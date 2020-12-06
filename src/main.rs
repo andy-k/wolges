@@ -196,7 +196,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                            //println!("j={}, assign {}", j, k);
                             v[k as usize] = CrossSet { bits, score };
                         }
                         if j > 0 {
@@ -242,7 +241,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 score +=
                                     alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
                             }
-                            //println!("j={}, assign {}", j, j-1);
                             v[(j - 1) as usize] = CrossSet { bits, score };
                         }
                     }
@@ -254,15 +252,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            for i in 0..len_usize {
-                if v[i].bits != 0 || v[i].score != 0 {
-                    print!("[{:2}] bits={:064b} score={}", i, v[i].bits, v[i].score,);
-                    for t in 0..63 {
-                        if ((v[i].bits >> t) & 1) != 0 {
-                            print!(" {}", alphabet.from_board(t).unwrap_or("."));
+            if false {
+                for i in 0..len_usize {
+                    if v[i].bits != 0 || v[i].score != 0 {
+                        print!("[{:2}] bits={:064b} score={}", i, v[i].bits, v[i].score);
+                        for t in 0..63 {
+                            if ((v[i].bits >> t) & 1) != 0 {
+                                print!(" {}", alphabet.from_board(t).unwrap_or("."));
+                            }
                         }
+                        println!();
                     }
-                    println!();
                 }
             }
         }
