@@ -1,4 +1,4 @@
-pub struct Tile<'a> {
+struct Tile<'a> {
     label: &'a str,
     blank_label: &'a str,
     freq: i16,
@@ -6,7 +6,7 @@ pub struct Tile<'a> {
     is_vowel: bool,
 }
 
-pub trait Alphabet<'a> {
+trait TraitAlphabet<'a> {
     fn len(&self) -> u8;
     fn get(&self, idx: u8) -> &'a Tile<'a>;
 
@@ -23,9 +23,9 @@ pub trait Alphabet<'a> {
     }
 }
 
-pub struct GenericAlphabet<'a>(&'a [Tile<'a>]);
+pub struct StaticAlphabet<'a>(&'a [Tile<'a>]);
 
-impl<'a> Alphabet<'a> for GenericAlphabet<'a> {
+impl<'a> TraitAlphabet<'a> for StaticAlphabet<'a> {
 
     #[inline(always)]
     fn len(&self) -> u8 {
@@ -38,7 +38,28 @@ impl<'a> Alphabet<'a> for GenericAlphabet<'a> {
     }
 }
 
-pub static ENGLISH_ALPHABET: GenericAlphabet = GenericAlphabet(&[
+pub enum Alphabet<'a> {
+  Static(StaticAlphabet<'a>),
+}
+
+impl<'a> TraitAlphabet<'a> for Alphabet<'a> {
+
+    #[inline(always)]
+    fn len(&self) -> u8 {
+    match self {
+      Alphabet::Static(x) => x.len()
+    }
+    }
+
+    #[inline(always)]
+    fn get(&self, idx: u8) -> &'a Tile<'a> {
+    match self {
+      Alphabet::Static(x) => x.get(idx)
+    }
+    }
+}
+
+pub static ENGLISH_ALPHABET: Alphabet = Alphabet::Static(StaticAlphabet(&[
     Tile {
         label: "?",
         blank_label: "?",
@@ -228,4 +249,4 @@ pub static ENGLISH_ALPHABET: GenericAlphabet = GenericAlphabet(&[
         score: 1,
         is_vowel: false,
     },
-]);
+]));

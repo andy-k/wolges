@@ -1,7 +1,8 @@
 use super::board_layout;
+use board_layout::TraitBoardLayout;
 
 #[inline(always)]
-pub fn empty_label<'a>(board_layout: &'a dyn board_layout::BoardLayout<'a>, row:i8,col:i8) -> &'a str {
+pub fn empty_label<'a>(board_layout: &'a board_layout::BoardLayout<'a>, row:i8,col:i8) -> &'a str {
 if row==board_layout.star_row()&&col==board_layout.star_col() {
 return "*";
 }
