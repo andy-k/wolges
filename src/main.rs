@@ -250,11 +250,14 @@ fn gen_cross_set<'a>(
     }
 }
 
+// rack must be sorted, and rack_tally must tally.
 fn gen_moves<'a>(
     board_tiles: &'a [u8],
     game_config: &'a game_config::GameConfig<'a>,
     gdw: &'a gdw::Gdw,
     cross_set_slice: &'a [CrossSet],
+    rack: &'a [u8],
+    rack_tally: &'a mut Tally,
     strider: matrix::Strider,
 ) {
     let len = strider.len();
@@ -355,6 +358,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let board_layout = game_config.board_layout();
         let dim = board_layout.dim();
+        let mut rack_tally = Tally::new(game_config.alphabet().len());
+        rack_tally.add_all(&rack);
+        println!("{:?}", rack_tally.0);
         {
             let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
             // tally the played tiles
@@ -407,6 +413,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &gdw,
                     &cross_set_for_across_plays
                         [cross_set_start..cross_set_start + (dim.cols as usize)],
+                    &rack,
+                    &mut rack_tally,
                     dim.across(row),
                 );
             }
@@ -435,6 +443,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &gdw,
                     &cross_set_for_down_plays
                         [cross_set_start..cross_set_start + (dim.rows as usize)],
+                    &rack,
+                    &mut rack_tally,
                     dim.down(col),
                 );
             }
