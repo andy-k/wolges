@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(" = {}", r)
     }
 
-    let board = b"\
+    let board_tiles = b"\
 \x0f\x04\x00\x00\x00\x00\x08\x01\x12\x0c\x0f\x14\x13\x00\x00\
 \x06\x09\x0e\x00\x00\x00\x00\x00\x00\x00\x00\x17\x00\x00\x00\
 \x00\x14\x05\x05\x00\x07\x00\x00\x00\x00\x00\x09\x00\x00\x00\
@@ -83,24 +83,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dim = bl.dim();
         for r in 0..dim.rows {
             for c in 0..dim.cols {
-                print!(
-                    "{}",
-                    al.from_board(board[dim.at_row_col(r, c)])
-                        .unwrap_or_else(|| display::empty_label(bl, r, c))
-                );
+                print!("{}", display::board_label(al, bl, dim, board_tiles, r, c),);
             }
             println!(" = {}", r)
         }
         println!("---transposed---");
-        for r in 0..dim.cols {
-            for c in 0..dim.rows {
-                print!(
-                    "{}",
-                    al.from_board(board[dim.at_row_col(r, c)])
-                        .unwrap_or_else(|| display::empty_label(bl, r, c))
-                );
+        for c in 0..dim.cols {
+            for r in 0..dim.rows {
+                print!("{}", display::board_label(al, bl, dim, board_tiles, r, c),);
             }
-            println!(" = {}", r)
+            println!(" = col {}", c)
         }
     }
 

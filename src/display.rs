@@ -1,4 +1,4 @@
-use super::board_layout;
+use super::{alphabet, board_layout, matrix};
 
 #[inline(always)]
 pub fn empty_label<'a>(
@@ -21,4 +21,18 @@ pub fn empty_label<'a>(
         },
         _ => panic!(),
     }
+}
+
+#[inline(always)]
+pub fn board_label<'a>(
+    alphabet: &'a alphabet::Alphabet<'a>,
+    board_layout: &'a board_layout::BoardLayout<'a>,
+    dim: matrix::Dim,
+    board_tiles: &'a [u8],
+    row: i8,
+    col: i8,
+) -> &'a str {
+    alphabet
+        .from_board(board_tiles[dim.at_row_col(row, col)])
+        .unwrap_or_else(|| empty_label(board_layout, row, col))
 }
