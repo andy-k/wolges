@@ -48,15 +48,9 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &gdw::Gdw) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdw = gdw::from_bytes(&std::fs::read("csw19.gdw")?);
     let gc = &game_config::COMMON_ENGLISH_GAME_CONFIG;
-    print_dawg(gc.alphabet(), &gdw);
-    println!("{}", gdw.0.len());
-    let bl = gc.board_layout();
-    let dim = bl.dim();
-    for r in 0..dim.rows {
-        for c in 0..dim.cols {
-            print!("{}", display::empty_label(bl, r, c));
-        }
-        println!(" = {}", r)
+    if false {
+        print_dawg(gc.alphabet(), &gdw);
+        println!("{}", gdw.0.len());
     }
 
     let board_tiles = b"\
@@ -77,23 +71,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 \x0f\x0b\x05\x00\x05\x09\x04\x05\x00\x00\x00\x00\x00\x00\x00\
 ";
     {
-        let al = gc.alphabet();
-        let bl = gc.board_layout();
-        println!("---dim---");
-        let dim = bl.dim();
-        for r in 0..dim.rows {
-            for c in 0..dim.cols {
-                print!("{}", display::board_label(al, bl, dim, board_tiles, r, c),);
-            }
-            println!(" = {}", r)
+        let alphabet = gc.alphabet();
+        let board_layout = gc.board_layout();
+        print!("  ");
+        for c in 0..board_layout.dim().cols {
+            print!(" {}", ((c as u8) + 0x61) as char);
         }
-        println!("---transposed---");
-        for c in 0..dim.cols {
-            for r in 0..dim.rows {
-                print!("{}", display::board_label(al, bl, dim, board_tiles, r, c),);
-            }
-            println!(" = col {}", c)
+        println!();
+        print!("  +");
+        for c in 1..board_layout.dim().cols {
+            print!("--");
         }
+        println!("-+");
+        for r in 0..board_layout.dim().rows {
+            print!("{:2}|", r + 1);
+            for c in 0..board_layout.dim().cols {
+                if c > 0 {
+                    print!(" ")
+                }
+                print!(
+                    "{}",
+                    display::board_label(alphabet, board_layout, board_tiles, r, c)
+                );
+            }
+            println!("|{}", r + 1);
+        }
+        print!("  +");
+        for c in 1..board_layout.dim().cols {
+            print!("--");
+        }
+        println!("-+");
+        print!("  ");
+        for c in 0..board_layout.dim().cols {
+            print!(" {}", ((c as u8) + 0x61) as char);
+        }
+        println!();
     }
 
     println!("Hello, world!");
