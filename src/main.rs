@@ -142,13 +142,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             game_config: &'a game_config::GameConfig<'a>,
             gdw: &'a gdw::Gdw,
             strider: matrix::Strider,
-            output_vec: &'a mut Vec<CrossSet>,
+            cross_sets: &'a mut [CrossSet],
             output_strider: matrix::Strider,
         ) {
             let len = strider.len();
             let len_usize = len as usize;
             for i in 0..output_strider.len() {
-                output_vec[output_strider.at(i)] = CrossSet { bits: 0, score: 0 };
+                cross_sets[output_strider.at(i)] = CrossSet { bits: 0, score: 0 };
             }
             if false {
                 assert_eq!(strider.len(), output_strider.len());
@@ -202,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                            output_vec[output_strider.at(k)] = CrossSet { bits, score };
+                            cross_sets[output_strider.at(k)] = CrossSet { bits, score };
                         }
                         if j > 0 {
                             // board[j - 1] is known to be empty
@@ -247,7 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 score +=
                                     alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
                             }
-                            output_vec[output_strider.at(j - 1)] = CrossSet { bits, score };
+                            cross_sets[output_strider.at(j - 1)] = CrossSet { bits, score };
                         }
                     }
                 } else {
@@ -260,7 +260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if false {
                 for i in 0..len_usize {
-                    let w = &output_vec[output_strider.at(i as i8)];
+                    let w = &cross_sets[output_strider.at(i as i8)];
                     if w.bits != 0 || w.score != 0 {
                         print!(
                             "[{:2}@{:3}] bits={:064b} score={}",
@@ -269,6 +269,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             w.bits,
                             w.score
                         );
+                        for t in 0..63 {
+                            if ((w.bits >> t) & 1) != 0 {
+                                print!(" {}", alphabet.from_board(t).unwrap_or("."));
+                            }
+                        }
+                        println!();
+                    }
+                }
+            }
+        }
+
+        fn gen_moves<'a>(
+            board_tiles: &'a [u8],
+            game_config: &'a game_config::GameConfig<'a>,
+            gdw: &'a gdw::Gdw,
+            cross_set_slice: &'a [CrossSet],
+            strider: matrix::Strider,
+        ) {
+            let len = strider.len();
+            let len_usize = len as usize;
+            if true {
+                assert_eq!(strider.len() as usize, cross_set_slice.len());
+                print!("using cross set for [");
+                for i in 0..len {
+                    print!(
+                        " {}",
+                        game_config
+                            .alphabet()
+                            .from_board(board_tiles[strider.at(i)])
+                            .unwrap_or(".")
+                    );
+                }
+                println!(" ]...");
+            }
+
+            let alphabet = game_config.alphabet();
+
+            if true {
+                for i in 0..len_usize {
+                    let w = &cross_set_slice[i];
+                    if w.bits != 0 || w.score != 0 {
+                        print!("[{:2}] bits={:064b} score={}", i, w.bits, w.score);
                         for t in 0..63 {
                             if ((w.bits >> t) & 1) != 0 {
                                 print!(" {}", alphabet.from_board(t).unwrap_or("."));
@@ -301,6 +343,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                 );
             }
+            for row in 0..dim.rows {
+                let cross_set_start = ((row as isize) * (dim.cols as isize)) as usize;
+                gen_moves(
+                    board_tiles,
+                    game_config,
+                    &gdw,
+                    &cross_set_for_across_plays
+                        [cross_set_start..cross_set_start + (dim.cols as usize)],
+                    dim.across(row),
+                );
+            }
             // striped by columns for better cache locality
             let mut cross_set_for_down_plays =
                 vec![CrossSet { bits: 0, score: 0 }; rows_times_cols];
@@ -316,6 +369,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         step: dim.rows,
                         len: dim.cols,
                     },
+                );
+            }
+            for col in 0..dim.cols {
+                let cross_set_start = ((col as isize) * (dim.rows as isize)) as usize;
+                gen_moves(
+                    board_tiles,
+                    game_config,
+                    &gdw,
+                    &cross_set_for_down_plays
+                        [cross_set_start..cross_set_start + (dim.rows as usize)],
+                    dim.down(col),
                 );
             }
         }

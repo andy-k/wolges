@@ -213,7 +213,7 @@ pub static ENGLISH_ALPHABET: Alphabet = Alphabet::Static(StaticAlphabet(&[
         label: "X",
         blank_label: "x",
         freq: 1,
-        score: 6,
+        score: 8,
         is_vowel: false,
     },
     Tile {
