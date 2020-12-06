@@ -293,6 +293,54 @@ fn gen_moves<'a>(
             }
         }
     }
+
+    // todo actual algo here
+    fn gen_moves_from(anchor: i8, leftmost: i8, rightmost: i8) {
+        println!("moves({}, {}..{})", anchor, leftmost, rightmost);
+    }
+
+    if false {
+        // starting play. gen_moves_from(star, 0, len); or something.
+        // TODO. might be able to simulate with zeros + all-ones (!0) at the star.
+    } else {
+        let mut rightmost = len; // processed up to here
+        let mut leftmost = len;
+        loop {
+            while leftmost > 0 && board_tiles[strider.at(leftmost - 1)] == 0 {
+                leftmost -= 1;
+            }
+            if leftmost > 0 {
+                // board[leftmost - 1] is a tile.
+                gen_moves_from(leftmost - 1, 0, rightmost);
+            }
+            if rack.len() >= 2 {
+                leftmost += 1;
+                for anchor in (leftmost..rightmost).rev() {
+                    if cross_set_slice[anchor as usize].bits != 0 {
+                        if rightmost - leftmost < 2 {
+                            break;
+                        }
+                        if cross_set_slice[anchor as usize].bits != 1 {
+                            // if 1, it means this square is totally blocked.
+                            // TODO: it can also suggest (bits & have_on_rack) != 1.
+                            // have_on_rack would be !0 if they have blank. bit 0 unknown.
+                            // so: if the xset requires vowel but rack is consonant, it's !.
+                            gen_moves_from(anchor, leftmost, rightmost);
+                        }
+                        rightmost = anchor; // prevent duplicates
+                    }
+                }
+                leftmost -= 1;
+            }
+            while leftmost > 0 && board_tiles[strider.at(leftmost - 1)] != 0 {
+                leftmost -= 1;
+            }
+            if leftmost <= 1 {
+                break;
+            }
+            rightmost = leftmost - 1; // prevent touching leftmost tile
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
