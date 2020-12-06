@@ -89,9 +89,29 @@ struct CrossSet {
     score: i16,
 }
 
+// pass the length, so 27.
+fn tally_rack<'a>(alphabet_len: u8, tiles: &[u8]) -> Box<[u8]> {
+    let mut ret = vec![0u8; alphabet_len as usize];
+    for t in tiles {
+        ret[*t as usize] += 1;
+    }
+    return ret.into_boxed_slice();
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdw = gdw::from_bytes(&std::fs::read("csw19.gdw")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
+    println!("{}", game_config.alphabet().len());
+    println!(
+        "{:?}",
+        tally_rack(
+            game_config.alphabet().len(),
+            b"\x1a\x19\x00\x00\x19\x16\x01"
+        )
+    );
+    if true {
+        return Ok(());
+    }
     if false {
         print_dawg(game_config.alphabet(), &gdw);
         println!("{}", gdw.0.len());
