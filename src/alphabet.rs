@@ -26,7 +26,6 @@ trait TraitAlphabet<'a> {
 pub struct StaticAlphabet<'a>(&'a [Tile<'a>]);
 
 impl<'a> TraitAlphabet<'a> for StaticAlphabet<'a> {
-
     #[inline(always)]
     fn len(&self) -> u8 {
         self.0.len() as u8
@@ -39,23 +38,22 @@ impl<'a> TraitAlphabet<'a> for StaticAlphabet<'a> {
 }
 
 pub enum Alphabet<'a> {
-  Static(StaticAlphabet<'a>),
+    Static(StaticAlphabet<'a>),
 }
 
 impl<'a> TraitAlphabet<'a> for Alphabet<'a> {
-
     #[inline(always)]
     fn len(&self) -> u8 {
-    match self {
-      Alphabet::Static(x) => x.len()
-    }
+        match self {
+            Alphabet::Static(x) => x.len(),
+        }
     }
 
     #[inline(always)]
     fn get(&self, idx: u8) -> &'a Tile<'a> {
-    match self {
-      Alphabet::Static(x) => x.get(idx)
-    }
+        match self {
+            Alphabet::Static(x) => x.get(idx),
+        }
     }
 }
 

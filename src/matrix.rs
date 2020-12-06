@@ -4,8 +4,10 @@ pub struct Dim {
     pub cols: i8,
 }
 
-impl Dim{
-pub fn at_row_col(&self,row:i8,col :i8)->usize {(((row as isize)*(self.cols as isize))+(col as isize)) as usize}
+impl Dim {
+    pub fn at_row_col(&self, row: i8, col: i8) -> usize {
+        (((row as isize) * (self.cols as isize)) + (col as isize)) as usize
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -27,7 +29,6 @@ pub trait Flippable {
 }
 
 impl Flippable for Across {
-
     #[inline(always)]
     fn lanes(&self) -> i8 {
         self.dim.rows
@@ -40,12 +41,11 @@ impl Flippable for Across {
 
     #[inline(always)]
     fn at(&self, col: i8) -> usize {
-    self.dim.at_row_col(self.row, col)
+        self.dim.at_row_col(self.row, col)
     }
 }
 
 impl Flippable for Down {
-
     #[inline(always)]
     fn lanes(&self) -> i8 {
         self.dim.cols
@@ -58,6 +58,6 @@ impl Flippable for Down {
 
     #[inline(always)]
     fn at(&self, row: i8) -> usize {
-    self.dim.at_row_col(row, self.col)
+        self.dim.at_row_col(row, self.col)
     }
 }
