@@ -54,7 +54,7 @@ fn print_board<'a>(gc: &game_config::GameConfig<'a>, board_tiles: &[u8]) {
     }
     println!();
     print!("  +");
-    for c in 1..board_layout.dim().cols {
+    for _ in 1..board_layout.dim().cols {
         print!("--");
     }
     println!("-+");
@@ -72,7 +72,7 @@ fn print_board<'a>(gc: &game_config::GameConfig<'a>, board_tiles: &[u8]) {
         println!("|{}", r + 1);
     }
     print!("  +");
-    for c in 1..board_layout.dim().cols {
+    for _ in 1..board_layout.dim().cols {
         print!("--");
     }
     println!("-+");
@@ -110,6 +110,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ";
 
     print_board(gc, board_tiles);
+
+    // todo: check for empty board, etc.
+    {
+        // ?UGE?US - http://liwords.localhost/game/oyMkFGLA
+        //let rack = b"\x00\x00\x05\x07\x13\x15\x15";
+        let mut rack = b"\x00\x15\x07\x05\x00\x15\x13".clone(); // clone because it's from static data
+        rack.sort();
+        let alphabet = gc.alphabet();
+        for &tile in rack.iter() {
+            print!(
+                "{}",
+                if tile == 0 {
+                    "?"
+                } else if tile & 0x80 == 0 {
+                    alphabet.from_board(tile).unwrap()
+                } else {
+                    panic!()
+                }
+            );
+        }
+        println!();
+
+        // todo: actually gen moves.
+        // todo: xchg.
+        // todo: leaves.
+    }
 
     println!("Hello, world!");
     Ok(())
