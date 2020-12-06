@@ -108,6 +108,190 @@ impl Tally {
     }
 }
 
+fn gen_cross_set<'a>(
+    board_tiles: &'a [u8],
+    game_config: &'a game_config::GameConfig<'a>,
+    gdw: &'a gdw::Gdw,
+    strider: matrix::Strider,
+    cross_sets: &'a mut [CrossSet],
+    output_strider: matrix::Strider,
+) {
+    let len = strider.len();
+    let len_usize = len as usize;
+    for i in 0..output_strider.len() {
+        cross_sets[output_strider.at(i)] = CrossSet { bits: 0, score: 0 };
+    }
+    if false {
+        assert_eq!(strider.len(), output_strider.len());
+        print!("generating cross set for [");
+        for i in 0..len {
+            print!(
+                " {}",
+                game_config
+                    .alphabet()
+                    .from_board(board_tiles[strider.at(i)])
+                    .unwrap_or(".")
+            );
+        }
+        println!(" ]...");
+    }
+
+    let alphabet = game_config.alphabet();
+    let mut p = 1;
+    let mut score = 0i16;
+    let mut k = len;
+    for j in (0..len).rev() {
+        let b = board_tiles[strider.at(j)];
+        if b != 0 {
+            // board has tile
+            if p >= 0 {
+                // include current tile
+                p = gdw.in_gdw(p, b & 0x7f);
+            }
+            score += alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
+            if j == 0 || board_tiles[strider.at(j - 1)] == 0 {
+                // there is a sequence of tiles from j inclusive to k exclusive
+                if k < len && !(k + 1 < len && board_tiles[strider.at(k + 1)] != 0) {
+                    // board[k + 1] is empty, compute cross_set[k].
+                    let mut bits = 1u64;
+                    if p > 0 {
+                        // p = DCBA
+                        let q = gdw.in_gdw(p, 0);
+                        if q > 0 {
+                            // q = DCBA@
+                            let mut q = gdw[q].arc_index();
+                            if q > 0 {
+                                loop {
+                                    if gdw[q].accepts() {
+                                        bits |= 1 << gdw[q].tile();
+                                    }
+                                    if gdw[q].is_end() {
+                                        break;
+                                    }
+                                    q += 1;
+                                }
+                            }
+                        }
+                    }
+                    cross_sets[output_strider.at(k)] = CrossSet { bits, score };
+                }
+                if j > 0 {
+                    // board[j - 1] is known to be empty
+                    let mut bits = 1u64;
+                    if p > 0 {
+                        // p = DCBA
+                        p = gdw[p].arc_index(); // p = after DCBA
+                        if p > 0 {
+                            loop {
+                                let tile = gdw[p].tile();
+                                if tile != 0 {
+                                    // not the gaddag marker
+                                    let mut q = p;
+                                    // board[j - 2] may or may not be empty.
+                                    for k in (0..j - 1).rev() {
+                                        let b = board_tiles[strider.at(k)];
+                                        if b == 0 {
+                                            break;
+                                        }
+                                        q = gdw.in_gdw(q, b & 0x7f);
+                                        if q <= 0 {
+                                            break;
+                                        }
+                                    }
+                                    if q > 0 && gdw[q].accepts() {
+                                        bits |= 1 << gdw[q].tile();
+                                    }
+                                }
+                                if gdw[p].is_end() {
+                                    break;
+                                }
+                                p += 1;
+                            }
+                        }
+                    }
+                    // score hasn't included the next batch.
+                    for k in (0i8..j - 1).rev() {
+                        let b = board_tiles[strider.at(k)];
+                        if b == 0 {
+                            break;
+                        }
+                        score += alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
+                    }
+                    cross_sets[output_strider.at(j - 1)] = CrossSet { bits, score };
+                }
+            }
+        } else {
+            // empty square, reset
+            p = 1; // cumulative gaddag traversal results
+            score = 0; // cumulative face-value score
+            k = j; // last seen empty square
+        }
+    }
+
+    if false {
+        for i in 0..len_usize {
+            let w = &cross_sets[output_strider.at(i as i8)];
+            if w.bits != 0 || w.score != 0 {
+                print!(
+                    "[{:2}@{:3}] bits={:064b} score={}",
+                    i,
+                    output_strider.at(i as i8),
+                    w.bits,
+                    w.score
+                );
+                for t in 0..63 {
+                    if ((w.bits >> t) & 1) != 0 {
+                        print!(" {}", alphabet.from_board(t).unwrap_or("."));
+                    }
+                }
+                println!();
+            }
+        }
+    }
+}
+
+fn gen_moves<'a>(
+    board_tiles: &'a [u8],
+    game_config: &'a game_config::GameConfig<'a>,
+    gdw: &'a gdw::Gdw,
+    cross_set_slice: &'a [CrossSet],
+    strider: matrix::Strider,
+) {
+    let len = strider.len();
+    let len_usize = len as usize;
+    if true {
+        assert_eq!(strider.len() as usize, cross_set_slice.len());
+        print!("using cross set for [");
+        for i in 0..len {
+            print!(
+                " {}",
+                game_config
+                    .alphabet()
+                    .from_board(board_tiles[strider.at(i)])
+                    .unwrap_or(".")
+            );
+        }
+        println!(" ]...");
+    }
+
+    let alphabet = game_config.alphabet();
+
+    if true {
+        for i in 0..len_usize {
+            let w = &cross_set_slice[i];
+            if w.bits != 0 || w.score != 0 {
+                print!("[{:2}] bits={:064b} score={}", i, w.bits, w.score);
+                for t in 0..63 {
+                    if ((w.bits >> t) & 1) != 0 {
+                        print!(" {}", alphabet.from_board(t).unwrap_or("."));
+                    }
+                }
+                println!();
+            }
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdw = gdw::from_bytes(&std::fs::read("csw19.gdw")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
@@ -168,191 +352,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         println!();
-
-        fn gen_cross_set<'a>(
-            board_tiles: &'a [u8],
-            game_config: &'a game_config::GameConfig<'a>,
-            gdw: &'a gdw::Gdw,
-            strider: matrix::Strider,
-            cross_sets: &'a mut [CrossSet],
-            output_strider: matrix::Strider,
-        ) {
-            let len = strider.len();
-            let len_usize = len as usize;
-            for i in 0..output_strider.len() {
-                cross_sets[output_strider.at(i)] = CrossSet { bits: 0, score: 0 };
-            }
-            if false {
-                assert_eq!(strider.len(), output_strider.len());
-                print!("generating cross set for [");
-                for i in 0..len {
-                    print!(
-                        " {}",
-                        game_config
-                            .alphabet()
-                            .from_board(board_tiles[strider.at(i)])
-                            .unwrap_or(".")
-                    );
-                }
-                println!(" ]...");
-            }
-
-            let alphabet = game_config.alphabet();
-            let mut p = 1;
-            let mut score = 0i16;
-            let mut k = len;
-            for j in (0..len).rev() {
-                let b = board_tiles[strider.at(j)];
-                if b != 0 {
-                    // board has tile
-                    if p >= 0 {
-                        // include current tile
-                        p = gdw.in_gdw(p, b & 0x7f);
-                    }
-                    score += alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
-                    if j == 0 || board_tiles[strider.at(j - 1)] == 0 {
-                        // there is a sequence of tiles from j inclusive to k exclusive
-                        if k < len && !(k + 1 < len && board_tiles[strider.at(k + 1)] != 0) {
-                            // board[k + 1] is empty, compute cross_set[k].
-                            let mut bits = 1u64;
-                            if p > 0 {
-                                // p = DCBA
-                                let q = gdw.in_gdw(p, 0);
-                                if q > 0 {
-                                    // q = DCBA@
-                                    let mut q = gdw[q].arc_index();
-                                    if q > 0 {
-                                        loop {
-                                            if gdw[q].accepts() {
-                                                bits |= 1 << gdw[q].tile();
-                                            }
-                                            if gdw[q].is_end() {
-                                                break;
-                                            }
-                                            q += 1;
-                                        }
-                                    }
-                                }
-                            }
-                            cross_sets[output_strider.at(k)] = CrossSet { bits, score };
-                        }
-                        if j > 0 {
-                            // board[j - 1] is known to be empty
-                            let mut bits = 1u64;
-                            if p > 0 {
-                                // p = DCBA
-                                p = gdw[p].arc_index(); // p = after DCBA
-                                if p > 0 {
-                                    loop {
-                                        let tile = gdw[p].tile();
-                                        if tile != 0 {
-                                            // not the gaddag marker
-                                            let mut q = p;
-                                            // board[j - 2] may or may not be empty.
-                                            for k in (0..j - 1).rev() {
-                                                let b = board_tiles[strider.at(k)];
-                                                if b == 0 {
-                                                    break;
-                                                }
-                                                q = gdw.in_gdw(q, b & 0x7f);
-                                                if q <= 0 {
-                                                    break;
-                                                }
-                                            }
-                                            if q > 0 && gdw[q].accepts() {
-                                                bits |= 1 << gdw[q].tile();
-                                            }
-                                        }
-                                        if gdw[p].is_end() {
-                                            break;
-                                        }
-                                        p += 1;
-                                    }
-                                }
-                            }
-                            // score hasn't included the next batch.
-                            for k in (0i8..j - 1).rev() {
-                                let b = board_tiles[strider.at(k)];
-                                if b == 0 {
-                                    break;
-                                }
-                                score +=
-                                    alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
-                            }
-                            cross_sets[output_strider.at(j - 1)] = CrossSet { bits, score };
-                        }
-                    }
-                } else {
-                    // empty square, reset
-                    p = 1; // cumulative gaddag traversal results
-                    score = 0; // cumulative face-value score
-                    k = j; // last seen empty square
-                }
-            }
-
-            if false {
-                for i in 0..len_usize {
-                    let w = &cross_sets[output_strider.at(i as i8)];
-                    if w.bits != 0 || w.score != 0 {
-                        print!(
-                            "[{:2}@{:3}] bits={:064b} score={}",
-                            i,
-                            output_strider.at(i as i8),
-                            w.bits,
-                            w.score
-                        );
-                        for t in 0..63 {
-                            if ((w.bits >> t) & 1) != 0 {
-                                print!(" {}", alphabet.from_board(t).unwrap_or("."));
-                            }
-                        }
-                        println!();
-                    }
-                }
-            }
-        }
-
-        fn gen_moves<'a>(
-            board_tiles: &'a [u8],
-            game_config: &'a game_config::GameConfig<'a>,
-            gdw: &'a gdw::Gdw,
-            cross_set_slice: &'a [CrossSet],
-            strider: matrix::Strider,
-        ) {
-            let len = strider.len();
-            let len_usize = len as usize;
-            if true {
-                assert_eq!(strider.len() as usize, cross_set_slice.len());
-                print!("using cross set for [");
-                for i in 0..len {
-                    print!(
-                        " {}",
-                        game_config
-                            .alphabet()
-                            .from_board(board_tiles[strider.at(i)])
-                            .unwrap_or(".")
-                    );
-                }
-                println!(" ]...");
-            }
-
-            let alphabet = game_config.alphabet();
-
-            if true {
-                for i in 0..len_usize {
-                    let w = &cross_set_slice[i];
-                    if w.bits != 0 || w.score != 0 {
-                        print!("[{:2}] bits={:064b} score={}", i, w.bits, w.score);
-                        for t in 0..63 {
-                            if ((w.bits >> t) & 1) != 0 {
-                                print!(" {}", alphabet.from_board(t).unwrap_or("."));
-                            }
-                        }
-                        println!();
-                    }
-                }
-            }
-        }
 
         let board_layout = game_config.board_layout();
         let dim = board_layout.dim();
