@@ -50,7 +50,7 @@ impl<'a> BoardLayout<'a> for GenericBoardLayout<'a> {
     }
 }
 
-pub static COMMON_BOARD_LAYOUT: GenericBoardLayout = GenericBoardLayout{
+pub static COMMON_BOARD_LAYOUT: Box<GenericBoardLayout> = Box::new(GenericBoardLayout{
 premiums:&[
 TWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS, TWS, //
 FVS, DWS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, DWS, FVS, //
@@ -67,7 +67,7 @@ DLS, FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS, DLS, //
 FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS, //
 FVS, DWS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, DWS, FVS, //
 TWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS, TWS, //
-], dim:matrix::Dim { rows: 15, cols: 15 },star_row: 7,star_col: 7};
+], dim:matrix::Dim { rows: 15, cols: 15 },star_row: 7,star_col: 7});
 
 
 /*
