@@ -44,17 +44,22 @@ impl std::ops::Index<i32> for Gdw {
 
 impl Gdw {
     pub fn in_gdw(&self, mut p: i32, tile: u8) -> i32 {
+        //println!("in_gdw({}, {})", p, tile);
         if p >= 0 {
             p = self[p].arc_index() as i32;
             if p > 0 {
                 while self[p].tile() != tile {
                     if self[p].is_end() {
+                        //println!("is -1");
                         return -1;
                     }
-                    return p;
+                    p += 1;
                 }
+                //println!("is {}", p);
+                return p;
             }
         }
+        //println!("is -1");
         -1 // intentionally return 0 as -1
     }
 }

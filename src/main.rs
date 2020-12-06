@@ -196,6 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
+                            //println!("j={}, assign {}", j, k);
                             v[k as usize] = CrossSet { bits, score };
                         }
                         if j > 0 {
@@ -241,6 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 score +=
                                     alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
                             }
+                            //println!("j={}, assign {}", j, j-1);
                             v[(j - 1) as usize] = CrossSet { bits, score };
                         }
                     }
