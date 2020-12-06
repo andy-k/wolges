@@ -144,24 +144,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         fn gen_cross_set<'a>(
             env: &'a Env,
-            work_vec: &'a mut Vec<CrossSet>,
             strider: matrix::Strider,
+            output_vec: &'a mut Vec<CrossSet>,
+            output_strider: matrix::Strider,
         ) {
             let len = strider.len();
             let len_usize = len as usize;
-            work_vec.clear();
-            work_vec.resize(len_usize, CrossSet { bits: 0, score: 0 });
-            print!("generating cross set for [");
-            for i in 0..len {
-                print!(
-                    " {}",
-                    env.game_config
-                        .alphabet()
-                        .from_board(env.board_tiles[strider.at(i)])
-                        .unwrap_or(".")
-                );
+            for i in 0..output_strider.len() {
+                output_vec[output_strider.at(i)] = CrossSet { bits: 0, score: 0 };
             }
-            println!(" ]...");
+            if false {
+                assert_eq!(strider.len(), output_strider.len());
+                print!("generating cross set for [");
+                for i in 0..len {
+                    print!(
+                        " {}",
+                        env.game_config
+                            .alphabet()
+                            .from_board(env.board_tiles[strider.at(i)])
+                            .unwrap_or(".")
+                    );
+                }
+                println!(" ]...");
+            }
 
             let alphabet = env.game_config.alphabet();
             let mut p = 1;
@@ -200,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                            work_vec[k as usize] = CrossSet { bits, score };
+                            output_vec[output_strider.at(k)] = CrossSet { bits, score };
                         }
                         if j > 0 {
                             // board[j - 1] is known to be empty
@@ -245,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 score +=
                                     alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
                             }
-                            work_vec[(j - 1) as usize] = CrossSet { bits, score };
+                            output_vec[output_strider.at(j - 1)] = CrossSet { bits, score };
                         }
                     }
                 } else {
@@ -258,13 +263,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if false {
                 for i in 0..len_usize {
-                    if work_vec[i].bits != 0 || work_vec[i].score != 0 {
+                    let w = &output_vec[output_strider.at(i as i8)];
+                    if w.bits != 0 || w.score != 0 {
                         print!(
-                            "[{:2}] bits={:064b} score={}",
-                            i, work_vec[i].bits, work_vec[i].score
+                            "[{:2}@{:3}] bits={:064b} score={}",
+                            i,
+                            output_strider.at(i as i8),
+                            w.bits,
+                            w.score
                         );
                         for t in 0..63 {
-                            if ((work_vec[i].bits >> t) & 1) != 0 {
+                            if ((w.bits >> t) & 1) != 0 {
                                 print!(" {}", alphabet.from_board(t).unwrap_or("."));
                             }
                         }
@@ -283,29 +292,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gdw: &gdw,
             };
             let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
-            let mut work_vec =
-                Vec::with_capacity(std::cmp::max(dim.rows as usize, dim.cols as usize));
             // striped by row
             let mut cross_set_for_across_plays =
                 vec![CrossSet { bits: 0, score: 0 }; rows_times_cols];
             for col in 0..dim.cols {
-                gen_cross_set(&env, &mut work_vec, dim.down(col));
-                for row in 0..dim.rows {
-                    cross_set_for_across_plays
-                        [(((row as isize) * (dim.cols as isize)) + (col as isize)) as usize] =
-                        work_vec[row as usize].clone();
-                }
+                gen_cross_set(
+                    &env,
+                    dim.down(col),
+                    &mut cross_set_for_across_plays,
+                    matrix::Strider {
+                        base: col as i16,
+                        step: dim.cols,
+                        len: dim.rows,
+                    },
+                );
             }
             // striped by columns for better cache locality
             let mut cross_set_for_down_plays =
                 vec![CrossSet { bits: 0, score: 0 }; rows_times_cols];
             for row in 0..dim.rows {
-                gen_cross_set(&env, &mut work_vec, dim.across(row));
-                for col in 0..dim.cols {
-                    cross_set_for_down_plays
-                        [(((col as isize) * (dim.rows as isize)) + (row as isize)) as usize] =
-                        work_vec[col as usize].clone();
-                }
+                gen_cross_set(
+                    &env,
+                    dim.across(row),
+                    &mut cross_set_for_down_plays,
+                    matrix::Strider {
+                        base: row as i16,
+                        step: dim.rows,
+                        len: dim.cols,
+                    },
+                );
             }
         }
 
