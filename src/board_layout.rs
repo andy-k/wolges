@@ -27,13 +27,6 @@ static FVS: Premium = Premium {
     letter_multiplier: 1,
 };
 
-pub trait TraitBoardLayout<'a> {
-    fn dim(&self) -> matrix::Dim;
-    fn star_row(&self) -> i8;
-    fn star_col(&self) -> i8;
-    fn premium_at(&self, row: i8, col: i8) -> Premium;
-}
-
 pub struct StaticBoardLayout<'a> {
     premiums: &'a [Premium],
     dim: matrix::Dim,
@@ -41,58 +34,36 @@ pub struct StaticBoardLayout<'a> {
     star_col: i8,
 }
 
-impl<'a> TraitBoardLayout<'a> for StaticBoardLayout<'a> {
-    #[inline(always)]
-    fn dim(&self) -> matrix::Dim {
-        self.dim
-    }
-
-    #[inline(always)]
-    fn star_row(&self) -> i8 {
-        self.star_row
-    }
-
-    #[inline(always)]
-    fn star_col(&self) -> i8 {
-        self.star_col
-    }
-
-    #[inline(always)]
-    fn premium_at(&self, row: i8, col: i8) -> Premium {
-        self.premiums[self.dim().at_row_col(row, col)]
-    }
-}
-
 pub enum BoardLayout<'a> {
     Static(StaticBoardLayout<'a>),
 }
 
-impl<'a> TraitBoardLayout<'a> for BoardLayout<'a> {
+impl<'a> BoardLayout<'a> {
     #[inline(always)]
-    fn dim(&self) -> matrix::Dim {
+    pub fn dim(&self) -> matrix::Dim {
         match self {
-            BoardLayout::Static(x) => x.dim(),
+            BoardLayout::Static(x) => x.dim,
         }
     }
 
     #[inline(always)]
-    fn star_row(&self) -> i8 {
+    pub fn star_row(&self) -> i8 {
         match self {
-            BoardLayout::Static(x) => x.star_row(),
+            BoardLayout::Static(x) => x.star_row,
         }
     }
 
     #[inline(always)]
-    fn star_col(&self) -> i8 {
+    pub fn star_col(&self) -> i8 {
         match self {
-            BoardLayout::Static(x) => x.star_col(),
+            BoardLayout::Static(x) => x.star_col,
         }
     }
 
     #[inline(always)]
-    fn premium_at(&self, row: i8, col: i8) -> Premium {
+    pub fn premium_at(&self, row: i8, col: i8) -> Premium {
         match self {
-            BoardLayout::Static(x) => x.premium_at(row, col),
+            BoardLayout::Static(x) => x.premiums[x.dim.at_row_col(row, col)],
         }
     }
 }

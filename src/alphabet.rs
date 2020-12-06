@@ -1,17 +1,34 @@
-struct Tile<'a> {
-    label: &'a str,
-    blank_label: &'a str,
-    freq: i16,
-    score: i8,
-    is_vowel: bool,
+pub struct Tile<'a> {
+    pub label: &'a str,
+    pub blank_label: &'a str,
+    pub freq: i16,
+    pub score: i8,
+    pub is_vowel: bool,
 }
 
-trait TraitAlphabet<'a> {
-    fn len(&self) -> u8;
-    fn get(&self, idx: u8) -> &'a Tile<'a>;
+pub struct StaticAlphabet<'a>(&'a [Tile<'a>]);
+
+pub enum Alphabet<'a> {
+    Static(StaticAlphabet<'a>),
+}
+
+impl<'a> Alphabet<'a> {
+    #[inline(always)]
+    pub fn len(&self) -> u8 {
+        match self {
+            Alphabet::Static(x) => x.0.len() as u8,
+        }
+    }
 
     #[inline(always)]
-    fn from_board(&self, idx: u8) -> Option<&'a str> {
+    pub fn get(&self, idx: u8) -> &'a Tile<'a> {
+        match self {
+            Alphabet::Static(x) => &x.0[idx as usize],
+        }
+    }
+
+    #[inline(always)]
+    pub fn from_board(&self, idx: u8) -> Option<&'a str> {
         let c = idx & 0x7f;
         if c == 0 || c >= self.len() {
             None
@@ -19,40 +36,6 @@ trait TraitAlphabet<'a> {
             Some(&self.get(c).label)
         } else {
             Some(&self.get(c).blank_label)
-        }
-    }
-}
-
-pub struct StaticAlphabet<'a>(&'a [Tile<'a>]);
-
-impl<'a> TraitAlphabet<'a> for StaticAlphabet<'a> {
-    #[inline(always)]
-    fn len(&self) -> u8 {
-        self.0.len() as u8
-    }
-
-    #[inline(always)]
-    fn get(&self, idx: u8) -> &'a Tile<'a> {
-        &self.0[idx as usize]
-    }
-}
-
-pub enum Alphabet<'a> {
-    Static(StaticAlphabet<'a>),
-}
-
-impl<'a> TraitAlphabet<'a> for Alphabet<'a> {
-    #[inline(always)]
-    fn len(&self) -> u8 {
-        match self {
-            Alphabet::Static(x) => x.len(),
-        }
-    }
-
-    #[inline(always)]
-    fn get(&self, idx: u8) -> &'a Tile<'a> {
-        match self {
-            Alphabet::Static(x) => x.get(idx),
         }
     }
 }

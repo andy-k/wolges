@@ -1,5 +1,4 @@
 use super::board_layout;
-use board_layout::TraitBoardLayout;
 
 #[inline(always)]
 pub fn empty_label<'a>(
