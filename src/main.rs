@@ -120,9 +120,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // todo: check for empty board, etc.
     {
         // ?UGE?US - http://liwords.localhost/game/oyMkFGLA
-        //let rack = b"\x00\x00\x05\x07\x13\x15\x15";
-        let mut rack = b"\x00\x15\x07\x05\x00\x15\x13".clone(); // clone because it's from static data
-        rack.sort();
+        let mut rack = *b"\x00\x15\x07\x05\x00\x15\x13";
+        rack.sort_unstable();
         let alphabet = game_config.alphabet();
         for &tile in rack.iter() {
             print!(
