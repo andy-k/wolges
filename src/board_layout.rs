@@ -1,8 +1,6 @@
-mod matrix;
+use super::matrix;
 
 #[derive(Clone, Copy)]
-struct RowCol(i8, i8);
-
 struct Premium {
   word_multiplier: i8,
   letter_multiplier: i8,
@@ -16,23 +14,37 @@ static FVS : Premium = Premium { word_multiplier: 1, letter_multiplier: 1 };
 
 pub trait BoardLayout<'a> {
     fn dim(&self) -> matrix::Dim;
-    fn at(&self, _: RowCol) -> Premium;
+    fn star_row(&self) -> i8;
+    fn star_col(&self) -> i8;
+    fn premium_at(&self,row:i8,col:i8) -> Premium;
 }
 
-pub struct GenericBoardLayout<'a>(&'a [Premium], matrix::Dim);
+pub struct GenericBoardLayout<'a> {
+  premiums: &'a[Premium],
+  dim: matrix::Dim,
+  star_row: i8,
+  star_col: i8,
+}
 
 impl<'a> BoardLayout<'a> for GenericBoardLayout<'a> {
 
     #[inline(always)]
-    fn dim(&self) -> matrix::Dim { self.1 }
+    fn dim(&self) -> matrix::Dim { self.dim }
 
     #[inline(always)]
-    fn at(&self, RowCol(row, col): RowCol) -> Premium {
-        self.0[((row as isize) * (self.dim().cols as isize) + (col as isize)) as usize]
+    fn star_row(&self) -> i8{ self.star_row }
+
+    #[inline(always)]
+    fn star_col(&self) -> i8{ self.star_col }
+
+    #[inline(always)]
+    fn premium_at(&self, row:i8,col:i8) -> Premium {
+        self.premiums[self.dim().at_row_col(row, col)]
     }
 }
 
-pub static COMMON_BOARD_LAYOUT: GenericBoardLayout = GenericBoardLayout(&[
+pub static COMMON_BOARD_LAYOUT: GenericBoardLayout = GenericBoardLayout{
+premiums:&[
 TWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS, TWS, //
 FVS, DWS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, DWS, FVS, //
 FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS, //
@@ -48,4 +60,4 @@ DLS, FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS, DLS, //
 FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS, //
 FVS, DWS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, DWS, FVS, //
 TWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS, TWS, //
-], matrix::Dim { rows: 15, cols: 15 });
+], dim:matrix::Dim { rows: 15, cols: 15 },star_row: 7,star_col: 7};
