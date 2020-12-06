@@ -137,13 +137,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!();
 
-        struct Env<'a> {
+        fn gen_cross_set<'a>(
             board_tiles: &'a [u8],
             game_config: &'a game_config::GameConfig<'a>,
             gdw: &'a gdw::Gdw,
-        }
-        fn gen_cross_set<'a>(
-            env: &'a Env,
             strider: matrix::Strider,
             output_vec: &'a mut Vec<CrossSet>,
             output_strider: matrix::Strider,
@@ -159,45 +156,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for i in 0..len {
                     print!(
                         " {}",
-                        env.game_config
+                        game_config
                             .alphabet()
-                            .from_board(env.board_tiles[strider.at(i)])
+                            .from_board(board_tiles[strider.at(i)])
                             .unwrap_or(".")
                     );
                 }
                 println!(" ]...");
             }
 
-            let alphabet = env.game_config.alphabet();
+            let alphabet = game_config.alphabet();
             let mut p = 1;
             let mut score = 0i16;
             let mut k = len;
             for j in (0..len).rev() {
-                let b = env.board_tiles[strider.at(j)];
+                let b = board_tiles[strider.at(j)];
                 if b != 0 {
                     // board has tile
                     if p >= 0 {
                         // include current tile
-                        p = env.gdw.in_gdw(p, b & 0x7f);
+                        p = gdw.in_gdw(p, b & 0x7f);
                     }
                     score += alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
-                    if j == 0 || env.board_tiles[strider.at(j - 1)] == 0 {
+                    if j == 0 || board_tiles[strider.at(j - 1)] == 0 {
                         // there is a sequence of tiles from j inclusive to k exclusive
-                        if k < len && !(k + 1 < len && env.board_tiles[strider.at(k + 1)] != 0) {
+                        if k < len && !(k + 1 < len && board_tiles[strider.at(k + 1)] != 0) {
                             // board[k + 1] is empty, compute cross_set[k].
                             let mut bits = 1u64;
                             if p > 0 {
                                 // p = DCBA
-                                let q = env.gdw.in_gdw(p, 0);
+                                let q = gdw.in_gdw(p, 0);
                                 if q > 0 {
                                     // q = DCBA@
-                                    let mut q = env.gdw[q].arc_index();
+                                    let mut q = gdw[q].arc_index();
                                     if q > 0 {
                                         loop {
-                                            if env.gdw[q].accepts() {
-                                                bits |= 1 << env.gdw[q].tile();
+                                            if gdw[q].accepts() {
+                                                bits |= 1 << gdw[q].tile();
                                             }
-                                            if env.gdw[q].is_end() {
+                                            if gdw[q].is_end() {
                                                 break;
                                             }
                                             q += 1;
@@ -212,29 +209,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut bits = 1u64;
                             if p > 0 {
                                 // p = DCBA
-                                p = env.gdw[p].arc_index(); // p = after DCBA
+                                p = gdw[p].arc_index(); // p = after DCBA
                                 if p > 0 {
                                     loop {
-                                        let tile = env.gdw[p].tile();
+                                        let tile = gdw[p].tile();
                                         if tile != 0 {
                                             // not the gaddag marker
                                             let mut q = p;
                                             // board[j - 2] may or may not be empty.
                                             for k in (0..j - 1).rev() {
-                                                let b = env.board_tiles[strider.at(k)];
+                                                let b = board_tiles[strider.at(k)];
                                                 if b == 0 {
                                                     break;
                                                 }
-                                                q = env.gdw.in_gdw(q, b & 0x7f);
+                                                q = gdw.in_gdw(q, b & 0x7f);
                                                 if q <= 0 {
                                                     break;
                                                 }
                                             }
-                                            if q > 0 && env.gdw[q].accepts() {
-                                                bits |= 1 << env.gdw[q].tile();
+                                            if q > 0 && gdw[q].accepts() {
+                                                bits |= 1 << gdw[q].tile();
                                             }
                                         }
-                                        if env.gdw[p].is_end() {
+                                        if gdw[p].is_end() {
                                             break;
                                         }
                                         p += 1;
@@ -243,7 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             // score hasn't included the next batch.
                             for k in (0i8..j - 1).rev() {
-                                let b = env.board_tiles[strider.at(k)];
+                                let b = board_tiles[strider.at(k)];
                                 if b == 0 {
                                     break;
                                 }
@@ -286,18 +283,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let board_layout = game_config.board_layout();
         let dim = board_layout.dim();
         {
-            let env = Env {
-                board_tiles,
-                game_config,
-                gdw: &gdw,
-            };
             let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
             // striped by row
             let mut cross_set_for_across_plays =
                 vec![CrossSet { bits: 0, score: 0 }; rows_times_cols];
             for col in 0..dim.cols {
                 gen_cross_set(
-                    &env,
+                    board_tiles,
+                    game_config,
+                    &gdw,
                     dim.down(col),
                     &mut cross_set_for_across_plays,
                     matrix::Strider {
@@ -312,7 +306,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vec![CrossSet { bits: 0, score: 0 }; rows_times_cols];
             for row in 0..dim.rows {
                 gen_cross_set(
-                    &env,
+                    board_tiles,
+                    game_config,
+                    &gdw,
                     dim.across(row),
                     &mut cross_set_for_down_plays,
                     matrix::Strider {
