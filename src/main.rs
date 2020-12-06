@@ -45,9 +45,9 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &gdw::Gdw) {
     );
 }
 
-fn print_board<'a>(gc: &game_config::GameConfig<'a>, board_tiles: &[u8]) {
-    let alphabet = gc.alphabet();
-    let board_layout = gc.board_layout();
+fn print_board<'a>(game_config: &game_config::GameConfig<'a>, board_tiles: &[u8]) {
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
     print!("  ");
     for c in 0..board_layout.dim().cols {
         print!(" {}", ((c as u8) + 0x61) as char);
@@ -83,11 +83,17 @@ fn print_board<'a>(gc: &game_config::GameConfig<'a>, board_tiles: &[u8]) {
     println!();
 }
 
+#[derive(Clone)]
+struct CrossSet {
+    bits: u64,
+    score: i16,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdw = gdw::from_bytes(&std::fs::read("csw19.gdw")?);
-    let gc = &game_config::COMMON_ENGLISH_GAME_CONFIG;
+    let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
     if false {
-        print_dawg(gc.alphabet(), &gdw);
+        print_dawg(game_config.alphabet(), &gdw);
         println!("{}", gdw.0.len());
     }
 
@@ -109,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 \x0f\x0b\x05\x00\x05\x09\x04\x05\x00\x00\x00\x00\x00\x00\x00\
 ";
 
-    print_board(gc, board_tiles);
+    print_board(game_config, board_tiles);
 
     // todo: check for empty board, etc.
     {
@@ -117,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         //let rack = b"\x00\x00\x05\x07\x13\x15\x15";
         let mut rack = b"\x00\x15\x07\x05\x00\x15\x13".clone(); // clone because it's from static data
         rack.sort();
-        let alphabet = gc.alphabet();
+        let alphabet = game_config.alphabet();
         for &tile in rack.iter() {
             print!(
                 "{}",
@@ -131,6 +137,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         println!();
+
+        struct Env<'a> {
+            game_config: &'a game_config::GameConfig<'a>,
+            board_tiles: &'a [u8],
+        }
+        fn gen_cross_set<'a>(env: &'a Env, v: &'a mut Vec<CrossSet>, strider: matrix::Strider) {
+            v.resize(strider.len() as usize, CrossSet { bits: 0, score: 0 });
+            print!("generating cross set for [");
+            for i in 0..strider.len() {
+                print!(
+                    " {}",
+                    env.game_config
+                        .alphabet()
+                        .from_board(env.board_tiles[strider.at(i)])
+                        .unwrap_or(".")
+                );
+            }
+            println!(" ]...");
+        }
+
+        let board_layout = game_config.board_layout();
+        let dim = board_layout.dim();
+        {
+            let env = Env {
+                game_config,
+                board_tiles,
+            };
+            let mut cross_set_for_across_plays = Vec::with_capacity(dim.cols as usize);
+            for i in 0..dim.cols {
+                let mut v = Vec::with_capacity(dim.rows as usize);
+                gen_cross_set(&env, &mut v, dim.down(i));
+                cross_set_for_across_plays.push(v);
+            }
+            let mut cross_set_for_down_plays = Vec::with_capacity(dim.rows as usize);
+            for i in 0..dim.rows {
+                let mut v = Vec::with_capacity(dim.cols as usize);
+                gen_cross_set(&env, &mut v, dim.across(i));
+                cross_set_for_down_plays.push(v);
+            }
+        }
 
         // todo: actually gen moves.
         // todo: xchg.

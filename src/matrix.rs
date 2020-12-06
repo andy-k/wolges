@@ -1,6 +1,6 @@
 #[derive(Clone, Copy)]
 pub struct Strider {
-    pub base: i8,
+    pub base: i16,
     pub step: i8,
     pub len: i8,
 }
@@ -27,7 +27,7 @@ impl Dim {
     #[inline(always)]
     pub fn across(&self, row: i8) -> Strider {
         Strider {
-            base: row * self.cols,
+            base: (row as i16) * (self.cols as i16),
             step: 1,
             len: self.cols,
         }
@@ -36,7 +36,7 @@ impl Dim {
     #[inline(always)]
     pub fn down(&self, col: i8) -> Strider {
         Strider {
-            base: col,
+            base: col as i16,
             step: self.cols,
             len: self.rows,
         }
