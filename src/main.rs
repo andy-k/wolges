@@ -14,12 +14,14 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &gdw::Gdw) {
     fn iter(env: &mut Env, mut p: u32) {
         let l = env.s.len();
         loop {
-            let t=env.g[p].tile();
-            env.s.push_str(
-              if t == 0 { "@" }
-              else if t & 0x80 == 0 { env.a.from_board(t).unwrap() }
-              else { panic!() }
-            );
+            let t = env.g[p].tile();
+            env.s.push_str(if t == 0 {
+                "@"
+            } else if t & 0x80 == 0 {
+                env.a.from_board(t).unwrap()
+            } else {
+                panic!()
+            });
             if env.g[p].accepts() {
                 println!("{}", env.s);
             }
@@ -57,8 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(" = {}", r)
     }
 
-    let board =
-        b"\
+    let board = b"\
 \x0f\x04\x00\x00\x00\x00\x08\x01\x12\x0c\x0f\x14\x13\x00\x00\
 \x06\x09\x0e\x00\x00\x00\x00\x00\x00\x00\x00\x17\x00\x00\x00\
 \x00\x14\x05\x05\x00\x07\x00\x00\x00\x00\x00\x09\x00\x00\x00\
@@ -76,23 +77,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 \x0f\x0b\x05\x00\x05\x09\x04\x05\x00\x00\x00\x00\x00\x00\x00\
 ";
     {
-      let al = gc.alphabet();
-      let bl = gc.board_layout();
-      println!("---dim---");
-      let dim = bl.dim();
-      for r in 0..dim.rows {
-        for c in 0..dim.cols {
-          print!("{}", al.from_board(board[dim.at_row_col(r,c)]).unwrap_or_else(|| display::empty_label(bl, r, c)));
+        let al = gc.alphabet();
+        let bl = gc.board_layout();
+        println!("---dim---");
+        let dim = bl.dim();
+        for r in 0..dim.rows {
+            for c in 0..dim.cols {
+                print!(
+                    "{}",
+                    al.from_board(board[dim.at_row_col(r, c)])
+                        .unwrap_or_else(|| display::empty_label(bl, r, c))
+                );
+            }
+            println!(" = {}", r)
         }
-        println!(" = {}", r)
-      }
-      println!("---transposed---");
-      for r in 0..dim.cols {
-        for c in 0..dim.rows {
-          print!("{}", al.from_board(board[dim.at_row_col(r,c)]).unwrap_or_else(|| display::empty_label(bl, r, c)));
+        println!("---transposed---");
+        for r in 0..dim.cols {
+            for c in 0..dim.rows {
+                print!(
+                    "{}",
+                    al.from_board(board[dim.at_row_col(r, c)])
+                        .unwrap_or_else(|| display::empty_label(bl, r, c))
+                );
+            }
+            println!(" = {}", r)
         }
-        println!(" = {}", r)
-      }
     }
 
     println!("Hello, world!");
