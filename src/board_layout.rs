@@ -34,15 +34,6 @@ pub trait TraitBoardLayout<'a> {
     fn premium_at(&self, row: i8, col: i8) -> Premium;
 }
 
-/*
-impl<'a, T: TraitBoardLayout<'a>> TraitBoardLayout<'a> for &T {
-    fn dim(&self) -> matrix::Dim {(*self).dim() }
-    fn star_row(&self) -> i8{(*self).star_row() }
-    fn star_col(&self) -> i8{(*self).star_col() }
-    fn premium_at(&self,row:i8,col:i8) -> Premium {(*self).premium_at(row,col)}
-}
-*/
-
 pub struct StaticBoardLayout<'a> {
     premiums: &'a [Premium],
     dim: matrix::Dim,
