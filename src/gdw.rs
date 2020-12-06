@@ -2,22 +2,22 @@ pub struct Node(pub u32);
 
 impl Node {
     #[inline(always)]
-    fn tile(&self) -> u8 {
+    pub fn tile(&self) -> u8 {
         (self.0 >> 24) as u8
     }
 
     #[inline(always)]
-    fn accepts(&self) -> bool {
+    pub fn accepts(&self) -> bool {
         self.0 & 0x800000 != 0
     }
 
     #[inline(always)]
-    fn is_end(&self) -> bool {
+    pub fn is_end(&self) -> bool {
         self.0 & 0x400000 != 0
     }
 
     #[inline(always)]
-    fn arc_index(&self) -> u32 {
+    pub fn arc_index(&self) -> u32 {
         self.0 & 0x3fffff
     }
 }
