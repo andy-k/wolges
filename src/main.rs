@@ -11,7 +11,7 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &gdw::Gdw) {
         g: &'a gdw::Gdw,
         s: &'a mut String,
     }
-    fn iter(env: &mut Env, mut p: u32) {
+    fn iter(env: &mut Env, mut p: i32) {
         let l = env.s.len();
         loop {
             let t = env.g[p].tile();
@@ -41,7 +41,7 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &gdw::Gdw) {
             g: &g,
             s: &mut String::new(),
         },
-        g[0u32].arc_index(),
+        g[0i32].arc_index(),
     );
 }
 
@@ -138,13 +138,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
 
         struct Env<'a> {
-            game_config: &'a game_config::GameConfig<'a>,
             board_tiles: &'a [u8],
+            game_config: &'a game_config::GameConfig<'a>,
+            gdw: &'a gdw::Gdw,
         }
         fn gen_cross_set<'a>(env: &'a Env, v: &'a mut Vec<CrossSet>, strider: matrix::Strider) {
-            v.resize(strider.len() as usize, CrossSet { bits: 0, score: 0 });
+            let len = strider.len();
+            let len_usize = len as usize;
+            v.clear();
+            v.resize(len_usize, CrossSet { bits: 0, score: 0 });
             print!("generating cross set for [");
-            for i in 0..strider.len() {
+            for i in 0..len {
                 print!(
                     " {}",
                     env.game_config
@@ -154,14 +158,120 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             println!(" ]...");
+
+            let alphabet = env.game_config.alphabet();
+            let mut p = 1;
+            let mut score = 0i16;
+            let mut k = len;
+            for j in (0..len).rev() {
+                let b = env.board_tiles[strider.at(j)];
+                if b != 0 {
+                    // board has tile
+                    if p >= 0 {
+                        // include current tile
+                        p = env.gdw.in_gdw(p, b & 0x7f);
+                    }
+                    score += alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
+                    if j == 0 || env.board_tiles[strider.at(j - 1)] == 0 {
+                        // there is a sequence of tiles from j inclusive to k exclusive
+                        if k < len && !(k + 1 < len && env.board_tiles[strider.at(k + 1)] != 0) {
+                            // board[k + 1] is empty, compute cross_set[k].
+                            let mut bits = 1u64;
+                            if p > 0 {
+                                // p = DCBA
+                                let q = env.gdw.in_gdw(p, 0);
+                                if q > 0 {
+                                    // q = DCBA@
+                                    let mut q = env.gdw[q].arc_index();
+                                    if q > 0 {
+                                        loop {
+                                            if env.gdw[q].accepts() {
+                                                bits |= 1 << env.gdw[q].tile();
+                                            }
+                                            if env.gdw[q].is_end() {
+                                                break;
+                                            }
+                                            q += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            v[k as usize] = CrossSet { bits, score };
+                        }
+                        if j > 0 {
+                            // board[j - 1] is known to be empty
+                            let mut bits = 1u64;
+                            if p > 0 {
+                                // p = DCBA
+                                p = env.gdw[p].arc_index(); // p = after DCBA
+                                if p > 0 {
+                                    loop {
+                                        let tile = env.gdw[p].tile();
+                                        if tile != 0 {
+                                            // not the gaddag marker
+                                            let mut q = p;
+                                            // board[j - 2] may or may not be empty.
+                                            for k in (0..j - 1).rev() {
+                                                let b = env.board_tiles[strider.at(k)];
+                                                if b == 0 {
+                                                    break;
+                                                }
+                                                q = env.gdw.in_gdw(q, b & 0x7f);
+                                                if q <= 0 {
+                                                    break;
+                                                }
+                                            }
+                                            if q > 0 && env.gdw[q].accepts() {
+                                                bits |= 1 << env.gdw[q].tile();
+                                            }
+                                        }
+                                        if env.gdw[p].is_end() {
+                                            break;
+                                        }
+                                        p += 1;
+                                    }
+                                }
+                            }
+                            // score hasn't included the next batch.
+                            for k in (0i8..j - 1).rev() {
+                                let b = env.board_tiles[strider.at(k)];
+                                if b == 0 {
+                                    break;
+                                }
+                                score +=
+                                    alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
+                            }
+                            v[(j - 1) as usize] = CrossSet { bits, score };
+                        }
+                    }
+                } else {
+                    // empty square, reset
+                    p = 1; // cumulative gaddag traversal results
+                    score = 0; // cumulative face-value score
+                    k = j; // last seen empty square
+                }
+            }
+
+            for i in 0..len_usize {
+                if v[i].bits != 0 || v[i].score != 0 {
+                    print!("[{:2}] bits={:064b} score={}", i, v[i].bits, v[i].score,);
+                    for t in 0..63 {
+                        if ((v[i].bits >> t) & 1) != 0 {
+                            print!(" {}", alphabet.from_board(t).unwrap_or("."));
+                        }
+                    }
+                    println!();
+                }
+            }
         }
 
         let board_layout = game_config.board_layout();
         let dim = board_layout.dim();
         {
             let env = Env {
-                game_config,
                 board_tiles,
+                game_config,
+                gdw: &gdw,
             };
             let mut cross_set_for_across_plays = Vec::with_capacity(dim.cols as usize);
             for i in 0..dim.cols {

@@ -17,8 +17,8 @@ impl Node {
     }
 
     #[inline(always)]
-    pub fn arc_index(&self) -> u32 {
-        self.0 & 0x3fffff
+    pub fn arc_index(&self) -> i32 {
+        (self.0 & 0x3fffff) as i32
     }
 }
 
@@ -33,12 +33,29 @@ impl std::ops::Index<usize> for Gdw {
     }
 }
 
-impl std::ops::Index<u32> for Gdw {
+impl std::ops::Index<i32> for Gdw {
     type Output = Node;
 
     #[inline(always)]
-    fn index(&self, i: u32) -> &Node {
+    fn index(&self, i: i32) -> &Node {
         &self[i as usize]
+    }
+}
+
+impl Gdw {
+    pub fn in_gdw(&self, mut p: i32, tile: u8) -> i32 {
+        if p >= 0 {
+            p = self[p].arc_index() as i32;
+            if p > 0 {
+                while self[p].tile() != tile {
+                    if self[p].is_end() {
+                        return -1;
+                    }
+                    return p;
+                }
+            }
+        }
+        -1 // intentionally return 0 as -1
     }
 }
 
