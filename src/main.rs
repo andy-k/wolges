@@ -45,6 +45,44 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &gdw::Gdw) {
     );
 }
 
+fn print_board<'a>(gc: &game_config::GameConfig<'a>, board_tiles: &[u8]) {
+    let alphabet = gc.alphabet();
+    let board_layout = gc.board_layout();
+    print!("  ");
+    for c in 0..board_layout.dim().cols {
+        print!(" {}", ((c as u8) + 0x61) as char);
+    }
+    println!();
+    print!("  +");
+    for c in 1..board_layout.dim().cols {
+        print!("--");
+    }
+    println!("-+");
+    for r in 0..board_layout.dim().rows {
+        print!("{:2}|", r + 1);
+        for c in 0..board_layout.dim().cols {
+            if c > 0 {
+                print!(" ")
+            }
+            print!(
+                "{}",
+                display::board_label(alphabet, board_layout, board_tiles, r, c)
+            );
+        }
+        println!("|{}", r + 1);
+    }
+    print!("  +");
+    for c in 1..board_layout.dim().cols {
+        print!("--");
+    }
+    println!("-+");
+    print!("  ");
+    for c in 0..board_layout.dim().cols {
+        print!(" {}", ((c as u8) + 0x61) as char);
+    }
+    println!();
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdw = gdw::from_bytes(&std::fs::read("csw19.gdw")?);
     let gc = &game_config::COMMON_ENGLISH_GAME_CONFIG;
@@ -70,43 +108,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 \x00\x00\x17\x12\x01\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\
 \x0f\x0b\x05\x00\x05\x09\x04\x05\x00\x00\x00\x00\x00\x00\x00\
 ";
-    {
-        let alphabet = gc.alphabet();
-        let board_layout = gc.board_layout();
-        print!("  ");
-        for c in 0..board_layout.dim().cols {
-            print!(" {}", ((c as u8) + 0x61) as char);
-        }
-        println!();
-        print!("  +");
-        for c in 1..board_layout.dim().cols {
-            print!("--");
-        }
-        println!("-+");
-        for r in 0..board_layout.dim().rows {
-            print!("{:2}|", r + 1);
-            for c in 0..board_layout.dim().cols {
-                if c > 0 {
-                    print!(" ")
-                }
-                print!(
-                    "{}",
-                    display::board_label(alphabet, board_layout, board_tiles, r, c)
-                );
-            }
-            println!("|{}", r + 1);
-        }
-        print!("  +");
-        for c in 1..board_layout.dim().cols {
-            print!("--");
-        }
-        println!("-+");
-        print!("  ");
-        for c in 0..board_layout.dim().cols {
-            print!(" {}", ((c as u8) + 0x61) as char);
-        }
-        println!();
-    }
+
+    print_board(gc, board_tiles);
 
     println!("Hello, world!");
     Ok(())
