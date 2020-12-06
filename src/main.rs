@@ -305,7 +305,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:?}", tally.0);
     tally.clear();
     println!("{:?}", tally.0);
-    if true {
+    if false {
         return Ok(());
     }
     if false {
@@ -357,6 +357,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dim = board_layout.dim();
         {
             let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
+            // tally the played tiles
+
+            let mut tally = Tally::new(game_config.alphabet().len());
+            //tally.clear(); // already cleared
+            board_tiles.iter().for_each(|&t| {
+                if t & 0x80 != 0 {
+                    tally.0[0] += 1;
+                } else if t != 0 {
+                    tally.0[t as usize] += 1;
+                }
+            });
+            println!("{:?}", tally.0);
+
+            // tally is on board, print unseens (this includes on racks)
+            (0..alphabet.len()).for_each(|t| {
+                let ag = alphabet.get(t);
+                println!(
+                    "{} total: {:2}, on board: {:2}, unseen: {:2}",
+                    ag.label,
+                    ag.freq,
+                    tally.0[t as usize],
+                    ag.freq - tally.0[t as usize]
+                );
+            });
+
             // striped by row
             let mut cross_set_for_across_plays =
                 vec![CrossSet { bits: 0, score: 0 }; rows_times_cols];

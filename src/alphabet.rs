@@ -1,7 +1,7 @@
 pub struct Tile<'a> {
     pub label: &'a str,
     pub blank_label: &'a str,
-    pub freq: i16,
+    pub freq: u8,
     pub score: i8,
     pub is_vowel: bool,
 }
