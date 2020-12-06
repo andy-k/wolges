@@ -89,26 +89,38 @@ struct CrossSet {
     score: i16,
 }
 
-// pass the length, so 27.
-fn tally_rack<'a>(alphabet_len: u8, tiles: &[u8]) -> Box<[u8]> {
-    let mut ret = vec![0u8; alphabet_len as usize];
-    for t in tiles {
-        ret[*t as usize] += 1;
+struct Tally(pub Box<[u8]>);
+
+impl Tally {
+    // length should include blank (so, 27 for ?A-Z).
+    fn new(alphabet_len: u8) -> Tally {
+        Tally(vec![0u8; alphabet_len as usize].into_boxed_slice())
     }
-    return ret.into_boxed_slice();
+
+    fn clear(&mut self) {
+        self.0.iter_mut().for_each(|m| *m = 0);
+    }
+
+    fn add_all(&mut self, tiles: &[u8]) {
+        for t in tiles {
+            self.0[*t as usize] += 1;
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdw = gdw::from_bytes(&std::fs::read("csw19.gdw")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
-    println!("{}", game_config.alphabet().len());
-    println!(
-        "{:?}",
-        tally_rack(
-            game_config.alphabet().len(),
-            b"\x1a\x19\x00\x00\x19\x16\x01"
-        )
-    );
+    let mut tally = Tally::new(game_config.alphabet().len());
+    println!("{:?}", tally.0);
+    tally.add_all(b"\x1a\x19\x00\x00\x19\x16\x01");
+    println!("{:?}", tally.0);
+    tally.add_all(b"\x1a\x19\x00\x00\x19\x16\x01");
+    println!("{:?}", tally.0);
+    tally.0[3] += 4;
+    println!("{:?}", tally.0);
+    tally.clear();
+    println!("{:?}", tally.0);
     if true {
         return Ok(());
     }
