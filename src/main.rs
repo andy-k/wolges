@@ -86,27 +86,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!(" = {}", r)
       }
-      println!("---transposable---");
-      let dim = bl.dim().transposable();
-      for r in 0..dim.pris {
-        for c in 0..dim.secs {
-          print!("{}", al.from_board(board[dim.at_pri_sec(r,c)]).unwrap_or_else(|| display::empty_label(bl, r, c)));
-        }
-        println!(" = {}", r)
-      }
-      println!("---transposable'---");
-      let dim = dim.transpose();
-      for r in 0..dim.pris {
-        for c in 0..dim.secs {
-          print!("{}", al.from_board(board[dim.at_pri_sec(r,c)]).unwrap_or_else(|| display::empty_label(bl, r, c)));
-        }
-        println!(" = {}", r)
-      }
-      println!("---transposable''---");
-      let dim = dim.transpose();
-      for r in 0..dim.pris {
-        for c in 0..dim.secs {
-          print!("{}", al.from_board(board[dim.at_pri_sec(r,c)]).unwrap_or_else(|| display::empty_label(bl, r, c)));
+      println!("---transposed---");
+      for r in 0..dim.cols {
+        for c in 0..dim.rows {
+          print!("{}", al.from_board(board[dim.at_row_col(r,c)]).unwrap_or_else(|| display::empty_label(bl, r, c)));
         }
         println!(" = {}", r)
       }
