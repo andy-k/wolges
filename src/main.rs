@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dim = bl.dim();
     for r in 0..dim.rows {
     for c in 0..dim.cols {
-    print!("{}",display:: empty_label(&bl,r,c));
+    print!("{}",display:: empty_label(bl,r,c));
     }
     println!(" = {}", r)
     }
