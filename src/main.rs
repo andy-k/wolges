@@ -251,14 +251,18 @@ fn gen_cross_set<'a>(
 }
 
 // rack must be sorted, and rack_tally must tally.
-fn gen_moves<'a>(
+// work_buf must have at least strider.len() length.
+fn gen_moves<'a, CallbackType: FnMut(i8)>(
     board_tiles: &'a [u8],
     game_config: &'a game_config::GameConfig<'a>,
     gdw: &'a gdw::Gdw,
     cross_set_slice: &'a [CrossSet],
     rack: &'a [u8],
     rack_tally: &'a mut Tally,
+    rack_bits: u64,
     strider: matrix::Strider,
+    work_buf: &'a mut [u8],
+    callback: CallbackType,
 ) {
     let len = strider.len();
     let len_usize = len as usize;
@@ -294,18 +298,40 @@ fn gen_moves<'a>(
         }
     }
 
-    // todo actual algo here
-    fn gen_moves_from(anchor: i8, leftmost: i8, rightmost: i8) {
-        println!("moves({}, {}..{})", anchor, leftmost, rightmost);
+    struct Env<'a, CallbackType: FnMut(i8)> {
+        board_tiles: &'a [u8],
+        game_config: &'a game_config::GameConfig<'a>,
+        gdw: &'a gdw::Gdw,
+        cross_set_slice: &'a [CrossSet],
+        rack: &'a [u8],
+        rack_tally: &'a mut Tally,
+        strider: matrix::Strider,
+        callback: CallbackType,
+        work_buf: &'a mut [u8],
+        anchor: i8,
+        leftmost: i8,
+        rightmost: i8,
     }
 
-    // this should be precomputed in env and re-passed
-    // rack_bits = 1 or whatever_else
-    let mut rack_bits = 1u64;
-    if rack_tally[0] != 0 {
-        rack_bits = !0; // blank
-    } else {
-        rack.iter().for_each(|&t| rack_bits |= 1 << t);
+    let mut env = Env {
+        board_tiles,
+        game_config,
+        gdw,
+        cross_set_slice,
+        rack,
+        rack_tally,
+        strider,
+        callback,
+        work_buf,
+        anchor: 0,
+        leftmost: 0,
+        rightmost: 0,
+    };
+
+    // todo actual algo here
+    fn gen_moves_from<'a, CallbackType: FnMut(i8)>(env: &mut Env<CallbackType>) {
+        println!("moves({}, {}..{})", env.anchor, env.leftmost, env.rightmost);
+        (env.callback)(env.anchor);
     }
 
     let mut rightmost = len; // processed up to here
@@ -316,7 +342,10 @@ fn gen_moves<'a>(
         }
         if leftmost > 0 {
             // board[leftmost - 1] is a tile.
-            gen_moves_from(leftmost - 1, 0, rightmost);
+            env.anchor = leftmost - 1;
+            env.leftmost = 0;
+            env.rightmost = rightmost;
+            gen_moves_from(&mut env);
         }
         if rack.len() >= 2 {
             let mut leftmost = leftmost; // shadowing
@@ -332,7 +361,10 @@ fn gen_moves<'a>(
                     }
                     if (cross_set_bits & rack_bits) != 1 {
                         // only if something on rack might fit
-                        gen_moves_from(anchor, leftmost, rightmost);
+                        env.anchor = anchor;
+                        env.leftmost = leftmost;
+                        env.rightmost = rightmost;
+                        gen_moves_from(&mut env);
                     }
                     rightmost = anchor; // prevent duplicates
                 }
@@ -437,7 +469,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut rack_tally = Tally::new(game_config.alphabet().len());
         rack_tally.add_all(&rack);
         println!("{:?}", rack_tally.0);
+
+        // rack_bits = 1 | whatever_else
+        let mut rack_bits = 1u64;
+        if rack_tally.0[0] != 0 {
+            rack_bits = !0; // blank
+        } else {
+            rack.iter().for_each(|&t| rack_bits |= 1 << t);
+        }
+
         {
+            let mut num_moves = 0; // for testing closure
+            let mut work_vec = vec![0u8; std::cmp::max(dim.rows, dim.cols) as usize];
+
             let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
             // tally the played tiles
 
@@ -501,7 +545,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         [cross_set_start..cross_set_start + (dim.cols as usize)],
                     &rack,
                     &mut rack_tally,
+                    rack_bits,
                     dim.across(row),
+                    &mut work_vec,
+                    |anchor: i8| {
+                        num_moves += 1;
+                        println!("move {}: row={}, anchor={}", num_moves, row, anchor);
+                    },
                 );
             }
             // striped by columns for better cache locality
@@ -531,7 +581,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         [cross_set_start..cross_set_start + (dim.rows as usize)],
                     &rack,
                     &mut rack_tally,
+                    rack_bits,
                     dim.down(col),
+                    &mut work_vec,
+                    |anchor: i8| {
+                        num_moves += 1;
+                        println!("move {}: col={}, anchor={}", num_moves, col, anchor);
+                    },
                 );
             }
         }
