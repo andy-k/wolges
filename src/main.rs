@@ -117,23 +117,8 @@ fn gen_cross_set<'a>(
     output_strider: matrix::Strider,
 ) {
     let len = strider.len();
-    let len_usize = len as usize;
     for i in 0..output_strider.len() {
         cross_sets[output_strider.at(i)] = CrossSet { bits: 0, score: 0 };
-    }
-    if false {
-        assert_eq!(strider.len(), output_strider.len());
-        print!("generating cross set for [");
-        for i in 0..len {
-            print!(
-                " {}",
-                game_config
-                    .alphabet()
-                    .from_board(board_tiles[strider.at(i)])
-                    .unwrap_or(".")
-            );
-        }
-        println!(" ]...");
     }
 
     let alphabet = game_config.alphabet();
@@ -227,86 +212,31 @@ fn gen_cross_set<'a>(
             k = j; // last seen empty square
         }
     }
-
-    if false {
-        for i in 0..len_usize {
-            let w = &cross_sets[output_strider.at(i as i8)];
-            if w.bits != 0 || w.score != 0 {
-                print!(
-                    "[{:2}@{:3}] bits={:064b} score={}",
-                    i,
-                    output_strider.at(i as i8),
-                    w.bits,
-                    w.score
-                );
-                for t in 0..63 {
-                    if w.bits & (1 << t) != 0 {
-                        print!(" {}", alphabet.from_board(t).unwrap_or("."));
-                    }
-                }
-                println!();
-            }
-        }
-    }
 }
 
 // rack must be sorted, and rack_tally must tally.
 // work_buf must have at least strider.len() length.
-fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
+#[allow(clippy::too_many_arguments)]
+fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
     board_tiles: &'a [u8],
     game_config: &'a game_config::GameConfig<'a>,
     gdw: &'a gdw::Gdw,
     cross_set_slice: &'a [CrossSet],
     rack: &'a [u8],
     rack_tally: &'a mut Tally,
-    rack_bits: u64,
     strider: matrix::Strider,
     work_buf: &'a mut [u8],
     min_num_played: i8,
     callback: CallbackType,
 ) {
     let len = strider.len();
-    let len_usize = len as usize;
-    if false {
-        assert_eq!(strider.len() as usize, cross_set_slice.len());
-        print!("using cross set for [");
-        for i in 0..len {
-            print!(
-                " {}",
-                game_config
-                    .alphabet()
-                    .from_board(board_tiles[strider.at(i)])
-                    .unwrap_or(".")
-            );
-        }
-        println!(" ]...");
-    }
 
-    let alphabet = game_config.alphabet();
-
-    if false {
-        for i in 0..len_usize {
-            let w = &cross_set_slice[i];
-            if w.bits != 0 || w.score != 0 {
-                print!("[{:2}] bits={:064b} score={}", i, w.bits, w.score);
-                for t in 0..63 {
-                    if w.bits & (1 << t) != 0 {
-                        print!(" {}", alphabet.from_board(t).unwrap_or("."));
-                    }
-                }
-                println!();
-            }
-        }
-    }
-
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i16)> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)> {
         board_tiles: &'a [u8],
         game_config: &'a game_config::GameConfig<'a>,
         gdw: &'a gdw::Gdw,
         cross_set_slice: &'a [CrossSet],
-        rack: &'a [u8], // TODO: use this
         rack_tally: &'a mut Tally,
-        rack_bits: u64,
         strider: matrix::Strider,
         callback: CallbackType,
         work_buf: &'a mut [u8],
@@ -323,9 +253,7 @@ fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
         game_config,
         gdw,
         cross_set_slice,
-        rack,
         rack_tally,
-        rack_bits,
         strider,
         callback,
         work_buf,
@@ -337,7 +265,7 @@ fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
         idx_left: 0,
     };
 
-    fn record<'a, CallbackType: FnMut(i8, &[u8], i16)>(
+    fn record<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         env: &mut Env<CallbackType>,
         idx_left: i8,
         idx_right: i8,
@@ -352,10 +280,11 @@ fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
             idx_left,
             &env.work_buf[(idx_left as usize)..(idx_right as usize)],
             score,
+            env.rack_tally,
         );
     }
 
-    fn play_right<'a, CallbackType: FnMut(i8, &[u8], i16)>(
+    fn play_right<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         env: &mut Env<CallbackType>,
         mut idx: i8,
         mut p: i32,
@@ -412,7 +341,6 @@ fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
             this_premium = env.game_config.board_layout().premiums()[env.strider.at(idx)];
             this_cross_set = env.cross_set_slice[idx as usize].clone();
         }
-        //if (this_cross_set.bits & env.rack_bits) == 1 { // opt not worth
         if this_cross_set.bits == 1 {
             // already handled '@'
             return;
@@ -481,7 +409,7 @@ fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
         }
     }
 
-    fn play_left<'a, CallbackType: FnMut(i8, &[u8], i16)>(
+    fn play_left<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         env: &mut Env<CallbackType>,
         mut idx: i8,
         mut p: i32,
@@ -507,7 +435,6 @@ fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
             env.work_buf[idx as usize] = 0;
             idx -= 1;
         }
-        // TODO: min_num_played dedup
         if env.num_played >= env.min_num_played && env.anchor - idx >= 2 && env.gdw[p].accepts() {
             record(
                 env,
@@ -606,7 +533,7 @@ fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
         }
     }
 
-    fn gen_moves_from<'a, CallbackType: FnMut(i8, &[u8], i16)>(env: &mut Env<CallbackType>) {
+    fn gen_moves_from<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(env: &mut Env<CallbackType>) {
         //println!("moves({}, {}..{})", env.anchor, env.leftmost, env.rightmost);
         play_left(env, env.anchor, 1, 0, 0, 1);
     }
@@ -633,12 +560,10 @@ fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
                 let cross_set_bits = cross_set_slice[anchor as usize].bits;
                 if cross_set_bits != 0 {
                     if rightmost - leftmost < 2 {
-                        // not enough room for 2-letter words
+                        // not enough room for 2-tile words
                         break;
                     }
-                    //if (cross_set_bits & rack_bits) != 1 { // opt not worth
                     if cross_set_bits != 1 {
-                        // only if something on rack might fit
                         env.anchor = anchor;
                         env.leftmost = leftmost;
                         env.rightmost = rightmost;
@@ -672,9 +597,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tally.clear();
     println!("{:?}", tally.0);
     if false {
-        return Ok(());
-    }
-    if false {
         print_dawg(game_config.alphabet(), &gdw);
         println!("{}", gdw.0.len());
     }
@@ -700,7 +622,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     print_board(game_config, board_tiles);
 
-    if false {
+    {
         board_tiles = b"\
 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
@@ -725,46 +647,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t0 = std::time::Instant::now();
     let mut num_moves = 0; // for testing closure
 
-    //for _ in 0..1
-    for _ in 0..1000
-    // todo: check for empty board, etc.
-    {
+    for _ in 0..1 {
         // ?UGE?US - http://liwords.localhost/game/oyMkFGLA
         //let mut rack = *b"\x00\x15\x07\x05\x00\x15\x13";
         let mut rack = *b"\x08\x15\x07\x05\x0f\x15\x13";
         rack.sort_unstable();
         let alphabet = game_config.alphabet();
-        if false {
-            for &tile in rack.iter() {
-                print!(
-                    "{}",
-                    if tile == 0 {
-                        "?"
-                    } else if tile & 0x80 == 0 {
-                        alphabet.from_board(tile).unwrap()
-                    } else {
-                        panic!()
-                    }
-                );
-            }
-            println!();
-        }
 
         let board_layout = game_config.board_layout();
         let dim = board_layout.dim();
         let mut rack_tally = Tally::new(game_config.alphabet().len());
         rack_tally.add_all(&rack);
-        if false {
-            println!("{:?}", rack_tally.0);
-        }
 
-        // rack_bits = 1 | whatever_else
-        let mut rack_bits = 1u64;
-        if rack_tally.0[0] != 0 {
-            rack_bits = !0; // blank
-        } else {
-            rack.iter().for_each(|&t| rack_bits |= 1 << t);
-        }
+        let print_leave = |rack_tally: &Tally| {
+            // rack should be pre-sorted, eg ??EGSUU.
+            // rack_tally excludes played tiles.
+            print!(" / played: ");
+            let mut i = 0;
+            while i < rack.len() {
+                let tile = rack[i];
+                i += rack_tally.0[tile as usize] as usize;
+                while i < rack.len() && rack[i] == tile {
+                    print!("{}", alphabet.from_board(tile).unwrap_or("?"));
+                    i += 1;
+                }
+            }
+            print!(" / kept: ");
+            let mut i = 0;
+            while i < rack.len() {
+                let tile = rack[i];
+                for _ in 0..rack_tally.0[tile as usize] {
+                    print!("{}", alphabet.from_board(tile).unwrap_or("?"));
+                }
+                i += rack_tally.0[tile as usize] as usize;
+                while i < rack.len() && rack[i] == tile {
+                    i += 1;
+                }
+            }
+        };
 
         {
             let mut work_vec = vec![0u8; std::cmp::max(dim.rows, dim.cols) as usize];
@@ -781,26 +701,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tally.0[t as usize] += 1;
                 }
             });
-            if false {
-                println!("{:?}", tally.0);
-            }
 
             let num_tiles_on_board: i16 = tally.0.iter().map(|&x| x as i16).sum();
-            if false {
-                println!("{:?} tiles on board", num_tiles_on_board);
-
-                // tally is on board, print unseens (this includes on racks)
-                (0..alphabet.len()).for_each(|t| {
-                    let ag = alphabet.get(t);
-                    println!(
-                        "{} total: {:2}, on board: {:2}, unseen: {:2}",
-                        ag.label,
-                        ag.freq,
-                        tally.0[t as usize],
-                        ag.freq - tally.0[t as usize]
-                    );
-                });
-            }
 
             // striped by row
             let mut cross_set_for_across_plays =
@@ -836,15 +738,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         [cross_set_start..cross_set_start + (dim.cols as usize)],
                     &rack,
                     &mut rack_tally,
-                    rack_bits,
                     dim.across(row),
                     &mut work_vec,
                     1,
-                    |idx: i8, word: &[u8], score: i16| {
+                    |idx: i8, word: &[u8], score: i16, rack_tally: &Tally| {
                         num_moves += 1;
-                        if false {
-                            return;
-                        }
                         let strider = dim.across(row);
                         print!("{}{} ", row + 1, (idx as u8 + 0x61) as char);
                         let mut inside = false;
@@ -872,10 +770,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if inside {
                             print!(")");
                         }
-                        println!(
-                            " -- move {}: row={}, col={}, word={:?}, score={}",
-                            num_moves, row, idx, word, score
-                        );
+                        print!(" {}", score);
+                        print_leave(rack_tally);
+                        println!(" ({})", num_moves);
                     },
                 );
             }
@@ -906,15 +803,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         [cross_set_start..cross_set_start + (dim.rows as usize)],
                     &rack,
                     &mut rack_tally,
-                    rack_bits,
                     dim.down(col),
                     &mut work_vec,
                     2,
-                    |idx: i8, word: &[u8], score: i16| {
+                    |idx: i8, word: &[u8], score: i16, rack_tally: &Tally| {
                         num_moves += 1;
-                        if false {
-                            return;
-                        }
                         let strider = dim.down(col);
                         print!("{}{} ", (col as u8 + 0x61) as char, idx + 1);
                         let mut inside = false;
@@ -942,10 +835,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if inside {
                             print!(")");
                         }
-                        println!(
-                            " -- move {}: col={}, row={}, word={:?}, score={}",
-                            num_moves, col, idx, word, score
-                        );
+                        print!(" {}", score);
+                        print_leave(rack_tally);
+                        println!(" ({})", num_moves);
                     },
                 );
             }
