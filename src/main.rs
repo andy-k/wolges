@@ -299,47 +299,52 @@ fn gen_moves<'a>(
         println!("moves({}, {}..{})", anchor, leftmost, rightmost);
     }
 
-    if false {
-        // starting play. gen_moves_from(star, 0, len); or something.
-        // TODO. might be able to simulate with zeros + all-ones (!0) at the star.
+    // this should be precomputed in env and re-passed
+    // rack_bits = 1 or whatever_else
+    let mut rack_bits = 1u64;
+    if rack_tally[0] != 0 {
+        rack_bits = !0; // blank
     } else {
-        let mut rightmost = len; // processed up to here
-        let mut leftmost = len;
-        loop {
-            while leftmost > 0 && board_tiles[strider.at(leftmost - 1)] == 0 {
-                leftmost -= 1;
-            }
-            if leftmost > 0 {
-                // board[leftmost - 1] is a tile.
-                gen_moves_from(leftmost - 1, 0, rightmost);
-            }
-            if rack.len() >= 2 {
-                leftmost += 1;
-                for anchor in (leftmost..rightmost).rev() {
-                    if cross_set_slice[anchor as usize].bits != 0 {
-                        if rightmost - leftmost < 2 {
-                            break;
-                        }
-                        if cross_set_slice[anchor as usize].bits != 1 {
-                            // if 1, it means this square is totally blocked.
-                            // TODO: it can also suggest (bits & have_on_rack) != 1.
-                            // have_on_rack would be !0 if they have blank. bit 0 unknown.
-                            // so: if the xset requires vowel but rack is consonant, it's !.
-                            gen_moves_from(anchor, leftmost, rightmost);
-                        }
-                        rightmost = anchor; // prevent duplicates
-                    }
-                }
-                leftmost -= 1;
-            }
-            while leftmost > 0 && board_tiles[strider.at(leftmost - 1)] != 0 {
-                leftmost -= 1;
-            }
-            if leftmost <= 1 {
-                break;
-            }
-            rightmost = leftmost - 1; // prevent touching leftmost tile
+        rack.iter().for_each(|&t| rack_bits |= 1 << t);
+    }
+
+    let mut rightmost = len; // processed up to here
+    let mut leftmost = len;
+    loop {
+        while leftmost > 0 && board_tiles[strider.at(leftmost - 1)] == 0 {
+            leftmost -= 1;
         }
+        if leftmost > 0 {
+            // board[leftmost - 1] is a tile.
+            gen_moves_from(leftmost - 1, 0, rightmost);
+        }
+        if rack.len() >= 2 {
+            let mut leftmost = leftmost; // shadowing
+            if leftmost > 0 {
+                leftmost += 1;
+            }
+            for anchor in (leftmost..rightmost).rev() {
+                let cross_set_bits = cross_set_slice[anchor as usize].bits;
+                if cross_set_bits != 0 {
+                    if rightmost - leftmost < 2 {
+                        // not enough room for 2-letter words
+                        break;
+                    }
+                    if (cross_set_bits & rack_bits) != 1 {
+                        // only if something on rack might fit
+                        gen_moves_from(anchor, leftmost, rightmost);
+                    }
+                    rightmost = anchor; // prevent duplicates
+                }
+            }
+        }
+        while leftmost > 0 && board_tiles[strider.at(leftmost - 1)] != 0 {
+            leftmost -= 1;
+        }
+        if leftmost <= 1 {
+            break;
+        }
+        rightmost = leftmost - 1; // prevent touching leftmost tile
     }
 }
 
@@ -364,7 +369,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", gdw.0.len());
     }
 
-    let board_tiles = b"\
+    // mut because of additional test case
+    let mut board_tiles = b"\
 \x0f\x04\x00\x00\x00\x00\x08\x01\x12\x0c\x0f\x14\x13\x00\x00\
 \x06\x09\x0e\x00\x00\x00\x00\x00\x00\x00\x00\x17\x00\x00\x00\
 \x00\x14\x05\x05\x00\x07\x00\x00\x00\x00\x00\x09\x00\x00\x00\
@@ -383,6 +389,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ";
 
     print_board(game_config, board_tiles);
+
+    if false {
+        board_tiles = b"\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+";
+
+        print_board(game_config, board_tiles);
+    }
 
     // todo: check for empty board, etc.
     {
@@ -424,6 +452,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             println!("{:?}", tally.0);
 
+            let num_tiles_on_board: i16 = tally.0.iter().map(|&x| x as i16).sum();
+            println!("{:?} tiles on board", num_tiles_on_board);
+
             // tally is on board, print unseens (this includes on racks)
             (0..alphabet.len()).for_each(|t| {
                 let ag = alphabet.get(t);
@@ -452,6 +483,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         len: dim.rows,
                     },
                 );
+            }
+            if num_tiles_on_board == 0 {
+                // empty board activates star
+                cross_set_for_across_plays[board_layout
+                    .dim()
+                    .at_row_col(board_layout.star_row(), board_layout.star_col())] =
+                    CrossSet { bits: !1, score: 0 };
             }
             for row in 0..dim.rows {
                 let cross_set_start = ((row as isize) * (dim.cols as isize)) as usize;
