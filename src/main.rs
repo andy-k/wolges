@@ -704,6 +704,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let num_tiles_on_board: i16 = tally.0.iter().map(|&x| x as i16).sum();
 
+            struct ExchangeEnv<'a> {
+                print_leave: &'a dyn Fn(&Tally),
+                rack: &'a [u8],
+                rack_tally: &'a mut Tally,
+            }
+            fn generate_exchanges<'a>(env: &mut ExchangeEnv<'a>, mut idx: u8) {
+                // TODO: suboptimal when using leave values
+                if (idx as usize) < env.rack.len() {
+                    let tile = env.rack[idx as usize];
+                    let available = env.rack_tally.0[tile as usize];
+                    idx += available;
+                    for exchanged in (0..available + 1).rev() {
+                        env.rack_tally.0[tile as usize] = available - exchanged;
+                        generate_exchanges(env, idx);
+                    }
+                    env.rack_tally.0[tile as usize] = available;
+                } else {
+                    // found it. (note: pass = xchg nothing)
+                    print!("xchg:");
+                    (env.print_leave)(&env.rack_tally);
+                    println!();
+                }
+            }
+            // 100 tiles, 7 goes to oppo, 7 goes to me, 7 in bag = 79.
+            if num_tiles_on_board <= 79 {
+                generate_exchanges(
+                    &mut ExchangeEnv {
+                        print_leave: &print_leave,
+                        rack: &rack,
+                        rack_tally: &mut rack_tally,
+                    },
+                    0,
+                );
+            } else {
+                println!("pass");
+            }
+
             // striped by row
             let mut cross_set_for_across_plays =
                 vec![CrossSet { bits: 0, score: 0 }; rows_times_cols];
@@ -843,8 +880,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // todo: actually gen moves.
-        // todo: xchg.
         // todo: leaves.
     }
 
