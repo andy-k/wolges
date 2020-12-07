@@ -1,0 +1,31 @@
+gdw/gaddawg: 0 = dawg, 1 = gaddag
+gdw/leaves: 0 = ptr (in conj w/ dawg part)
+
+00 01-1a 80 81-9a
+ .  A-Z  ERR a-z  from board (0 = empty)
+ERR A-Z  ERR a-z  from (move play-through) board (board must not be empty if move = 0)
+OVR A-Z  ERR a-z  from move (0 = play through the board)
+ @  A-Z  ERR ERR  from gdw/gaddawg/gaddag
+ERR A-Z  ERR ERR  from gdw/gaddawg/dawg
+ ?  A-Z  ERR ERR  from gdw/leaves
+ ?  A-Z  ERR ERR  from rack (same as leaves)
+AVL A-Z  ERR ERR  cross bits (0 = this has perpendicular. note blanks are unblanked to match gdw)
+
+when following gdw from board:
+gdw.in_gdw(p, b & 0x7f)
+(if board is 'a' follow 'A' arc i gdw)
+
+when geting score of a tile on board:
+score += alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
+01-1a = that score
+81-9a = blank's score
+00 = unexpected
+
+when geting score of a tile on rack that matches gdw (01-1a):
+let tile_value = (env.game_config.alphabet().get(tile).score as i16)
+  * (this_premium.tile_multiplier as i16);
+when geting score of a blank on rack (00) although gdw is 01-1a:
+let tile_value = (env.game_config.alphabet().get(0).score as i16)
+  * (this_premium.tile_multiplier as i16);
+
+
