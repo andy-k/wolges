@@ -3,28 +3,28 @@ use super::matrix;
 #[derive(Clone, Copy)]
 pub struct Premium {
     pub word_multiplier: i8,
-    pub letter_multiplier: i8,
+    pub tile_multiplier: i8,
 }
 
 static TWS: Premium = Premium {
     word_multiplier: 3,
-    letter_multiplier: 1,
+    tile_multiplier: 1,
 };
 static DWS: Premium = Premium {
     word_multiplier: 2,
-    letter_multiplier: 1,
+    tile_multiplier: 1,
 };
 static TLS: Premium = Premium {
     word_multiplier: 1,
-    letter_multiplier: 3,
+    tile_multiplier: 3,
 };
 static DLS: Premium = Premium {
     word_multiplier: 1,
-    letter_multiplier: 2,
+    tile_multiplier: 2,
 };
 static FVS: Premium = Premium {
     word_multiplier: 1,
-    letter_multiplier: 1,
+    tile_multiplier: 1,
 };
 
 pub struct StaticBoardLayout<'a> {
@@ -61,9 +61,9 @@ impl<'a> BoardLayout<'a> {
     }
 
     #[inline(always)]
-    pub fn premium_at(&self, row: i8, col: i8) -> Premium {
+    pub fn premiums(&self) -> &[Premium] {
         match self {
-            BoardLayout::Static(x) => x.premiums[x.dim.at_row_col(row, col)],
+            BoardLayout::Static(x) => &x.premiums,
         }
     }
 }

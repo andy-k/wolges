@@ -9,11 +9,11 @@ pub fn empty_label<'a>(
     if row == board_layout.star_row() && col == board_layout.star_col() {
         return "*";
     }
-    let premium = board_layout.premium_at(row, col);
+    let premium = board_layout.premiums()[board_layout.dim().at_row_col(row, col)];
     match premium.word_multiplier {
         3 => "=",
         2 => "-",
-        1 => match premium.letter_multiplier {
+        1 => match premium.tile_multiplier {
             3 => "\"",
             2 => "\'",
             1 => " ",

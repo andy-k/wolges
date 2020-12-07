@@ -240,7 +240,7 @@ fn gen_cross_set<'a>(
                     w.score
                 );
                 for t in 0..63 {
-                    if ((w.bits >> t) & 1) != 0 {
+                    if w.bits & (1 << t) != 0 {
                         print!(" {}", alphabet.from_board(t).unwrap_or("."));
                     }
                 }
@@ -252,7 +252,7 @@ fn gen_cross_set<'a>(
 
 // rack must be sorted, and rack_tally must tally.
 // work_buf must have at least strider.len() length.
-fn gen_moves<'a, CallbackType: FnMut(i8)>(
+fn gen_moves<'a, CallbackType: FnMut(i8, &[u8], i16)>(
     board_tiles: &'a [u8],
     game_config: &'a game_config::GameConfig<'a>,
     gdw: &'a gdw::Gdw,
@@ -289,7 +289,7 @@ fn gen_moves<'a, CallbackType: FnMut(i8)>(
             if w.bits != 0 || w.score != 0 {
                 print!("[{:2}] bits={:064b} score={}", i, w.bits, w.score);
                 for t in 0..63 {
-                    if ((w.bits >> t) & 1) != 0 {
+                    if w.bits & (1 << t) != 0 {
                         print!(" {}", alphabet.from_board(t).unwrap_or("."));
                     }
                 }
@@ -298,7 +298,7 @@ fn gen_moves<'a, CallbackType: FnMut(i8)>(
         }
     }
 
-    struct Env<'a, CallbackType: FnMut(i8)> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i16)> {
         board_tiles: &'a [u8],
         game_config: &'a game_config::GameConfig<'a>,
         gdw: &'a gdw::Gdw,
@@ -308,9 +308,13 @@ fn gen_moves<'a, CallbackType: FnMut(i8)>(
         strider: matrix::Strider,
         callback: CallbackType,
         work_buf: &'a mut [u8],
+        alphabet: &'a alphabet::Alphabet<'a>,
+        board_layout: &'a board_layout::BoardLayout<'a>,
         anchor: i8,
         leftmost: i8,
         rightmost: i8,
+        num_played: i8,
+        idx_left: i8,
     }
 
     let mut env = Env {
@@ -323,15 +327,277 @@ fn gen_moves<'a, CallbackType: FnMut(i8)>(
         strider,
         callback,
         work_buf,
+        alphabet: game_config.alphabet(),
+        board_layout: game_config.board_layout(),
         anchor: 0,
         leftmost: 0,
         rightmost: 0,
+        num_played: 0,
+        idx_left: 0,
     };
 
-    // todo actual algo here
-    fn gen_moves_from<'a, CallbackType: FnMut(i8)>(env: &mut Env<CallbackType>) {
+    fn record<'a, CallbackType: FnMut(i8, &[u8], i16)>(
+        env: &mut Env<CallbackType>,
+        idx_left: i8,
+        idx_right: i8,
+        main_score: i16,
+        perpendicular_score: i16,
+        word_multiplier: i8,
+    ) {
+        let score = main_score * (word_multiplier as i16)
+            + perpendicular_score
+            + if env.num_played >= 7 { 50 } else { 0 };
+        (env.callback)(
+            idx_left,
+            &env.work_buf[(idx_left as usize)..(idx_right as usize)],
+            score,
+        );
+    }
+
+    fn play_right<'a, CallbackType: FnMut(i8, &[u8], i16)>(
+        env: &mut Env<CallbackType>,
+        mut idx: i8,
+        mut p: i32,
+        mut main_score: i16,
+        perpendicular_score: i16,
+        word_multiplier: i8,
+    ) {
+        // tail-recurse placing current sequence of tiles
+        while idx < env.rightmost {
+            let b = env.board_tiles[env.strider.at(idx)];
+            if b == 0 {
+                break;
+            }
+            p = env.gdw.in_gdw(p, b & 0x7f);
+            if p <= 0 {
+                return;
+            }
+            main_score += env.alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
+            idx += 1;
+        }
+        // TODO: min_num_played dedup
+        if idx > env.anchor + 1
+            && env.num_played > 0
+            && env.anchor - idx >= 2
+            && env.gdw[p].accepts()
+        {
+            record(
+                env,
+                env.idx_left,
+                idx,
+                main_score,
+                perpendicular_score,
+                word_multiplier,
+            );
+        }
+        if idx >= env.rightmost {
+            return;
+        }
+
+        p = env.gdw[p].arc_index();
+        if p <= 0 {
+            return;
+        }
+        let mut this_premium = board_layout::Premium {
+            word_multiplier: 0,
+            tile_multiplier: 0,
+        };
+        let mut this_cross_set = CrossSet { bits: 0, score: 0 };
+        if idx < env.rightmost {
+            this_premium = env.board_layout.premiums()[env.strider.at(idx)];
+            this_cross_set = env.cross_set_slice[idx as usize].clone();
+        }
+        if this_cross_set.bits == 1 {
+            // already handled '@'
+            return;
+        }
+        let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
+        let this_cross_bits = if this_cross_set.bits != 0 {
+            this_cross_set.bits
+        } else {
+            !1
+        };
+        loop {
+            let tile = env.gdw[p].tile();
+            if tile != 0 && this_cross_bits & (1 << tile) != 0 {
+                if env.rack_tally.0[tile as usize] > 0 {
+                    env.rack_tally.0[tile as usize] -= 1;
+                    env.num_played += 1;
+                    let tile_value = (env.alphabet.get(tile).score as i16)
+                        * (this_premium.tile_multiplier as i16);
+                    env.work_buf[idx as usize] = tile;
+                    play_right(
+                        env,
+                        idx + 1,
+                        p,
+                        main_score + tile_value,
+                        if this_cross_set.bits != 0 {
+                            perpendicular_score
+                                + (this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16)
+                        } else {
+                            perpendicular_score
+                        },
+                        new_word_multiplier,
+                    );
+                    env.num_played -= 1;
+                    env.rack_tally.0[tile as usize] += 1;
+                }
+                if env.rack_tally.0[0] > 0 {
+                    env.rack_tally.0[0] -= 1;
+                    env.num_played += 1;
+                    // intentional to not hardcode blank tile value as zero
+                    let tile_value =
+                        (env.alphabet.get(0).score as i16) * (this_premium.tile_multiplier as i16);
+                    env.work_buf[idx as usize] = tile | 0x80;
+                    play_right(
+                        env,
+                        idx + 1,
+                        p,
+                        main_score + tile_value,
+                        if this_cross_set.bits != 0 {
+                            perpendicular_score
+                                + (this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16)
+                        } else {
+                            perpendicular_score
+                        },
+                        new_word_multiplier,
+                    );
+                    env.num_played -= 1;
+                    env.rack_tally.0[0] += 1;
+                }
+            }
+            if env.gdw[p].is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+
+    fn play_left<'a, CallbackType: FnMut(i8, &[u8], i16)>(
+        env: &mut Env<CallbackType>,
+        mut idx: i8,
+        mut p: i32,
+        mut main_score: i16,
+        perpendicular_score: i16,
+        word_multiplier: i8,
+    ) {
+        // tail-recurse placing current sequence of tiles
+        while idx >= env.leftmost {
+            let b = env.board_tiles[env.strider.at(idx)];
+            if b == 0 {
+                break;
+            }
+            p = env.gdw.in_gdw(p, b & 0x7f);
+            if p <= 0 {
+                return;
+            }
+            main_score += env.alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
+            idx -= 1;
+        }
+        // TODO: min_num_played dedup
+        if env.num_played > 0 && env.anchor - idx >= 2 && env.gdw[p].accepts() {
+            record(
+                env,
+                idx + 1,
+                env.anchor + 1,
+                main_score,
+                perpendicular_score,
+                word_multiplier,
+            );
+        }
+
+        p = env.gdw[p].arc_index();
+        if p <= 0 {
+            return;
+        }
+        let mut this_premium = board_layout::Premium {
+            word_multiplier: 0,
+            tile_multiplier: 0,
+        };
+        let mut this_cross_set = CrossSet { bits: 0, score: 0 };
+        if idx >= env.leftmost {
+            this_premium = env.board_layout.premiums()[env.strider.at(idx)];
+            this_cross_set = env.cross_set_slice[idx as usize].clone();
+        }
+        let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
+        let this_cross_bits = if this_cross_set.bits != 0 {
+            this_cross_set.bits
+        } else {
+            !1
+        };
+        loop {
+            let tile = env.gdw[p].tile();
+            if tile == 0 {
+                env.idx_left = idx + 1;
+                play_right(
+                    env,
+                    env.anchor + 1,
+                    p,
+                    main_score,
+                    perpendicular_score,
+                    word_multiplier,
+                );
+            } else if idx >= env.leftmost && this_cross_bits & (1 << tile) != 0 {
+                if env.rack_tally.0[tile as usize] > 0 {
+                    env.rack_tally.0[tile as usize] -= 1;
+                    env.num_played += 1;
+                    let tile_value = (env.alphabet.get(tile).score as i16)
+                        * (this_premium.tile_multiplier as i16);
+                    env.work_buf[idx as usize] = tile;
+                    play_left(
+                        env,
+                        idx - 1,
+                        p,
+                        main_score + tile_value,
+                        if this_cross_set.bits != 0 {
+                            perpendicular_score
+                                + (this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16)
+                        } else {
+                            perpendicular_score
+                        },
+                        new_word_multiplier,
+                    );
+                    env.num_played -= 1;
+                    env.rack_tally.0[tile as usize] += 1;
+                }
+                if env.rack_tally.0[0] > 0 {
+                    env.rack_tally.0[0] -= 1;
+                    env.num_played += 1;
+                    // intentional to not hardcode blank tile value as zero
+                    let tile_value =
+                        (env.alphabet.get(0).score as i16) * (this_premium.tile_multiplier as i16);
+                    env.work_buf[idx as usize] = tile | 0x80;
+                    play_left(
+                        env,
+                        idx - 1,
+                        p,
+                        main_score + tile_value,
+                        if this_cross_set.bits != 0 {
+                            perpendicular_score
+                                + (this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16)
+                        } else {
+                            perpendicular_score
+                        },
+                        new_word_multiplier,
+                    );
+                    env.num_played -= 1;
+                    env.rack_tally.0[0] += 1;
+                }
+            }
+            if env.gdw[p].is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+
+    fn gen_moves_from<'a, CallbackType: FnMut(i8, &[u8], i16)>(env: &mut Env<CallbackType>) {
         println!("moves({}, {}..{})", env.anchor, env.leftmost, env.rightmost);
-        (env.callback)(env.anchor);
+        play_left(env, env.anchor, 1, 0, 0, 1);
     }
 
     let mut rightmost = len; // processed up to here
@@ -548,9 +814,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rack_bits,
                     dim.across(row),
                     &mut work_vec,
-                    |anchor: i8| {
+                    |idx: i8, word: &[u8], score: i16| {
                         num_moves += 1;
-                        println!("move {}: row={}, anchor={}", num_moves, row, anchor);
+                        let strider = dim.across(row);
+                        print!("{}{} ", row + 1, (idx as u8 + 0x61) as char);
+                        let mut inside = false;
+                        for i in 0..word.len() {
+                            let w = word[i];
+                            if w == 0 {
+                                if !inside {
+                                    print!("(");
+                                    inside = true;
+                                }
+                                print!(
+                                    "{}",
+                                    alphabet
+                                        .from_board(board_tiles[strider.at(idx + (i as i8))])
+                                        .unwrap()
+                                );
+                            } else {
+                                if inside {
+                                    print!(")");
+                                    inside = false;
+                                }
+                                print!("{}", alphabet.from_board(w).unwrap());
+                            }
+                        }
+                        if inside {
+                            print!(")");
+                        }
+                        println!(
+                            " -- move {}: row={}, col={}, word={:?}, score={}",
+                            num_moves, row, idx, word, score
+                        );
                     },
                 );
             }
@@ -584,9 +880,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rack_bits,
                     dim.down(col),
                     &mut work_vec,
-                    |anchor: i8| {
+                    |idx: i8, word: &[u8], score: i16| {
                         num_moves += 1;
-                        println!("move {}: col={}, anchor={}", num_moves, col, anchor);
+                        let strider = dim.down(col);
+                        print!("{}{} ", (col as u8 + 0x61) as char, idx + 1);
+                        let mut inside = false;
+                        for i in 0..word.len() {
+                            let w = word[i];
+                            if w == 0 {
+                                if !inside {
+                                    print!("(");
+                                    inside = true;
+                                }
+                                print!(
+                                    "{}",
+                                    alphabet
+                                        .from_board(board_tiles[strider.at(idx + (i as i8))])
+                                        .unwrap()
+                                );
+                            } else {
+                                if inside {
+                                    print!(")");
+                                    inside = false;
+                                }
+                                print!("{}", alphabet.from_board(w).unwrap());
+                            }
+                        }
+                        if inside {
+                            print!(")");
+                        }
+                        println!(
+                            " -- move {}: col={}, row={}, word={:?}, score={}",
+                            num_moves, col, idx, word, score
+                        );
                     },
                 );
             }
