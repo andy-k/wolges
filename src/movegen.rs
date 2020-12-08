@@ -599,7 +599,9 @@ pub fn gen_moves<'a>(
         }
 
         // striped by row
-        let mut cross_set_for_across_plays = vec![CrossSet { bits: 0, score: 0 }; rows_times_cols];
+        let mut cross_set_for_both = vec![CrossSet { bits: 0, score: 0 }; 2 * rows_times_cols];
+        let (mut cross_set_for_across_plays, mut cross_set_for_down_plays) =
+            cross_set_for_both.split_at_mut(rows_times_cols);
         for col in 0..dim.cols {
             gen_cross_set(
                 board_tiles,
@@ -669,7 +671,6 @@ pub fn gen_moves<'a>(
             );
         }
         // striped by columns for better cache locality
-        let mut cross_set_for_down_plays = vec![CrossSet { bits: 0, score: 0 }; rows_times_cols];
         for row in 0..dim.rows {
             gen_cross_set(
                 board_tiles,

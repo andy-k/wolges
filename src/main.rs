@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdw = gdw::Gdw::from_bytes_alloc(&std::fs::read("csw19.gdw")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
 
-    {
+    if false {
         let t0 = std::time::Instant::now();
         let word_counts = gdw.count_words_alloc();
         println!("took {} ms", t0.elapsed().as_millis());
