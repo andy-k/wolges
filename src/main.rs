@@ -84,9 +84,21 @@ fn print_board<'a>(game_config: &game_config::GameConfig<'a>, board_tiles: &[u8]
     println!();
 }
 
+use std::str::FromStr;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdw = gdw::Gdw::from_bytes_alloc(&std::fs::read("csw19.gdw")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
+
+    if true {
+        let f = std::fs::File::open("leaves.csv")?;
+        let mut rdr = csv::Reader::from_reader(f);
+        for result in rdr.records() {
+            let record = result?;
+            println!("{:?} {:?}", &record[0], f32::from_str(&record[1]));
+        }
+        return Ok(());
+    }
 
     if false {
         let t0 = std::time::Instant::now();
