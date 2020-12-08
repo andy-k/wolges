@@ -85,8 +85,29 @@ fn print_board<'a>(game_config: &game_config::GameConfig<'a>, board_tiles: &[u8]
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let gdw = gdw::from_bytes(&std::fs::read("csw19.gdw")?);
+    let gdw = gdw::Gdw::from_bytes_alloc(&std::fs::read("csw19.gdw")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
+
+    {
+        let t0 = std::time::Instant::now();
+        let word_counts = gdw.count_words_alloc();
+        println!("took {} ms", t0.elapsed().as_millis());
+        println!("{:?}", &word_counts[0..100]);
+        let mut out_vec = Vec::new();
+        let dawg_root = gdw[0i32].arc_index();
+        for i in 0..word_counts[dawg_root as usize] {
+            out_vec = gdw.get_word_by_index(&word_counts, dawg_root, i, out_vec);
+            let j = gdw.get_word_index(&word_counts, dawg_root, &out_vec);
+            println!("{} {} {:?}", i, j, out_vec);
+            assert_eq!(i, j);
+        }
+        assert_eq!(gdw.get_word_index(&word_counts, dawg_root, &[5, 3, 1]), !0);
+        assert_eq!(gdw.get_word_index(&word_counts, dawg_root, &[]), !0);
+        assert_eq!(gdw.get_word_index(&word_counts, dawg_root, &[1, 3]), !0);
+        if true {
+            return Ok(());
+        }
+    }
 
     // mut because of additional test case
     let mut board_tiles = b"\
