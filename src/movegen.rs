@@ -1,4 +1,4 @@
-use super::{board_layout, game_config, kwg, matrix};
+use super::{board_layout, game_config, klv, kwg, matrix};
 
 #[derive(Clone)]
 struct CrossSet {
@@ -32,6 +32,7 @@ pub struct BoardSnapshot<'a> {
     pub board_tiles: &'a [u8],
     pub game_config: &'a game_config::GameConfig<'a>,
     pub kwg: &'a kwg::Kwg,
+    pub klv: &'a klv::Klv,
 }
 
 fn gen_cross_set<'a>(

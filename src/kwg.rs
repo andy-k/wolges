@@ -44,15 +44,17 @@ impl std::ops::Index<i32> for Kwg {
 
 impl Kwg {
     pub fn from_bytes_alloc(buf: &[u8]) -> Kwg {
-        let nelts = buf.len() / 4;
-        let mut elts = Vec::with_capacity(nelts);
-        for r in (0..(nelts * 4)).step_by(4) {
+        let kwg_len = buf.len() / 4;
+        let mut elts = Vec::with_capacity(kwg_len);
+        let mut r = 0;
+        for _ in 0..kwg_len {
             elts.push(Node(u32::from_le(
                 buf[r] as u32
                     | (buf[r + 1] as u32) << 8
                     | (buf[r + 2] as u32) << 16
                     | (buf[r + 3] as u32) << 24,
             )));
+            r += 4;
         }
         Kwg(elts.into_boxed_slice())
     }

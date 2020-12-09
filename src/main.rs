@@ -6,6 +6,7 @@ mod board_layout;
 mod build;
 mod display;
 mod game_config;
+mod klv;
 mod kwg;
 mod matrix;
 mod movegen;
@@ -136,7 +137,7 @@ pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[Box
 use std::str::FromStr;
 
 fn main() -> error::Returns<()> {
-    if true {
+    if false {
         let f = std::fs::File::open("leaves.csv")?;
         let mut leave_values = Vec::new();
         // extern crate csv;
@@ -171,9 +172,6 @@ fn main() -> error::Returns<()> {
         }
         assert_eq!(w, bin.len());
         std::fs::write("leaves.klv", bin)?;
-    }
-
-    if true {
         std::fs::write(
             "csw19.kwg",
             build::build(
@@ -212,6 +210,7 @@ fn main() -> error::Returns<()> {
     }
 
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
+    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
 
     if false {
@@ -286,6 +285,7 @@ fn main() -> error::Returns<()> {
             board_tiles,
             game_config,
             kwg: &kwg,
+            klv: &klv,
         },
         &mut b"\x00\x15\x07\x05\x00\x15\x13".clone(),
     );
