@@ -149,6 +149,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     callback: CallbackType,
 ) {
     let len = strider.len();
+    word_buffer.iter_mut().take(len as usize).for_each(|m| *m = 0);
 
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
         board_snapshot: &'a BoardSnapshot<'a>,
@@ -217,7 +218,6 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 return;
             }
             main_score += env.board_snapshot.game_config.alphabet().score(b) as i16;
-            env.word_buffer[idx as usize] = 0;
             idx += 1;
         }
         if idx > env.anchor + 1
@@ -343,7 +343,6 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 return;
             }
             main_score += env.board_snapshot.game_config.alphabet().score(b) as i16;
-            env.word_buffer[idx as usize] = 0;
             idx -= 1;
         }
         if (env.num_played + is_unique as i8) >= 2
