@@ -133,30 +133,6 @@ pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[Box
     Ok(machine_words.into_boxed_slice())
 }
 
-fn save_kwg(
-    build_format: build::BuildFormat,
-    giant_string: &str,
-    output_filename: &str,
-) -> error::Returns<()> {
-    let machine_words = read_english_machine_words(giant_string)?;
-    let bin = build::build(build_format, &machine_words)?;
-    drop(machine_words);
-    std::fs::write(output_filename, bin)?;
-    Ok(())
-}
-
-fn save_kwg_from_file(
-    build_format: build::BuildFormat,
-    input_filename: &str,
-    output_filename: &str,
-) -> error::Returns<()> {
-    // Memory wastage notes:
-    // - We allocate and read the whole file at once.
-    // - We could have streamed it, but that's noticeably slower.
-    let giant_string = std::fs::read_to_string(input_filename)?;
-    save_kwg(build_format, &giant_string, output_filename)
-}
-
 use std::str::FromStr;
 
 fn main() -> error::Returns<()> {
@@ -170,14 +146,19 @@ fn main() -> error::Returns<()> {
             leave_values.push((String::from(&record[0]), f32::from_str(&record[1])?));
         }
         leave_values.sort_by(|(s1, _), (s2, _)| s1.cmp(s2));
-        save_kwg(
-            build::BuildFormat::DawgOnly,
-            &leave_values.iter().fold(String::new(), |mut acc, (s, _)| {
-                acc.push_str(s);
-                acc.push('\n');
-                acc
-            }),
+        std::fs::write(
             "leaves.kwg",
+            build::build(
+                build::BuildFormat::DawgOnly,
+                &read_english_machine_words(&leave_values.iter().fold(
+                    String::new(),
+                    |mut acc, (s, _)| {
+                        acc.push_str(s);
+                        acc.push('\n');
+                        acc
+                    },
+                ))?,
+            )?,
         )?;
         // TODO use one file
         let mut ret = vec![0; leave_values.len() * 4];
@@ -188,11 +169,41 @@ fn main() -> error::Returns<()> {
     }
 
     if true {
-        save_kwg_from_file(build::BuildFormat::Gaddawg, "csw19.txt", "csw19.kwg")?;
-        save_kwg_from_file(build::BuildFormat::Gaddawg, "nwl18.txt", "nwl18.kwg")?;
-        save_kwg_from_file(build::BuildFormat::Gaddawg, "nwl20.txt", "nwl20.kwg")?;
-        save_kwg(build::BuildFormat::Gaddawg, "VOLOST\nVOLOSTS", "volost.kwg")?;
-        save_kwg(build::BuildFormat::Gaddawg, "", "empty.kwg")?;
+        std::fs::write(
+            "csw19.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?,
+            )?,
+        )?;
+        std::fs::write(
+            "nwl18.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words(&std::fs::read_to_string("nwl18.txt")?)?,
+            )?,
+        )?;
+        std::fs::write(
+            "nwl20.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?,
+            )?,
+        )?;
+        std::fs::write(
+            "volost.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words("VOLOST\nVOLOSTS")?,
+            )?,
+        )?;
+        std::fs::write(
+            "empty.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words("")?,
+            )?,
+        )?;
     }
 
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
