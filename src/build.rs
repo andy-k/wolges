@@ -1,4 +1,4 @@
-use crate::error::*;
+use super::error;
 
 struct MyHasher(u64);
 
@@ -330,7 +330,7 @@ impl NeedGaddawg for DawgOnly {
     }
 }
 
-pub fn build<T: NeedGaddawg>(machine_words: &[Vec<u8>]) -> Returns<Vec<u8>> {
+pub fn build<T: NeedGaddawg>(machine_words: &[Vec<u8>]) -> error::Returns<Vec<u8>> {
     // The sink state always exists.
     let mut states = Vec::new();
     states.push(State {
