@@ -1,23 +1,23 @@
-pub struct GaddawgError {
+pub struct MyError {
     s: String,
 }
 
-impl std::fmt::Display for GaddawgError {
+impl std::fmt::Display for MyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.s)
     }
 }
 
-impl std::fmt::Debug for GaddawgError {
+impl std::fmt::Debug for MyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         (self as &dyn std::fmt::Display).fmt(f)
     }
 }
 
-impl std::error::Error for GaddawgError {}
+impl std::error::Error for MyError {}
 
-pub fn new(s: String) -> GaddawgError {
-    GaddawgError { s }
+pub fn new(s: String) -> MyError {
+    MyError { s }
 }
 
 pub type BoxAnyError = Box<dyn std::error::Error>;

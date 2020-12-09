@@ -1,6 +1,8 @@
 mod alphabet;
 mod board_layout;
 mod display;
+#[macro_use]
+mod error;
 mod game_config;
 mod gdw;
 mod matrix;
@@ -86,7 +88,11 @@ fn print_board<'a>(game_config: &game_config::GameConfig<'a>, board_tiles: &[u8]
 
 use std::str::FromStr;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> error::Returns<()> {
+    if true {
+        return_error!(format!("yeah"));
+    }
+
     let gdw = gdw::Gdw::from_bytes_alloc(&std::fs::read("csw19.gdw")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
 
