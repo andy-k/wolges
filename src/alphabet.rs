@@ -1,9 +1,9 @@
 pub struct Tile<'a> {
-    pub label: &'a str,
-    pub blank_label: &'a str,
-    pub freq: u8,
-    pub score: i8,
-    pub is_vowel: bool,
+    label: &'a str,
+    blank_label: &'a str,
+    freq: u8,
+    score: i8,
+    is_vowel: bool,
 }
 
 pub struct StaticAlphabet<'a>(&'a [Tile<'a>]);
@@ -37,6 +37,11 @@ impl<'a> Alphabet<'a> {
         } else {
             Some(&self.get(c).blank_label)
         }
+    }
+
+    #[inline(always)]
+    pub fn score(&self, idx: u8) -> i8 {
+        self.get(if idx & 0x80 == 0 { idx } else { 0 }).score
     }
 }
 

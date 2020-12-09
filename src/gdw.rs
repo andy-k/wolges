@@ -1,4 +1,4 @@
-pub struct Node(pub u32);
+pub struct Node(u32);
 
 impl Node {
     #[inline(always)]

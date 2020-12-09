@@ -57,7 +57,7 @@ fn gen_cross_set<'a>(
                 // include current tile
                 p = board_snapshot.gdw.in_gdw(p, b & 0x7f);
             }
-            score += alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
+            score += alphabet.score(b) as i16;
             if j == 0 || board_snapshot.board_tiles[strider.at(j - 1)] == 0 {
                 // there is a sequence of tiles from j inclusive to k exclusive
                 if k < len && !(k + 1 < len && board_snapshot.board_tiles[strider.at(k + 1)] != 0) {
@@ -124,7 +124,7 @@ fn gen_cross_set<'a>(
                         if b == 0 {
                             break;
                         }
-                        score += alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
+                        score += alphabet.score(b) as i16;
                     }
                     cross_sets[output_strider.at(j - 1)] = CrossSet { bits, score };
                 }
@@ -216,12 +216,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             if p <= 0 {
                 return;
             }
-            main_score += env
-                .board_snapshot
-                .game_config
-                .alphabet()
-                .get(if b & 0x80 == 0 { b } else { 0 })
-                .score as i16;
+            main_score += env.board_snapshot.game_config.alphabet().score(b) as i16;
             env.word_buffer[idx as usize] = 0;
             idx += 1;
         }
@@ -274,8 +269,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 if env.rack_tally[tile as usize] > 0 {
                     env.rack_tally[tile as usize] -= 1;
                     env.num_played += 1;
-                    let tile_value = (env.board_snapshot.game_config.alphabet().get(tile).score
-                        as i16)
+                    let tile_value = (env.board_snapshot.game_config.alphabet().score(tile) as i16)
                         * (this_premium.tile_multiplier as i16);
                     env.word_buffer[idx as usize] = tile;
                     play_right(
@@ -300,8 +294,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.rack_tally[0] -= 1;
                     env.num_played += 1;
                     // intentional to not hardcode blank tile value as zero
-                    let tile_value = (env.board_snapshot.game_config.alphabet().get(0).score
-                        as i16)
+                    let tile_value = (env.board_snapshot.game_config.alphabet().score(0) as i16)
                         * (this_premium.tile_multiplier as i16);
                     env.word_buffer[idx as usize] = tile | 0x80;
                     play_right(
@@ -349,12 +342,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             if p <= 0 {
                 return;
             }
-            main_score += env
-                .board_snapshot
-                .game_config
-                .alphabet()
-                .get(if b & 0x80 == 0 { b } else { 0 })
-                .score as i16;
+            main_score += env.board_snapshot.game_config.alphabet().score(b) as i16;
             env.word_buffer[idx as usize] = 0;
             idx -= 1;
         }
@@ -410,8 +398,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 if env.rack_tally[tile as usize] > 0 {
                     env.rack_tally[tile as usize] -= 1;
                     env.num_played += 1;
-                    let tile_value = (env.board_snapshot.game_config.alphabet().get(tile).score
-                        as i16)
+                    let tile_value = (env.board_snapshot.game_config.alphabet().score(tile) as i16)
                         * (this_premium.tile_multiplier as i16);
                     env.word_buffer[idx as usize] = tile;
                     play_left(
@@ -436,8 +423,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.rack_tally[0] -= 1;
                     env.num_played += 1;
                     // intentional to not hardcode blank tile value as zero
-                    let tile_value = (env.board_snapshot.game_config.alphabet().get(0).score
-                        as i16)
+                    let tile_value = (env.board_snapshot.game_config.alphabet().score(0) as i16)
                         * (this_premium.tile_multiplier as i16);
                     env.word_buffer[idx as usize] = tile | 0x80;
                     play_left(
