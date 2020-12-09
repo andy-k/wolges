@@ -56,7 +56,7 @@ fn gen_cross_set<'a>(
             // board has tile
             if p >= 0 {
                 // include current tile
-                p = board_snapshot.kwg.in_kwg(p, b & 0x7f);
+                p = board_snapshot.kwg.seek(p, b & 0x7f);
             }
             score += alphabet.score(b) as i16;
             if j == 0 || board_snapshot.board_tiles[strider.at(j - 1)] == 0 {
@@ -66,7 +66,7 @@ fn gen_cross_set<'a>(
                     let mut bits = 1u64;
                     if p > 0 {
                         // p = DCBA
-                        let q = board_snapshot.kwg.in_kwg(p, 0);
+                        let q = board_snapshot.kwg.seek(p, 0);
                         if q > 0 {
                             // q = DCBA@
                             let mut q = board_snapshot.kwg[q].arc_index();
@@ -103,7 +103,7 @@ fn gen_cross_set<'a>(
                                         if b == 0 {
                                             break;
                                         }
-                                        q = board_snapshot.kwg.in_kwg(q, b & 0x7f);
+                                        q = board_snapshot.kwg.seek(q, b & 0x7f);
                                         if q <= 0 {
                                             break;
                                         }
@@ -217,7 +217,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             if b == 0 {
                 break;
             }
-            p = env.board_snapshot.kwg.in_kwg(p, b & 0x7f);
+            p = env.board_snapshot.kwg.seek(p, b & 0x7f);
             if p <= 0 {
                 return;
             }
@@ -342,7 +342,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             if b == 0 {
                 break;
             }
-            p = env.board_snapshot.kwg.in_kwg(p, b & 0x7f);
+            p = env.board_snapshot.kwg.seek(p, b & 0x7f);
             if p <= 0 {
                 return;
             }

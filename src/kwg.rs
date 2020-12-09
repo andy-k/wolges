@@ -59,7 +59,7 @@ impl Kwg {
         Kwg(elts.into_boxed_slice())
     }
 
-    pub fn in_kwg(&self, mut p: i32, tile: u8) -> i32 {
+    pub fn seek(&self, mut p: i32, tile: u8) -> i32 {
         if p >= 0 {
             p = self[p].arc_index() as i32;
             if p > 0 {
