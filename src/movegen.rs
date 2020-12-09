@@ -520,8 +520,6 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
 }
 
 pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
-    let mut num_moves = 0; // TODO
-
     rack.sort_unstable();
     let alphabet = board_snapshot.game_config.alphabet();
 
@@ -553,6 +551,43 @@ pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) 
                 i += 1;
             }
         }
+    };
+
+    let found_move = |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+        let strider = if down {
+            print!("{}{} ", (lane as u8 + 0x61) as char, idx + 1);
+            dim.down(lane)
+        } else {
+            print!("{}{} ", lane + 1, (idx as u8 + 0x61) as char);
+            dim.across(lane)
+        };
+        let mut inside = false;
+        for (i, &w) in word.iter().enumerate() {
+            if w == 0 {
+                if !inside {
+                    print!("(");
+                    inside = true;
+                }
+                print!(
+                    "{}",
+                    alphabet
+                        .from_board(board_snapshot.board_tiles[strider.at(idx + (i as i8))])
+                        .unwrap()
+                );
+            } else {
+                if inside {
+                    print!(")");
+                    inside = false;
+                }
+                print!("{}", alphabet.from_board(w).unwrap());
+            }
+        }
+        if inside {
+            print!(")");
+        }
+        print!(" {}", score);
+        print_leave(rack_tally);
+        println!();
     };
 
     {
@@ -635,38 +670,7 @@ pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) 
                 &mut working_buffer.word_buffer,
                 true,
                 |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-                    num_moves += 1;
-                    let strider = dim.across(row);
-                    print!("{}{} ", row + 1, (idx as u8 + 0x61) as char);
-                    let mut inside = false;
-                    for (i, &w) in word.iter().enumerate() {
-                        if w == 0 {
-                            if !inside {
-                                print!("(");
-                                inside = true;
-                            }
-                            print!(
-                                "{}",
-                                alphabet
-                                    .from_board(
-                                        board_snapshot.board_tiles[strider.at(idx + (i as i8))]
-                                    )
-                                    .unwrap()
-                            );
-                        } else {
-                            if inside {
-                                print!(")");
-                                inside = false;
-                            }
-                            print!("{}", alphabet.from_board(w).unwrap());
-                        }
-                    }
-                    if inside {
-                        print!(")");
-                    }
-                    print!(" {}", score);
-                    print_leave(rack_tally);
-                    println!(" ({})", num_moves);
+                    found_move(false, row, idx, word, score, rack_tally)
                 },
             );
         }
@@ -694,38 +698,7 @@ pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) 
                 &mut working_buffer.word_buffer,
                 false,
                 |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-                    num_moves += 1;
-                    let strider = dim.down(col);
-                    print!("{}{} ", (col as u8 + 0x61) as char, idx + 1);
-                    let mut inside = false;
-                    for (i, &w) in word.iter().enumerate() {
-                        if w == 0 {
-                            if !inside {
-                                print!("(");
-                                inside = true;
-                            }
-                            print!(
-                                "{}",
-                                alphabet
-                                    .from_board(
-                                        board_snapshot.board_tiles[strider.at(idx + (i as i8))]
-                                    )
-                                    .unwrap()
-                            );
-                        } else {
-                            if inside {
-                                print!(")");
-                                inside = false;
-                            }
-                            print!("{}", alphabet.from_board(w).unwrap());
-                        }
-                    }
-                    if inside {
-                        print!(")");
-                    }
-                    print!(" {}", score);
-                    print_leave(rack_tally);
-                    println!(" ({})", num_moves);
+                    found_move(true, col, idx, word, score, rack_tally)
                 },
             );
         }
