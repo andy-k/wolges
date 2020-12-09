@@ -37,6 +37,7 @@ struct TransitionStack<'a> {
 }
 
 impl TransitionStack<'_> {
+    #[inline(always)]
     fn push(&mut self, tile: &u8) {
         self.transitions.push(Transition {
             tile: *tile,
@@ -46,6 +47,7 @@ impl TransitionStack<'_> {
         self.indexes.push(self.transitions.len());
     }
 
+    #[inline(always)]
     fn pop(&mut self, state_maker: &mut StateMaker) {
         let start_of_batch = self.indexes.pop().unwrap();
         let new_arc_index = state_maker.make_state(&self.transitions[start_of_batch..]);
@@ -72,6 +74,7 @@ struct StateMaker<'a> {
 }
 
 impl StateMaker<'_> {
+    #[inline(always)]
     fn make_state(&mut self, node_transitions: &[Transition]) -> u32 {
         let mut ret = 0;
         for node_transition in node_transitions.iter().rev() {
@@ -96,6 +99,7 @@ impl StateMaker<'_> {
         ret
     }
 
+    #[inline(always)]
     fn make_dawg(
         &mut self,
         sorted_machine_words: &[Box<[u8]>],
@@ -158,29 +162,36 @@ fn gen_machine_drowwords(machine_words: &[Box<[u8]>]) -> Box<[Box<[u8]>]> {
         reverse_buffer.clear();
         reverse_buffer.extend_from_slice(this_word);
         reverse_buffer.reverse();
-        //machine_drowword_set.insert(reverse_buffer[..].to_vec());
-        machine_drowword_set.insert(reverse_buffer.clone().into_boxed_slice());
+        machine_drowword_set.insert(reverse_buffer.clone().into());
         reverse_buffer.push(0); // the '@'
         for drow_prefix_len in 1..this_word.len() {
             machine_drowword_set.insert(reverse_buffer[drow_prefix_len..].into());
         }
-        /*
+    }
+    drop(reverse_buffer);
+    let mut machine_drowwords = machine_drowword_set.into_iter().collect::<Box<_>>();
+    machine_drowwords.sort();
+    machine_drowwords
+}
+
+fn gen_machine_dorws(machine_words: &[Box<[u8]>]) -> Box<[Box<[u8]>]> {
+    let mut machine_drowword_set = std::collections::HashSet::<_, MyHasherDefault>::default();
+    let mut reverse_buffer = Vec::new();
+    for this_word in machine_words {
         reverse_buffer.clear();
         reverse_buffer.extend_from_slice(this_word);
         reverse_buffer.sort();
-        machine_drowword_set.insert(reverse_buffer.to_vec());
+        machine_drowword_set.insert(reverse_buffer.clone().into_boxed_slice());
         let len_minus_one = this_word.len() - 1;
         for which_tile in (0..len_minus_one).rev() {
             let c1 = reverse_buffer[which_tile];
             let c2 = reverse_buffer[len_minus_one];
             if c1 != c2 {
-                //reverse_buffer.swap(which_tile, this_word.len() - 1);
                 reverse_buffer[which_tile] = c2;
                 reverse_buffer[len_minus_one] = c1;
-                machine_drowword_set.insert(reverse_buffer.to_vec());
+                machine_drowword_set.insert(reverse_buffer.clone().into_boxed_slice());
             }
         }
-        */
     }
     drop(reverse_buffer);
     let mut machine_drowwords = machine_drowword_set.into_iter().collect::<Box<_>>();
@@ -239,6 +250,7 @@ impl StatesDefragger<'_> {
     // bit 22 = end
     // bit 23 = is_terminal
     // bits 24-31 = char
+    #[inline(always)]
     fn write_node(
         &self,
         out: &mut [u8],
@@ -271,7 +283,7 @@ impl StatesDefragger<'_> {
             0,
         );
         match build_format {
-            BuildFormat::DawgOnly => (),
+            BuildFormat::DawgOnly | BuildFormat::AlphaOne => (),
             BuildFormat::Gaddawg => {
                 self.write_node(
                     &mut ret[4..],
@@ -325,6 +337,7 @@ fn gen_prev_indexes(states: &[State]) -> Vec<u32> {
 pub enum BuildFormat {
     DawgOnly,
     Gaddawg,
+    AlphaOne,
 }
 
 pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::Returns<Box<[u8]>> {
@@ -344,31 +357,34 @@ pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::R
         states: &mut states,
         states_finder: &mut states_finder,
     };
-    let dawg_start_state = state_maker.make_dawg(machine_words, 0, false);
-    //let mut dawg_start_state = 0;
+    let dawg_start_state = match build_format {
+        BuildFormat::DawgOnly | BuildFormat::Gaddawg => {
+            state_maker.make_dawg(machine_words, 0, false)
+        }
+        BuildFormat::AlphaOne => state_maker.make_dawg(&gen_machine_dorws(machine_words), 0, false),
+    };
     let gaddag_start_state = match build_format {
-        BuildFormat::DawgOnly => 0,
+        BuildFormat::DawgOnly | BuildFormat::AlphaOne => 0,
         BuildFormat::Gaddawg => state_maker.make_dawg(
             &gen_machine_drowwords(machine_words),
             dawg_start_state,
             true,
         ),
     };
-    //dawg_start_state = gaddag_start_state;
 
     let mut states_defragger = StatesDefragger {
         states: &states,
         prev_indexes: &gen_prev_indexes(&states),
         destination: &mut vec![0u32; states.len()],
         num_written: match build_format {
-            BuildFormat::DawgOnly => 1,
+            BuildFormat::DawgOnly | BuildFormat::AlphaOne => 1,
             BuildFormat::Gaddawg => 2,
         },
     };
     states_defragger.destination[0] = !0; // useful for empty lexicon
     states_defragger.defrag(dawg_start_state);
     match build_format {
-        BuildFormat::DawgOnly => (),
+        BuildFormat::DawgOnly | BuildFormat::AlphaOne => (),
         BuildFormat::Gaddawg => {
             states_defragger.defrag(gaddag_start_state);
         }
