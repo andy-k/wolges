@@ -120,7 +120,7 @@ impl Kwg {
             let words_here = if self[p].is_end() {
                 word_counts[p as usize]
             } else {
-                word_counts[p as usize] - word_counts[(p + 1) as usize]
+                word_counts[p as usize] - word_counts[p as usize + 1]
             };
             if idx < words_here {
                 if self[p].accepts() {
@@ -148,7 +148,7 @@ impl Kwg {
                 if self[p].is_end() {
                     return !0;
                 }
-                idx += word_counts[p as usize] - word_counts[(p + 1) as usize];
+                idx += word_counts[p as usize] - word_counts[p as usize + 1];
                 p += 1;
             }
             if i == word.len() - 1 {
