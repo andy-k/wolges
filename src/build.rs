@@ -154,7 +154,6 @@ fn gen_machine_drowwords(machine_words: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let mut machine_drowword_set = std::collections::HashSet::<_, MyHasherDefault>::default();
     let mut reverse_buffer = Vec::new();
     for this_word in machine_words {
-        /*
         // CARE = ERAC, RAC@, AC@, C@
         reverse_buffer.clear();
         reverse_buffer.extend_from_slice(this_word);
@@ -164,7 +163,7 @@ fn gen_machine_drowwords(machine_words: &[Vec<u8>]) -> Vec<Vec<u8>> {
         for drow_prefix_len in 1..this_word.len() {
             machine_drowword_set.insert(reverse_buffer[drow_prefix_len..].to_vec());
         }
-        */
+        /*
         reverse_buffer.clear();
         reverse_buffer.extend_from_slice(this_word);
         reverse_buffer.sort();
@@ -180,6 +179,7 @@ fn gen_machine_drowwords(machine_words: &[Vec<u8>]) -> Vec<Vec<u8>> {
                 machine_drowword_set.insert(reverse_buffer.to_vec());
             }
         }
+        */
     }
     drop(reverse_buffer);
     let mut machine_drowwords = machine_drowword_set.into_iter().collect::<Vec<_>>();
