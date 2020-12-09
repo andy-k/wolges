@@ -1,5 +1,5 @@
 use super::build::MyHasherDefault;
-use super::{board_layout, game_config, klv, kwg, matrix}; // temp
+use super::{board_layout, game_config, klv, kwg, matrix};
 
 #[derive(Clone)]
 struct CrossSet {
@@ -516,111 +516,6 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
-    assert!(rack.len() <= 16);
-    let mut possible_leaves = vec![0.0f32; 1 << rack.len()];
-
-    /*
-      let p=[0]
-      idx=0
-      i=0
-      if i>=racklen,
-        return
-      if p=0, return
-      rack[i] > [p].tile: def skip
-        if [p].end, break
-        idx += num in [p] (i.e. n[p+1]-n[p])
-        p+=1
-      rack[i] < [p].tile: bad pool
-        i+=1
-      rack[i] == [p].tile: 2 choices
-        take:
-          bits |= (1 << i)
-          if [p].accepts
-            posleave[idx]=fl[i]
-            idx+=1
-          i+=1
-          prev_ret=f[p]
-          p = [p].arc
-        or not:
-          proceed w/ > case
-    */
-    fn precompute_leaves(
-        klv: &klv::Klv,
-        possible_leaves: &mut [f32],
-        rack: &[u8],
-        mut p: i32,
-        mut i: i8,
-        mut idx: u32,
-        mut bits: u16,
-    ) {
-        if p == 0 {
-            return;
-        }
-        let rack_len = rack.len();
-        loop {
-            let p_tile = klv.kwg[p].tile();
-            loop {
-                if i as usize >= rack_len {
-                    return;
-                }
-                if rack[i as usize] >= p_tile {
-                    break;
-                }
-                i += 1;
-            }
-            if rack[i as usize] == p_tile {
-                let bits = bits | (1 << i); // important to shadow
-                let accepts = klv.kwg[p].accepts();
-                if accepts {
-                    possible_leaves[bits as usize] = klv.leaves[idx as usize];
-                }
-                precompute_leaves(
-                    klv,
-                    possible_leaves,
-                    rack,
-                    klv.kwg[p].arc_index(),
-                    i + 1,
-                    idx + (accepts as u32),
-                    bits,
-                );
-            }
-            if klv.kwg[p].is_end() {
-                return;
-            }
-            idx += klv.counts[p as usize] - klv.counts[p as usize + 1];
-            p += 1;
-        }
-    }
-
-    if false {
-        precompute_leaves(
-            board_snapshot.klv,
-            &mut possible_leaves,
-            &rack,
-            board_snapshot.klv.kwg[0i32].arc_index(),
-            0,
-            0,
-            0,
-        );
-    }
-
-    let mut precomputed2 = std::collections::HashMap::<_, _, MyHasherDefault>::default();
-    fn recur(
-        mut precomputed2: &mut std::collections::HashMap<Box<[u8]>, f32, MyHasherDefault>,
-        veck: &mut Vec<u8>,
-        rack: &[u8],
-    ) {
-        if rack.is_empty() {
-            precomputed2.insert(veck.clone().into_boxed_slice(), 0.0f32);
-            return;
-        }
-        veck.push(rack[0]);
-        recur(&mut precomputed2, veck, &rack[1..]);
-        veck.pop();
-        recur(&mut precomputed2, veck, &rack[1..]);
-    }
-    recur(&mut precomputed2, &mut Vec::new(), rack);
-
     let print_leave = |rack_tally: &[u8]| {
         // rack should be pre-sorted, eg ??EGSUU.
         // rack_tally excludes played tiles.
@@ -647,21 +542,6 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
             }
         }
 
-        if false {
-            let mut i = 0;
-            let mut bits = 0u16;
-            while i < rack.len() {
-                let tile = rack[i];
-                bits |= ((1 << rack_tally[tile as usize]) - 1) << i;
-                i += rack_tally[tile as usize] as usize;
-                while i < rack.len() && rack[i] == tile {
-                    i += 1;
-                }
-            }
-
-            print!(" / leave: {}", possible_leaves[bits as usize]);
-        }
-
         let mut leave_tiles = Vec::with_capacity(8);
         for (tile, &count) in rack_tally.iter().enumerate() {
             for _ in 0..count {
@@ -669,7 +549,14 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
             }
         }
         print!(" {:?}", leave_tiles);
-        print!(" {:?}", precomputed2[&leave_tiles.into_boxed_slice()]);
+        print!(
+            " {:?}",
+            board_snapshot
+                .klv
+                .hashmap
+                .get(&leave_tiles[..])
+                .unwrap_or(&0.0)
+        );
     };
 
     let found_place_move =
