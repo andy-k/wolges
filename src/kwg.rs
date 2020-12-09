@@ -22,9 +22,9 @@ impl Node {
     }
 }
 
-pub struct Gdw(pub Box<[Node]>);
+pub struct Kwg(pub Box<[Node]>);
 
-impl std::ops::Index<usize> for Gdw {
+impl std::ops::Index<usize> for Kwg {
     type Output = Node;
 
     #[inline(always)]
@@ -33,7 +33,7 @@ impl std::ops::Index<usize> for Gdw {
     }
 }
 
-impl std::ops::Index<i32> for Gdw {
+impl std::ops::Index<i32> for Kwg {
     type Output = Node;
 
     #[inline(always)]
@@ -42,8 +42,8 @@ impl std::ops::Index<i32> for Gdw {
     }
 }
 
-impl Gdw {
-    pub fn from_bytes_alloc(buf: &[u8]) -> Gdw {
+impl Kwg {
+    pub fn from_bytes_alloc(buf: &[u8]) -> Kwg {
         let nelts = buf.len() / 4;
         let mut elts = Vec::with_capacity(nelts);
         for r in (0..(nelts * 4)).step_by(4) {
@@ -54,10 +54,10 @@ impl Gdw {
                     | (buf[r + 3] as u32) << 24,
             )));
         }
-        Gdw(elts.into_boxed_slice())
+        Kwg(elts.into_boxed_slice())
     }
 
-    pub fn in_gdw(&self, mut p: i32, tile: u8) -> i32 {
+    pub fn in_kwg(&self, mut p: i32, tile: u8) -> i32 {
         if p >= 0 {
             p = self[p].arc_index() as i32;
             if p > 0 {

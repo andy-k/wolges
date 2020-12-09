@@ -6,14 +6,14 @@ mod board_layout;
 mod build;
 mod display;
 mod game_config;
-mod gdw;
+mod kwg;
 mod matrix;
 mod movegen;
 
-fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &gdw::Gdw) {
+fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
     struct Env<'a> {
         a: &'a alphabet::Alphabet<'a>,
-        g: &'a gdw::Gdw,
+        g: &'a kwg::Kwg,
         s: &'a mut String,
     }
     fn iter(env: &mut Env, mut p: i32) {
@@ -177,7 +177,7 @@ fn main() -> error::Returns<()> {
                 acc.push('\n');
                 acc
             }),
-            "leaves.gdw",
+            "leaves.kwg",
         )?;
         // TODO use one file
         let mut ret = vec![0; leave_values.len() * 4];
@@ -185,36 +185,35 @@ fn main() -> error::Returns<()> {
             ret[(i * 4)..(i * 4 + 4)].copy_from_slice(&f32::to_le_bytes(v));
         }
         std::fs::write("leaves.klv", ret)?;
-        return Ok(());
     }
 
-    if false {
-        save_kwg_from_file(build::BuildFormat::Gaddawg, "csw19.txt", "csw19.gdw")?;
-        save_kwg_from_file(build::BuildFormat::Gaddawg, "nwl18.txt", "nwl18.gdw")?;
-        save_kwg_from_file(build::BuildFormat::Gaddawg, "nwl20.txt", "nwl20.gdw")?;
-        save_kwg(build::BuildFormat::Gaddawg, "VOLOST\nVOLOSTS", "volost.gdw")?;
-        save_kwg(build::BuildFormat::Gaddawg, "", "empty.gdw")?;
+    if true {
+        save_kwg_from_file(build::BuildFormat::Gaddawg, "csw19.txt", "csw19.kwg")?;
+        save_kwg_from_file(build::BuildFormat::Gaddawg, "nwl18.txt", "nwl18.kwg")?;
+        save_kwg_from_file(build::BuildFormat::Gaddawg, "nwl20.txt", "nwl20.kwg")?;
+        save_kwg(build::BuildFormat::Gaddawg, "VOLOST\nVOLOSTS", "volost.kwg")?;
+        save_kwg(build::BuildFormat::Gaddawg, "", "empty.kwg")?;
     }
 
-    let gdw = gdw::Gdw::from_bytes_alloc(&std::fs::read("csw19.gdw")?);
+    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
 
     if false {
         let t0 = std::time::Instant::now();
-        let word_counts = gdw.count_words_alloc();
+        let word_counts = kwg.count_words_alloc();
         println!("took {} ms", t0.elapsed().as_millis());
         println!("{:?}", &word_counts[0..100]);
         let mut out_vec = Vec::new();
-        let dawg_root = gdw[0i32].arc_index();
+        let dawg_root = kwg[0i32].arc_index();
         for i in 0..word_counts[dawg_root as usize] {
-            out_vec = gdw.get_word_by_index(&word_counts, dawg_root, i, out_vec);
-            let j = gdw.get_word_index(&word_counts, dawg_root, &out_vec);
+            out_vec = kwg.get_word_by_index(&word_counts, dawg_root, i, out_vec);
+            let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
             println!("{} {} {:?}", i, j, out_vec);
             assert_eq!(i, j);
         }
-        assert_eq!(gdw.get_word_index(&word_counts, dawg_root, &[5, 3, 1]), !0);
-        assert_eq!(gdw.get_word_index(&word_counts, dawg_root, &[]), !0);
-        assert_eq!(gdw.get_word_index(&word_counts, dawg_root, &[1, 3]), !0);
+        assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[5, 3, 1]), !0);
+        assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[]), !0);
+        assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[1, 3]), !0);
         if true {
             return Ok(());
         }
@@ -270,7 +269,7 @@ fn main() -> error::Returns<()> {
         &movegen::BoardSnapshot {
             board_tiles,
             game_config,
-            gdw: &gdw,
+            kwg: &kwg,
         },
         &mut b"\x00\x15\x07\x05\x00\x15\x13".clone(),
     );
