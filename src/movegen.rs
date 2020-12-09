@@ -507,7 +507,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 }
 
-pub fn gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
+pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
     rack.sort_unstable();
     let alphabet = board_snapshot.game_config.alphabet();
 
@@ -586,7 +586,7 @@ pub fn gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut 
     };
 
     let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
-    gen_moves(
+    kurnia_gen_moves(
         board_snapshot,
         &mut working_buffer,
         rack,
@@ -596,7 +596,7 @@ pub fn gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut 
 }
 
 // assumes rack is sorted
-fn gen_moves<
+fn kurnia_gen_moves<
     'a,
     FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[u8]),
     FoundExchangeMove: FnMut(&[u8]),

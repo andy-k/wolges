@@ -265,7 +265,7 @@ fn main() -> error::Returns<()> {
     let t0 = std::time::Instant::now();
 
     // ?UGE?US - http://liwords.localhost/game/oyMkFGLA
-    movegen::gen_moves_alloc(
+    movegen::kurnia_gen_moves_alloc(
         &movegen::BoardSnapshot {
             board_tiles,
             game_config,
