@@ -8,7 +8,7 @@ struct CrossSet {
 
 struct WorkingBuffer {
     rack_tally: Box<[u8]>,                       // 27 for ?A-Z
-    word_vec: Box<[u8]>,                         // max(r, c)
+    word_buffer: Box<[u8]>,                      // max(r, c)
     cross_set_for_across_plays: Box<[CrossSet]>, // r*c
     cross_set_for_down_plays: Box<[CrossSet]>,   // c*r
 }
@@ -19,7 +19,7 @@ impl WorkingBuffer {
         let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
         Box::new(Self {
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
-            word_vec: vec![0u8; std::cmp::max(dim.rows, dim.cols) as usize].into_boxed_slice(),
+            word_buffer: vec![0u8; std::cmp::max(dim.rows, dim.cols) as usize].into_boxed_slice(),
             cross_set_for_across_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
                 .into_boxed_slice(),
             cross_set_for_down_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
@@ -633,7 +633,7 @@ pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) 
                     [cross_set_start..cross_set_start + (dim.cols as usize)],
                 &mut working_buffer.rack_tally,
                 dim.across(row),
-                &mut working_buffer.word_vec,
+                &mut working_buffer.word_buffer,
                 true,
                 |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                     num_moves += 1;
@@ -693,7 +693,7 @@ pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) 
                     [cross_set_start..cross_set_start + (dim.rows as usize)],
                 &mut working_buffer.rack_tally,
                 dim.down(col),
-                &mut working_buffer.word_vec,
+                &mut working_buffer.word_buffer,
                 false,
                 |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                     num_moves += 1;
