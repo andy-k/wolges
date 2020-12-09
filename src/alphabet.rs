@@ -40,6 +40,15 @@ impl<'a> Alphabet<'a> {
     }
 
     #[inline(always)]
+    pub fn from_rack(&self, idx: u8) -> Option<&'a str> {
+        if idx >= self.len() {
+            None
+        } else {
+            Some(&self.get(idx).label)
+        }
+    }
+
+    #[inline(always)]
     pub fn score(&self, idx: u8) -> i8 {
         self.get(if idx & 0x80 == 0 { idx } else { 0 }).score
     }

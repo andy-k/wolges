@@ -523,7 +523,7 @@ pub fn gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut 
             let tile = rack[i];
             i += rack_tally[tile as usize] as usize;
             while i < rack.len() && rack[i] == tile {
-                print!("{}", alphabet.from_board(tile).unwrap_or("?"));
+                print!("{}", alphabet.from_rack(tile).unwrap());
                 i += 1;
             }
         }
@@ -532,7 +532,7 @@ pub fn gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut 
         while i < rack.len() {
             let tile = rack[i];
             for _ in 0..rack_tally[tile as usize] {
-                print!("{}", alphabet.from_board(tile).unwrap_or("?"));
+                print!("{}", alphabet.from_rack(tile).unwrap());
             }
             i += rack_tally[tile as usize] as usize;
             while i < rack.len() && rack[i] == tile {

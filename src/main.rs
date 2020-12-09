@@ -186,13 +186,13 @@ fn save_gaddawg_from_file<T: build::NeedGaddawg>(
 use std::str::FromStr;
 
 fn main() -> error::Returns<()> {
-    if true {
-    save_gaddawg_from_file::<build::DawgOnly>("leaves.txt", "leaves.gdw")?;
-    save_gaddawg_from_file::<build::Gaddawg>("csw19.txt", "csw19.gdw")?;
-    save_gaddawg_from_file::<build::Gaddawg>("nwl18.txt", "nwl18.gdw")?;
-    save_gaddawg_from_file::<build::Gaddawg>("nwl20.txt", "nwl20.gdw")?;
-    save_gaddawg::<build::Gaddawg>("VOLOST\nVOLOSTS", "volost.gdw")?;
-    save_gaddawg::<build::Gaddawg>("", "empty.gdw")?;
+    if false {
+        //save_gaddawg_from_file::<build::DawgOnly>("leaves.txt", "leaves.gdw")?;
+        save_gaddawg_from_file::<build::Gaddawg>("csw19.txt", "csw19.gdw")?;
+        save_gaddawg_from_file::<build::Gaddawg>("nwl18.txt", "nwl18.gdw")?;
+        save_gaddawg_from_file::<build::Gaddawg>("nwl20.txt", "nwl20.gdw")?;
+        save_gaddawg::<build::Gaddawg>("VOLOST\nVOLOSTS", "volost.gdw")?;
+        save_gaddawg::<build::Gaddawg>("", "empty.gdw")?;
         return_error!(format!("all done"));
     }
 
