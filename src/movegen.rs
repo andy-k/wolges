@@ -1,4 +1,5 @@
-use super::{board_layout, game_config, klv, kwg, matrix};
+use super::build::MyHasherDefault;
+use super::{board_layout, game_config, klv, kwg, matrix}; // temp
 
 #[derive(Clone)]
 struct CrossSet {
@@ -591,15 +592,34 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         }
     }
 
-    precompute_leaves(
-        board_snapshot.klv,
-        &mut possible_leaves,
-        &rack,
-        board_snapshot.klv.kwg[0i32].arc_index(),
-        0,
-        0,
-        0,
-    );
+    if false {
+        precompute_leaves(
+            board_snapshot.klv,
+            &mut possible_leaves,
+            &rack,
+            board_snapshot.klv.kwg[0i32].arc_index(),
+            0,
+            0,
+            0,
+        );
+    }
+
+    let mut precomputed2 = std::collections::HashMap::<_, _, MyHasherDefault>::default();
+    fn recur(
+        mut precomputed2: &mut std::collections::HashMap<Box<[u8]>, f32, MyHasherDefault>,
+        veck: &mut Vec<u8>,
+        rack: &[u8],
+    ) {
+        if rack.is_empty() {
+            precomputed2.insert(veck.clone().into_boxed_slice(), 0.0f32);
+            return;
+        }
+        veck.push(rack[0]);
+        recur(&mut precomputed2, veck, &rack[1..]);
+        veck.pop();
+        recur(&mut precomputed2, veck, &rack[1..]);
+    }
+    recur(&mut precomputed2, &mut Vec::new(), rack);
 
     let print_leave = |rack_tally: &[u8]| {
         // rack should be pre-sorted, eg ??EGSUU.
@@ -627,18 +647,29 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
             }
         }
 
-        let mut i = 0;
-        let mut bits = 0u16;
-        while i < rack.len() {
-            let tile = rack[i];
-            bits |= ((1 << rack_tally[tile as usize]) - 1) << i;
-            i += rack_tally[tile as usize] as usize;
-            while i < rack.len() && rack[i] == tile {
-                i += 1;
+        if false {
+            let mut i = 0;
+            let mut bits = 0u16;
+            while i < rack.len() {
+                let tile = rack[i];
+                bits |= ((1 << rack_tally[tile as usize]) - 1) << i;
+                i += rack_tally[tile as usize] as usize;
+                while i < rack.len() && rack[i] == tile {
+                    i += 1;
+                }
             }
+
+            print!(" / leave: {}", possible_leaves[bits as usize]);
         }
 
-        print!(" / leave: {}", possible_leaves[bits as usize]);
+        let mut leave_tiles = Vec::with_capacity(8);
+        for (tile, &count) in rack_tally.iter().enumerate() {
+            for _ in 0..count {
+                leave_tiles.push(tile as u8);
+            }
+        }
+        print!(" {:?}", leave_tiles);
+        print!(" {:?}", precomputed2[&leave_tiles.into_boxed_slice()]);
     };
 
     let found_place_move =
