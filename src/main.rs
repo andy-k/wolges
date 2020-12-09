@@ -167,7 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t0 = std::time::Instant::now();
 
     // ?UGE?US - http://liwords.localhost/game/oyMkFGLA
-    movegen::gen_moves(
+    movegen::gen_moves_alloc(
         &movegen::BoardSnapshot {
             board_tiles,
             game_config,

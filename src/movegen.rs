@@ -149,7 +149,10 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     callback: CallbackType,
 ) {
     let len = strider.len();
-    word_buffer.iter_mut().take(len as usize).for_each(|m| *m = 0);
+    word_buffer
+        .iter_mut()
+        .take(len as usize)
+        .for_each(|m| *m = 0);
 
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
         board_snapshot: &'a BoardSnapshot<'a>,
@@ -504,7 +507,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 }
 
-pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
+pub fn gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
     rack.sort_unstable();
     let alphabet = board_snapshot.game_config.alphabet();
 
@@ -538,156 +541,183 @@ pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) 
         }
     };
 
-    let found_move = |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-        let strider = if down {
-            print!("{}{} ", (lane as u8 + 0x61) as char, idx + 1);
-            dim.down(lane)
-        } else {
-            print!("{}{} ", lane + 1, (idx as u8 + 0x61) as char);
-            dim.across(lane)
-        };
-        let mut inside = false;
-        for (i, &w) in word.iter().enumerate() {
-            if w == 0 {
-                if !inside {
-                    print!("(");
-                    inside = true;
-                }
-                print!(
-                    "{}",
-                    alphabet
-                        .from_board(board_snapshot.board_tiles[strider.at(idx + (i as i8))])
-                        .unwrap()
-                );
+    let found_place_move =
+        |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+            let strider = if down {
+                print!("{}{} ", (lane as u8 + 0x61) as char, idx + 1);
+                dim.down(lane)
             } else {
-                if inside {
-                    print!(")");
-                    inside = false;
+                print!("{}{} ", lane + 1, (idx as u8 + 0x61) as char);
+                dim.across(lane)
+            };
+            let mut inside = false;
+            for (i, &w) in word.iter().enumerate() {
+                if w == 0 {
+                    if !inside {
+                        print!("(");
+                        inside = true;
+                    }
+                    print!(
+                        "{}",
+                        alphabet
+                            .from_board(board_snapshot.board_tiles[strider.at(idx + (i as i8))])
+                            .unwrap()
+                    );
+                } else {
+                    if inside {
+                        print!(")");
+                        inside = false;
+                    }
+                    print!("{}", alphabet.from_board(w).unwrap());
                 }
-                print!("{}", alphabet.from_board(w).unwrap());
             }
-        }
-        if inside {
-            print!(")");
-        }
-        print!(" {}", score);
+            if inside {
+                print!(")");
+            }
+            print!(" {}", score);
+            print_leave(rack_tally);
+            println!();
+        };
+
+    let found_exchange_move = |rack_tally: &[u8]| {
+        print!("xchg");
         print_leave(rack_tally);
         println!();
     };
 
-    {
-        let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
-        for tile in &rack[..] {
-            working_buffer.rack_tally[*tile as usize] += 1;
-        }
+    let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
+    gen_moves(
+        board_snapshot,
+        &mut working_buffer,
+        rack,
+        found_place_move,
+        found_exchange_move,
+    );
+}
 
-        let num_tiles_on_board = board_snapshot
-            .board_tiles
-            .iter()
-            .filter(|&t| *t != 0)
-            .count() as usize;
+// assumes rack is sorted
+fn gen_moves<
+    'a,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[u8]),
+    FoundExchangeMove: FnMut(&[u8]),
+>(
+    board_snapshot: &'a BoardSnapshot<'a>,
+    working_buffer: &mut WorkingBuffer,
+    rack: &'a [u8],
+    mut found_place_move: FoundPlaceMove,
+    mut found_exchange_move: FoundExchangeMove,
+) {
+    let board_layout = board_snapshot.game_config.board_layout();
+    let dim = board_layout.dim();
 
-        struct ExchangeEnv<'a> {
-            print_leave: &'a dyn Fn(&[u8]),
-            rack: &'a [u8],
-            rack_tally: &'a mut [u8],
-        }
-        fn generate_exchanges<'a>(env: &mut ExchangeEnv<'a>, mut idx: u8) {
-            // TODO: suboptimal when using leave values
-            if (idx as usize) < env.rack.len() {
-                let tile = env.rack[idx as usize];
-                let available = env.rack_tally[tile as usize];
-                idx += available;
-                for exchanged in (0..available + 1).rev() {
-                    env.rack_tally[tile as usize] = available - exchanged;
-                    generate_exchanges(env, idx);
-                }
-                env.rack_tally[tile as usize] = available;
-            } else {
-                // found it. (note: pass = xchg nothing)
-                print!("xchg:");
-                (env.print_leave)(&env.rack_tally);
-                println!();
-            }
-        }
-        // 100 tiles, 7 goes to oppo, 7 goes to me, 7 in bag = 79.
-        if num_tiles_on_board <= 79 {
-            generate_exchanges(
-                &mut ExchangeEnv {
-                    print_leave: &print_leave,
-                    rack: &rack,
-                    rack_tally: &mut working_buffer.rack_tally,
-                },
-                0,
-            );
-        } else {
-            println!("pass");
-        }
-
-        // striped by row
-        for col in 0..dim.cols {
-            gen_cross_set(
-                &board_snapshot,
-                dim.down(col),
-                &mut working_buffer.cross_set_for_across_plays,
-                matrix::Strider {
-                    base: col as i16,
-                    step: dim.cols,
-                    len: dim.rows,
-                },
-            );
-        }
-        if num_tiles_on_board == 0 {
-            // empty board activates star
-            working_buffer.cross_set_for_across_plays[board_layout
-                .dim()
-                .at_row_col(board_layout.star_row(), board_layout.star_col())] =
-                CrossSet { bits: !1, score: 0 };
-        }
-        for row in 0..dim.rows {
-            let cross_set_start = ((row as isize) * (dim.cols as isize)) as usize;
-            gen_place_moves(
-                &board_snapshot,
-                &working_buffer.cross_set_for_across_plays
-                    [cross_set_start..cross_set_start + (dim.cols as usize)],
-                &mut working_buffer.rack_tally,
-                dim.across(row),
-                &mut working_buffer.word_buffer,
-                true,
-                |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-                    found_move(false, row, idx, word, score, rack_tally)
-                },
-            );
-        }
-        // striped by columns for better cache locality
-        for row in 0..dim.rows {
-            gen_cross_set(
-                &board_snapshot,
-                dim.across(row),
-                &mut working_buffer.cross_set_for_down_plays,
-                matrix::Strider {
-                    base: row as i16,
-                    step: dim.rows,
-                    len: dim.cols,
-                },
-            );
-        }
-        for col in 0..dim.cols {
-            let cross_set_start = ((col as isize) * (dim.rows as isize)) as usize;
-            gen_place_moves(
-                &board_snapshot,
-                &working_buffer.cross_set_for_down_plays
-                    [cross_set_start..cross_set_start + (dim.rows as usize)],
-                &mut working_buffer.rack_tally,
-                dim.down(col),
-                &mut working_buffer.word_buffer,
-                false,
-                |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-                    found_move(true, col, idx, word, score, rack_tally)
-                },
-            );
-        }
+    working_buffer.rack_tally.iter_mut().for_each(|m| *m = 0);
+    for tile in &rack[..] {
+        working_buffer.rack_tally[*tile as usize] += 1;
     }
 
-    // todo: leaves.
+    let num_tiles_on_board = board_snapshot
+        .board_tiles
+        .iter()
+        .filter(|&t| *t != 0)
+        .count() as usize;
+
+    struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
+        found_exchange_move: FoundExchangeMove,
+        rack: &'a [u8],
+        rack_tally: &'a mut [u8],
+    }
+    fn generate_exchanges<'a, FoundExchangeMove: FnMut(&[u8])>(
+        env: &mut ExchangeEnv<'a, FoundExchangeMove>,
+        mut idx: u8,
+    ) {
+        if (idx as usize) < env.rack.len() {
+            let tile = env.rack[idx as usize];
+            let available = env.rack_tally[tile as usize];
+            idx += available;
+            for exchanged in (0..available + 1).rev() {
+                env.rack_tally[tile as usize] = available - exchanged;
+                generate_exchanges(env, idx);
+            }
+            env.rack_tally[tile as usize] = available;
+        } else {
+            (env.found_exchange_move)(&env.rack_tally);
+        }
+    }
+    // 100 tiles, 7 goes to oppo, 7 goes to me, 7 in bag = 79.
+    if num_tiles_on_board <= 79 {
+        generate_exchanges(
+            &mut ExchangeEnv {
+                found_exchange_move,
+                rack: &rack,
+                rack_tally: &mut working_buffer.rack_tally,
+            },
+            0,
+        );
+    } else {
+        found_exchange_move(&working_buffer.rack_tally);
+    }
+
+    // striped by row
+    for col in 0..dim.cols {
+        gen_cross_set(
+            &board_snapshot,
+            dim.down(col),
+            &mut working_buffer.cross_set_for_across_plays,
+            matrix::Strider {
+                base: col as i16,
+                step: dim.cols,
+                len: dim.rows,
+            },
+        );
+    }
+    if num_tiles_on_board == 0 {
+        // empty board activates star
+        working_buffer.cross_set_for_across_plays[board_layout
+            .dim()
+            .at_row_col(board_layout.star_row(), board_layout.star_col())] =
+            CrossSet { bits: !1, score: 0 };
+    }
+    for row in 0..dim.rows {
+        let cross_set_start = ((row as isize) * (dim.cols as isize)) as usize;
+        gen_place_moves(
+            &board_snapshot,
+            &working_buffer.cross_set_for_across_plays
+                [cross_set_start..cross_set_start + (dim.cols as usize)],
+            &mut working_buffer.rack_tally,
+            dim.across(row),
+            &mut working_buffer.word_buffer,
+            true,
+            |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+                found_place_move(false, row, idx, word, score, rack_tally)
+            },
+        );
+    }
+    // striped by columns for better cache locality
+    for row in 0..dim.rows {
+        gen_cross_set(
+            &board_snapshot,
+            dim.across(row),
+            &mut working_buffer.cross_set_for_down_plays,
+            matrix::Strider {
+                base: row as i16,
+                step: dim.rows,
+                len: dim.cols,
+            },
+        );
+    }
+    for col in 0..dim.cols {
+        let cross_set_start = ((col as isize) * (dim.rows as isize)) as usize;
+        gen_place_moves(
+            &board_snapshot,
+            &working_buffer.cross_set_for_down_plays
+                [cross_set_start..cross_set_start + (dim.rows as usize)],
+            &mut working_buffer.rack_tally,
+            dim.down(col),
+            &mut working_buffer.word_buffer,
+            false,
+            |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+                found_place_move(true, col, idx, word, score, rack_tally)
+            },
+        );
+    }
 }
