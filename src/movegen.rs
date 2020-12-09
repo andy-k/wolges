@@ -143,7 +143,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
     rack_tally: &'a mut Tally,
     strider: matrix::Strider,
     work_buf: &'a mut [u8],
-    min_num_played: i8,
+    single_tile_plays: bool,
     callback: CallbackType,
 ) {
     let len = strider.len();
@@ -157,7 +157,6 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         strider: matrix::Strider,
         callback: CallbackType,
         work_buf: &'a mut [u8],
-        min_num_played: i8,
         anchor: i8,
         leftmost: i8,
         rightmost: i8,
@@ -174,7 +173,6 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         strider,
         callback,
         work_buf,
-        min_num_played,
         anchor: 0,
         leftmost: 0,
         rightmost: 0,
@@ -208,6 +206,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         mut main_score: i16,
         perpendicular_score: i16,
         word_multiplier: i8,
+        mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
         while idx < env.rightmost {
@@ -228,7 +227,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
             idx += 1;
         }
         if idx > env.anchor + 1
-            && env.num_played >= env.min_num_played
+            && (env.num_played + is_unique as i8) >= 2
             && idx - env.idx_left >= 2
             && env.gdw[p].accepts()
         {
@@ -266,6 +265,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         let this_cross_bits = if this_cross_set.bits != 0 {
             this_cross_set.bits
         } else {
+            is_unique = true;
             !1
         };
         loop {
@@ -290,6 +290,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                             perpendicular_score
                         },
                         new_word_multiplier,
+                        is_unique,
                     );
                     env.num_played -= 1;
                     env.rack_tally.0[tile as usize] += 1;
@@ -314,6 +315,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                             perpendicular_score
                         },
                         new_word_multiplier,
+                        is_unique,
                     );
                     env.num_played -= 1;
                     env.rack_tally.0[0] += 1;
@@ -333,6 +335,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         mut main_score: i16,
         perpendicular_score: i16,
         word_multiplier: i8,
+        mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
         while idx >= env.leftmost {
@@ -352,7 +355,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
             env.work_buf[idx as usize] = 0;
             idx -= 1;
         }
-        if env.num_played >= env.min_num_played && env.anchor - idx >= 2 && env.gdw[p].accepts() {
+        if (env.num_played + is_unique as i8) >= 2 && env.anchor - idx >= 2 && env.gdw[p].accepts()
+        {
             record(
                 env,
                 idx + 1,
@@ -380,6 +384,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         let this_cross_bits = if this_cross_set.bits != 0 {
             this_cross_set.bits
         } else {
+            is_unique = true;
             !1
         };
         loop {
@@ -393,6 +398,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                     main_score,
                     perpendicular_score,
                     word_multiplier,
+                    is_unique,
                 );
             } else if idx >= env.leftmost && this_cross_bits & (1 << tile) != 0 {
                 if env.rack_tally.0[tile as usize] > 0 {
@@ -414,6 +420,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                             perpendicular_score
                         },
                         new_word_multiplier,
+                        is_unique,
                     );
                     env.num_played -= 1;
                     env.rack_tally.0[tile as usize] += 1;
@@ -438,6 +445,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                             perpendicular_score
                         },
                         new_word_multiplier,
+                        is_unique,
                     );
                     env.num_played -= 1;
                     env.rack_tally.0[0] += 1;
@@ -450,9 +458,11 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         }
     }
 
-    fn gen_moves_from<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(env: &mut Env<CallbackType>) {
-        //println!("moves({}, {}..{})", env.anchor, env.leftmost, env.rightmost);
-        play_left(env, env.anchor, 1, 0, 0, 1);
+    fn gen_moves_from<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
+        env: &mut Env<CallbackType>,
+        single_tile_plays: bool,
+    ) {
+        play_left(env, env.anchor, 1, 0, 0, 1, single_tile_plays);
     }
 
     let mut rightmost = len; // processed up to here
@@ -466,7 +476,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
             env.anchor = leftmost - 1;
             env.leftmost = 0;
             env.rightmost = rightmost;
-            gen_moves_from(&mut env);
+            gen_moves_from(&mut env, single_tile_plays);
         }
         if rack.len() >= 2 {
             let mut leftmost = leftmost; // shadowing
@@ -484,7 +494,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                         env.anchor = anchor;
                         env.leftmost = leftmost;
                         env.rightmost = rightmost;
-                        gen_moves_from(&mut env);
+                        gen_moves_from(&mut env, single_tile_plays);
                     }
                     rightmost = anchor; // prevent duplicates
                 }
@@ -634,7 +644,7 @@ pub fn gen_moves<'a>(
                 &mut rack_tally,
                 dim.across(row),
                 &mut work_vec,
-                1,
+                true,
                 |idx: i8, word: &[u8], score: i16, rack_tally: &Tally| {
                     num_moves += 1;
                     let strider = dim.across(row);
@@ -696,7 +706,7 @@ pub fn gen_moves<'a>(
                 &mut rack_tally,
                 dim.down(col),
                 &mut work_vec,
-                2,
+                false,
                 |idx: i8, word: &[u8], score: i16, rack_tally: &Tally| {
                     num_moves += 1;
                     let strider = dim.down(col);

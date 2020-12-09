@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gdw = gdw::Gdw::from_bytes_alloc(&std::fs::read("csw19.gdw")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
 
-    if true {
+    if false {
         let f = std::fs::File::open("leaves.csv")?;
         let mut rdr = csv::Reader::from_reader(f);
         for result in rdr.records() {
