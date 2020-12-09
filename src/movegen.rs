@@ -28,10 +28,14 @@ impl WorkingBuffer {
     }
 }
 
+pub struct BoardSnapshot<'a> {
+    pub board_tiles: &'a [u8],
+    pub game_config: &'a game_config::GameConfig<'a>,
+    pub gdw: &'a gdw::Gdw,
+}
+
 fn gen_cross_set<'a>(
-    board_tiles: &'a [u8],
-    game_config: &'a game_config::GameConfig<'a>,
-    gdw: &'a gdw::Gdw,
+    board_snapshot: &'a BoardSnapshot<'a>,
     strider: matrix::Strider,
     cross_sets: &'a mut [CrossSet],
     output_strider: matrix::Strider,
@@ -41,36 +45,36 @@ fn gen_cross_set<'a>(
         cross_sets[output_strider.at(i)] = CrossSet { bits: 0, score: 0 };
     }
 
-    let alphabet = game_config.alphabet();
+    let alphabet = board_snapshot.game_config.alphabet();
     let mut p = 1;
     let mut score = 0i16;
     let mut k = len;
     for j in (0..len).rev() {
-        let b = board_tiles[strider.at(j)];
+        let b = board_snapshot.board_tiles[strider.at(j)];
         if b != 0 {
             // board has tile
             if p >= 0 {
                 // include current tile
-                p = gdw.in_gdw(p, b & 0x7f);
+                p = board_snapshot.gdw.in_gdw(p, b & 0x7f);
             }
             score += alphabet.get(if b & 0x80 == 0 { b } else { 0 }).score as i16;
-            if j == 0 || board_tiles[strider.at(j - 1)] == 0 {
+            if j == 0 || board_snapshot.board_tiles[strider.at(j - 1)] == 0 {
                 // there is a sequence of tiles from j inclusive to k exclusive
-                if k < len && !(k + 1 < len && board_tiles[strider.at(k + 1)] != 0) {
+                if k < len && !(k + 1 < len && board_snapshot.board_tiles[strider.at(k + 1)] != 0) {
                     // board[k + 1] is empty, compute cross_set[k].
                     let mut bits = 1u64;
                     if p > 0 {
                         // p = DCBA
-                        let q = gdw.in_gdw(p, 0);
+                        let q = board_snapshot.gdw.in_gdw(p, 0);
                         if q > 0 {
                             // q = DCBA@
-                            let mut q = gdw[q].arc_index();
+                            let mut q = board_snapshot.gdw[q].arc_index();
                             if q > 0 {
                                 loop {
-                                    if gdw[q].accepts() {
-                                        bits |= 1 << gdw[q].tile();
+                                    if board_snapshot.gdw[q].accepts() {
+                                        bits |= 1 << board_snapshot.gdw[q].tile();
                                     }
-                                    if gdw[q].is_end() {
+                                    if board_snapshot.gdw[q].is_end() {
                                         break;
                                     }
                                     q += 1;
@@ -85,29 +89,29 @@ fn gen_cross_set<'a>(
                     let mut bits = 1u64;
                     if p > 0 {
                         // p = DCBA
-                        p = gdw[p].arc_index(); // p = after DCBA
+                        p = board_snapshot.gdw[p].arc_index(); // p = after DCBA
                         if p > 0 {
                             loop {
-                                let tile = gdw[p].tile();
+                                let tile = board_snapshot.gdw[p].tile();
                                 if tile != 0 {
                                     // not the gaddag marker
                                     let mut q = p;
                                     // board[j - 2] may or may not be empty.
                                     for k in (0..j - 1).rev() {
-                                        let b = board_tiles[strider.at(k)];
+                                        let b = board_snapshot.board_tiles[strider.at(k)];
                                         if b == 0 {
                                             break;
                                         }
-                                        q = gdw.in_gdw(q, b & 0x7f);
+                                        q = board_snapshot.gdw.in_gdw(q, b & 0x7f);
                                         if q <= 0 {
                                             break;
                                         }
                                     }
-                                    if q > 0 && gdw[q].accepts() {
-                                        bits |= 1 << gdw[q].tile();
+                                    if q > 0 && board_snapshot.gdw[q].accepts() {
+                                        bits |= 1 << board_snapshot.gdw[q].tile();
                                     }
                                 }
-                                if gdw[p].is_end() {
+                                if board_snapshot.gdw[p].is_end() {
                                     break;
                                 }
                                 p += 1;
@@ -116,7 +120,7 @@ fn gen_cross_set<'a>(
                     }
                     // score hasn't included the next batch.
                     for k in (0i8..j - 1).rev() {
-                        let b = board_tiles[strider.at(k)];
+                        let b = board_snapshot.board_tiles[strider.at(k)];
                         if b == 0 {
                             break;
                         }
@@ -137,9 +141,7 @@ fn gen_cross_set<'a>(
 // word_buffer must have at least strider.len() length.
 #[allow(clippy::too_many_arguments)]
 fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
-    board_tiles: &'a [u8],
-    game_config: &'a game_config::GameConfig<'a>,
-    gdw: &'a gdw::Gdw,
+    board_snapshot: &'a BoardSnapshot<'a>,
     cross_set_slice: &'a [CrossSet],
     rack_tally: &'a mut [u8],
     strider: matrix::Strider,
@@ -150,9 +152,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     let len = strider.len();
 
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
-        board_tiles: &'a [u8],
-        game_config: &'a game_config::GameConfig<'a>,
-        gdw: &'a gdw::Gdw,
+        board_snapshot: &'a BoardSnapshot<'a>,
         cross_set_slice: &'a [CrossSet],
         rack_tally: &'a mut [u8],
         strider: matrix::Strider,
@@ -166,9 +166,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 
     let mut env = Env {
-        board_tiles,
-        game_config,
-        gdw,
+        board_snapshot,
         cross_set_slice,
         rack_tally,
         strider,
@@ -211,15 +209,16 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     ) {
         // tail-recurse placing current sequence of tiles
         while idx < env.rightmost {
-            let b = env.board_tiles[env.strider.at(idx)];
+            let b = env.board_snapshot.board_tiles[env.strider.at(idx)];
             if b == 0 {
                 break;
             }
-            p = env.gdw.in_gdw(p, b & 0x7f);
+            p = env.board_snapshot.gdw.in_gdw(p, b & 0x7f);
             if p <= 0 {
                 return;
             }
             main_score += env
+                .board_snapshot
                 .game_config
                 .alphabet()
                 .get(if b & 0x80 == 0 { b } else { 0 })
@@ -230,7 +229,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         if idx > env.anchor + 1
             && (env.num_played + is_unique as i8) >= 2
             && idx - env.idx_left >= 2
-            && env.gdw[p].accepts()
+            && env.board_snapshot.gdw[p].accepts()
         {
             record(
                 env,
@@ -245,7 +244,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             return;
         }
 
-        p = env.gdw[p].arc_index();
+        p = env.board_snapshot.gdw[p].arc_index();
         if p <= 0 {
             return;
         }
@@ -255,7 +254,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         };
         let mut this_cross_set = CrossSet { bits: 0, score: 0 };
         if idx < env.rightmost {
-            this_premium = env.game_config.board_layout().premiums()[env.strider.at(idx)];
+            this_premium =
+                env.board_snapshot.game_config.board_layout().premiums()[env.strider.at(idx)];
             this_cross_set = env.cross_set_slice[idx as usize].clone();
         }
         if this_cross_set.bits == 1 {
@@ -270,12 +270,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             !1
         };
         loop {
-            let tile = env.gdw[p].tile();
+            let tile = env.board_snapshot.gdw[p].tile();
             if tile != 0 && this_cross_bits & (1 << tile) != 0 {
                 if env.rack_tally[tile as usize] > 0 {
                     env.rack_tally[tile as usize] -= 1;
                     env.num_played += 1;
-                    let tile_value = (env.game_config.alphabet().get(tile).score as i16)
+                    let tile_value = (env.board_snapshot.game_config.alphabet().get(tile).score
+                        as i16)
                         * (this_premium.tile_multiplier as i16);
                     env.word_buffer[idx as usize] = tile;
                     play_right(
@@ -300,7 +301,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.rack_tally[0] -= 1;
                     env.num_played += 1;
                     // intentional to not hardcode blank tile value as zero
-                    let tile_value = (env.game_config.alphabet().get(0).score as i16)
+                    let tile_value = (env.board_snapshot.game_config.alphabet().get(0).score
+                        as i16)
                         * (this_premium.tile_multiplier as i16);
                     env.word_buffer[idx as usize] = tile | 0x80;
                     play_right(
@@ -322,7 +324,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.rack_tally[0] += 1;
                 }
             }
-            if env.gdw[p].is_end() {
+            if env.board_snapshot.gdw[p].is_end() {
                 break;
             }
             p += 1;
@@ -340,15 +342,16 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     ) {
         // tail-recurse placing current sequence of tiles
         while idx >= env.leftmost {
-            let b = env.board_tiles[env.strider.at(idx)];
+            let b = env.board_snapshot.board_tiles[env.strider.at(idx)];
             if b == 0 {
                 break;
             }
-            p = env.gdw.in_gdw(p, b & 0x7f);
+            p = env.board_snapshot.gdw.in_gdw(p, b & 0x7f);
             if p <= 0 {
                 return;
             }
             main_score += env
+                .board_snapshot
                 .game_config
                 .alphabet()
                 .get(if b & 0x80 == 0 { b } else { 0 })
@@ -356,7 +359,9 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             env.word_buffer[idx as usize] = 0;
             idx -= 1;
         }
-        if (env.num_played + is_unique as i8) >= 2 && env.anchor - idx >= 2 && env.gdw[p].accepts()
+        if (env.num_played + is_unique as i8) >= 2
+            && env.anchor - idx >= 2
+            && env.board_snapshot.gdw[p].accepts()
         {
             record(
                 env,
@@ -368,7 +373,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             );
         }
 
-        p = env.gdw[p].arc_index();
+        p = env.board_snapshot.gdw[p].arc_index();
         if p <= 0 {
             return;
         }
@@ -378,7 +383,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         };
         let mut this_cross_set = CrossSet { bits: 0, score: 0 };
         if idx >= env.leftmost {
-            this_premium = env.game_config.board_layout().premiums()[env.strider.at(idx)];
+            this_premium =
+                env.board_snapshot.game_config.board_layout().premiums()[env.strider.at(idx)];
             this_cross_set = env.cross_set_slice[idx as usize].clone();
         }
         let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
@@ -389,7 +395,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             !1
         };
         loop {
-            let tile = env.gdw[p].tile();
+            let tile = env.board_snapshot.gdw[p].tile();
             if tile == 0 {
                 env.idx_left = idx + 1;
                 play_right(
@@ -405,7 +411,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 if env.rack_tally[tile as usize] > 0 {
                     env.rack_tally[tile as usize] -= 1;
                     env.num_played += 1;
-                    let tile_value = (env.game_config.alphabet().get(tile).score as i16)
+                    let tile_value = (env.board_snapshot.game_config.alphabet().get(tile).score
+                        as i16)
                         * (this_premium.tile_multiplier as i16);
                     env.word_buffer[idx as usize] = tile;
                     play_left(
@@ -430,7 +437,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.rack_tally[0] -= 1;
                     env.num_played += 1;
                     // intentional to not hardcode blank tile value as zero
-                    let tile_value = (env.game_config.alphabet().get(0).score as i16)
+                    let tile_value = (env.board_snapshot.game_config.alphabet().get(0).score
+                        as i16)
                         * (this_premium.tile_multiplier as i16);
                     env.word_buffer[idx as usize] = tile | 0x80;
                     play_left(
@@ -452,7 +460,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.rack_tally[0] += 1;
                 }
             }
-            if env.gdw[p].is_end() {
+            if env.board_snapshot.gdw[p].is_end() {
                 break;
             }
             p += 1;
@@ -469,7 +477,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     let mut rightmost = len; // processed up to here
     let mut leftmost = len;
     loop {
-        while leftmost > 0 && board_tiles[strider.at(leftmost - 1)] == 0 {
+        while leftmost > 0 && board_snapshot.board_tiles[strider.at(leftmost - 1)] == 0 {
             leftmost -= 1;
         }
         if leftmost > 0 {
@@ -502,7 +510,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 }
             }
         }
-        while leftmost > 0 && board_tiles[strider.at(leftmost - 1)] != 0 {
+        while leftmost > 0 && board_snapshot.board_tiles[strider.at(leftmost - 1)] != 0 {
             leftmost -= 1;
         }
         if leftmost <= 1 {
@@ -512,18 +520,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 }
 
-pub fn gen_moves<'a>(
-    board_tiles: &'a [u8],
-    game_config: &'a game_config::GameConfig<'a>,
-    gdw: &'a gdw::Gdw,
-    rack: &'a mut [u8],
-) {
+pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
     let mut num_moves = 0; // TODO
 
     rack.sort_unstable();
-    let alphabet = game_config.alphabet();
+    let alphabet = board_snapshot.game_config.alphabet();
 
-    let board_layout = game_config.board_layout();
+    let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
     let print_leave = |rack_tally: &[u8]| {
@@ -554,12 +557,16 @@ pub fn gen_moves<'a>(
     };
 
     {
-        let mut working_buffer = WorkingBuffer::new(game_config);
+        let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
         for tile in &rack[..] {
             working_buffer.rack_tally[*tile as usize] += 1;
         }
 
-        let num_tiles_on_board = board_tiles.iter().filter(|&t| *t != 0).count() as usize;
+        let num_tiles_on_board = board_snapshot
+            .board_tiles
+            .iter()
+            .filter(|&t| *t != 0)
+            .count() as usize;
 
         struct ExchangeEnv<'a> {
             print_leave: &'a dyn Fn(&[u8]),
@@ -601,9 +608,7 @@ pub fn gen_moves<'a>(
         // striped by row
         for col in 0..dim.cols {
             gen_cross_set(
-                board_tiles,
-                game_config,
-                &gdw,
+                &board_snapshot,
                 dim.down(col),
                 &mut working_buffer.cross_set_for_across_plays,
                 matrix::Strider {
@@ -623,9 +628,7 @@ pub fn gen_moves<'a>(
         for row in 0..dim.rows {
             let cross_set_start = ((row as isize) * (dim.cols as isize)) as usize;
             gen_place_moves(
-                board_tiles,
-                game_config,
-                &gdw,
+                &board_snapshot,
                 &working_buffer.cross_set_for_across_plays
                     [cross_set_start..cross_set_start + (dim.cols as usize)],
                 &mut working_buffer.rack_tally,
@@ -647,7 +650,9 @@ pub fn gen_moves<'a>(
                             print!(
                                 "{}",
                                 alphabet
-                                    .from_board(board_tiles[strider.at(idx + (i as i8))])
+                                    .from_board(
+                                        board_snapshot.board_tiles[strider.at(idx + (i as i8))]
+                                    )
                                     .unwrap()
                             );
                         } else {
@@ -670,9 +675,7 @@ pub fn gen_moves<'a>(
         // striped by columns for better cache locality
         for row in 0..dim.rows {
             gen_cross_set(
-                board_tiles,
-                game_config,
-                &gdw,
+                &board_snapshot,
                 dim.across(row),
                 &mut working_buffer.cross_set_for_down_plays,
                 matrix::Strider {
@@ -685,9 +688,7 @@ pub fn gen_moves<'a>(
         for col in 0..dim.cols {
             let cross_set_start = ((col as isize) * (dim.rows as isize)) as usize;
             gen_place_moves(
-                board_tiles,
-                game_config,
-                &gdw,
+                &board_snapshot,
                 &working_buffer.cross_set_for_down_plays
                     [cross_set_start..cross_set_start + (dim.rows as usize)],
                 &mut working_buffer.rack_tally,
@@ -709,7 +710,9 @@ pub fn gen_moves<'a>(
                             print!(
                                 "{}",
                                 alphabet
-                                    .from_board(board_tiles[strider.at(idx + (i as i8))])
+                                    .from_board(
+                                        board_snapshot.board_tiles[strider.at(idx + (i as i8))]
+                                    )
                                     .unwrap()
                             );
                         } else {

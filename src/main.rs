@@ -168,9 +168,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ?UGE?US - http://liwords.localhost/game/oyMkFGLA
     movegen::gen_moves(
-        board_tiles,
-        game_config,
-        &gdw,
+        &movegen::BoardSnapshot {
+            board_tiles,
+            game_config,
+            gdw: &gdw,
+        },
         &mut b"\x00\x15\x07\x05\x00\x15\x13".clone(),
     );
 
