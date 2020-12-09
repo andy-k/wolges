@@ -155,7 +155,6 @@ fn gen_cross_set<'a>(
     }
 }
 
-// rack must be sorted, and rack_tally must tally.
 // word_buffer must have at least strider.len() length.
 #[allow(clippy::too_many_arguments)]
 fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
@@ -163,7 +162,6 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
     game_config: &'a game_config::GameConfig<'a>,
     gdw: &'a gdw::Gdw,
     cross_set_slice: &'a [CrossSet],
-    rack: &'a [u8],
     rack_tally: &'a mut Tally,
     strider: matrix::Strider,
     word_buffer: &'a mut [u8],
@@ -502,7 +500,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
             env.rightmost = rightmost;
             gen_moves_from(&mut env, single_tile_plays);
         }
-        if rack.len() >= 2 {
+        {
+            // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
             let mut leftmost = leftmost; // shadowing
             if leftmost > 0 {
                 leftmost += 1;
@@ -649,7 +648,6 @@ pub fn gen_moves<'a>(
                 &gdw,
                 &working_buffer.cross_set_for_across_plays
                     [cross_set_start..cross_set_start + (dim.cols as usize)],
-                &rack,
                 &mut working_buffer.rack_tally,
                 dim.across(row),
                 &mut working_buffer.word_vec,
@@ -712,7 +710,6 @@ pub fn gen_moves<'a>(
                 &gdw,
                 &working_buffer.cross_set_for_down_plays
                     [cross_set_start..cross_set_start + (dim.rows as usize)],
-                &rack,
                 &mut working_buffer.rack_tally,
                 dim.down(col),
                 &mut working_buffer.word_vec,
