@@ -516,7 +516,95 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
     let dim = board_layout.dim();
 
     assert!(rack.len() <= 16);
-    let mut possible_leaves = vec![f32::NAN; 1 << rack.len()];
+    let mut possible_leaves = vec![0.0f32; 1 << rack.len()];
+
+    /*
+      let p=[0]
+      idx=0
+      i=0
+      if i>=racklen,
+        return
+      if p=0, return
+      rack[i] > [p].tile: def skip
+        if [p].end, break
+        idx += num in [p] (i.e. n[p+1]-n[p])
+        p+=1
+      rack[i] < [p].tile: bad pool
+        i+=1
+      rack[i] == [p].tile: 2 choices
+        take:
+          bits |= (1 << i)
+          if [p].accepts
+            posleave[idx]=fl[i]
+            idx+=1
+          i+=1
+          prev_ret=f[p]
+          p = [p].arc
+        or not:
+          proceed w/ > case
+    */
+    fn precompute_leaves(
+        klv: &klv::Klv,
+        possible_leaves: &mut [f32],
+        rack: &[u8],
+        mut p: i32,
+        mut i: i8,
+        mut idx: u32,
+        mut bits: u16,
+    ) {
+        //println!("[p={},i={},idx={},bits={}]",p,i,idx,bits);
+        if p == 0 {
+            return;
+        }
+        let rack_len = rack.len();
+        loop {
+            let p_tile = klv.kwg[p].tile();
+            loop {
+                if i as usize >= rack_len {
+                    return;
+                }
+                if rack[i as usize] >= p_tile {
+                    break;
+                }
+                i += 1;
+            }
+            //println!("inner[p={},i={},idx={},bits={}]",p,i,idx,bits);
+            if rack[i as usize] == p_tile {
+                let bits = bits | (1 << i); // important to shadow
+                let accepts = klv.kwg[p].accepts();
+                if accepts {
+                    possible_leaves[bits as usize] = klv.leaves[idx as usize];
+                    println!("[{:016b} = {}]", bits, klv.leaves[idx as usize]);
+                }
+                //println!("recurse[p={},i={},idx={},bits={}]",p,i,idx,bits);
+                precompute_leaves(
+                    klv,
+                    possible_leaves,
+                    rack,
+                    klv.kwg[p].arc_index(),
+                    i + 1,
+                    idx + (accepts as u32),
+                    bits,
+                );
+                //println!("outcurse[p={},i={},idx={},bits={}]",p,i,idx,bits);
+            }
+            if klv.kwg[p].is_end() {
+                return;
+            }
+            idx += klv.counts[p as usize] - klv.counts[p as usize + 1];
+            p += 1;
+        }
+    }
+
+    precompute_leaves(
+        board_snapshot.klv,
+        &mut possible_leaves,
+        &rack,
+        board_snapshot.klv.kwg[0i32].arc_index(),
+        0,
+        0,
+        0,
+    );
 
     let print_leave = |rack_tally: &[u8]| {
         // rack should be pre-sorted, eg ??EGSUU.
