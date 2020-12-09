@@ -139,8 +139,7 @@ fn save_gaddawg(
     output_filename: &str,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
-    let machine_words = read_english_machine_words(&giant_string)?;
-    drop(giant_string);
+    let machine_words = read_english_machine_words(giant_string)?;
     let t1 = std::time::Instant::now();
     println!(
         "{:10}ns to construct the machine words ({} words)",

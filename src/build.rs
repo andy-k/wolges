@@ -256,7 +256,12 @@ impl StatesDefragger<'_> {
         out[3] = tile;
     }
 
-    fn to_vec(&self, dawg_start_state: u32, gaddag_start_state: u32) -> Vec<u8> {
+    fn to_vec(
+        &self,
+        build_format: BuildFormat,
+        dawg_start_state: u32,
+        gaddag_start_state: u32,
+    ) -> Vec<u8> {
         let mut ret = vec![0; (self.num_written as usize) << 2];
         self.write_node(
             &mut ret[0..],
@@ -265,13 +270,18 @@ impl StatesDefragger<'_> {
             Accepts(false),
             0,
         );
-        self.write_node(
-            &mut ret[4..],
-            gaddag_start_state,
-            IsEnd(true),
-            Accepts(false),
-            0,
-        );
+        match build_format {
+            BuildFormat::DawgOnly => (),
+            BuildFormat::Gaddawg => {
+                self.write_node(
+                    &mut ret[4..],
+                    gaddag_start_state,
+                    IsEnd(true),
+                    Accepts(false),
+                    0,
+                );
+            }
+        }
         for mut p in 1..self.states.len() {
             if self.prev_indexes[p] != 0 {
                 continue;
@@ -317,7 +327,7 @@ pub enum BuildFormat {
     Gaddawg,
 }
 
-pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::Returns<Vec<u8>> {
+pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::Returns<Box<[u8]>> {
     // The sink state always exists.
     let mut states = Vec::new();
     states.push(State {
@@ -373,5 +383,7 @@ pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::R
         ));
     }
 
-    Ok(states_defragger.to_vec(dawg_start_state, gaddag_start_state))
+    Ok(states_defragger
+        .to_vec(build_format, dawg_start_state, gaddag_start_state)
+        .into_boxed_slice())
 }
