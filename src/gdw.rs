@@ -99,7 +99,7 @@ impl Gdw {
         for p in (0..word_counts.len()).rev() {
             self.count_words_at(&mut word_counts, p as i32);
         }
-        return word_counts.into_boxed_slice();
+        word_counts.into_boxed_slice()
     }
 
     pub fn get_word_by_index(
@@ -157,6 +157,6 @@ impl Gdw {
             }
             p = self[p].arc_index();
         }
-        return !0;
+        !0
     }
 }

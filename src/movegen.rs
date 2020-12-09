@@ -139,7 +139,6 @@ fn gen_cross_set<'a>(
 }
 
 // word_buffer must have at least strider.len() length.
-#[allow(clippy::too_many_arguments)]
 fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     board_snapshot: &'a BoardSnapshot<'a>,
     cross_set_slice: &'a [CrossSet],
@@ -640,8 +639,7 @@ pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) 
                     let strider = dim.across(row);
                     print!("{}{} ", row + 1, (idx as u8 + 0x61) as char);
                     let mut inside = false;
-                    for i in 0..word.len() {
-                        let w = word[i];
+                    for (i, &w) in word.iter().enumerate() {
                         if w == 0 {
                             if !inside {
                                 print!("(");
@@ -700,8 +698,7 @@ pub fn gen_moves<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) 
                     let strider = dim.down(col);
                     print!("{}{} ", (col as u8 + 0x61) as char, idx + 1);
                     let mut inside = false;
-                    for i in 0..word.len() {
-                        let w = word[i];
+                    for (i, &w) in word.iter().enumerate() {
                         if w == 0 {
                             if !inside {
                                 print!("(");
