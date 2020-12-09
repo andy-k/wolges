@@ -552,7 +552,6 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         mut idx: u32,
         mut bits: u16,
     ) {
-        //println!("[p={},i={},idx={},bits={}]",p,i,idx,bits);
         if p == 0 {
             return;
         }
@@ -568,15 +567,12 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
                 }
                 i += 1;
             }
-            //println!("inner[p={},i={},idx={},bits={}]",p,i,idx,bits);
             if rack[i as usize] == p_tile {
                 let bits = bits | (1 << i); // important to shadow
                 let accepts = klv.kwg[p].accepts();
                 if accepts {
                     possible_leaves[bits as usize] = klv.leaves[idx as usize];
-                    println!("[{:016b} = {}]", bits, klv.leaves[idx as usize]);
                 }
-                //println!("recurse[p={},i={},idx={},bits={}]",p,i,idx,bits);
                 precompute_leaves(
                     klv,
                     possible_leaves,
@@ -586,7 +582,6 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
                     idx + (accepts as u32),
                     bits,
                 );
-                //println!("outcurse[p={},i={},idx={},bits={}]",p,i,idx,bits);
             }
             if klv.kwg[p].is_end() {
                 return;
@@ -631,7 +626,7 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
                 i += 1;
             }
         }
-        print!(" / bits: ");
+
         let mut i = 0;
         let mut bits = 0u16;
         while i < rack.len() {
@@ -641,48 +636,6 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
             while i < rack.len() && rack[i] == tile {
                 i += 1;
             }
-        }
-        print!("{:016b}", bits);
-
-        if possible_leaves[bits as usize].is_nan() {
-            // this does get_word_index on kept, without copying the leave.
-            let mut i = 0;
-            let mut leave_idx = !0;
-            let mut idx = 0;
-            let mut p = board_snapshot.klv.kwg[0i32].arc_index();
-            'leave_index: while i < rack.len() {
-                let tile = rack[i];
-                for _ in 0..rack_tally[tile as usize] {
-                    leave_idx = !0;
-                    if p == 0 {
-                        break 'leave_index;
-                    }
-                    while board_snapshot.klv.kwg[p].tile() != tile {
-                        if board_snapshot.klv.kwg[p].is_end() {
-                            break 'leave_index;
-                        }
-                        idx += board_snapshot.klv.counts[p as usize]
-                            - board_snapshot.klv.counts[p as usize + 1];
-                        p += 1;
-                    }
-                    if board_snapshot.klv.kwg[p].accepts() {
-                        leave_idx = idx;
-                        idx += 1;
-                    }
-                    p = board_snapshot.klv.kwg[p].arc_index();
-                }
-                i += rack_tally[tile as usize] as usize;
-                while i < rack.len() && rack[i] == tile {
-                    i += 1;
-                }
-            }
-            /* this fails borrow checker
-            possible_leaves[bits as usize] = */
-            if leave_idx == !0 {
-                0.0
-            } else {
-                board_snapshot.klv.leaves[leave_idx as usize]
-            };
         }
 
         print!(" / leave: {}", possible_leaves[bits as usize]);
