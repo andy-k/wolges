@@ -6,8 +6,10 @@ struct CrossSet {
     score: i16,
 }
 
+// todo stack stuffs
 struct Tally(pub Box<[u8]>);
 
+// todo downgrade to &[u8]
 impl Tally {
     // length should include blank (so, 27 for ?A-Z).
     fn new(alphabet_len: u8) -> Tally {
@@ -22,6 +24,28 @@ impl Tally {
         for t in tiles {
             self.0[*t as usize] += 1;
         }
+    }
+}
+
+struct WorkingBuffer {
+    rack_tally: Tally,                           // atm this is a box
+    word_vec: Box<[u8]>,                         // max(r, c)
+    cross_set_for_across_plays: Box<[CrossSet]>, // r*c
+    cross_set_for_down_plays: Box<[CrossSet]>,   // c*r
+}
+
+impl WorkingBuffer {
+    fn new(game_config: &game_config::GameConfig) -> Box<Self> {
+        let dim = game_config.board_layout().dim();
+        let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
+        Box::new(Self {
+            rack_tally: Tally::new(game_config.alphabet().len()),
+            word_vec: vec![0u8; std::cmp::max(dim.rows, dim.cols) as usize].into_boxed_slice(),
+            cross_set_for_across_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
+                .into_boxed_slice(),
+            cross_set_for_down_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
+                .into_boxed_slice(),
+        })
     }
 }
 
@@ -132,7 +156,7 @@ fn gen_cross_set<'a>(
 }
 
 // rack must be sorted, and rack_tally must tally.
-// work_buf must have at least strider.len() length.
+// word_buffer must have at least strider.len() length.
 #[allow(clippy::too_many_arguments)]
 fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
     board_tiles: &'a [u8],
@@ -142,7 +166,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
     rack: &'a [u8],
     rack_tally: &'a mut Tally,
     strider: matrix::Strider,
-    work_buf: &'a mut [u8],
+    word_buffer: &'a mut [u8],
     single_tile_plays: bool,
     callback: CallbackType,
 ) {
@@ -156,7 +180,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         rack_tally: &'a mut Tally,
         strider: matrix::Strider,
         callback: CallbackType,
-        work_buf: &'a mut [u8],
+        word_buffer: &'a mut [u8],
         anchor: i8,
         leftmost: i8,
         rightmost: i8,
@@ -172,7 +196,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         rack_tally,
         strider,
         callback,
-        work_buf,
+        word_buffer,
         anchor: 0,
         leftmost: 0,
         rightmost: 0,
@@ -193,7 +217,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
             + if env.num_played >= 7 { 50 } else { 0 };
         (env.callback)(
             idx_left,
-            &env.work_buf[(idx_left as usize)..(idx_right as usize)],
+            &env.word_buffer[(idx_left as usize)..(idx_right as usize)],
             score,
             env.rack_tally,
         );
@@ -223,7 +247,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                 .alphabet()
                 .get(if b & 0x80 == 0 { b } else { 0 })
                 .score as i16;
-            env.work_buf[idx as usize] = 0;
+            env.word_buffer[idx as usize] = 0;
             idx += 1;
         }
         if idx > env.anchor + 1
@@ -276,7 +300,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                     env.num_played += 1;
                     let tile_value = (env.game_config.alphabet().get(tile).score as i16)
                         * (this_premium.tile_multiplier as i16);
-                    env.work_buf[idx as usize] = tile;
+                    env.word_buffer[idx as usize] = tile;
                     play_right(
                         env,
                         idx + 1,
@@ -301,7 +325,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                     // intentional to not hardcode blank tile value as zero
                     let tile_value = (env.game_config.alphabet().get(0).score as i16)
                         * (this_premium.tile_multiplier as i16);
-                    env.work_buf[idx as usize] = tile | 0x80;
+                    env.word_buffer[idx as usize] = tile | 0x80;
                     play_right(
                         env,
                         idx + 1,
@@ -352,7 +376,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                 .alphabet()
                 .get(if b & 0x80 == 0 { b } else { 0 })
                 .score as i16;
-            env.work_buf[idx as usize] = 0;
+            env.word_buffer[idx as usize] = 0;
             idx -= 1;
         }
         if (env.num_played + is_unique as i8) >= 2 && env.anchor - idx >= 2 && env.gdw[p].accepts()
@@ -406,7 +430,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                     env.num_played += 1;
                     let tile_value = (env.game_config.alphabet().get(tile).score as i16)
                         * (this_premium.tile_multiplier as i16);
-                    env.work_buf[idx as usize] = tile;
+                    env.word_buffer[idx as usize] = tile;
                     play_left(
                         env,
                         idx - 1,
@@ -431,7 +455,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                     // intentional to not hardcode blank tile value as zero
                     let tile_value = (env.game_config.alphabet().get(0).score as i16)
                         * (this_premium.tile_multiplier as i16);
-                    env.work_buf[idx as usize] = tile | 0x80;
+                    env.word_buffer[idx as usize] = tile | 0x80;
                     play_left(
                         env,
                         idx - 1,
@@ -523,8 +547,6 @@ pub fn gen_moves<'a>(
 
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
-    let mut rack_tally = Tally::new(game_config.alphabet().len());
-    rack_tally.add_all(&rack);
 
     let print_leave = |rack_tally: &Tally| {
         // rack should be pre-sorted, eg ??EGSUU.
@@ -554,22 +576,11 @@ pub fn gen_moves<'a>(
     };
 
     {
-        let mut work_vec = vec![0u8; std::cmp::max(dim.rows, dim.cols) as usize];
+        let mut working_buffer = WorkingBuffer::new(game_config);
 
-        let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
-        // tally the played tiles
+        working_buffer.rack_tally.add_all(&rack);
 
-        let mut tally = Tally::new(game_config.alphabet().len());
-        //tally.clear(); // already cleared
-        board_tiles.iter().for_each(|&t| {
-            if t & 0x80 != 0 {
-                tally.0[0] += 1;
-            } else if t != 0 {
-                tally.0[t as usize] += 1;
-            }
-        });
-
-        let num_tiles_on_board: i16 = tally.0.iter().map(|&x| x as i16).sum();
+        let num_tiles_on_board = board_tiles.iter().filter(|&t| *t != 0).count() as usize;
 
         struct ExchangeEnv<'a> {
             print_leave: &'a dyn Fn(&Tally),
@@ -600,7 +611,7 @@ pub fn gen_moves<'a>(
                 &mut ExchangeEnv {
                     print_leave: &print_leave,
                     rack: &rack,
-                    rack_tally: &mut rack_tally,
+                    rack_tally: &mut working_buffer.rack_tally,
                 },
                 0,
             );
@@ -609,16 +620,13 @@ pub fn gen_moves<'a>(
         }
 
         // striped by row
-        let mut cross_set_for_both = vec![CrossSet { bits: 0, score: 0 }; 2 * rows_times_cols];
-        let (mut cross_set_for_across_plays, mut cross_set_for_down_plays) =
-            cross_set_for_both.split_at_mut(rows_times_cols);
         for col in 0..dim.cols {
             gen_cross_set(
                 board_tiles,
                 game_config,
                 &gdw,
                 dim.down(col),
-                &mut cross_set_for_across_plays,
+                &mut working_buffer.cross_set_for_across_plays,
                 matrix::Strider {
                     base: col as i16,
                     step: dim.cols,
@@ -628,7 +636,7 @@ pub fn gen_moves<'a>(
         }
         if num_tiles_on_board == 0 {
             // empty board activates star
-            cross_set_for_across_plays[board_layout
+            working_buffer.cross_set_for_across_plays[board_layout
                 .dim()
                 .at_row_col(board_layout.star_row(), board_layout.star_col())] =
                 CrossSet { bits: !1, score: 0 };
@@ -639,11 +647,12 @@ pub fn gen_moves<'a>(
                 board_tiles,
                 game_config,
                 &gdw,
-                &cross_set_for_across_plays[cross_set_start..cross_set_start + (dim.cols as usize)],
+                &working_buffer.cross_set_for_across_plays
+                    [cross_set_start..cross_set_start + (dim.cols as usize)],
                 &rack,
-                &mut rack_tally,
+                &mut working_buffer.rack_tally,
                 dim.across(row),
-                &mut work_vec,
+                &mut working_buffer.word_vec,
                 true,
                 |idx: i8, word: &[u8], score: i16, rack_tally: &Tally| {
                     num_moves += 1;
@@ -687,7 +696,7 @@ pub fn gen_moves<'a>(
                 game_config,
                 &gdw,
                 dim.across(row),
-                &mut cross_set_for_down_plays,
+                &mut working_buffer.cross_set_for_down_plays,
                 matrix::Strider {
                     base: row as i16,
                     step: dim.rows,
@@ -701,11 +710,12 @@ pub fn gen_moves<'a>(
                 board_tiles,
                 game_config,
                 &gdw,
-                &cross_set_for_down_plays[cross_set_start..cross_set_start + (dim.rows as usize)],
+                &working_buffer.cross_set_for_down_plays
+                    [cross_set_start..cross_set_start + (dim.rows as usize)],
                 &rack,
-                &mut rack_tally,
+                &mut working_buffer.rack_tally,
                 dim.down(col),
-                &mut work_vec,
+                &mut working_buffer.word_vec,
                 false,
                 |idx: i8, word: &[u8], score: i16, rack_tally: &Tally| {
                     num_moves += 1;
