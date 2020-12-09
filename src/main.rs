@@ -190,15 +190,11 @@ fn main() -> error::Returns<()> {
     if true {
         //save_gaddawg_from_file(build::BuildFormat::DawgOnly, "leaves.txt", "leaves.gdw")?;
         //save_gaddawg_from_file(build::BuildFormat::DawgOnly, "csw19.txt", "csw19.gdw")?;
-        save_gaddawg_from_file(build::BuildFormat::AlphaOne, "csw19.txt", "csw19.gdw")?;
-        save_gaddawg_from_file(build::BuildFormat::AlphaOne, "nwl18.txt", "nwl18.gdw")?;
-        save_gaddawg_from_file(build::BuildFormat::AlphaOne, "nwl20.txt", "nwl20.gdw")?;
-        save_gaddawg(
-            build::BuildFormat::AlphaOne,
-            "VOLOST\nVOLOSTS",
-            "volost.gdw",
-        )?;
-        save_gaddawg(build::BuildFormat::AlphaOne, "", "empty.gdw")?;
+        save_gaddawg_from_file(build::BuildFormat::Gaddawg, "csw19.txt", "csw19.gdw")?;
+        save_gaddawg_from_file(build::BuildFormat::Gaddawg, "nwl18.txt", "nwl18.gdw")?;
+        save_gaddawg_from_file(build::BuildFormat::Gaddawg, "nwl20.txt", "nwl20.gdw")?;
+        save_gaddawg(build::BuildFormat::Gaddawg, "VOLOST\nVOLOSTS", "volost.gdw")?;
+        save_gaddawg(build::BuildFormat::Gaddawg, "", "empty.gdw")?;
         //return_error!(format!("all done"));
     }
 

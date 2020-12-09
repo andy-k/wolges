@@ -174,31 +174,6 @@ fn gen_machine_drowwords(machine_words: &[Box<[u8]>]) -> Box<[Box<[u8]>]> {
     machine_drowwords
 }
 
-fn gen_machine_dorws(machine_words: &[Box<[u8]>]) -> Box<[Box<[u8]>]> {
-    let mut machine_drowword_set = std::collections::HashSet::<_, MyHasherDefault>::default();
-    let mut reverse_buffer = Vec::new();
-    for this_word in machine_words {
-        reverse_buffer.clear();
-        reverse_buffer.extend_from_slice(this_word);
-        reverse_buffer.sort();
-        machine_drowword_set.insert(reverse_buffer.clone().into_boxed_slice());
-        let len_minus_one = this_word.len() - 1;
-        for which_tile in (0..len_minus_one).rev() {
-            let c1 = reverse_buffer[which_tile];
-            let c2 = reverse_buffer[len_minus_one];
-            if c1 != c2 {
-                reverse_buffer[which_tile] = c2;
-                reverse_buffer[len_minus_one] = c1;
-                machine_drowword_set.insert(reverse_buffer.clone().into_boxed_slice());
-            }
-        }
-    }
-    drop(reverse_buffer);
-    let mut machine_drowwords = machine_drowword_set.into_iter().collect::<Box<_>>();
-    machine_drowwords.sort();
-    machine_drowwords
-}
-
 // zero-cost type-safety
 struct IsEnd(bool);
 struct Accepts(bool);
@@ -283,7 +258,7 @@ impl StatesDefragger<'_> {
             0,
         );
         match build_format {
-            BuildFormat::DawgOnly | BuildFormat::AlphaOne => (),
+            BuildFormat::DawgOnly => (),
             BuildFormat::Gaddawg => {
                 self.write_node(
                     &mut ret[4..],
@@ -337,7 +312,6 @@ fn gen_prev_indexes(states: &[State]) -> Vec<u32> {
 pub enum BuildFormat {
     DawgOnly,
     Gaddawg,
-    AlphaOne,
 }
 
 pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::Returns<Box<[u8]>> {
@@ -361,10 +335,9 @@ pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::R
         BuildFormat::DawgOnly | BuildFormat::Gaddawg => {
             state_maker.make_dawg(machine_words, 0, false)
         }
-        BuildFormat::AlphaOne => state_maker.make_dawg(&gen_machine_dorws(machine_words), 0, false),
     };
     let gaddag_start_state = match build_format {
-        BuildFormat::DawgOnly | BuildFormat::AlphaOne => 0,
+        BuildFormat::DawgOnly => 0,
         BuildFormat::Gaddawg => state_maker.make_dawg(
             &gen_machine_drowwords(machine_words),
             dawg_start_state,
@@ -377,14 +350,14 @@ pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::R
         prev_indexes: &gen_prev_indexes(&states),
         destination: &mut vec![0u32; states.len()],
         num_written: match build_format {
-            BuildFormat::DawgOnly | BuildFormat::AlphaOne => 1,
+            BuildFormat::DawgOnly => 1,
             BuildFormat::Gaddawg => 2,
         },
     };
     states_defragger.destination[0] = !0; // useful for empty lexicon
     states_defragger.defrag(dawg_start_state);
     match build_format {
-        BuildFormat::DawgOnly | BuildFormat::AlphaOne => (),
+        BuildFormat::DawgOnly => (),
         BuildFormat::Gaddawg => {
             states_defragger.defrag(gaddag_start_state);
         }
