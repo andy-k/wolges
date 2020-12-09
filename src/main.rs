@@ -146,26 +146,31 @@ fn main() -> error::Returns<()> {
             leave_values.push((String::from(&record[0]), f32::from_str(&record[1])?));
         }
         leave_values.sort_by(|(s1, _), (s2, _)| s1.cmp(s2));
-        std::fs::write(
-            "leaves.kwg",
-            build::build(
-                build::BuildFormat::DawgOnly,
-                &read_english_machine_words(&leave_values.iter().fold(
-                    String::new(),
-                    |mut acc, (s, _)| {
-                        acc.push_str(s);
-                        acc.push('\n');
-                        acc
-                    },
-                ))?,
-            )?,
+        let leaves_kwg = build::build(
+            build::BuildFormat::DawgOnly,
+            &read_english_machine_words(&leave_values.iter().fold(
+                String::new(),
+                |mut acc, (s, _)| {
+                    acc.push_str(s);
+                    acc.push('\n');
+                    acc
+                },
+            ))?,
         )?;
-        // TODO use one file
-        let mut ret = vec![0; leave_values.len() * 4];
-        for (i, &(_, v)) in leave_values.iter().enumerate() {
-            ret[(i * 4)..(i * 4 + 4)].copy_from_slice(&f32::to_le_bytes(v));
+        let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 4];
+        let mut w = 0;
+        bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+        w += 4;
+        bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
+        w += leaves_kwg.len();
+        bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
+        w += 4;
+        for (_, v) in leave_values {
+            bin[w..w + 4].copy_from_slice(&v.to_le_bytes());
+            w += 4;
         }
-        std::fs::write("leaves.klv", ret)?;
+        assert_eq!(w, bin.len());
+        std::fs::write("leaves.klv", bin)?;
     }
 
     if true {

@@ -1,5 +1,6 @@
 /target
 *.kwg
+*.klv
 leaves.csv
 csw19.txt
 nwl18.txt
