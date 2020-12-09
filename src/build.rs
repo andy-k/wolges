@@ -313,8 +313,8 @@ fn gen_prev_indexes(states: &[State]) -> Vec<u32> {
 }
 
 pub enum BuildFormat {
-  DawgOnly,
-  Gaddawg,
+    DawgOnly,
+    Gaddawg,
 }
 
 pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::Returns<Vec<u8>> {
@@ -337,10 +337,8 @@ pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::R
     let dawg_start_state = state_maker.make_dawg(machine_words, 0, false);
     //let mut dawg_start_state = 0;
     let gaddag_start_state = match build_format {
-      BuildFormat::DawgOnly =>
-        0,
-      BuildFormat::Gaddawg =>
-        state_maker.make_dawg(
+        BuildFormat::DawgOnly => 0,
+        BuildFormat::Gaddawg => state_maker.make_dawg(
             &gen_machine_drowwords(machine_words),
             dawg_start_state,
             true,
@@ -352,11 +350,19 @@ pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::R
         states: &states,
         prev_indexes: &gen_prev_indexes(&states),
         destination: &mut vec![0u32; states.len()],
-        num_written: 2, // Convention: [0] points to dawg, [1] to gaddag.
+        num_written: match build_format {
+            BuildFormat::DawgOnly => 1,
+            BuildFormat::Gaddawg => 2,
+        },
     };
     states_defragger.destination[0] = !0; // useful for empty lexicon
     states_defragger.defrag(dawg_start_state);
-    states_defragger.defrag(gaddag_start_state);
+    match build_format {
+        BuildFormat::DawgOnly => (),
+        BuildFormat::Gaddawg => {
+            states_defragger.defrag(gaddag_start_state);
+        }
+    }
     states_defragger.destination[0] = 0; // useful for empty lexicon
 
     if states_defragger.num_written > 0x400000 {
