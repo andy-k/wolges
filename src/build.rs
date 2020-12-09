@@ -249,7 +249,7 @@ impl StatesDefragger<'_> {
         dawg_start_state: u32,
         gaddag_start_state: u32,
     ) -> Vec<u8> {
-        let mut ret = vec![0; (self.num_written as usize) << 2];
+        let mut ret = vec![0; (self.num_written as usize) * 4];
         self.write_node(
             &mut ret[0..],
             dawg_start_state,

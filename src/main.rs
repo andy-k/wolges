@@ -188,28 +188,44 @@ use std::str::FromStr;
 
 fn main() -> error::Returns<()> {
     if true {
-        //save_gaddawg_from_file(build::BuildFormat::DawgOnly, "leaves.txt", "leaves.gdw")?;
-        //save_gaddawg_from_file(build::BuildFormat::DawgOnly, "csw19.txt", "csw19.gdw")?;
+        let f = std::fs::File::open("leaves.csv")?;
+        let mut leave_values = Vec::new();
+        // extern crate csv;
+        let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
+        for result in csv_reader.records() {
+            let record = result?;
+            leave_values.push((String::from(&record[0]), f32::from_str(&record[1])?));
+        }
+        leave_values.sort_by(|(s1, _), (s2, _)| s1.cmp(s2));
+        save_gaddawg(
+            build::BuildFormat::DawgOnly,
+            &leave_values.iter().fold(String::new(), |mut acc, (s, _)| {
+                acc.push_str(s);
+                acc.push('\n');
+                acc
+            }),
+            "leaves.gdw",
+        )?;
+        // TODO use one file
+        let mut ret = vec![0; leave_values.len() * 4];
+        println!("{} entries", leave_values.len());
+        for (i, &(_, v)) in leave_values.iter().enumerate() {
+            ret[(i * 4)..(i * 4 + 4)].copy_from_slice(&f32::to_le_bytes(v));
+        }
+        std::fs::write("leaves.klv", ret)?;
+        return Ok(());
+    }
+
+    if false {
         save_gaddawg_from_file(build::BuildFormat::Gaddawg, "csw19.txt", "csw19.gdw")?;
         save_gaddawg_from_file(build::BuildFormat::Gaddawg, "nwl18.txt", "nwl18.gdw")?;
         save_gaddawg_from_file(build::BuildFormat::Gaddawg, "nwl20.txt", "nwl20.gdw")?;
         save_gaddawg(build::BuildFormat::Gaddawg, "VOLOST\nVOLOSTS", "volost.gdw")?;
         save_gaddawg(build::BuildFormat::Gaddawg, "", "empty.gdw")?;
-        //return_error!(format!("all done"));
     }
 
     let gdw = gdw::Gdw::from_bytes_alloc(&std::fs::read("csw19.gdw")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
-
-    if false {
-        let f = std::fs::File::open("leaves.csv")?;
-        let mut rdr = csv::Reader::from_reader(f);
-        for result in rdr.records() {
-            let record = result?;
-            println!("{:?} {:?}", &record[0], f32::from_str(&record[1]));
-        }
-        return Ok(());
-    }
 
     if false {
         let t0 = std::time::Instant::now();
