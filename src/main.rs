@@ -88,14 +88,14 @@ fn print_board<'a>(game_config: &game_config::GameConfig<'a>, board_tiles: &[u8]
     println!();
 }
 
-pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Vec<Vec<u8>>> {
+pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[Box<[u8]>]>> {
     // Memory wastage notes:
     // - Vec of 270k words have size 512k because vec grows by doubling.
     // - Size of vec is 24 bytes. Size of slice would have been 16 bytes.
     // - Each vec is individually allocated. We could instead join them all.
     // - We do not do this, because that O(n) already gives build().
 
-    let mut machine_words = Vec::new();
+    let mut machine_words = Vec::<Box<[u8]>>::new();
     for s in giant_string.lines() {
         let mut v = Vec::with_capacity(s.len());
         // This is English-only, and will need adjustment for multibyte.
@@ -115,7 +115,7 @@ pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Vec<Vec<
         // - But the borrow checker does not like raw pointer.
         match machine_words.last() {
             Some(previous_v) => {
-                if v <= *previous_v {
+                if v[..] <= previous_v[..] {
                     return_error!(format!(
                         "input is not sorted, {:?} cannot come after {:?}",
                         v, previous_v
@@ -128,12 +128,13 @@ pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Vec<Vec<
                 }
             }
         };
-        machine_words.push(v);
+        machine_words.push(v.into_boxed_slice());
     }
-    Ok(machine_words)
+    Ok(machine_words.into_boxed_slice())
 }
 
-fn save_gaddawg<T: build::NeedGaddawg>(
+fn save_gaddawg(
+    build_format: build::BuildFormat,
     giant_string: &str,
     output_filename: &str,
 ) -> error::Returns<()> {
@@ -146,7 +147,7 @@ fn save_gaddawg<T: build::NeedGaddawg>(
         (t1 - t0).as_nanos(),
         machine_words.len()
     );
-    let bin = build::build::<T>(&machine_words)?;
+    let bin = build::build(build_format, &machine_words)?;
     drop(machine_words);
     let t2 = std::time::Instant::now();
     println!(
@@ -164,7 +165,8 @@ fn save_gaddawg<T: build::NeedGaddawg>(
     Ok(())
 }
 
-fn save_gaddawg_from_file<T: build::NeedGaddawg>(
+fn save_gaddawg_from_file(
+    build_format: build::BuildFormat,
     input_filename: &str,
     output_filename: &str,
 ) -> error::Returns<()> {
@@ -180,20 +182,21 @@ fn save_gaddawg_from_file<T: build::NeedGaddawg>(
         input_filename,
         giant_string.len()
     );
-    save_gaddawg::<T>(&giant_string, output_filename)
+    save_gaddawg(build_format, &giant_string, output_filename)
 }
 
 use std::str::FromStr;
 
 fn main() -> error::Returns<()> {
-    if false {
-        //save_gaddawg_from_file::<build::DawgOnly>("leaves.txt", "leaves.gdw")?;
-        save_gaddawg_from_file::<build::Gaddawg>("csw19.txt", "csw19.gdw")?;
-        save_gaddawg_from_file::<build::Gaddawg>("nwl18.txt", "nwl18.gdw")?;
-        save_gaddawg_from_file::<build::Gaddawg>("nwl20.txt", "nwl20.gdw")?;
-        save_gaddawg::<build::Gaddawg>("VOLOST\nVOLOSTS", "volost.gdw")?;
-        save_gaddawg::<build::Gaddawg>("", "empty.gdw")?;
-        return_error!(format!("all done"));
+    if true {
+        //save_gaddawg_from_file(build::BuildFormat::DawgOnly, "leaves.txt", "leaves.gdw")?;
+        //save_gaddawg_from_file(build::BuildFormat::DawgOnly, "csw19.txt", "csw19.gdw")?;
+        save_gaddawg_from_file(build::BuildFormat::Gaddawg, "csw19.txt", "csw19.gdw")?;
+        save_gaddawg_from_file(build::BuildFormat::Gaddawg, "nwl18.txt", "nwl18.gdw")?;
+        save_gaddawg_from_file(build::BuildFormat::Gaddawg, "nwl20.txt", "nwl20.gdw")?;
+        save_gaddawg(build::BuildFormat::Gaddawg, "VOLOST\nVOLOSTS", "volost.gdw")?;
+        save_gaddawg(build::BuildFormat::Gaddawg, "", "empty.gdw")?;
+        //return_error!(format!("all done"));
     }
 
     let gdw = gdw::Gdw::from_bytes_alloc(&std::fs::read("csw19.gdw")?);

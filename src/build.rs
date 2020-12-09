@@ -98,7 +98,7 @@ impl StateMaker<'_> {
 
     fn make_dawg(
         &mut self,
-        sorted_machine_words: &[Vec<u8>],
+        sorted_machine_words: &[Box<[u8]>],
         dawg_start_state: u32,
         is_gaddag_phase: bool,
     ) -> u32 {
@@ -150,7 +150,7 @@ impl StateMaker<'_> {
     }
 }
 
-fn gen_machine_drowwords(machine_words: &[Vec<u8>]) -> Vec<Vec<u8>> {
+fn gen_machine_drowwords(machine_words: &[Box<[u8]>]) -> Box<[Box<[u8]>]> {
     let mut machine_drowword_set = std::collections::HashSet::<_, MyHasherDefault>::default();
     let mut reverse_buffer = Vec::new();
     for this_word in machine_words {
@@ -158,10 +158,11 @@ fn gen_machine_drowwords(machine_words: &[Vec<u8>]) -> Vec<Vec<u8>> {
         reverse_buffer.clear();
         reverse_buffer.extend_from_slice(this_word);
         reverse_buffer.reverse();
-        machine_drowword_set.insert(reverse_buffer[..].to_vec());
+        //machine_drowword_set.insert(reverse_buffer[..].to_vec());
+        machine_drowword_set.insert(reverse_buffer.clone().into_boxed_slice());
         reverse_buffer.push(0); // the '@'
         for drow_prefix_len in 1..this_word.len() {
-            machine_drowword_set.insert(reverse_buffer[drow_prefix_len..].to_vec());
+            machine_drowword_set.insert(reverse_buffer[drow_prefix_len..].into());
         }
         /*
         reverse_buffer.clear();
@@ -182,7 +183,7 @@ fn gen_machine_drowwords(machine_words: &[Vec<u8>]) -> Vec<Vec<u8>> {
         */
     }
     drop(reverse_buffer);
-    let mut machine_drowwords = machine_drowword_set.into_iter().collect::<Vec<_>>();
+    let mut machine_drowwords = machine_drowword_set.into_iter().collect::<Box<_>>();
     machine_drowwords.sort();
     machine_drowwords
 }
@@ -311,26 +312,12 @@ fn gen_prev_indexes(states: &[State]) -> Vec<u32> {
     prev_indexes
 }
 
-pub struct Gaddawg {}
-pub struct DawgOnly {}
-
-pub trait NeedGaddawg {
-    fn need_gaddawg() -> bool;
+pub enum BuildFormat {
+  DawgOnly,
+  Gaddawg,
 }
 
-impl NeedGaddawg for Gaddawg {
-    fn need_gaddawg() -> bool {
-        true
-    }
-}
-
-impl NeedGaddawg for DawgOnly {
-    fn need_gaddawg() -> bool {
-        false
-    }
-}
-
-pub fn build<T: NeedGaddawg>(machine_words: &[Vec<u8>]) -> error::Returns<Vec<u8>> {
+pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::Returns<Vec<u8>> {
     // The sink state always exists.
     let mut states = Vec::new();
     states.push(State {
@@ -349,14 +336,15 @@ pub fn build<T: NeedGaddawg>(machine_words: &[Vec<u8>]) -> error::Returns<Vec<u8
     };
     let dawg_start_state = state_maker.make_dawg(machine_words, 0, false);
     //let mut dawg_start_state = 0;
-    let gaddag_start_state = if T::need_gaddawg() {
+    let gaddag_start_state = match build_format {
+      BuildFormat::DawgOnly =>
+        0,
+      BuildFormat::Gaddawg =>
         state_maker.make_dawg(
             &gen_machine_drowwords(machine_words),
             dawg_start_state,
             true,
-        )
-    } else {
-        0
+        ),
     };
     //dawg_start_state = gaddag_start_state;
 
