@@ -6,29 +6,8 @@ struct CrossSet {
     score: i16,
 }
 
-// todo stack stuffs
-struct Tally(pub Box<[u8]>);
-
-// todo downgrade to &[u8]
-impl Tally {
-    // length should include blank (so, 27 for ?A-Z).
-    fn new(alphabet_len: u8) -> Tally {
-        Tally(vec![0u8; alphabet_len as usize].into_boxed_slice())
-    }
-
-    fn clear(&mut self) {
-        self.0.iter_mut().for_each(|m| *m = 0);
-    }
-
-    fn add_all(&mut self, tiles: &[u8]) {
-        for t in tiles {
-            self.0[*t as usize] += 1;
-        }
-    }
-}
-
 struct WorkingBuffer {
-    rack_tally: Tally,                           // atm this is a box
+    rack_tally: Box<[u8]>,                       // 27 for ?A-Z
     word_vec: Box<[u8]>,                         // max(r, c)
     cross_set_for_across_plays: Box<[CrossSet]>, // r*c
     cross_set_for_down_plays: Box<[CrossSet]>,   // c*r
@@ -39,7 +18,7 @@ impl WorkingBuffer {
         let dim = game_config.board_layout().dim();
         let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
         Box::new(Self {
-            rack_tally: Tally::new(game_config.alphabet().len()),
+            rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             word_vec: vec![0u8; std::cmp::max(dim.rows, dim.cols) as usize].into_boxed_slice(),
             cross_set_for_across_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
                 .into_boxed_slice(),
@@ -157,12 +136,12 @@ fn gen_cross_set<'a>(
 
 // word_buffer must have at least strider.len() length.
 #[allow(clippy::too_many_arguments)]
-fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
+fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     board_tiles: &'a [u8],
     game_config: &'a game_config::GameConfig<'a>,
     gdw: &'a gdw::Gdw,
     cross_set_slice: &'a [CrossSet],
-    rack_tally: &'a mut Tally,
+    rack_tally: &'a mut [u8],
     strider: matrix::Strider,
     word_buffer: &'a mut [u8],
     single_tile_plays: bool,
@@ -170,12 +149,12 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
 ) {
     let len = strider.len();
 
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
         board_tiles: &'a [u8],
         game_config: &'a game_config::GameConfig<'a>,
         gdw: &'a gdw::Gdw,
         cross_set_slice: &'a [CrossSet],
-        rack_tally: &'a mut Tally,
+        rack_tally: &'a mut [u8],
         strider: matrix::Strider,
         callback: CallbackType,
         word_buffer: &'a mut [u8],
@@ -202,7 +181,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         idx_left: 0,
     };
 
-    fn record<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
+    fn record<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         env: &mut Env<CallbackType>,
         idx_left: i8,
         idx_right: i8,
@@ -221,7 +200,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         );
     }
 
-    fn play_right<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
+    fn play_right<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         env: &mut Env<CallbackType>,
         mut idx: i8,
         mut p: i32,
@@ -293,8 +272,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         loop {
             let tile = env.gdw[p].tile();
             if tile != 0 && this_cross_bits & (1 << tile) != 0 {
-                if env.rack_tally.0[tile as usize] > 0 {
-                    env.rack_tally.0[tile as usize] -= 1;
+                if env.rack_tally[tile as usize] > 0 {
+                    env.rack_tally[tile as usize] -= 1;
                     env.num_played += 1;
                     let tile_value = (env.game_config.alphabet().get(tile).score as i16)
                         * (this_premium.tile_multiplier as i16);
@@ -315,10 +294,10 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                         is_unique,
                     );
                     env.num_played -= 1;
-                    env.rack_tally.0[tile as usize] += 1;
+                    env.rack_tally[tile as usize] += 1;
                 }
-                if env.rack_tally.0[0] > 0 {
-                    env.rack_tally.0[0] -= 1;
+                if env.rack_tally[0] > 0 {
+                    env.rack_tally[0] -= 1;
                     env.num_played += 1;
                     // intentional to not hardcode blank tile value as zero
                     let tile_value = (env.game_config.alphabet().get(0).score as i16)
@@ -340,7 +319,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                         is_unique,
                     );
                     env.num_played -= 1;
-                    env.rack_tally.0[0] += 1;
+                    env.rack_tally[0] += 1;
                 }
             }
             if env.gdw[p].is_end() {
@@ -350,7 +329,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         }
     }
 
-    fn play_left<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
+    fn play_left<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         env: &mut Env<CallbackType>,
         mut idx: i8,
         mut p: i32,
@@ -423,8 +402,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                     is_unique,
                 );
             } else if idx >= env.leftmost && this_cross_bits & (1 << tile) != 0 {
-                if env.rack_tally.0[tile as usize] > 0 {
-                    env.rack_tally.0[tile as usize] -= 1;
+                if env.rack_tally[tile as usize] > 0 {
+                    env.rack_tally[tile as usize] -= 1;
                     env.num_played += 1;
                     let tile_value = (env.game_config.alphabet().get(tile).score as i16)
                         * (this_premium.tile_multiplier as i16);
@@ -445,10 +424,10 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                         is_unique,
                     );
                     env.num_played -= 1;
-                    env.rack_tally.0[tile as usize] += 1;
+                    env.rack_tally[tile as usize] += 1;
                 }
-                if env.rack_tally.0[0] > 0 {
-                    env.rack_tally.0[0] -= 1;
+                if env.rack_tally[0] > 0 {
+                    env.rack_tally[0] -= 1;
                     env.num_played += 1;
                     // intentional to not hardcode blank tile value as zero
                     let tile_value = (env.game_config.alphabet().get(0).score as i16)
@@ -470,7 +449,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
                         is_unique,
                     );
                     env.num_played -= 1;
-                    env.rack_tally.0[0] += 1;
+                    env.rack_tally[0] += 1;
                 }
             }
             if env.gdw[p].is_end() {
@@ -480,7 +459,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
         }
     }
 
-    fn gen_moves_from<CallbackType: FnMut(i8, &[u8], i16, &Tally)>(
+    fn gen_moves_from<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         env: &mut Env<CallbackType>,
         single_tile_plays: bool,
     ) {
@@ -547,14 +526,14 @@ pub fn gen_moves<'a>(
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
 
-    let print_leave = |rack_tally: &Tally| {
+    let print_leave = |rack_tally: &[u8]| {
         // rack should be pre-sorted, eg ??EGSUU.
         // rack_tally excludes played tiles.
         print!(" / played: ");
         let mut i = 0;
         while i < rack.len() {
             let tile = rack[i];
-            i += rack_tally.0[tile as usize] as usize;
+            i += rack_tally[tile as usize] as usize;
             while i < rack.len() && rack[i] == tile {
                 print!("{}", alphabet.from_board(tile).unwrap_or("?"));
                 i += 1;
@@ -564,10 +543,10 @@ pub fn gen_moves<'a>(
         let mut i = 0;
         while i < rack.len() {
             let tile = rack[i];
-            for _ in 0..rack_tally.0[tile as usize] {
+            for _ in 0..rack_tally[tile as usize] {
                 print!("{}", alphabet.from_board(tile).unwrap_or("?"));
             }
-            i += rack_tally.0[tile as usize] as usize;
+            i += rack_tally[tile as usize] as usize;
             while i < rack.len() && rack[i] == tile {
                 i += 1;
             }
@@ -576,27 +555,28 @@ pub fn gen_moves<'a>(
 
     {
         let mut working_buffer = WorkingBuffer::new(game_config);
-
-        working_buffer.rack_tally.add_all(&rack);
+        for tile in &rack[..] {
+            working_buffer.rack_tally[*tile as usize] += 1;
+        }
 
         let num_tiles_on_board = board_tiles.iter().filter(|&t| *t != 0).count() as usize;
 
         struct ExchangeEnv<'a> {
-            print_leave: &'a dyn Fn(&Tally),
+            print_leave: &'a dyn Fn(&[u8]),
             rack: &'a [u8],
-            rack_tally: &'a mut Tally,
+            rack_tally: &'a mut [u8],
         }
         fn generate_exchanges<'a>(env: &mut ExchangeEnv<'a>, mut idx: u8) {
             // TODO: suboptimal when using leave values
             if (idx as usize) < env.rack.len() {
                 let tile = env.rack[idx as usize];
-                let available = env.rack_tally.0[tile as usize];
+                let available = env.rack_tally[tile as usize];
                 idx += available;
                 for exchanged in (0..available + 1).rev() {
-                    env.rack_tally.0[tile as usize] = available - exchanged;
+                    env.rack_tally[tile as usize] = available - exchanged;
                     generate_exchanges(env, idx);
                 }
-                env.rack_tally.0[tile as usize] = available;
+                env.rack_tally[tile as usize] = available;
             } else {
                 // found it. (note: pass = xchg nothing)
                 print!("xchg:");
@@ -652,7 +632,7 @@ pub fn gen_moves<'a>(
                 dim.across(row),
                 &mut working_buffer.word_vec,
                 true,
-                |idx: i8, word: &[u8], score: i16, rack_tally: &Tally| {
+                |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                     num_moves += 1;
                     let strider = dim.across(row);
                     print!("{}{} ", row + 1, (idx as u8 + 0x61) as char);
@@ -714,7 +694,7 @@ pub fn gen_moves<'a>(
                 dim.down(col),
                 &mut working_buffer.word_vec,
                 false,
-                |idx: i8, word: &[u8], score: i16, rack_tally: &Tally| {
+                |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                     num_moves += 1;
                     let strider = dim.down(col);
                     print!("{}{} ", (col as u8 + 0x61) as char, idx + 1);
