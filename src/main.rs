@@ -213,7 +213,7 @@ fn main() -> error::Returns<()> {
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
 
-    if true {
+    if false {
         let t0 = std::time::Instant::now();
         let word_counts = kwg.count_words_alloc();
         println!("took {} ms", t0.elapsed().as_millis());
