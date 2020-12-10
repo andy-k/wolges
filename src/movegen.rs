@@ -515,8 +515,8 @@ enum Play {
     },
     Place {
         down: bool,
-        row: i8,
-        col: i8,
+        lane: i8,
+        idx: i8,
         word: Box<[u8]>,
         score: i16,
     },
@@ -557,7 +557,7 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
-    let mut found_moves =
+    let found_moves =
         std::rc::Rc::new(std::cell::RefCell::new(std::collections::BinaryHeap::new()));
 
     let max_gen = 15;
@@ -592,8 +592,8 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
             push_move(&found_moves, max_gen, score as f32 + leave_value, || {
                 Play::Place {
                     down,
-                    row: if down { idx } else { lane },
-                    col: if down { lane } else { idx },
+                    lane,
+                    idx,
                     word: word.into(),
                     score,
                 }
@@ -642,22 +642,60 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
     }
     result_vec.reverse();
     for play in result_vec {
-        print!("{:6.2} ", play.equity);
+        print!("{} ", play.equity);
         match play.play {
             Play::Pass => {
-                print!("pass");
+                print!("Pass");
             }
             Play::Exchange { tiles } => {
-                print!("exchange {:?}", tiles);
+                print!("Exch. ");
+                for &tile in tiles.iter() {
+                    print!("{}", alphabet.from_board(tile).unwrap());
+                }
             }
             Play::Place {
                 down,
-                row,
-                col,
+                lane,
+                idx,
                 word,
                 score,
             } => {
-                print!("play {},{},{},{:?},{}", down, row, col, word, score);
+                if down {
+                    print!("{}{}", (lane as u8 + 0x41) as char, idx + 1);
+                } else {
+                    print!("{}{}", lane + 1, (idx as u8 + 0x41) as char);
+                }
+                print!(" ");
+                let strider = if down {
+                    dim.down(lane)
+                } else {
+                    dim.across(lane)
+                };
+                let mut inside = false;
+                for (i, &tile) in word.iter().enumerate() {
+                    if tile == 0 {
+                        if !inside {
+                            print!("(");
+                            inside = true;
+                        }
+                        print!(
+                            "{}",
+                            alphabet
+                                .from_board(board_snapshot.board_tiles[strider.at(idx + i as i8)])
+                                .unwrap()
+                        );
+                    } else {
+                        if inside {
+                            print!(")");
+                            inside = false;
+                        }
+                        print!("{}", alphabet.from_board(tile).unwrap());
+                    }
+                }
+                if inside {
+                    print!(")");
+                }
+                print!(" {}", score);
             }
         }
         println!();

@@ -291,50 +291,10 @@ fn main() -> error::Returns<()> {
             klv: &klv,
         },
         &mut b"\x00\x15\x07\x05\x00\x15\x13".clone(),
+        //&mut b"\x15\x15\x15\x15\x16\x16\x17".clone(),
     );
 
     println!("took {} ms", t0.elapsed().as_millis());
-
-    /*
-    fn leave_of(klv: &klv::Klv, rack: &[u8]) -> f32 {
-        // this does get_word_index on kept, without copying the leave.
-        let mut i = 0;
-        let mut leave_idx = !0;
-        let mut idx = 0;
-        let mut p = klv.kwg[0].arc_index();
-        'leave_index: while i < rack.len() {
-            let tile = rack[i];
-            for _ in 0..rack_tally[tile as usize] {
-                leave_idx = !0;
-                if p == 0 {
-                    break 'leave_index;
-                }
-                while klv.kwg[p].tile() != tile {
-                    if klv.kwg[p].is_end() {
-                        break 'leave_index;
-                    }
-                    idx += klv.counts[p as usize] - klv.counts[p as usize + 1];
-                    p += 1;
-                }
-                if klv.kwg[p].accepts() {
-                    leave_idx = idx;
-                    idx += 1;
-                }
-                p = klv.kwg[p].arc_index();
-            }
-            i += rack_tally[tile as usize] as usize;
-            while i < rack.len() && rack[i] == tile {
-                i += 1;
-            }
-        }
-
-        if leave_idx == !0 {
-            0.0
-        } else {
-            klv.leaves[leave_idx as usize]
-        }
-    }
-    */
 
     let mut testcases = vec![
         (vec![0], 25.19870376586914),
@@ -369,7 +329,6 @@ fn main() -> error::Returns<()> {
                 } else {
                     klv.leaves[leave_idx as usize]
                 };
-                //println!("{:?} {} {}", tc, exp, leave_val);
                 v += leave_val as f64;
             }
         }
