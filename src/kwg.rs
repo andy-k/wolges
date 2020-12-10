@@ -97,19 +97,14 @@ impl Kwg {
     }
 
     #[inline(always)]
-    pub fn get_word_by_index(
+    pub fn get_word_by_index<F: FnMut(u8)>(
         &self,
         word_counts: &[u32],
         mut p: i32,
         mut idx: u32,
-        mut out_vec: Vec<u8>,
-    ) -> Vec<u8> {
-        out_vec.clear();
-        loop {
-            if idx == 0 && self[p].accepts() {
-                out_vec.push(self[p].tile());
-                return out_vec;
-            }
+        mut out: F,
+    ) {
+        while !(idx == 0 && self[p].accepts()) {
             let words_here = if self[p].is_end() {
                 word_counts[p as usize]
             } else {
@@ -119,7 +114,7 @@ impl Kwg {
                 if self[p].accepts() {
                     idx -= 1;
                 }
-                out_vec.push(self[p].tile());
+                out(self[p].tile());
                 p = self[p].arc_index();
             } else {
                 idx -= words_here;
@@ -129,6 +124,7 @@ impl Kwg {
                 p += 1;
             }
         }
+        out(self[p].tile());
     }
 
     #[inline(always)]

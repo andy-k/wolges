@@ -213,7 +213,7 @@ fn main() -> error::Returns<()> {
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
 
-    if false {
+    if true {
         let t0 = std::time::Instant::now();
         let word_counts = kwg.count_words_alloc();
         println!("took {} ms", t0.elapsed().as_millis());
@@ -221,7 +221,10 @@ fn main() -> error::Returns<()> {
         let mut out_vec = Vec::new();
         let dawg_root = kwg[0].arc_index();
         for i in 0..word_counts[dawg_root as usize] {
-            out_vec = kwg.get_word_by_index(&word_counts, dawg_root, i, out_vec);
+            out_vec.clear();
+            kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
+                out_vec.push(v);
+            });
             let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
             println!("{} {} {:?}", i, j, out_vec);
             assert_eq!(i, j);
