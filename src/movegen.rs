@@ -541,11 +541,12 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
             }
         }
 
+        /*
         // this does get_word_index on kept, without copying the leave.
         let mut i = 0;
         let mut leave_idx = !0;
         let mut idx = 0;
-        let mut p = board_snapshot.klv.kwg[0i32].arc_index();
+        let mut p = board_snapshot.klv.kwg[0].arc_index();
         'leave_index: while i < rack.len() {
             let tile = rack[i];
             for _ in 0..rack_tally[tile as usize] {
@@ -572,6 +573,36 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
                 i += 1;
             }
         }
+
+        print!(
+            " / leave: {}",
+            if leave_idx == !0 {
+                0.0
+            } else {
+                board_snapshot.klv.leaves[leave_idx as usize]
+            }
+        );
+        */
+
+        /*
+        print!(
+          "{:?}",
+          rack_tally
+          .iter()
+          .enumerate() // (0,numof0) (1,numof1)
+          .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize))
+          .collect::<Vec<_>>()
+        );
+        */
+
+        let leave_idx = board_snapshot.klv.kwg.get_word_index_of(
+            &board_snapshot.klv.counts,
+            board_snapshot.klv.kwg[0].arc_index(),
+            &mut rack_tally
+                .iter()
+                .enumerate() // (0,numof0) (1,numof1)
+                .flat_map(|(tile, &count)| std::iter::repeat(tile as u8).take(count as usize)),
+        );
 
         print!(
             " / leave: {}",

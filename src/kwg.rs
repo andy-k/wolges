@@ -24,21 +24,12 @@ impl Node {
 
 pub struct Kwg(pub Box<[Node]>);
 
-impl std::ops::Index<usize> for Kwg {
-    type Output = Node;
-
-    #[inline(always)]
-    fn index(&self, i: usize) -> &Node {
-        &self.0[i]
-    }
-}
-
 impl std::ops::Index<i32> for Kwg {
     type Output = Node;
 
     #[inline(always)]
     fn index(&self, i: i32) -> &Node {
-        &self[i as usize]
+        &self.0[i as usize]
     }
 }
 
@@ -59,6 +50,7 @@ impl Kwg {
         Kwg(elts.into_boxed_slice())
     }
 
+    #[inline(always)]
     pub fn seek(&self, mut p: i32, tile: u8) -> i32 {
         if p >= 0 {
             p = self[p].arc_index() as i32;
@@ -81,13 +73,13 @@ impl Kwg {
         };
         if word_counts[p as usize] == 0 {
             word_counts[p as usize] = !0; // marker
-            word_counts[p as usize] = if self[p as usize].accepts() { 1 } else { 0 }
-                + if self[p as usize].arc_index() != 0 {
-                    self.count_words_at(&mut word_counts, self[p as usize].arc_index())
+            word_counts[p as usize] = if self[p].accepts() { 1 } else { 0 }
+                + if self[p].arc_index() != 0 {
+                    self.count_words_at(&mut word_counts, self[p].arc_index())
                 } else {
                     0
                 }
-                + if self[p as usize].is_end() {
+                + if self[p].is_end() {
                     0
                 } else {
                     self.count_words_at(&mut word_counts, p + 1)
@@ -104,6 +96,7 @@ impl Kwg {
         word_counts.into_boxed_slice()
     }
 
+    #[inline(always)]
     pub fn get_word_by_index(
         &self,
         word_counts: &[u32],
@@ -138,6 +131,7 @@ impl Kwg {
         }
     }
 
+    #[inline(always)]
     pub fn get_word_index(&self, word_counts: &[u32], mut p: i32, word: &[u8]) -> u32 {
         let mut idx = 0;
         for i in 0..word.len() {
@@ -158,6 +152,43 @@ impl Kwg {
                 idx += 1;
             }
             p = self[p].arc_index();
+        }
+        !0
+    }
+
+    #[inline(always)]
+    pub fn get_word_index_of(
+        &self,
+        word_counts: &[u32],
+        mut p: i32,
+        iter: &mut dyn Iterator<Item = u8>,
+    ) -> u32 {
+        let mut idx = 0;
+        if let Some(mut tile) = iter.next() {
+            loop {
+                if p == 0 {
+                    break;
+                }
+                while self[p].tile() != tile {
+                    if self[p].is_end() {
+                        return !0;
+                    }
+                    idx += word_counts[p as usize] - word_counts[p as usize + 1];
+                    p += 1;
+                }
+                match iter.next() {
+                    Some(t) => {
+                        tile = t;
+                    }
+                    None => {
+                        return if self[p].accepts() { idx } else { !0 };
+                    }
+                }
+                if self[p].accepts() {
+                    idx += 1;
+                }
+                p = self[p].arc_index();
+            }
         }
         !0
     }

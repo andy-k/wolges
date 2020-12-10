@@ -47,7 +47,7 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
             g: &g,
             s: &mut String::new(),
         },
-        g[0i32].arc_index(),
+        g[0].arc_index(),
     );
 }
 
@@ -219,7 +219,7 @@ fn main() -> error::Returns<()> {
         println!("took {} ms", t0.elapsed().as_millis());
         println!("{:?}", &word_counts[0..100]);
         let mut out_vec = Vec::new();
-        let dawg_root = kwg[0i32].arc_index();
+        let dawg_root = kwg[0].arc_index();
         for i in 0..word_counts[dawg_root as usize] {
             out_vec = kwg.get_word_by_index(&word_counts, dawg_root, i, out_vec);
             let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
@@ -298,7 +298,7 @@ fn main() -> error::Returns<()> {
         let mut i = 0;
         let mut leave_idx = !0;
         let mut idx = 0;
-        let mut p = klv.kwg[0i32].arc_index();
+        let mut p = klv.kwg[0].arc_index();
         'leave_index: while i < rack.len() {
             let tile = rack[i];
             for _ in 0..rack_tally[tile as usize] {
@@ -360,7 +360,7 @@ fn main() -> error::Returns<()> {
                 }
                 let leave_idx = klv
                     .kwg
-                    .get_word_index(&klv.counts, klv.kwg[0i32].arc_index(), &tc);
+                    .get_word_index(&klv.counts, klv.kwg[0].arc_index(), &tc);
                 let leave_val = if leave_idx == !0 {
                     0.0
                 } else {
