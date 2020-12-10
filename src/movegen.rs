@@ -508,60 +508,73 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 }
 
-enum Play<'a> {
+enum Play {
     Pass,
     Exchange {
-        tiles: &'a [u8],
+        tiles: Box<[u8]>,
     },
     Place {
         down: bool,
         row: i8,
         col: i8,
-        word: &'a [u8],
+        word: Box<[u8]>,
         score: i16,
     },
 }
 
-struct ValuedMove<'a> {
+struct ValuedMove {
     pub equity: f32,
-    pub play: Play<'a>,
+    pub play: Play,
 }
 
 pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
     rack.sort_unstable();
     let alphabet = board_snapshot.game_config.alphabet();
 
-    let mut found_moves = Vec::new();
+    let mut found_moves = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
 
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
-    let mut push_move = |m: ValuedMove| found_moves.push(m);
-
     let found_place_move =
         |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
             let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
-            push_move(ValuedMove {
+            found_moves.borrow_mut().push(Box::new(ValuedMove {
                 equity: score as f32 + leave_value,
                 play: Play::Place {
                     down,
                     row: if down { idx } else { lane },
                     col: if down { lane } else { idx },
-                    word: word,
+                    word: word.into(),
                     score,
                 },
-            });
+            }));
         };
 
     let found_exchange_move = |rack_tally: &[u8]| {
         let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
-        // TODO: is this pass?
-        push_move(ValuedMove {
+        let num_kept = rack_tally.iter().map(|x| *x as usize).sum::<usize>();
+        let mut leave_vec = Vec::with_capacity(num_kept);
+        let rack_len = rack.len();
+        let mut i = 0;
+        while i < rack_len {
+            let tile = rack[i];
+            i += rack_tally[tile as usize] as usize;
+            while i < rack_len && rack[i] == tile {
+                leave_vec.push(tile);
+                i += 1;
+            }
+        }
+        found_moves.borrow_mut().push(Box::new(ValuedMove {
             equity: leave_value,
-            play: Play::Exchange {
-                tiles: rack_tally.clone(), //TODO
+            play: if leave_vec.is_empty() {
+                Play::Pass
+            } else {
+                Play::Exchange {
+                    tiles: leave_vec.into(),
+                }
             },
-        });
+        }));
     };
 
     let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
@@ -572,6 +585,8 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         found_place_move,
         found_exchange_move,
     );
+
+    println!("found {} moves", found_moves.borrow().len());
 }
 
 // assumes rack is sorted
