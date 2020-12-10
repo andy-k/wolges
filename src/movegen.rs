@@ -281,7 +281,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        if this_cross_set.bits != 0 {
+                        if this_cross_set.bits & 1 != 0 {
                             perpendicular_score
                                 + (this_cross_set.score + tile_value)
                                     * (this_premium.word_multiplier as i16)
@@ -306,7 +306,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        if this_cross_set.bits != 0 {
+                        if this_cross_set.bits & 1 != 0 {
                             perpendicular_score
                                 + (this_cross_set.score + tile_value)
                                     * (this_premium.word_multiplier as i16)
@@ -409,7 +409,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        if this_cross_set.bits != 0 {
+                        if this_cross_set.bits & 1 != 0 {
                             perpendicular_score
                                 + (this_cross_set.score + tile_value)
                                     * (this_premium.word_multiplier as i16)
@@ -434,7 +434,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        if this_cross_set.bits != 0 {
+                        if this_cross_set.bits & 1 != 0 {
                             perpendicular_score
                                 + (this_cross_set.score + tile_value)
                                     * (this_premium.word_multiplier as i16)
@@ -586,18 +586,73 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         }));
     };
 
+    // this is recomputed inside, but it's cleaner this way.
+    let num_tiles_on_board = board_snapshot
+        .board_tiles
+        .iter()
+        .filter(|&t| *t != 0)
+        .count() as usize;
+
     let found_place_move =
         |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
             let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
-            push_move(&found_moves, max_gen, score as f32 + leave_value, || {
-                Play::Place {
+            let other_adjustments = if num_tiles_on_board == 0 {
+                let num_lanes = if down { dim.cols } else { dim.rows };
+                let strider1 = if lane > 0 {
+                    Some(if down {
+                        dim.down(lane - 1)
+                    } else {
+                        dim.across(lane - 1)
+                    })
+                } else {
+                    None
+                };
+                let strider2 = if lane < num_lanes - 1 {
+                    Some(if down {
+                        dim.down(lane + 1)
+                    } else {
+                        dim.across(lane + 1)
+                    })
+                } else {
+                    None
+                };
+                word.iter()
+                    .enumerate()
+                    .filter(|(i, &tile)| {
+                        tile != 0 && alphabet.is_vowel(tile) && {
+                            let ii = idx + *i as i8;
+                            (match strider1 {
+                                Some(strider) => {
+                                    let premium = board_layout.premiums()[strider.at(ii)];
+                                    premium.tile_multiplier != 1 || premium.word_multiplier != 1
+                                }
+                                None => false,
+                            }) || (match strider2 {
+                                Some(strider) => {
+                                    let premium = board_layout.premiums()[strider.at(ii)];
+                                    premium.tile_multiplier != 1 || premium.word_multiplier != 1
+                                }
+                                None => false,
+                            })
+                        }
+                    })
+                    .count() as f32
+                    * -0.7
+            } else {
+                0.0
+            };
+            push_move(
+                &found_moves,
+                max_gen,
+                score as f32 + leave_value + other_adjustments,
+                || Play::Place {
                     down,
                     lane,
                     idx,
                     word: word.into(),
                     score,
-                }
-            });
+                },
+            );
         };
 
     let found_exchange_move = |rack_tally: &[u8]| {

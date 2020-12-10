@@ -258,7 +258,7 @@ fn main() -> error::Returns<()> {
 
     print_board(game_config, board_tiles);
 
-    if false {
+    if true {
         board_tiles = b"\
 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
@@ -290,8 +290,9 @@ fn main() -> error::Returns<()> {
             kwg: &kwg,
             klv: &klv,
         },
-        &mut b"\x00\x15\x07\x05\x00\x15\x13".clone(),
+        //&mut b"\x00\x15\x07\x05\x00\x15\x13".clone(),
         //&mut b"\x15\x15\x15\x15\x16\x16\x17".clone(),
+        &mut b"\x00\x04\x05\x0e\x0f\x13\x15".clone(),
     );
 
     println!("took {} ms", t0.elapsed().as_millis());

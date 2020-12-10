@@ -52,6 +52,11 @@ impl<'a> Alphabet<'a> {
     pub fn score(&self, idx: u8) -> i8 {
         self.get(if idx & 0x80 == 0 { idx } else { 0 }).score
     }
+
+    #[inline(always)]
+    pub fn is_vowel(&self, idx: u8) -> bool {
+        self.get(idx & 0x7f).is_vowel
+    }
 }
 
 pub static ENGLISH_ALPHABET: Alphabet = Alphabet::Static(StaticAlphabet(&[
