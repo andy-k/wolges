@@ -291,6 +291,90 @@ fn main() -> error::Returns<()> {
     );
 
     println!("took {} ms", t0.elapsed().as_millis());
+
+    /*
+    fn leave_of(klv: &klv::Klv, rack: &[u8]) -> f32 {
+        // this does get_word_index on kept, without copying the leave.
+        let mut i = 0;
+        let mut leave_idx = !0;
+        let mut idx = 0;
+        let mut p = klv.kwg[0i32].arc_index();
+        'leave_index: while i < rack.len() {
+            let tile = rack[i];
+            for _ in 0..rack_tally[tile as usize] {
+                leave_idx = !0;
+                if p == 0 {
+                    break 'leave_index;
+                }
+                while klv.kwg[p].tile() != tile {
+                    if klv.kwg[p].is_end() {
+                        break 'leave_index;
+                    }
+                    idx += klv.counts[p as usize] - klv.counts[p as usize + 1];
+                    p += 1;
+                }
+                if klv.kwg[p].accepts() {
+                    leave_idx = idx;
+                    idx += 1;
+                }
+                p = klv.kwg[p].arc_index();
+            }
+            i += rack_tally[tile as usize] as usize;
+            while i < rack.len() && rack[i] == tile {
+                i += 1;
+            }
+        }
+
+        if leave_idx == !0 {
+            0.0
+        } else {
+            klv.leaves[leave_idx as usize]
+        }
+    }
+    */
+
+    let mut testcases = vec![
+        (vec![0], 25.19870376586914),
+        (vec![17], -7.26110315322876),
+        (vec![0, 9], 26.448156356811523),
+        (vec![9, 0], 26.448156356811523),
+        (vec![0, 4, 12, 17, 19, 22], -1.2257566452026367),
+        (vec![8, 13, 18, 18, 19, 19], -7.6917290687561035),
+        (vec![1, 5, 9, 14, 19, 20], 30.734148025512695),
+        (vec![19, 1, 20, 9, 14, 5], 30.734148025512695),
+    ];
+
+    for (tc, _exp) in &mut testcases {
+        if !tc.windows(2).all(|w| w[0] <= w[1]) {
+            tc.sort_unstable();
+        }
+    }
+
+    for &bn in &[1, 100, 10000, 745845, 1000000, 1322193, 1409782] {
+        let t0 = std::time::Instant::now();
+        let mut v = 0.0;
+        for _ in 0..bn {
+            for (tc, _exp) in &mut testcases {
+                if false && !tc.windows(2).all(|w| w[0] <= w[1]) {
+                    tc.sort_unstable();
+                }
+                let leave_idx = klv
+                    .kwg
+                    .get_word_index(&klv.counts, klv.kwg[0i32].arc_index(), &tc);
+                let leave_val = if leave_idx == !0 {
+                    0.0
+                } else {
+                    klv.leaves[leave_idx as usize]
+                };
+                //println!("{:?} {} {}", tc, exp, leave_val);
+                v += leave_val as f64;
+            }
+        }
+        let dur = t0.elapsed();
+        println!("{} {:#} {:?}", bn, v, dur);
+        println!("{}ns/op", dur.as_nanos() / bn);
+    }
+
     println!("Hello, world!");
     Ok(())
 }
