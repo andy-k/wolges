@@ -536,45 +536,52 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
+    fn push_move<F: FnMut() -> Play>(
+        found_moves: &std::rc::Rc<std::cell::RefCell<Vec<Box<ValuedMove>>>>,
+        equity: f32,
+        mut construct_play: F,
+    ) {
+        found_moves.borrow_mut().push(Box::new(ValuedMove {
+            equity,
+            play: construct_play(),
+        }));
+    };
+
     let found_place_move =
         |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
             let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
-            found_moves.borrow_mut().push(Box::new(ValuedMove {
-                equity: score as f32 + leave_value,
-                play: Play::Place {
-                    down,
-                    row: if down { idx } else { lane },
-                    col: if down { lane } else { idx },
-                    word: word.into(),
-                    score,
-                },
-            }));
+            push_move(&found_moves, score as f32 + leave_value, || Play::Place {
+                down,
+                row: if down { idx } else { lane },
+                col: if down { lane } else { idx },
+                word: word.into(),
+                score,
+            });
         };
 
     let found_exchange_move = |rack_tally: &[u8]| {
         let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
-        let num_kept = rack_tally.iter().map(|x| *x as usize).sum::<usize>();
-        let mut leave_vec = Vec::with_capacity(num_kept);
-        let rack_len = rack.len();
-        let mut i = 0;
-        while i < rack_len {
-            let tile = rack[i];
-            i += rack_tally[tile as usize] as usize;
-            while i < rack_len && rack[i] == tile {
-                leave_vec.push(tile);
-                i += 1;
+        push_move(&found_moves, leave_value, || {
+            let num_kept = rack_tally.iter().map(|x| *x as usize).sum::<usize>();
+            let mut leave_vec = Vec::with_capacity(num_kept);
+            let rack_len = rack.len();
+            let mut i = 0;
+            while i < rack_len {
+                let tile = rack[i];
+                i += rack_tally[tile as usize] as usize;
+                while i < rack_len && rack[i] == tile {
+                    leave_vec.push(tile);
+                    i += 1;
+                }
             }
-        }
-        found_moves.borrow_mut().push(Box::new(ValuedMove {
-            equity: leave_value,
-            play: if leave_vec.is_empty() {
+            if leave_vec.is_empty() {
                 Play::Pass
             } else {
                 Play::Exchange {
                     tiles: leave_vec.into(),
                 }
-            },
-        }));
+            }
+        });
     };
 
     let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
