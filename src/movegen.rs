@@ -508,161 +508,60 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 }
 
+enum Play<'a> {
+    Pass,
+    Exchange {
+        tiles: &'a [u8],
+    },
+    Place {
+        down: bool,
+        row: i8,
+        col: i8,
+        word: &'a [u8],
+        score: i16,
+    },
+}
+
+struct ValuedMove<'a> {
+    pub equity: f32,
+    pub play: Play<'a>,
+}
+
 pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
     rack.sort_unstable();
     let alphabet = board_snapshot.game_config.alphabet();
 
+    let mut found_moves = Vec::new();
+
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
-    let print_leave = |rack_tally: &[u8]| {
-        // rack should be pre-sorted, eg ??EGSUU.
-        // rack_tally excludes played tiles.
-        print!(" / played: ");
-        let mut i = 0;
-        while i < rack.len() {
-            let tile = rack[i];
-            i += rack_tally[tile as usize] as usize;
-            while i < rack.len() && rack[i] == tile {
-                print!("{}", alphabet.from_rack(tile).unwrap());
-                i += 1;
-            }
-        }
-        print!(" / kept: ");
-        let mut i = 0;
-        while i < rack.len() {
-            let tile = rack[i];
-            for _ in 0..rack_tally[tile as usize] {
-                print!("{}", alphabet.from_rack(tile).unwrap());
-            }
-            i += rack_tally[tile as usize] as usize;
-            while i < rack.len() && rack[i] == tile {
-                i += 1;
-            }
-        }
-
-        /*
-        // this does get_word_index on kept, without copying the leave.
-        let mut i = 0;
-        let mut leave_idx = !0;
-        let mut idx = 0;
-        let mut p = board_snapshot.klv.kwg[0].arc_index();
-        'leave_index: while i < rack.len() {
-            let tile = rack[i];
-            for _ in 0..rack_tally[tile as usize] {
-                leave_idx = !0;
-                if p == 0 {
-                    break 'leave_index;
-                }
-                while board_snapshot.klv.kwg[p].tile() != tile {
-                    if board_snapshot.klv.kwg[p].is_end() {
-                        break 'leave_index;
-                    }
-                    idx += board_snapshot.klv.counts[p as usize]
-                        - board_snapshot.klv.counts[p as usize + 1];
-                    p += 1;
-                }
-                if board_snapshot.klv.kwg[p].accepts() {
-                    leave_idx = idx;
-                    idx += 1;
-                }
-                p = board_snapshot.klv.kwg[p].arc_index();
-            }
-            i += rack_tally[tile as usize] as usize;
-            while i < rack.len() && rack[i] == tile {
-                i += 1;
-            }
-        }
-
-        print!(
-            " / leave: {}",
-            if leave_idx == !0 {
-                0.0
-            } else {
-                board_snapshot.klv.leaves[leave_idx as usize]
-            }
-        );
-        */
-
-        /*
-        print!(
-          "{:?}",
-          rack_tally
-          .iter()
-          .enumerate() // (0,numof0) (1,numof1)
-          .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize))
-          .collect::<Vec<_>>()
-        );
-        */
-
-        /*
-        let leave_idx = board_snapshot.klv.kwg.get_word_index_of(
-            &board_snapshot.klv.counts,
-            board_snapshot.klv.kwg[0].arc_index(),
-            &mut rack_tally
-                .iter()
-                .enumerate() // (0,numof0) (1,numof1)
-                .flat_map(|(tile, &count)| std::iter::repeat(tile as u8).take(count as usize)),
-        );
-
-        print!(
-            " / leave: {}",
-            if leave_idx == !0 {
-                0.0
-            } else {
-                board_snapshot.klv.leaves[leave_idx as usize]
-            }
-        );
-        */
-
-        print!(
-            " / leave: {}",
-            board_snapshot.klv.leave_value_from_tally(&rack_tally)
-        );
-    };
+    let mut push_move = |m: ValuedMove| found_moves.push(m);
 
     let found_place_move =
         |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-            let strider = if down {
-                print!("{}{} ", (lane as u8 + 0x61) as char, idx + 1);
-                dim.down(lane)
-            } else {
-                print!("{}{} ", lane + 1, (idx as u8 + 0x61) as char);
-                dim.across(lane)
-            };
-            let mut inside = false;
-            for (i, &w) in word.iter().enumerate() {
-                if w == 0 {
-                    if !inside {
-                        print!("(");
-                        inside = true;
-                    }
-                    print!(
-                        "{}",
-                        alphabet
-                            .from_board(board_snapshot.board_tiles[strider.at(idx + (i as i8))])
-                            .unwrap()
-                    );
-                } else {
-                    if inside {
-                        print!(")");
-                        inside = false;
-                    }
-                    print!("{}", alphabet.from_board(w).unwrap());
-                }
-            }
-            if inside {
-                print!(")");
-            }
-            print!(" {}", score);
-            print_leave(rack_tally);
-            println!();
+            let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
+            push_move(ValuedMove {
+                equity: score as f32 + leave_value,
+                play: Play::Place {
+                    down,
+                    row: if down { idx } else { lane },
+                    col: if down { lane } else { idx },
+                    word: word,
+                    score,
+                },
+            });
         };
 
     let found_exchange_move = |rack_tally: &[u8]| {
-        print!("xchg");
-        print_leave(rack_tally);
-        println!();
+        let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
+        // TODO: is this pass?
+        push_move(ValuedMove {
+            equity: leave_value,
+            play: Play::Exchange {
+                tiles: rack_tally.clone(), //TODO
+            },
+        });
     };
 
     let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
