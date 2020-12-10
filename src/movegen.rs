@@ -593,9 +593,44 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         .filter(|&t| *t != 0)
         .count() as usize;
 
+    // unseen tiles = pool minus tiles on board
+    let mut unseen_tiles = vec![0u8; alphabet.len() as usize];
+    for i in 0..alphabet.len() {
+        unseen_tiles[i as usize] = alphabet.freq(i);
+    }
+    board_snapshot.board_tiles.iter().for_each(|&t| {
+        if t != 0 {
+            let ti = if t & 0x80 == 0 { t as usize } else { 0 };
+            if unseen_tiles[ti] > 0 {
+                unseen_tiles[ti] -= 1;
+            } else {
+                panic!("bad pool/board");
+            }
+        }
+    });
+    // rack_tally not yet populated
+    for tile in &rack[..] {
+        let ti = *tile as usize;
+        if unseen_tiles[ti] > 0 {
+            unseen_tiles[ti] -= 1;
+        } else {
+            panic!("bad pool/rack");
+        }
+    }
+    // now if num_tiles_on_board >= 86, unseen_tiles are opponent's tiles
+    let play_out_bonus = 2 * unseen_tiles
+        .iter()
+        .enumerate()
+        .map(|(tile, num)| *num as i16 * alphabet.score(tile as u8) as i16)
+        .sum::<i16>();
+
     let found_place_move =
         |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-            let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
+            let leave_value = if num_tiles_on_board >= 86 {
+                0.0
+            } else {
+                board_snapshot.klv.leave_value_from_tally(rack_tally)
+            };
             let other_adjustments = if num_tiles_on_board == 0 {
                 let num_lanes = if down { dim.cols } else { dim.rows };
                 let strider1 = if lane > 0 {
@@ -638,6 +673,17 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
                     })
                     .count() as f32
                     * -0.7
+            } else if num_tiles_on_board >= 86 {
+                let mut played_out = rack_tally.iter().all(|&num| num == 0);
+                (if played_out {
+                    play_out_bonus
+                } else {
+                    -10 - 2 * rack_tally
+                        .iter()
+                        .enumerate()
+                        .map(|(tile, num)| *num as i16 * alphabet.score(tile as u8) as i16)
+                        .sum::<i16>()
+                }) as f32
             } else {
                 0.0
             };
@@ -656,7 +702,11 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         };
 
     let found_exchange_move = |rack_tally: &[u8]| {
-        let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
+        let leave_value = if num_tiles_on_board >= 86 {
+            0.0
+        } else {
+            board_snapshot.klv.leave_value_from_tally(rack_tally)
+        };
         push_move(&found_moves, max_gen, leave_value, || {
             let num_kept = rack_tally.iter().map(|x| *x as usize).sum::<usize>();
             let mut leave_vec = Vec::with_capacity(num_kept);

@@ -57,6 +57,11 @@ impl<'a> Alphabet<'a> {
     pub fn is_vowel(&self, idx: u8) -> bool {
         self.get(idx & 0x7f).is_vowel
     }
+
+    #[inline(always)]
+    pub fn freq(&self, idx: u8) -> u8 {
+        self.get(idx).freq
+    }
 }
 
 pub static ENGLISH_ALPHABET: Alphabet = Alphabet::Static(StaticAlphabet(&[
