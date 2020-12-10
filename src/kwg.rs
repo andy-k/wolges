@@ -129,10 +129,9 @@ impl Kwg {
 
     #[inline(always)]
     pub fn get_word_index(&self, word_counts: &[u32], mut p: i32, word: &[u8]) -> u32 {
-        self.get_word_index_of(word_counts, p, &mut word.iter().cloned())
-        /*
         let mut idx = 0;
-        for i in 0..word.len() {
+        let word_len = word.len();
+        for i in 0..word_len {
             if p == 0 {
                 return !0;
             }
@@ -143,7 +142,7 @@ impl Kwg {
                 idx += word_counts[p as usize] - word_counts[p as usize + 1];
                 p += 1;
             }
-            if i == word.len() - 1 {
+            if i == word_len - 1 {
                 return if self[p].accepts() { idx } else { !0 };
             }
             if self[p].accepts() {
@@ -152,9 +151,9 @@ impl Kwg {
             p = self[p].arc_index();
         }
         !0
-        */
     }
 
+    // slower than just using the index
     #[inline(always)]
     pub fn get_word_index_of<I: Iterator<Item = u8>>(
         &self,
