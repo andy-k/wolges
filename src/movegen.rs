@@ -527,21 +527,60 @@ struct ValuedMove {
     pub play: Play,
 }
 
+impl PartialEq for ValuedMove {
+    fn eq(&self, other: &Self) -> bool {
+        other.equity == self.equity
+    }
+}
+
+impl Eq for ValuedMove {}
+
+impl PartialOrd for ValuedMove {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        other.equity.partial_cmp(&self.equity)
+    }
+}
+
+impl Ord for ValuedMove {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.partial_cmp(other) {
+            Some(x) => x,
+            None => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
 pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
     rack.sort_unstable();
     let alphabet = board_snapshot.game_config.alphabet();
 
-    let mut found_moves = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
+    let mut found_moves =
+        std::rc::Rc::new(std::cell::RefCell::new(std::collections::BinaryHeap::new()));
+
+    let max_gen = 15;
+
     fn push_move<F: FnMut() -> Play>(
-        found_moves: &std::rc::Rc<std::cell::RefCell<Vec<Box<ValuedMove>>>>,
+        found_moves: &std::rc::Rc<
+            std::cell::RefCell<std::collections::BinaryHeap<Box<ValuedMove>>>,
+        >,
+        max_gen: usize,
         equity: f32,
         mut construct_play: F,
     ) {
-        found_moves.borrow_mut().push(Box::new(ValuedMove {
+        if max_gen <= 0 {
+            return;
+        }
+        let mut borrowed = found_moves.borrow_mut();
+        if borrowed.len() >= max_gen {
+            if borrowed.peek().unwrap().equity >= equity {
+                return;
+            }
+            borrowed.pop();
+        }
+        borrowed.push(Box::new(ValuedMove {
             equity,
             play: construct_play(),
         }));
@@ -550,18 +589,20 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
     let found_place_move =
         |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
             let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
-            push_move(&found_moves, score as f32 + leave_value, || Play::Place {
-                down,
-                row: if down { idx } else { lane },
-                col: if down { lane } else { idx },
-                word: word.into(),
-                score,
+            push_move(&found_moves, max_gen, score as f32 + leave_value, || {
+                Play::Place {
+                    down,
+                    row: if down { idx } else { lane },
+                    col: if down { lane } else { idx },
+                    word: word.into(),
+                    score,
+                }
             });
         };
 
     let found_exchange_move = |rack_tally: &[u8]| {
         let leave_value = board_snapshot.klv.leave_value_from_tally(rack_tally);
-        push_move(&found_moves, leave_value, || {
+        push_move(&found_moves, max_gen, leave_value, || {
             let num_kept = rack_tally.iter().map(|x| *x as usize).sum::<usize>();
             let mut leave_vec = Vec::with_capacity(num_kept);
             let rack_len = rack.len();
@@ -593,7 +634,34 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         found_exchange_move,
     );
 
-    println!("found {} moves", found_moves.borrow().len());
+    let mut borrowed = found_moves.borrow_mut();
+    println!("found {} moves", borrowed.len());
+    let mut result_vec = Vec::with_capacity(borrowed.len());
+    while let Some(play) = borrowed.pop() {
+        result_vec.push(play);
+    }
+    result_vec.reverse();
+    for play in result_vec {
+        print!("{:6.2} ", play.equity);
+        match play.play {
+            Play::Pass => {
+                print!("pass");
+            }
+            Play::Exchange { tiles } => {
+                print!("exchange {:?}", tiles);
+            }
+            Play::Place {
+                down,
+                row,
+                col,
+                word,
+                score,
+            } => {
+                print!("play {},{},{},{:?},{}", down, row, col, word, score);
+            }
+        }
+        println!();
+    }
 }
 
 // assumes rack is sorted
