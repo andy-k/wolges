@@ -595,6 +595,7 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         );
         */
 
+        /*
         let leave_idx = board_snapshot.klv.kwg.get_word_index_of(
             &board_snapshot.klv.counts,
             board_snapshot.klv.kwg[0].arc_index(),
@@ -611,6 +612,12 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
             } else {
                 board_snapshot.klv.leaves[leave_idx as usize]
             }
+        );
+        */
+
+        print!(
+            " / leave: {}",
+            board_snapshot.klv.leave_value_from_tally(&rack_tally)
         );
     };
 
