@@ -510,7 +510,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 }
 
-enum Play {
+pub enum Play {
     Pass,
     Exchange {
         tiles: Box<[u8]>,
@@ -524,7 +524,7 @@ enum Play {
     },
 }
 
-struct ValuedMove {
+pub struct ValuedMove {
     pub equity: f32,
     pub play: Play,
 }
@@ -552,7 +552,10 @@ impl Ord for ValuedMove {
     }
 }
 
-pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &'a mut [u8]) {
+pub fn kurnia_gen_moves_alloc<'a>(
+    board_snapshot: &'a BoardSnapshot<'a>,
+    rack: &'a mut [u8],
+) -> Vec<Box<ValuedMove>> {
     rack.sort_unstable();
     let alphabet = board_snapshot.game_config.alphabet();
 
@@ -748,9 +751,9 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         result_vec.push(play);
     }
     result_vec.reverse();
-    for play in result_vec {
+    for play in result_vec.iter() {
         print!("{} ", play.equity);
-        match play.play {
+        match &play.play {
             Play::Pass => {
                 print!("Pass");
             }
@@ -767,16 +770,16 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
                 word,
                 score,
             } => {
-                if down {
-                    print!("{}{}", (lane as u8 + 0x41) as char, idx + 1);
+                if *down {
+                    print!("{}{}", (*lane as u8 + 0x41) as char, idx + 1);
                 } else {
-                    print!("{}{}", lane + 1, (idx as u8 + 0x41) as char);
+                    print!("{}{}", lane + 1, (*idx as u8 + 0x41) as char);
                 }
                 print!(" ");
-                let strider = if down {
-                    dim.down(lane)
+                let strider = if *down {
+                    dim.down(*lane)
                 } else {
-                    dim.across(lane)
+                    dim.across(*lane)
                 };
                 let mut inside = false;
                 for (i, &tile) in word.iter().enumerate() {
@@ -807,6 +810,8 @@ pub fn kurnia_gen_moves_alloc<'a>(board_snapshot: &'a BoardSnapshot<'a>, rack: &
         }
         println!();
     }
+
+    result_vec
 }
 
 // assumes rack is sorted

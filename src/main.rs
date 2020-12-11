@@ -258,7 +258,7 @@ fn main() -> error::Returns<()> {
 
     print_board(game_config, board_tiles);
 
-    if true {
+    if false {
         // ?LNS - http://liwords.localhost/game/BSCEW2NK
 
         board_tiles = b"\
@@ -314,10 +314,10 @@ fn main() -> error::Returns<()> {
             kwg: &kwg,
             klv: &klv,
         },
-        //&mut b"\x00\x15\x07\x05\x00\x15\x13".clone(),
+        &mut b"\x00\x15\x07\x05\x00\x15\x13".clone(),
         //&mut b"\x15\x15\x15\x15\x16\x16\x17".clone(),
         //&mut b"\x00\x04\x05\x0e\x0f\x13\x15".clone(),
-        &mut b"\x00\x0c\x0e\x13".clone(),
+        //&mut b"\x00\x0c\x0e\x13".clone(),
     );
 
     println!("took {} ms", t0.elapsed().as_millis());
@@ -361,6 +361,40 @@ fn main() -> error::Returns<()> {
         let dur = t0.elapsed();
         println!("{} {:#} {:?}", bn, v, dur);
         println!("{}ns/op", dur.as_nanos() / bn);
+    }
+
+    {
+        println!("\nplaying self");
+        let board_tiles = vec![
+            0u8;
+            (game_config.board_layout().dim().rows as usize)
+                * (game_config.board_layout().dim().cols as usize)
+        ];
+        let alphabet = game_config.alphabet();
+
+        loop {
+            print_board(game_config, &board_tiles);
+
+            // this is recomputed inside, but it's cleaner this way.
+            let num_tiles_on_board = board_tiles.iter().filter(|&t| *t != 0).count() as usize;
+
+            // unseen tiles = pool minus tiles on board
+            let mut unseen_tiles = vec![0u8; alphabet.len() as usize];
+            for i in 0..alphabet.len() {
+                unseen_tiles[i as usize] = alphabet.freq(i);
+            }
+
+            for (tile, &num) in unseen_tiles.iter().enumerate() {
+                for _ in 0..num {
+                    print!("{}", alphabet.from_rack(tile as u8).unwrap());
+                }
+            }
+            println!();
+
+            // for now, draw just before move, instead of properly
+            // TODO
+            break;
+        }
     }
 
     println!("Hello, world!");
