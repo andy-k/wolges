@@ -277,7 +277,7 @@ impl StatesDefragger<'_> {
             if dp == 0 {
                 continue;
             }
-            dp <<= 2;
+            dp *= 4;
             loop {
                 let np = self.states[p].next_index;
                 self.write_node(
