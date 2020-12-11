@@ -555,7 +555,7 @@ impl Ord for ValuedMove {
 pub fn kurnia_gen_moves_alloc<'a>(
     board_snapshot: &'a BoardSnapshot<'a>,
     rack: &'a mut [u8],
-) -> Vec<Box<ValuedMove>> {
+) -> Vec<ValuedMove> {
     rack.sort_unstable();
     let alphabet = board_snapshot.game_config.alphabet();
 
@@ -568,9 +568,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
     let max_gen = 15;
 
     fn push_move<F: FnMut() -> Play>(
-        found_moves: &std::rc::Rc<
-            std::cell::RefCell<std::collections::BinaryHeap<Box<ValuedMove>>>,
-        >,
+        found_moves: &std::rc::Rc<std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>>,
         max_gen: usize,
         equity: f32,
         mut construct_play: F,
@@ -585,10 +583,10 @@ pub fn kurnia_gen_moves_alloc<'a>(
             }
             borrowed.pop();
         }
-        borrowed.push(Box::new(ValuedMove {
+        borrowed.push(ValuedMove {
             equity,
             play: construct_play(),
-        }));
+        });
     };
 
     // this is recomputed inside, but it's cleaner this way.

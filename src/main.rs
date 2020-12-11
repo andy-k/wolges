@@ -439,7 +439,7 @@ fn main() -> error::Returns<()> {
 
             let mut played_out = false;
             print!("making top move: ");
-            let play = &*plays[0]; // assume at least there's always Pass
+            let play = &plays[0]; // assume at least there's always Pass
             match &play.play {
                 movegen::Play::Pass => {
                     print!("Pass");
