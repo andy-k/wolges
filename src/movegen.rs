@@ -267,6 +267,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             is_unique = true;
             !1
         };
+        let has_perpendicular = this_cross_set.bits & 1 != 0;
         loop {
             let tile = env.board_snapshot.kwg[p].tile();
             if tile != 0 && this_cross_bits & (1 << tile) != 0 {
@@ -281,7 +282,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        if this_cross_set.bits & 1 != 0 {
+                        if has_perpendicular {
                             perpendicular_score
                                 + (this_cross_set.score + tile_value)
                                     * (this_premium.word_multiplier as i16)
@@ -306,7 +307,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        if this_cross_set.bits & 1 != 0 {
+                        if has_perpendicular {
                             perpendicular_score
                                 + (this_cross_set.score + tile_value)
                                     * (this_premium.word_multiplier as i16)
@@ -384,6 +385,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             is_unique = true;
             !1
         };
+        let has_perpendicular = this_cross_set.bits & 1 != 0;
         loop {
             let tile = env.board_snapshot.kwg[p].tile();
             if tile == 0 {
@@ -409,7 +411,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        if this_cross_set.bits & 1 != 0 {
+                        if has_perpendicular {
                             perpendicular_score
                                 + (this_cross_set.score + tile_value)
                                     * (this_premium.word_multiplier as i16)
@@ -434,7 +436,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        if this_cross_set.bits & 1 != 0 {
+                        if has_perpendicular {
                             perpendicular_score
                                 + (this_cross_set.score + tile_value)
                                     * (this_premium.word_multiplier as i16)
