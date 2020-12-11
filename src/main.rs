@@ -216,6 +216,7 @@ fn main() -> error::Returns<()> {
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
 
     if false {
+        print_dawg(game_config.alphabet(), &kwg);
         let t0 = std::time::Instant::now();
         let word_counts = kwg.count_words_alloc();
         println!("took {} ms", t0.elapsed().as_millis());
@@ -346,9 +347,11 @@ fn main() -> error::Returns<()> {
         let mut v = 0.0;
         for _ in 0..bn {
             for (tc, _exp) in &mut testcases {
-                if false && !tc.windows(2).all(|w| w[0] <= w[1]) {
+                /*
+                if !tc.windows(2).all(|w| w[0] <= w[1]) {
                     tc.sort_unstable();
                 }
+                */
                 let leave_idx = klv
                     .kwg
                     .get_word_index(&klv.counts, klv.kwg[0].arc_index(), &tc);

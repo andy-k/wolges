@@ -131,11 +131,11 @@ impl Kwg {
     pub fn get_word_index(&self, word_counts: &[u32], mut p: i32, word: &[u8]) -> u32 {
         let mut idx = 0;
         let word_len = word.len();
-        for i in 0..word_len {
+        for (i, &tile) in word.iter().enumerate() {
             if p == 0 {
                 return !0;
             }
-            while self[p].tile() != word[i] {
+            while self[p].tile() != tile {
                 if self[p].is_end() {
                     return !0;
                 }

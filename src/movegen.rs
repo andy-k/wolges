@@ -573,7 +573,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
         equity: f32,
         mut construct_play: F,
     ) {
-        if max_gen <= 0 {
+        if max_gen == 0 {
             return;
         }
         let mut borrowed = found_moves.borrow_mut();
