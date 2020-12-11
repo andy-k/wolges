@@ -562,6 +562,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
+// allocs bheap
     let found_moves =
         std::rc::Rc::new(std::cell::RefCell::new(std::collections::BinaryHeap::new()));
 
@@ -596,6 +597,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
         .filter(|&t| *t != 0)
         .count() as usize;
 
+// tally.new.+=un
     // unseen tiles = pool minus tiles on board
     let mut unseen_tiles = vec![0u8; alphabet.len() as usize];
     for i in 0..alphabet.len() {
@@ -812,6 +814,18 @@ pub fn kurnia_gen_moves_alloc<'a>(
     result_vec
 }
 
+// num tiles on board: [;225] -> ignore zeros -> tally everything
+// create tallier: [0;27]
+// +=board: foreach board if !=0 +=t
+// clear_tally([0;27]): memset
+// add_tally_with_rack(mut [0;27], [u8]): foreach tile (00-1a) add; similarly for minus)
+// add_tally_with_board(mut [0;27], [;225]): foreach tile (01-1a -> add; 81-9a -> add 00)
+// add_tally_with_tally(mut [0;27], [0;27]): tally[i]+=tally2[i]
+// tally_len(): sum the numbers, return usize
+// board_len(): count nonzeros
+// rack_len(): .len()
+// tally_to_rack(mut buf)
+
 // assumes rack is sorted
 fn kurnia_gen_moves<
     'a,
@@ -827,11 +841,13 @@ fn kurnia_gen_moves<
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
+// rack_tally = 0 + rack
     working_buffer.rack_tally.iter_mut().for_each(|m| *m = 0);
     for tile in &rack[..] {
         working_buffer.rack_tally[*tile as usize] += 1;
     }
 
+// board.len()
     let num_tiles_on_board = board_snapshot
         .board_tiles
         .iter()
