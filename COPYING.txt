@@ -1,0 +1,7 @@
+This repository contains experimental stuffs. In the course of experimenting,
+code or data that are not redistributable may be used.
+
+When applying parts of this repository that do work into other repositories,
+take care not to include such non-redistributable items.
+
+This is NOT free software.
