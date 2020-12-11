@@ -11,3 +11,5 @@ opt-level = 3
 
 [dependencies]
 csv = "1"
+rand = "0.7"
+rand_chacha = "0.2.2"

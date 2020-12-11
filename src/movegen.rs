@@ -679,7 +679,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
                     .count() as f32
                     * -0.7
             } else if num_tiles_on_board >= 86 {
-                let mut played_out = rack_tally.iter().all(|&num| num == 0);
+                let played_out = rack_tally.iter().all(|&num| num == 0);
                 (if played_out {
                     play_out_bonus
                 } else {

@@ -11,6 +11,8 @@ mod kwg;
 mod matrix;
 mod movegen;
 
+use rand::prelude::*;
+
 fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
     struct Env<'a> {
         a: &'a alphabet::Alphabet<'a>,
@@ -364,16 +366,23 @@ fn main() -> error::Returns<()> {
     }
 
     {
+        let mut scores = [0, 0];
+        let mut turn = 0;
         println!("\nplaying self");
-        let board_tiles = vec![
-            0u8;
-            (game_config.board_layout().dim().rows as usize)
-                * (game_config.board_layout().dim().cols as usize)
-        ];
+        let board_layout = game_config.board_layout();
+        let dim = board_layout.dim();
+        let mut board_tiles = vec![0u8; (dim.rows as usize) * (dim.cols as usize)];
         let alphabet = game_config.alphabet();
+        let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
 
         loop {
             print_board(game_config, &board_tiles);
+            println!(
+                "player 1: {}, player 2: {}, turn: player {}",
+                scores[0],
+                scores[1],
+                turn + 1
+            );
 
             // this is recomputed inside, but it's cleaner this way.
             let num_tiles_on_board = board_tiles.iter().filter(|&t| *t != 0).count() as usize;
@@ -383,17 +392,140 @@ fn main() -> error::Returns<()> {
             for i in 0..alphabet.len() {
                 unseen_tiles[i as usize] = alphabet.freq(i);
             }
+            board_tiles.iter().for_each(|&t| {
+                if t != 0 {
+                    let ti = if t & 0x80 == 0 { t as usize } else { 0 };
+                    if unseen_tiles[ti] > 0 {
+                        unseen_tiles[ti] -= 1;
+                    } else {
+                        panic!("bad pool/board");
+                    }
+                }
+            });
 
+            let mut unseen_vec =
+                Vec::with_capacity(unseen_tiles.iter().map(|count| *count as usize).sum());
             for (tile, &num) in unseen_tiles.iter().enumerate() {
                 for _ in 0..num {
                     print!("{}", alphabet.from_rack(tile as u8).unwrap());
+                    unseen_vec.push(tile as u8);
                 }
             }
             println!();
 
             // for now, draw just before move, instead of properly
-            // TODO
-            break;
+            let (rack, _leftover) = unseen_vec.partial_shuffle(&mut rng, 7);
+            print!("drawn:  ");
+            for tile in &*rack {
+                print!("{}", alphabet.from_rack(*tile).unwrap());
+            }
+            println!();
+            rack.sort_unstable();
+            print!("sorted: ");
+            for tile in &*rack {
+                print!("{}", alphabet.from_rack(*tile).unwrap());
+            }
+            println!();
+
+            let plays = movegen::kurnia_gen_moves_alloc(
+                &movegen::BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config,
+                    kwg: &kwg,
+                    klv: &klv,
+                },
+                rack,
+            );
+
+            let mut played_out = false;
+            print!("making top move: ");
+            let play = &*plays[0]; // assume at least there's always Pass
+            match &play.play {
+                movegen::Play::Pass => {
+                    print!("Pass");
+                }
+                movegen::Play::Exchange { tiles } => {
+                    print!("Exch. ");
+                    for &tile in tiles.iter() {
+                        print!("{}", alphabet.from_board(tile).unwrap());
+                    }
+                    print!(" (is a no-op because we always redraw)");
+                }
+                movegen::Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    score,
+                } => {
+                    if *down {
+                        print!("{}{}", (*lane as u8 + 0x41) as char, idx + 1);
+                    } else {
+                        print!("{}{}", lane + 1, (*idx as u8 + 0x41) as char);
+                    }
+                    print!(" ");
+                    let strider = if *down {
+                        dim.down(*lane)
+                    } else {
+                        dim.across(*lane)
+                    };
+                    let mut inside = false;
+                    for (i, &tile) in word.iter().enumerate() {
+                        if tile == 0 {
+                            if !inside {
+                                print!("(");
+                                inside = true;
+                            }
+                            print!(
+                                "{}",
+                                alphabet
+                                    .from_board(board_tiles[strider.at(idx + i as i8)])
+                                    .unwrap()
+                            );
+                        } else {
+                            if inside {
+                                print!(")");
+                                inside = false;
+                            }
+                            print!("{}", alphabet.from_board(tile).unwrap());
+                        }
+                    }
+                    if inside {
+                        print!(")");
+                    }
+                    print!(" {}", score);
+
+                    // place the tiles
+                    let mut played_tiles = 0;
+                    for (i, &tile) in word.iter().enumerate() {
+                        if tile != 0 {
+                            board_tiles[strider.at(idx + i as i8)] = tile;
+                            played_tiles += 1;
+                        }
+                    }
+                    if num_tiles_on_board >= 86 && played_tiles == rack.len() {
+                        played_out = true;
+                    }
+
+                    scores[turn] += score;
+                }
+            }
+            println!();
+            println!();
+
+            if played_out {
+                println!("played out!");
+                print_board(game_config, &board_tiles);
+                println!(
+                    "player 1: {}, player 2: {}, player {} went out (scores are before leftovers)",
+                    scores[0],
+                    scores[1],
+                    turn + 1
+                );
+                break;
+            }
+
+            turn = 1 - turn;
         }
     }
 
