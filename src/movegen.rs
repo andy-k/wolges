@@ -711,8 +711,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
             board_snapshot.klv.leave_value_from_tally(rack_tally)
         };
         push_move(&found_moves, max_gen, leave_value, || {
-            let num_kept = rack_tally.iter().map(|x| *x as usize).sum::<usize>();
-            let mut leave_vec = Vec::with_capacity(num_kept);
+            let mut leave_vec = Vec::new();
             let rack_len = rack.len();
             let mut i = 0;
             while i < rack_len {
