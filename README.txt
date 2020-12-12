@@ -19,7 +19,22 @@ need to separately gain access to those.
 Ideas taken elsewhere should be attributed to Andy Kurnia.
 
 
-QUICK START
+INITIAL SETUP
+
+brew install rustup-init
+rustup-init
+(accept defaults)
+(restart shell to activate .profile)
+
+(cd src for convenience)
+(put some word list .txt files and leaves.csv files in current directory)
+(toggle "if false" in fn main in main.rs to compile leaves and word graphs)
+cargo run --release
+
+(toggle it back to false)
+
+
+RUNNING
 
 cargo run --release
 
