@@ -195,6 +195,13 @@ fn main() -> error::Returns<()> {
                 &read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?,
             )?,
         )?;
+        std::fs::write(
+            "twl14.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words(&std::fs::read_to_string("twl14.txt")?)?,
+            )?,
+        )?;
 
         {
             let mut v = Vec::<Box<[u8]>>::new();
@@ -210,6 +217,11 @@ fn main() -> error::Returns<()> {
             );
             v.extend(
                 read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?
+                    .iter()
+                    .cloned(),
+            );
+            v.extend(
+                read_english_machine_words(&std::fs::read_to_string("twl14.txt")?)?
                     .iter()
                     .cloned(),
             );
