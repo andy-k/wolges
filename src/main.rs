@@ -182,6 +182,13 @@ fn main() -> error::Returns<()> {
             )?,
         )?;
         std::fs::write(
+            "ecwl.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words(&std::fs::read_to_string("ecwl.txt")?)?,
+            )?,
+        )?;
+        std::fs::write(
             "nwl18.kwg",
             build::build(
                 build::BuildFormat::Gaddawg,
@@ -207,6 +214,11 @@ fn main() -> error::Returns<()> {
             let mut v = Vec::<Box<[u8]>>::new();
             v.extend(
                 read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?
+                    .iter()
+                    .cloned(),
+            );
+            v.extend(
+                read_english_machine_words(&std::fs::read_to_string("ecwl.txt")?)?
                     .iter()
                     .cloned(),
             );
