@@ -212,7 +212,12 @@ impl StatesDefragger<'_> {
                 break;
             }
         }
+        self.destination[write_p as usize] = 0;
         for ofs in 0..num {
+            // prefer earlier index, so dawg part does not point to gaddag part
+            if self.destination[write_p as usize] != 0 {
+                break;
+            }
             self.destination[write_p as usize] = self.num_written + ofs;
             write_p = self.states[write_p as usize].next_index;
         }
