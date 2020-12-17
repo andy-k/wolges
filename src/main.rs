@@ -268,6 +268,62 @@ fn main() -> error::Returns<()> {
             std::fs::write("all-twl14.kwi", v_twl14_bits)?;
         }
 
+        if true {
+            // proof-of-concept
+            let mut gdw_bin = std::fs::read("allgdw.kwg")?;
+            gdw_bin[4] = 0;
+            gdw_bin[5] = 0;
+            gdw_bin[6] = 0x40; // is_end
+            gdw_bin[7] = 0;
+            let kwg = kwg::Kwg::from_bytes_alloc(
+                &gdw_bin[..4 * {
+                    let kwg = kwg::Kwg::from_bytes_alloc(&gdw_bin);
+                    let mut kwg_p = kwg[0].arc_index();
+                    while !kwg[kwg_p].is_end() {
+                        kwg_p += 1;
+                    }
+                    kwg_p as usize + 1
+                }],
+            );
+            // because dawg do not need gaddag nodes
+            println!("only counting {} nodes", kwg.0.len());
+            let v_csw19_bits = std::fs::read("all-csw19.kwi")?;
+            let v_ecwl_bits = std::fs::read("all-ecwl.kwi")?;
+            let v_nwl18_bits = std::fs::read("all-nwl18.kwi")?;
+            let v_nwl20_bits = std::fs::read("all-nwl20.kwi")?;
+            let v_twl14_bits = std::fs::read("all-twl14.kwi")?;
+            let word_counts = kwg.count_words_alloc();
+            let mut out_vec = Vec::new();
+            let dawg_root = kwg[0].arc_index();
+            for i in 0..word_counts[dawg_root as usize] {
+                out_vec.clear();
+                kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
+                    out_vec.push(v);
+                });
+                let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
+                print!("{} {} {:?}", i, j, out_vec);
+                let j1 = j as usize / 8;
+                let j2 = j as usize % 8;
+                if v_csw19_bits[j1] & (1 << j2) != 0 {
+                    print!(" csw19");
+                }
+                if v_ecwl_bits[j1] & (1 << j2) != 0 {
+                    print!(" ecwl");
+                }
+                if v_nwl18_bits[j1] & (1 << j2) != 0 {
+                    print!(" nwl18");
+                }
+                if v_nwl20_bits[j1] & (1 << j2) != 0 {
+                    print!(" nwl20");
+                }
+                if v_twl14_bits[j1] & (1 << j2) != 0 {
+                    print!(" twl14");
+                }
+                println!();
+                assert_eq!(i, j);
+            }
+        }
+
         std::fs::write(
             "volost.kwg",
             build::build(
