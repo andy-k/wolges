@@ -139,7 +139,7 @@ pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[Box
 use std::str::FromStr;
 
 fn main() -> error::Returns<()> {
-    if false {
+    if true {
         let f = std::fs::File::open("leaves.csv")?;
         let mut leave_values = Vec::new();
         // extern crate csv;
@@ -195,6 +195,35 @@ fn main() -> error::Returns<()> {
                 &read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?,
             )?,
         )?;
+
+        {
+            let mut v = Vec::<Box<[u8]>>::new();
+            v.extend(
+                read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?
+                    .iter()
+                    .cloned(),
+            );
+            v.extend(
+                read_english_machine_words(&std::fs::read_to_string("nwl18.txt")?)?
+                    .iter()
+                    .cloned(),
+            );
+            v.extend(
+                read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?
+                    .iter()
+                    .cloned(),
+            );
+            v.sort();
+            v.dedup();
+            println!("num dedup: {}", v.len());
+            let v = v.into_boxed_slice();
+            std::fs::write(
+                "alldwg.kwg",
+                build::build(build::BuildFormat::DawgOnly, &v)?,
+            )?;
+            std::fs::write("allgdw.kwg", build::build(build::BuildFormat::Gaddawg, &v)?)?;
+        }
+
         std::fs::write(
             "volost.kwg",
             build::build(
