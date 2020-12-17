@@ -210,42 +210,62 @@ fn main() -> error::Returns<()> {
             )?,
         )?;
 
-        {
+        if true {
+            // this reads the files again, but this code is temporary
+            let v_csw19 = read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?;
+            let v_ecwl = read_english_machine_words(&std::fs::read_to_string("ecwl.txt")?)?;
+            let v_nwl18 = read_english_machine_words(&std::fs::read_to_string("nwl18.txt")?)?;
+            let v_nwl20 = read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?;
+            let v_twl14 = read_english_machine_words(&std::fs::read_to_string("twl14.txt")?)?;
             let mut v = Vec::<Box<[u8]>>::new();
-            v.extend(
-                read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?
-                    .iter()
-                    .cloned(),
-            );
-            v.extend(
-                read_english_machine_words(&std::fs::read_to_string("ecwl.txt")?)?
-                    .iter()
-                    .cloned(),
-            );
-            v.extend(
-                read_english_machine_words(&std::fs::read_to_string("nwl18.txt")?)?
-                    .iter()
-                    .cloned(),
-            );
-            v.extend(
-                read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?
-                    .iter()
-                    .cloned(),
-            );
-            v.extend(
-                read_english_machine_words(&std::fs::read_to_string("twl14.txt")?)?
-                    .iter()
-                    .cloned(),
-            );
+            v.extend_from_slice(&v_csw19);
+            v.extend_from_slice(&v_ecwl);
+            v.extend_from_slice(&v_nwl18);
+            v.extend_from_slice(&v_nwl20);
+            v.extend_from_slice(&v_twl14);
             v.sort();
             v.dedup();
-            println!("num dedup: {}", v.len());
             let v = v.into_boxed_slice();
-            std::fs::write(
-                "alldwg.kwg",
-                build::build(build::BuildFormat::DawgOnly, &v)?,
-            )?;
+            println!("num dedup: {}", v.len());
+            let v_bits_bytes = (v.len() + 7) / 8;
+            let mut v_csw19_bits = vec![0u8; v_bits_bytes];
+            let mut v_ecwl_bits = vec![0u8; v_bits_bytes];
+            let mut v_nwl18_bits = vec![0u8; v_bits_bytes];
+            let mut v_nwl20_bits = vec![0u8; v_bits_bytes];
+            let mut v_twl14_bits = vec![0u8; v_bits_bytes];
+            let mut p_csw19 = v_csw19.len();
+            let mut p_ecwl = v_ecwl.len();
+            let mut p_nwl18 = v_nwl18.len();
+            let mut p_nwl20 = v_nwl20.len();
+            let mut p_twl14 = v_twl14.len();
+            for i in (0..v.len()).rev() {
+                if p_csw19 > 0 && v[i] == v_csw19[p_csw19 - 1] {
+                    v_csw19_bits[i / 8] |= 1 << (i % 8);
+                    p_csw19 -= 1;
+                }
+                if p_ecwl > 0 && v[i] == v_ecwl[p_ecwl - 1] {
+                    v_ecwl_bits[i / 8] |= 1 << (i % 8);
+                    p_ecwl -= 1;
+                }
+                if p_nwl18 > 0 && v[i] == v_nwl18[p_nwl18 - 1] {
+                    v_nwl18_bits[i / 8] |= 1 << (i % 8);
+                    p_nwl18 -= 1;
+                }
+                if p_nwl20 > 0 && v[i] == v_nwl20[p_nwl20 - 1] {
+                    v_nwl20_bits[i / 8] |= 1 << (i % 8);
+                    p_nwl20 -= 1;
+                }
+                if p_twl14 > 0 && v[i] == v_twl14[p_twl14 - 1] {
+                    v_twl14_bits[i / 8] |= 1 << (i % 8);
+                    p_twl14 -= 1;
+                }
+            }
             std::fs::write("allgdw.kwg", build::build(build::BuildFormat::Gaddawg, &v)?)?;
+            std::fs::write("all-csw19.kwi", v_csw19_bits)?;
+            std::fs::write("all-ecwl.kwi", v_ecwl_bits)?;
+            std::fs::write("all-nwl18.kwi", v_nwl18_bits)?;
+            std::fs::write("all-nwl20.kwi", v_nwl20_bits)?;
+            std::fs::write("all-twl14.kwi", v_twl14_bits)?;
         }
 
         std::fs::write(

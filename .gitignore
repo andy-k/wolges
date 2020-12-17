@@ -1,6 +1,7 @@
 /target
 *.kwg
 *.klv
+*.kwi
 leaves.csv
 csw19.txt
 ecwl.txt
