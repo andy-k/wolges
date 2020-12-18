@@ -484,6 +484,7 @@ fn main() -> error::Returns<()> {
     }
 
     {
+        let mut zero_turns = 0;
         let mut scores = [0, 0];
         let mut turn = 0;
         println!("\nplaying self");
@@ -555,6 +556,7 @@ fn main() -> error::Returns<()> {
                 rack,
             );
 
+            zero_turns += 1;
             let mut played_out = false;
             print!("making top move: ");
             let play = &plays[0]; // assume at least there's always Pass
@@ -626,13 +628,21 @@ fn main() -> error::Returns<()> {
                     }
 
                     scores[turn] += score;
+                    if *score != 0 {
+                        zero_turns = 0;
+                    }
                 }
             }
             println!();
             println!();
 
-            if played_out {
+            if (played_out && {
                 println!("played out!");
+                true
+            }) || (zero_turns >= 6 && {
+                println!("six zeros!");
+                true
+            }) {
                 print_board(game_config, &board_tiles);
                 println!(
                     "player 1: {}, player 2: {}, player {} went out (scores are before leftovers)",
