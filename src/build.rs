@@ -307,25 +307,7 @@ fn gen_prev_indexes(states: &[State]) -> Vec<u32> {
     let states_len = states.len();
     let mut prev_indexes = vec![0u32; states_len];
     for p in (1..states_len).rev() {
-        let next_p = states[p].next_index;
-        let mut old_chain_len = 0;
-        let mut old_chain_p = next_p;
-        while old_chain_p != 0 {
-            old_chain_len += 1;
-            old_chain_p = prev_indexes[old_chain_p as usize];
-        }
-        if old_chain_len == 0 || {
-            let mut new_chain_len = 1;
-            let mut new_chain_p = p as u32;
-            while new_chain_p != 0 {
-                new_chain_len += 1;
-                new_chain_p = prev_indexes[new_chain_p as usize];
-            }
-            new_chain_len
-        } <= old_chain_len
-        {
-            prev_indexes[next_p as usize] = p as u32;
-        }
+        prev_indexes[states[p].next_index as usize] = p as u32;
     }
     // prev_indexes[0] is garbage, does not matter.
 
