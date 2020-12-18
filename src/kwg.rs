@@ -68,6 +68,9 @@ impl Kwg {
     }
 
     fn count_words_at(&self, mut word_counts: &mut [u32], p: i32) -> u32 {
+        if p as usize >= word_counts.len() {
+            return 0;
+        }
         if word_counts[p as usize] == !0 {
             panic!()
         };
@@ -90,6 +93,34 @@ impl Kwg {
 
     pub fn count_words_alloc(&self) -> Box<[u32]> {
         let mut word_counts = vec![0u32; self.0.len()];
+        for p in (0..word_counts.len()).rev() {
+            self.count_words_at(&mut word_counts, p as i32);
+        }
+        word_counts.into_boxed_slice()
+    }
+
+    pub fn count_dawg_words_alloc(&self) -> Box<[u32]> {
+        fn max_from(nodes: &Kwg, vis: &mut [u8], mut p: i32) -> i32 {
+            let mut ret = 0;
+            loop {
+                let p_byte_index = (p as usize) / 8;
+                let p_bit = 1 << (p as usize % 8);
+                if vis[p_byte_index] & p_bit != 0 {
+                    break;
+                }
+                vis[p_byte_index] |= p_bit;
+                if nodes[p].arc_index() != 0 {
+                    ret = std::cmp::max(ret, max_from(nodes, vis, nodes[p].arc_index()));
+                }
+                if nodes[p].is_end() {
+                    break;
+                }
+                p += 1;
+            }
+            std::cmp::max(ret, p)
+        }
+        let required_size = max_from(&self, &mut vec![0u8; (self.0.len() + 7) / 8], 0) as usize + 1;
+        let mut word_counts = vec![0u32; required_size];
         for p in (0..word_counts.len()).rev() {
             self.count_words_at(&mut word_counts, p as i32);
         }
