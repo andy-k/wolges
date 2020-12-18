@@ -169,6 +169,13 @@ AC@, and C@ point to the DAWG after CAR, CA, and C. This makes including the
 DAWG a negligible cost: it's just one additional root node where the A points
 to the GADDAG's A@.
 
+It is desirable to put GADDAG-only nodes after nodes that are used for DAWG,
+and it is often possible to do so without sacrificing file size. Doing so
+reduces cache miss when traversing the DAWG part and reduces the size required
+for word counts, as word counts are typically only useful for the DAWG part.
+However, GADDAG-only nodes with implicit next_index to a node used for DAWG
+will necessarily be placed in the DAWG part.
+
 
 BUILDING KURNIA WORD GRAPH
 
@@ -196,6 +203,11 @@ phase.
 The states then need to be defragmented to identify where in the file they
 should end up, because only the arc_index (and not next_index) are encoded
 explicitly.
+
+While GADDAG-only nodes are placed after nodes that are used for DAWG,
+sometimes there are several GADDAG-only nodes with implicit next_index to a
+node used for DAWG. No effort is currently made to choose the best such node
+that minimizes the size of the DAWG region.
 
 Below are implementation-specific structs found in the builder.
 
