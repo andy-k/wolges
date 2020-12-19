@@ -146,7 +146,10 @@ fn main() -> error::Returns<()> {
         let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
         for result in csv_reader.records() {
             let record = result?;
-            leave_values.push((String::from(&record[0]), f32::from_str(&record[1])?));
+            let rounded_leave = (f32::from_str(&record[1])? * 256.0).round();
+            let int_leave = rounded_leave as i16;
+            assert!((int_leave as f32 - rounded_leave).abs() == 0.0);
+            leave_values.push((String::from(&record[0]), int_leave));
         }
         leave_values.sort_by(|(s1, _), (s2, _)| s1.cmp(s2));
         let leaves_kwg = build::build(
@@ -160,7 +163,7 @@ fn main() -> error::Returns<()> {
                 },
             ))?,
         )?;
-        let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 4];
+        let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 2];
         let mut w = 0;
         bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
         w += 4;
@@ -169,8 +172,8 @@ fn main() -> error::Returns<()> {
         bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
         w += 4;
         for (_, v) in leave_values {
-            bin[w..w + 4].copy_from_slice(&v.to_le_bytes());
-            w += 4;
+            bin[w..w + 2].copy_from_slice(&v.to_le_bytes());
+            w += 2;
         }
         assert_eq!(w, bin.len());
         std::fs::write("leaves.klv", bin)?;
@@ -473,7 +476,7 @@ fn main() -> error::Returns<()> {
                 let leave_val = if leave_idx == !0 {
                     0.0
                 } else {
-                    klv.leaves[leave_idx as usize]
+                    klv.leave(leave_idx)
                 };
                 v += leave_val as f64;
             }

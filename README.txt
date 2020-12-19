@@ -244,21 +244,21 @@ for the compiler to ensure the arguments are not in the wrong order.
 
 KURNIA LEAVE VALUES
 
-This file maps leave values to float32. The input is a two-column CSV
-(leave,value). The tiles in each leave must be pre-sorted (blanks first). The
-format does not encode empty rack, and this is fine as non-existent entries are
-conceptually mapped to 0.0.
+This file maps leaves to int16, which is scaled from float32 by 1/256. The
+input is a two-column CSV (leave,value). The tiles in each leave must be
+pre-sorted (blanks first). The format does not encode empty rack, and this is
+fine as non-existent entries are conceptually mapped to 0.0.
 
-The KLV stores a KWG (with a length prefix) and a raw float32 array (with a
+The KLV stores a KWG (with a length prefix) and a raw int16 array (with a
 length prefix). The KWG is a standard DawgOnly KWG with the additional
-allowance to use 00 to represent the blank tile. The float32 array is sorted
+allowance to use 00 to represent the blank tile. The int16 array is sorted
 based on the sorted order of the leaves file. Both the length prefixes and the
-float32s are in little-endian. The length prefixes are also 32-bit for
-alignment, this may not matter yet but the cost is negligible.
+int16s are in little-endian. The length prefixes are also 32-bit for alignment,
+this may not matter yet but the cost is negligible.
 
 Because each entry is sorted, finding the correct entry takes linear time.
 Effectively for a 7-tile rack there will be about 26 next_index and about 7
-arc_index. The index returned corresponds to the index in the float32 array.
+arc_index. The index returned corresponds to the index in the int16 array.
 
 
 KURNIA MOVE GENERATOR
