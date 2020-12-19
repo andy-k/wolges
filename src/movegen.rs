@@ -736,7 +736,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
 
     let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
     kurnia_init_working_buffer(board_snapshot, &mut working_buffer, rack);
-    kurnia_gen_nonplace_moves(&mut working_buffer, rack, found_exchange_move);
+    kurnia_gen_nonplace_moves(&mut working_buffer, found_exchange_move);
     kurnia_gen_place_moves(board_snapshot, &mut working_buffer, found_place_move);
 
     let mut borrowed = found_moves.borrow_mut();
@@ -826,43 +826,40 @@ fn kurnia_init_working_buffer<'a>(
         .count() as u16;
 }
 
-// assumes rack is sorted
-fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8])>(
+fn kurnia_gen_nonplace_moves<FoundExchangeMove: FnMut(&[u8])>(
     working_buffer: &mut WorkingBuffer,
-    rack: &'a [u8],
     mut found_exchange_move: FoundExchangeMove,
 ) {
     struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
         found_exchange_move: FoundExchangeMove,
-        rack: &'a [u8],
         rack_tally: &'a mut [u8],
     }
     fn generate_exchanges<'a, FoundExchangeMove: FnMut(&[u8])>(
         env: &mut ExchangeEnv<'a, FoundExchangeMove>,
         mut idx: u8,
     ) {
-        if (idx as usize) < env.rack.len() {
-            let tile = env.rack[idx as usize];
-            let available = env.rack_tally[tile as usize];
-            idx += available;
-            for exchanged in (0..available + 1).rev() {
-                env.rack_tally[tile as usize] = available - exchanged;
-                generate_exchanges(env, idx);
-            }
-            env.rack_tally[tile as usize] = available;
-        } else {
+        while idx > 0 && env.rack_tally[idx as usize - 1] == 0 {
+            idx -= 1;
+        }
+        if idx == 0 {
             (env.found_exchange_move)(&env.rack_tally);
+            return;
+        }
+        idx -= 1;
+        for available in 0..env.rack_tally[idx as usize] + 1 {
+            env.rack_tally[idx as usize] = available;
+            generate_exchanges(env, idx);
         }
     }
     // 100 tiles, 7 goes to oppo, 7 goes to me, 7 in bag = 79.
     if working_buffer.num_tiles_on_board <= 79 {
+        let initial_idx = working_buffer.rack_tally.len() as u8;
         generate_exchanges(
             &mut ExchangeEnv {
                 found_exchange_move,
-                rack: &rack,
                 rack_tally: &mut working_buffer.rack_tally,
             },
-            0,
+            initial_idx,
         );
     } else {
         found_exchange_move(&working_buffer.rack_tally);
