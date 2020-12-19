@@ -52,10 +52,9 @@ impl Klv {
         let leave_idx = self.kwg.get_word_index_of(
             &self.counts,
             self.kwg[0].arc_index(),
-            &mut rack_tally
-                .iter()
-                .enumerate()
-                .flat_map(|(tile, &count)| std::iter::repeat(tile as u8).take(count as usize)),
+            &mut (0u8..)
+                .zip(rack_tally)
+                .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize)),
         );
         if leave_idx == !0 {
             0.0

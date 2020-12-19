@@ -589,7 +589,7 @@ pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
                 dim.across(*lane)
             };
             let mut inside = false;
-            for (i, &tile) in word.iter().enumerate() {
+            for (i, &tile) in (*idx..).zip(word.iter()) {
                 if tile == 0 {
                     if !inside {
                         s.push('(');
@@ -597,7 +597,7 @@ pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
                     }
                     s.push_str(
                         alphabet
-                            .from_board(board_snapshot.board_tiles[strider.at(idx + i as i8)])
+                            .from_board(board_snapshot.board_tiles[strider.at(i)])
                             .unwrap(),
                     );
                 } else {
@@ -678,10 +678,9 @@ pub fn kurnia_gen_moves_alloc<'a>(
                 }
             }
         });
-        2 * unseen_tiles
-            .iter()
-            .enumerate()
-            .map(|(tile, num)| *num as i16 * alphabet.score(tile as u8) as i16)
+        2 * (0u8..)
+            .zip(unseen_tiles)
+            .map(|(tile, num)| num as i16 * alphabet.score(tile) as i16)
             .sum::<i16>()
     } else {
         0
@@ -714,20 +713,19 @@ pub fn kurnia_gen_moves_alloc<'a>(
                 } else {
                     None
                 };
-                word.iter()
-                    .enumerate()
+                (idx..)
+                    .zip(word)
                     .filter(|(i, &tile)| {
                         tile != 0 && alphabet.is_vowel(tile) && {
-                            let ii = idx + *i as i8;
                             (match strider1 {
                                 Some(strider) => {
-                                    let premium = board_layout.premiums()[strider.at(ii)];
+                                    let premium = board_layout.premiums()[strider.at(*i)];
                                     premium.tile_multiplier != 1 || premium.word_multiplier != 1
                                 }
                                 None => false,
                             }) || (match strider2 {
                                 Some(strider) => {
-                                    let premium = board_layout.premiums()[strider.at(ii)];
+                                    let premium = board_layout.premiums()[strider.at(*i)];
                                     premium.tile_multiplier != 1 || premium.word_multiplier != 1
                                 }
                                 None => false,
@@ -741,11 +739,11 @@ pub fn kurnia_gen_moves_alloc<'a>(
                 (if played_out {
                     play_out_bonus
                 } else {
-                    -10 - 2 * rack_tally
-                        .iter()
-                        .enumerate()
-                        .map(|(tile, num)| *num as i16 * alphabet.score(tile as u8) as i16)
-                        .sum::<i16>()
+                    -10 - 2
+                        * (0u8..)
+                            .zip(rack_tally)
+                            .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
+                            .sum::<i16>()
                 }) as f32
             } else {
                 0.0

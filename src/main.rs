@@ -679,7 +679,7 @@ fn main() -> error::Returns<()> {
                         dim.across(*lane)
                     };
                     let mut inside = false;
-                    for (i, &tile) in word.iter().enumerate() {
+                    for (i, &tile) in (*idx..).zip(word.iter()) {
                         if tile == 0 {
                             if !inside {
                                 print!("(");
@@ -687,9 +687,7 @@ fn main() -> error::Returns<()> {
                             }
                             print!(
                                 "{}",
-                                alphabet
-                                    .from_board(board_tiles[strider.at(idx + i as i8)])
-                                    .unwrap()
+                                alphabet.from_board(board_tiles[strider.at(i)]).unwrap()
                             );
                         } else {
                             if inside {
@@ -705,9 +703,9 @@ fn main() -> error::Returns<()> {
                     print!(" {}", score);
 
                     // place the tiles
-                    for (i, &tile) in word.iter().enumerate() {
+                    for (i, &tile) in (*idx..).zip(word.iter()) {
                         if tile != 0 {
-                            board_tiles[strider.at(idx + i as i8)] = tile;
+                            board_tiles[strider.at(i)] = tile;
                         }
                     }
 

@@ -161,8 +161,7 @@ impl Kwg {
     #[inline(always)]
     pub fn get_word_index(&self, word_counts: &[u32], mut p: i32, word: &[u8]) -> u32 {
         let mut idx = 0;
-        let word_len = word.len();
-        for (i, &tile) in word.iter().enumerate() {
+        for (remaining, &tile) in (0..word.len()).rev().zip(word) {
             if p == 0 {
                 return !0;
             }
@@ -173,7 +172,7 @@ impl Kwg {
                 idx += word_counts[p as usize] - word_counts[p as usize + 1];
                 p += 1;
             }
-            if i == word_len - 1 {
+            if remaining == 0 {
                 return if self[p].accepts() { idx } else { !0 };
             }
             if self[p].accepts() {
