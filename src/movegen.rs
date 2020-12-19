@@ -657,36 +657,35 @@ pub fn kurnia_gen_moves_alloc<'a>(
     kurnia_init_working_buffer(board_snapshot, &mut working_buffer, rack);
     let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
-    // unseen tiles = pool minus tiles on board
-    let mut unseen_tiles = vec![0u8; alphabet.len() as usize];
-    for i in 0..alphabet.len() {
-        unseen_tiles[i as usize] = alphabet.freq(i);
-    }
-    board_snapshot.board_tiles.iter().for_each(|&t| {
-        if t != 0 {
-            let ti = if t & 0x80 == 0 { t as usize } else { 0 };
-            if unseen_tiles[ti] > 0 {
-                unseen_tiles[ti] -= 1;
+    let play_out_bonus = if num_tiles_on_board >= 86 {
+        let mut unseen_tiles = vec![0u8; alphabet.len() as usize];
+        for i in 0..alphabet.len() {
+            let af = alphabet.freq(i);
+            let rf = working_buffer.rack_tally[i as usize];
+            if af >= rf {
+                unseen_tiles[i as usize] = af - rf;
             } else {
-                panic!("bad pool/board");
+                panic!("bad pool/rack");
             }
         }
-    });
-    // rack_tally not yet populated
-    for tile in &rack[..] {
-        let ti = *tile as usize;
-        if unseen_tiles[ti] > 0 {
-            unseen_tiles[ti] -= 1;
-        } else {
-            panic!("bad pool/rack");
-        }
-    }
-    // now if num_tiles_on_board >= 86, unseen_tiles are opponent's tiles
-    let play_out_bonus = 2 * unseen_tiles
-        .iter()
-        .enumerate()
-        .map(|(tile, num)| *num as i16 * alphabet.score(tile as u8) as i16)
-        .sum::<i16>();
+        board_snapshot.board_tiles.iter().for_each(|&t| {
+            if t != 0 {
+                let ti = if t & 0x80 == 0 { t as usize } else { 0 };
+                if unseen_tiles[ti] > 0 {
+                    unseen_tiles[ti] -= 1;
+                } else {
+                    panic!("bad pool/board");
+                }
+            }
+        });
+        2 * unseen_tiles
+            .iter()
+            .enumerate()
+            .map(|(tile, num)| *num as i16 * alphabet.score(tile as u8) as i16)
+            .sum::<i16>()
+    } else {
+        0
+    };
 
     let found_place_move =
         |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
