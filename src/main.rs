@@ -638,6 +638,12 @@ fn main() -> error::Returns<()> {
 
             zero_turns += 1;
             print!("making top move: ");
+            /*
+            let play = movegen::ValuedMove {
+                equity: 0.0,
+                play: movegen::Play::Pass,
+            };
+            */
             let play = &plays[0]; // assume at least there's always Pass
             match &play.play {
                 movegen::Play::Pass => {
@@ -727,13 +733,7 @@ fn main() -> error::Returns<()> {
             println!();
             println!();
 
-            if (rack.is_empty() && {
-                println!("played out!");
-                true
-            }) || (zero_turns >= 6 && {
-                println!("six zeros!");
-                true
-            }) {
+            if rack.is_empty() {
                 print_board(game_config, &board_tiles);
                 println!(
                     "player 1: {}, player 2: {}, player {} went out (scores are before leftovers)",
@@ -741,11 +741,63 @@ fn main() -> error::Returns<()> {
                     scores[1],
                     turn + 1
                 );
+                scores[0] += 2 * racks[1]
+                    .iter()
+                    .map(|&t| alphabet.score(t) as i16)
+                    .sum::<i16>();
+                scores[1] += 2 * racks[0]
+                    .iter()
+                    .map(|&t| alphabet.score(t) as i16)
+                    .sum::<i16>();
+                break;
+            }
+
+            if zero_turns >= 6 {
+                print_board(game_config, &board_tiles);
+                println!(
+                    "player 1: {}, player 2: {}, player {} ended game by making sixth zero score",
+                    scores[0],
+                    scores[1],
+                    turn + 1
+                );
+                scores[0] -= racks[0]
+                    .iter()
+                    .map(|&t| alphabet.score(t) as i16)
+                    .sum::<i16>();
+                scores[1] -= racks[1]
+                    .iter()
+                    .map(|&t| alphabet.score(t) as i16)
+                    .sum::<i16>();
                 break;
             }
 
             turn = 1 - turn;
         }
+
+        match scores[0].cmp(&scores[1]) {
+            std::cmp::Ordering::Greater => {
+                println!(
+                    "final score: player 1: {}, player 2: {} (player 1 wins by {})",
+                    scores[0],
+                    scores[1],
+                    scores[0] - scores[1],
+                );
+            }
+            std::cmp::Ordering::Less => {
+                println!(
+                    "final score: player 1: {}, player 2: {} (player 2 wins by {})",
+                    scores[0],
+                    scores[1],
+                    scores[1] - scores[0],
+                );
+            }
+            std::cmp::Ordering::Equal => {
+                println!(
+                    "final score: player 1: {}, player 2: {} (it's a draw)",
+                    scores[0], scores[1],
+                );
+            }
+        };
     }
 
     println!("Hello, world!");
