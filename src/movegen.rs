@@ -625,13 +625,12 @@ pub fn kurnia_gen_moves_alloc<'a>(
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
-    let found_moves =
-        std::rc::Rc::new(std::cell::RefCell::new(std::collections::BinaryHeap::new()));
+    let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::new());
 
     let max_gen = 15;
 
     fn push_move<F: FnMut() -> Play>(
-        found_moves: &std::rc::Rc<std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>>,
+        found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
         max_gen: usize,
         equity: f32,
         mut construct_play: F,
