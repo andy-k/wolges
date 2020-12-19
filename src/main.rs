@@ -136,10 +136,89 @@ pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[Box
     Ok(machine_words.into_boxed_slice())
 }
 
+pub struct Bag(pub Vec<u8>);
+
+impl Bag {
+    fn new(alphabet: &alphabet::Alphabet) -> Bag {
+        let mut bag = Vec::with_capacity(
+            (0..alphabet.len())
+                .map(|tile| alphabet.freq(tile) as usize)
+                .sum(),
+        );
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                bag.push(tile as u8);
+            }
+        }
+        Bag(bag)
+    }
+
+    fn shuffle(&mut self, mut rng: &mut dyn RngCore) {
+        self.0.shuffle(&mut rng);
+    }
+
+    fn pop(&mut self) -> Option<u8> {
+        self.0.pop()
+    }
+
+    // put back the tiles in random order. keep the rest of the bag in the same order.
+    fn put_back(&mut self, mut rng: &mut dyn RngCore, tiles: &[u8]) {
+        let mut num_new_tiles = tiles.len();
+        match num_new_tiles {
+            0 => {
+                return;
+            }
+            1 => {
+                self.0.insert(rng.gen_range(0, self.0.len()), tiles[0]);
+                return;
+            }
+            _ => {}
+        }
+        let mut num_old_tiles = self.0.len();
+        let new_len = num_new_tiles + num_old_tiles;
+        self.0.reserve(new_len);
+        let mut p_old_tiles = self.0.len();
+        self.0.resize(2 * self.0.len(), 0);
+        self.0.copy_within(0..num_old_tiles, num_old_tiles);
+        let mut p_new_tiles = self.0.len();
+        self.0.extend_from_slice(tiles);
+        self.0[p_new_tiles..].shuffle(&mut rng);
+        for wp in 0..new_len {
+            if if num_new_tiles == 0 {
+                true
+            } else if num_old_tiles == 0 {
+                false
+            } else {
+                rng.gen_range(0, num_old_tiles + num_new_tiles) < num_old_tiles
+            } {
+                self.0[wp] = self.0[p_old_tiles];
+                p_old_tiles += 1;
+                num_old_tiles -= 1;
+            } else {
+                self.0[wp] = self.0[p_new_tiles];
+                p_new_tiles += 1;
+                num_new_tiles -= 1;
+            }
+        }
+        self.0.truncate(new_len);
+    }
+}
+
+fn use_tiles<II: IntoIterator<Item = u8>>(
+    rack: &mut Vec<u8>,
+    tiles_iter: II,
+) -> error::Returns<()> {
+    for tile in tiles_iter {
+        let pos = rack.iter().rposition(|&t| t == tile).ok_or("bad tile")?;
+        rack.swap_remove(pos);
+    }
+    Ok(())
+}
+
 use std::str::FromStr;
 
 fn main() -> error::Returns<()> {
-    if true {
+    if false {
         let f = std::fs::File::open("leaves.csv")?;
         let mut leave_values = Vec::new();
         // extern crate csv;
@@ -271,7 +350,7 @@ fn main() -> error::Returns<()> {
             std::fs::write("all-twl14.kwi", v_twl14_bits)?;
         }
 
-        if true {
+        if false {
             // proof-of-concept
             let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("allgdw.kwg")?);
             let word_counts = kwg.count_dawg_words_alloc();
@@ -497,6 +576,23 @@ fn main() -> error::Returns<()> {
         let alphabet = game_config.alphabet();
         let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
 
+        let mut bag = Bag::new(&alphabet);
+        bag.shuffle(&mut rng);
+
+        print!("bag: ");
+        for &tile in &bag.0 {
+            print!("{}", alphabet.from_rack(tile).unwrap());
+        }
+        println!();
+
+        let mut racks = [Vec::with_capacity(7), Vec::with_capacity(7)];
+        for _ in 0..7 {
+            racks[0].push(bag.pop().unwrap());
+        }
+        for _ in 0..7 {
+            racks[1].push(bag.pop().unwrap());
+        }
+
         loop {
             print_board(game_config, &board_tiles);
             println!(
@@ -506,44 +602,25 @@ fn main() -> error::Returns<()> {
                 turn + 1
             );
 
-            // this is recomputed inside, but it's cleaner this way.
-            let num_tiles_on_board = board_tiles.iter().filter(|&t| *t != 0).count() as usize;
-
-            // unseen tiles = pool minus tiles on board
-            let mut unseen_tiles = vec![0u8; alphabet.len() as usize];
-            for i in 0..alphabet.len() {
-                unseen_tiles[i as usize] = alphabet.freq(i);
-            }
-            board_tiles.iter().for_each(|&t| {
-                if t != 0 {
-                    let ti = if t & 0x80 == 0 { t as usize } else { 0 };
-                    if unseen_tiles[ti] > 0 {
-                        unseen_tiles[ti] -= 1;
-                    } else {
-                        panic!("bad pool/board");
-                    }
-                }
-            });
-
-            let mut unseen_vec =
-                Vec::with_capacity(unseen_tiles.iter().map(|count| *count as usize).sum());
-            for (tile, &num) in unseen_tiles.iter().enumerate() {
-                for _ in 0..num {
-                    print!("{}", alphabet.from_rack(tile as u8).unwrap());
-                    unseen_vec.push(tile as u8);
-                }
-            }
-            println!();
-
-            // for now, draw just before move, instead of properly
-            let (rack, _leftover) = unseen_vec.partial_shuffle(&mut rng, 7);
-            print!("drawn:  ");
-            for tile in &*rack {
+            print!("pool {:2}: ", bag.0.len());
+            for tile in &bag.0 {
                 print!("{}", alphabet.from_rack(*tile).unwrap());
             }
             println!();
+            print!("p1 rack: ");
+            for tile in &*racks[0] {
+                print!("{}", alphabet.from_rack(*tile).unwrap());
+            }
+            println!();
+            print!("p2 rack: ");
+            for tile in &*racks[1] {
+                print!("{}", alphabet.from_rack(*tile).unwrap());
+            }
+            println!();
+
+            let mut rack = &mut racks[turn];
             rack.sort_unstable();
-            print!("sorted: ");
+            print!("current sorted rack: ");
             for tile in &*rack {
                 print!("{}", alphabet.from_rack(*tile).unwrap());
             }
@@ -556,11 +633,10 @@ fn main() -> error::Returns<()> {
                     kwg: &kwg,
                     klv: &klv,
                 },
-                rack,
+                &mut rack,
             );
 
             zero_turns += 1;
-            let mut played_out = false;
             print!("making top move: ");
             let play = &plays[0]; // assume at least there's always Pass
             match &play.play {
@@ -572,7 +648,11 @@ fn main() -> error::Returns<()> {
                     for &tile in tiles.iter() {
                         print!("{}", alphabet.from_board(tile).unwrap());
                     }
-                    print!(" (is a no-op because we always redraw)");
+                    use_tiles(&mut rack, tiles.iter().copied())?;
+                    for _ in 0..std::cmp::min(7 - rack.len(), bag.0.len()) {
+                        rack.push(bag.pop().unwrap());
+                    }
+                    bag.put_back(&mut rng, &tiles);
                 }
                 movegen::Play::Place {
                     down,
@@ -619,27 +699,35 @@ fn main() -> error::Returns<()> {
                     print!(" {}", score);
 
                     // place the tiles
-                    let mut played_tiles = 0;
                     for (i, &tile) in word.iter().enumerate() {
                         if tile != 0 {
                             board_tiles[strider.at(idx + i as i8)] = tile;
-                            played_tiles += 1;
                         }
-                    }
-                    if num_tiles_on_board >= 86 && played_tiles == rack.len() {
-                        played_out = true;
                     }
 
                     scores[turn] += score;
                     if *score != 0 {
                         zero_turns = 0;
                     }
+                    use_tiles(
+                        &mut rack,
+                        word.iter().filter_map(|&tile| {
+                            if tile != 0 {
+                                Some(if tile & 0x80 == 0 { tile } else { 0 })
+                            } else {
+                                None
+                            }
+                        }),
+                    )?;
+                    for _ in 0..std::cmp::min(7 - rack.len(), bag.0.len()) {
+                        rack.push(bag.pop().unwrap());
+                    }
                 }
             }
             println!();
             println!();
 
-            if (played_out && {
+            if (rack.is_empty() && {
                 println!("played out!");
                 true
             }) || (zero_turns >= 6 && {
