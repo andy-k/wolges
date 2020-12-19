@@ -11,6 +11,7 @@ struct WorkingBuffer {
     word_buffer: Box<[u8]>,                      // max(r, c)
     cross_set_for_across_plays: Box<[CrossSet]>, // r*c
     cross_set_for_down_plays: Box<[CrossSet]>,   // c*r
+    num_tiles_on_board: u16,
 }
 
 impl WorkingBuffer {
@@ -24,6 +25,7 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             cross_set_for_down_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
                 .into_boxed_slice(),
+            num_tiles_on_board: 0,
         })
     }
 }
@@ -733,13 +735,9 @@ pub fn kurnia_gen_moves_alloc<'a>(
     };
 
     let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
-    kurnia_gen_moves(
-        board_snapshot,
-        &mut working_buffer,
-        rack,
-        found_place_move,
-        found_exchange_move,
-    );
+    kurnia_init_working_buffer(board_snapshot, &mut working_buffer, rack);
+    kurnia_gen_nonplace_moves(&mut working_buffer, rack, found_exchange_move);
+    kurnia_gen_place_moves(board_snapshot, &mut working_buffer, found_place_move);
 
     let mut borrowed = found_moves.borrow_mut();
     println!("found {} moves", borrowed.len());
@@ -811,32 +809,29 @@ pub fn kurnia_gen_moves_alloc<'a>(
     result_vec
 }
 
-// assumes rack is sorted
-fn kurnia_gen_moves<
-    'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[u8]),
-    FoundExchangeMove: FnMut(&[u8]),
->(
+fn kurnia_init_working_buffer<'a>(
     board_snapshot: &'a BoardSnapshot<'a>,
     working_buffer: &mut WorkingBuffer,
     rack: &'a [u8],
-    mut found_place_move: FoundPlaceMove,
-    mut found_exchange_move: FoundExchangeMove,
 ) {
-    let board_layout = board_snapshot.game_config.board_layout();
-    let dim = board_layout.dim();
-
     working_buffer.rack_tally.iter_mut().for_each(|m| *m = 0);
     for tile in &rack[..] {
         working_buffer.rack_tally[*tile as usize] += 1;
     }
 
-    let num_tiles_on_board = board_snapshot
+    working_buffer.num_tiles_on_board = board_snapshot
         .board_tiles
         .iter()
         .filter(|&t| *t != 0)
-        .count() as usize;
+        .count() as u16;
+}
 
+// assumes rack is sorted
+fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8])>(
+    working_buffer: &mut WorkingBuffer,
+    rack: &'a [u8],
+    mut found_exchange_move: FoundExchangeMove,
+) {
     struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
         found_exchange_move: FoundExchangeMove,
         rack: &'a [u8],
@@ -860,7 +855,7 @@ fn kurnia_gen_moves<
         }
     }
     // 100 tiles, 7 goes to oppo, 7 goes to me, 7 in bag = 79.
-    if num_tiles_on_board <= 79 {
+    if working_buffer.num_tiles_on_board <= 79 {
         generate_exchanges(
             &mut ExchangeEnv {
                 found_exchange_move,
@@ -872,6 +867,15 @@ fn kurnia_gen_moves<
     } else {
         found_exchange_move(&working_buffer.rack_tally);
     }
+}
+
+fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[u8])>(
+    board_snapshot: &'a BoardSnapshot<'a>,
+    working_buffer: &mut WorkingBuffer,
+    mut found_place_move: FoundPlaceMove,
+) {
+    let board_layout = board_snapshot.game_config.board_layout();
+    let dim = board_layout.dim();
 
     // striped by row
     for col in 0..dim.cols {
@@ -886,11 +890,10 @@ fn kurnia_gen_moves<
             },
         );
     }
-    if num_tiles_on_board == 0 {
+    if working_buffer.num_tiles_on_board == 0 {
         // empty board activates star
-        working_buffer.cross_set_for_across_plays[board_layout
-            .dim()
-            .at_row_col(board_layout.star_row(), board_layout.star_col())] =
+        working_buffer.cross_set_for_across_plays
+            [dim.at_row_col(board_layout.star_row(), board_layout.star_col())] =
             CrossSet { bits: !1, score: 0 };
     }
     for row in 0..dim.rows {
