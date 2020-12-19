@@ -755,7 +755,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
             Play::Exchange { tiles } => {
                 print!("Exch. ");
                 for &tile in tiles.iter() {
-                    print!("{}", alphabet.from_board(tile).unwrap());
+                    print!("{}", alphabet.from_rack(tile).unwrap());
                 }
             }
             Play::Place {
