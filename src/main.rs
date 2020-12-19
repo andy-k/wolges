@@ -623,12 +623,6 @@ fn main() -> error::Returns<()> {
             println!();
 
             let mut rack = &mut racks[turn];
-            rack.sort_unstable();
-            print!("current sorted rack: ");
-            for tile in &*rack {
-                print!("{}", alphabet.from_rack(*tile).unwrap());
-            }
-            println!();
 
             let plays = movegen::kurnia_gen_moves_alloc(
                 &movegen::BoardSnapshot {
