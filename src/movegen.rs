@@ -554,6 +554,68 @@ impl Ord for ValuedMove {
     }
 }
 
+use std::fmt::Write;
+
+pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
+    match &play {
+        Play::Pass => {
+            s.push_str("Pass");
+        }
+        Play::Exchange { tiles } => {
+            let alphabet = board_snapshot.game_config.alphabet();
+            s.push_str("Exch. ");
+            for &tile in tiles.iter() {
+                s.push_str(alphabet.from_rack(tile).unwrap());
+            }
+        }
+        Play::Place {
+            down,
+            lane,
+            idx,
+            word,
+            score,
+        } => {
+            let dim = board_snapshot.game_config.board_layout().dim();
+            let alphabet = board_snapshot.game_config.alphabet();
+            if *down {
+                write!(s, "{}{}", (*lane as u8 + 0x41) as char, idx + 1).unwrap();
+            } else {
+                write!(s, "{}{}", lane + 1, (*idx as u8 + 0x41) as char).unwrap();
+            }
+            s.push(' ');
+            let strider = if *down {
+                dim.down(*lane)
+            } else {
+                dim.across(*lane)
+            };
+            let mut inside = false;
+            for (i, &tile) in word.iter().enumerate() {
+                if tile == 0 {
+                    if !inside {
+                        s.push('(');
+                        inside = true;
+                    }
+                    s.push_str(
+                        alphabet
+                            .from_board(board_snapshot.board_tiles[strider.at(idx + i as i8)])
+                            .unwrap(),
+                    );
+                } else {
+                    if inside {
+                        s.push(')');
+                        inside = false;
+                    }
+                    s.push_str(alphabet.from_board(tile).unwrap());
+                }
+            }
+            if inside {
+                s.push(')');
+            }
+            write!(s, " {}", score).unwrap();
+        }
+    }
+}
+
 pub fn kurnia_gen_moves_alloc<'a>(
     board_snapshot: &'a BoardSnapshot<'a>,
     rack: &'a mut [u8],
@@ -746,64 +808,12 @@ pub fn kurnia_gen_moves_alloc<'a>(
         result_vec.push(play);
     }
     result_vec.reverse();
+
+    let mut s = String::new();
     for play in result_vec.iter() {
-        print!("{} ", play.equity);
-        match &play.play {
-            Play::Pass => {
-                print!("Pass");
-            }
-            Play::Exchange { tiles } => {
-                print!("Exch. ");
-                for &tile in tiles.iter() {
-                    print!("{}", alphabet.from_rack(tile).unwrap());
-                }
-            }
-            Play::Place {
-                down,
-                lane,
-                idx,
-                word,
-                score,
-            } => {
-                if *down {
-                    print!("{}{}", (*lane as u8 + 0x41) as char, idx + 1);
-                } else {
-                    print!("{}{}", lane + 1, (*idx as u8 + 0x41) as char);
-                }
-                print!(" ");
-                let strider = if *down {
-                    dim.down(*lane)
-                } else {
-                    dim.across(*lane)
-                };
-                let mut inside = false;
-                for (i, &tile) in word.iter().enumerate() {
-                    if tile == 0 {
-                        if !inside {
-                            print!("(");
-                            inside = true;
-                        }
-                        print!(
-                            "{}",
-                            alphabet
-                                .from_board(board_snapshot.board_tiles[strider.at(idx + i as i8)])
-                                .unwrap()
-                        );
-                    } else {
-                        if inside {
-                            print!(")");
-                            inside = false;
-                        }
-                        print!("{}", alphabet.from_board(tile).unwrap());
-                    }
-                }
-                if inside {
-                    print!(")");
-                }
-                print!(" {}", score);
-            }
-        }
-        println!();
+        s.clear();
+        write_play(board_snapshot, &play.play, &mut s);
+        println!("{} {}", play.equity, s);
     }
 
     result_vec
