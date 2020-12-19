@@ -618,9 +618,8 @@ pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
 
 pub fn kurnia_gen_moves_alloc<'a>(
     board_snapshot: &'a BoardSnapshot<'a>,
-    rack: &'a mut [u8],
+    rack: &'a [u8],
 ) -> Vec<ValuedMove> {
-    rack.sort_unstable();
     let alphabet = board_snapshot.game_config.alphabet();
 
     let board_layout = board_snapshot.game_config.board_layout();
@@ -656,6 +655,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
     let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
     kurnia_init_working_buffer(board_snapshot, &mut working_buffer, rack);
     let num_tiles_on_board = working_buffer.num_tiles_on_board;
+    let initial_rack_tally = working_buffer.rack_tally.clone();
 
     let play_out_bonus = if num_tiles_on_board >= 86 {
         let mut unseen_tiles = vec![0u8; alphabet.len() as usize];
@@ -771,23 +771,24 @@ pub fn kurnia_gen_moves_alloc<'a>(
             board_snapshot.klv.leave_value_from_tally(rack_tally)
         };
         push_move(&found_moves, max_gen, leave_value, || {
-            let mut leave_vec = Vec::new();
-            let rack_len = rack.len();
-            let mut i = 0;
-            while i < rack_len {
-                let tile = rack[i];
-                i += rack_tally[tile as usize] as usize;
-                while i < rack_len && rack[i] == tile {
+            let num_exchanged: u16 = initial_rack_tally
+                .iter()
+                .zip(rack_tally)
+                .map(|(num_initial, num_kept)| (num_initial - num_kept) as u16)
+                .sum();
+            if num_exchanged == 0 {
+                return Play::Pass;
+            }
+            let mut leave_vec = Vec::with_capacity(num_exchanged as usize);
+            for (tile, (num_initial, num_kept)) in
+                (0u8..).zip(initial_rack_tally.iter().zip(rack_tally))
+            {
+                for _ in *num_kept..*num_initial {
                     leave_vec.push(tile);
-                    i += 1;
                 }
             }
-            if leave_vec.is_empty() {
-                Play::Pass
-            } else {
-                Play::Exchange {
-                    tiles: leave_vec.into(),
-                }
+            Play::Exchange {
+                tiles: leave_vec.into(),
             }
         });
     };
