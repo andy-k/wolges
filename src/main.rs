@@ -437,8 +437,9 @@ fn main() -> error::Returns<()> {
         }
     }
 
-    // mut because of additional test case
-    let mut board_tiles = b"\
+    if false {
+        // mut because of additional test case
+        let mut board_tiles = b"\
 \x0f\x04\x00\x00\x00\x00\x08\x01\x12\x0c\x0f\x14\x13\x00\x00\
 \x06\x09\x0e\x00\x00\x00\x00\x00\x00\x00\x00\x17\x00\x00\x00\
 \x00\x14\x05\x05\x00\x07\x00\x00\x00\x00\x00\x09\x00\x00\x00\
@@ -456,12 +457,12 @@ fn main() -> error::Returns<()> {
 \x0f\x0b\x05\x00\x05\x09\x04\x05\x00\x00\x00\x00\x00\x00\x00\
 ";
 
-    print_board(game_config, board_tiles);
+        print_board(game_config, board_tiles);
 
-    if false {
-        // ?LNS - http://liwords.localhost/game/BSCEW2NK
+        if false {
+            // ?LNS - http://liwords.localhost/game/BSCEW2NK
 
-        board_tiles = b"\
+            board_tiles = b"\
 \x00\x00\x00\x00\x00\x05\x00\x00\x00\x00\x00\x04\x05\x16\x13\
 \x00\x00\x00\x00\x05\x18\x00\x00\x00\x00\x00\x15\x00\x00\x00\
 \x00\x00\x00\x00\x15\x00\x00\x00\x00\x00\x02\x01\x12\x00\x00\
@@ -479,11 +480,11 @@ fn main() -> error::Returns<()> {
 \x12\x00\x00\x00\x00\x00\x00\x04\x1a\x0f\x00\x00\x00\x00\x0b\
 ";
 
-        print_board(game_config, board_tiles);
-    }
+            print_board(game_config, board_tiles);
+        }
 
-    if false {
-        board_tiles = b"\
+        if false {
+            board_tiles = b"\
 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
@@ -501,68 +502,71 @@ fn main() -> error::Returns<()> {
 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
 ";
 
-        print_board(game_config, board_tiles);
-    }
-
-    let t0 = std::time::Instant::now();
-
-    // ?UGE?US - http://liwords.localhost/game/oyMkFGLA
-    movegen::kurnia_gen_moves_alloc(
-        &movegen::BoardSnapshot {
-            board_tiles,
-            game_config,
-            kwg: &kwg,
-            klv: &klv,
-        },
-        b"\x00\x15\x07\x05\x00\x15\x13",
-        //b"\x15\x15\x15\x15\x16\x16\x17",
-        //b"\x00\x04\x05\x0e\x0f\x13\x15",
-        //b"\x00\x0c\x0e\x13",
-    );
-
-    println!("took {} ms", t0.elapsed().as_millis());
-
-    let mut testcases = vec![
-        (vec![0], 25.19870376586914),
-        (vec![17], -7.26110315322876),
-        (vec![0, 9], 26.448156356811523),
-        (vec![9, 0], 26.448156356811523),
-        (vec![0, 4, 12, 17, 19, 22], -1.2257566452026367),
-        (vec![8, 13, 18, 18, 19, 19], -7.6917290687561035),
-        (vec![1, 5, 9, 14, 19, 20], 30.734148025512695),
-        (vec![19, 1, 20, 9, 14, 5], 30.734148025512695),
-    ];
-
-    for (tc, _exp) in &mut testcases {
-        if !tc.windows(2).all(|w| w[0] <= w[1]) {
-            tc.sort_unstable();
+            print_board(game_config, board_tiles);
         }
+
+        let t0 = std::time::Instant::now();
+
+        // ?UGE?US - http://liwords.localhost/game/oyMkFGLA
+        movegen::kurnia_gen_moves_alloc(
+            &movegen::BoardSnapshot {
+                board_tiles,
+                game_config,
+                kwg: &kwg,
+                klv: &klv,
+            },
+            b"\x00\x15\x07\x05\x00\x15\x13",
+            //b"\x15\x15\x15\x15\x16\x16\x17",
+            //b"\x00\x04\x05\x0e\x0f\x13\x15",
+            //b"\x00\x0c\x0e\x13",
+        );
+
+        println!("took {} ms", t0.elapsed().as_millis());
     }
 
-    for &bn in &[1, 100, 10000, 745845, 1000000, 1322193, 1409782] {
-        let t0 = std::time::Instant::now();
-        let mut v = 0.0;
-        for _ in 0..bn {
-            for (tc, _exp) in &mut testcases {
-                /*
-                if !tc.windows(2).all(|w| w[0] <= w[1]) {
-                    tc.sort_unstable();
-                }
-                */
-                let leave_idx = klv
-                    .kwg
-                    .get_word_index(&klv.counts, klv.kwg[0].arc_index(), &tc);
-                let leave_val = if leave_idx == !0 {
-                    0.0
-                } else {
-                    klv.leave(leave_idx)
-                };
-                v += leave_val as f64;
+    if false {
+        let mut testcases = vec![
+            (vec![0], 25.19870376586914),
+            (vec![17], -7.26110315322876),
+            (vec![0, 9], 26.448156356811523),
+            (vec![9, 0], 26.448156356811523),
+            (vec![0, 4, 12, 17, 19, 22], -1.2257566452026367),
+            (vec![8, 13, 18, 18, 19, 19], -7.6917290687561035),
+            (vec![1, 5, 9, 14, 19, 20], 30.734148025512695),
+            (vec![19, 1, 20, 9, 14, 5], 30.734148025512695),
+        ];
+
+        for (tc, _exp) in &mut testcases {
+            if !tc.windows(2).all(|w| w[0] <= w[1]) {
+                tc.sort_unstable();
             }
         }
-        let dur = t0.elapsed();
-        println!("{} {:#} {:?}", bn, v, dur);
-        println!("{}ns/op", dur.as_nanos() / bn);
+
+        for &bn in &[1, 100, 10000, 745845, 1000000, 1322193, 1409782] {
+            let t0 = std::time::Instant::now();
+            let mut v = 0.0;
+            for _ in 0..bn {
+                for (tc, _exp) in &mut testcases {
+                    /*
+                    if !tc.windows(2).all(|w| w[0] <= w[1]) {
+                        tc.sort_unstable();
+                    }
+                    */
+                    let leave_idx =
+                        klv.kwg
+                            .get_word_index(&klv.counts, klv.kwg[0].arc_index(), &tc);
+                    let leave_val = if leave_idx == !0 {
+                        0.0
+                    } else {
+                        klv.leave(leave_idx)
+                    };
+                    v += leave_val as f64;
+                }
+            }
+            let dur = t0.elapsed();
+            println!("{} {:#} {:?}", bn, v, dur);
+            println!("{}ns/op", dur.as_nanos() / bn);
+        }
     }
 
     {
