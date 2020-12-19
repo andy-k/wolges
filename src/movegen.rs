@@ -653,12 +653,9 @@ pub fn kurnia_gen_moves_alloc<'a>(
         });
     };
 
-    // this is recomputed inside, but it's cleaner this way.
-    let num_tiles_on_board = board_snapshot
-        .board_tiles
-        .iter()
-        .filter(|&t| *t != 0)
-        .count() as usize;
+    let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
+    kurnia_init_working_buffer(board_snapshot, &mut working_buffer, rack);
+    let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
     // unseen tiles = pool minus tiles on board
     let mut unseen_tiles = vec![0u8; alphabet.len() as usize];
@@ -796,8 +793,6 @@ pub fn kurnia_gen_moves_alloc<'a>(
         });
     };
 
-    let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
-    kurnia_init_working_buffer(board_snapshot, &mut working_buffer, rack);
     kurnia_gen_nonplace_moves(&mut working_buffer, found_exchange_move);
     kurnia_gen_place_moves(board_snapshot, &mut working_buffer, found_place_move);
 
