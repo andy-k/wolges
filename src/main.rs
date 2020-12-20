@@ -525,51 +525,6 @@ fn main() -> error::Returns<()> {
         println!("took {} ms", t0.elapsed().as_millis());
     }
 
-    if false {
-        let mut testcases = vec![
-            (vec![0], 25.19870376586914),
-            (vec![17], -7.26110315322876),
-            (vec![0, 9], 26.448156356811523),
-            (vec![9, 0], 26.448156356811523),
-            (vec![0, 4, 12, 17, 19, 22], -1.2257566452026367),
-            (vec![8, 13, 18, 18, 19, 19], -7.6917290687561035),
-            (vec![1, 5, 9, 14, 19, 20], 30.734148025512695),
-            (vec![19, 1, 20, 9, 14, 5], 30.734148025512695),
-        ];
-
-        for (tc, _exp) in &mut testcases {
-            if !tc.windows(2).all(|w| w[0] <= w[1]) {
-                tc.sort_unstable();
-            }
-        }
-
-        for &bn in &[1, 100, 10000, 745845, 1000000, 1322193, 1409782] {
-            let t0 = std::time::Instant::now();
-            let mut v = 0.0;
-            for _ in 0..bn {
-                for (tc, _exp) in &mut testcases {
-                    /*
-                    if !tc.windows(2).all(|w| w[0] <= w[1]) {
-                        tc.sort_unstable();
-                    }
-                    */
-                    let leave_idx =
-                        klv.kwg
-                            .get_word_index(&klv.counts, klv.kwg[0].arc_index(), &tc);
-                    let leave_val = if leave_idx == !0 {
-                        0.0
-                    } else {
-                        klv.leave(leave_idx)
-                    };
-                    v += leave_val as f64;
-                }
-            }
-            let dur = t0.elapsed();
-            println!("{} {:#} {:?}", bn, v, dur);
-            println!("{}ns/op", dur.as_nanos() / bn);
-        }
-    }
-
     {
         let mut zero_turns = 0;
         let mut scores = [0, 0];
