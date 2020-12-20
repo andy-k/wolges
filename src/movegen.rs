@@ -111,7 +111,7 @@ fn gen_cross_set<'a>(
                                         }
                                     }
                                     if q > 0 && board_snapshot.kwg[q].accepts() {
-                                        bits |= 1 << board_snapshot.kwg[q].tile();
+                                        bits |= 1 << tile;
                                     }
                                 }
                                 if board_snapshot.kwg[p].is_end() {
@@ -381,6 +381,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             this_cross_set = env.cross_set_slice[idx as usize].clone();
         }
         let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
+        let prev_is_unique = is_unique;
         let this_cross_bits = if this_cross_set.bits != 0 {
             this_cross_set.bits
         } else {
@@ -399,7 +400,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     main_score,
                     perpendicular_score,
                     word_multiplier,
-                    is_unique,
+                    prev_is_unique,
                 );
             } else if idx >= env.leftmost && this_cross_bits & (1 << tile) != 0 {
                 if env.rack_tally[tile as usize] > 0 {
@@ -619,6 +620,7 @@ pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
 pub fn kurnia_gen_moves_alloc<'a>(
     board_snapshot: &'a BoardSnapshot<'a>,
     rack: &'a [u8],
+    max_gen: usize,
 ) -> Vec<ValuedMove> {
     let alphabet = board_snapshot.game_config.alphabet();
 
@@ -626,8 +628,6 @@ pub fn kurnia_gen_moves_alloc<'a>(
     let dim = board_layout.dim();
 
     let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::new());
-
-    let max_gen = 15;
 
     fn push_move<F: FnMut() -> Play>(
         found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
