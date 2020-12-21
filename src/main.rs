@@ -231,7 +231,7 @@ fn main() -> error::Returns<()> {
             assert!((int_leave as f32 - rounded_leave).abs() == 0.0);
             leave_values.push((String::from(&record[0]), int_leave));
         }
-        leave_values.sort_by(|(s1, _), (s2, _)| s1.cmp(s2));
+        leave_values.sort_unstable_by(|(s1, _), (s2, _)| s1.cmp(s2));
         let leaves_kwg = build::build(
             build::BuildFormat::DawgOnly,
             &read_english_machine_words(&leave_values.iter().fold(
@@ -306,7 +306,7 @@ fn main() -> error::Returns<()> {
             v.extend_from_slice(&v_nwl18);
             v.extend_from_slice(&v_nwl20);
             v.extend_from_slice(&v_twl14);
-            v.sort();
+            v.sort_unstable();
             v.dedup();
             let v = v.into_boxed_slice();
             println!("num dedup: {}", v.len());

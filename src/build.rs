@@ -170,7 +170,7 @@ fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> 
     }
     drop(reverse_buffer);
     let mut machine_drowwords = machine_drowword_set.into_iter().collect::<Box<_>>();
-    machine_drowwords.sort();
+    machine_drowwords.sort_unstable();
     machine_drowwords
 }
 
