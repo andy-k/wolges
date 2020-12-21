@@ -1,4 +1,4 @@
-use super::error;
+use super::{bites, error};
 
 struct MyHasher(u64);
 
@@ -102,7 +102,7 @@ impl StateMaker<'_> {
     #[inline(always)]
     fn make_dawg(
         &mut self,
-        sorted_machine_words: &[Box<[u8]>],
+        sorted_machine_words: &[bites::Bites],
         dawg_start_state: u32,
         is_gaddag_phase: bool,
     ) -> u32 {
@@ -154,7 +154,7 @@ impl StateMaker<'_> {
     }
 }
 
-fn gen_machine_drowwords(machine_words: &[Box<[u8]>]) -> Box<[Box<[u8]>]> {
+fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
     let mut machine_drowword_set = std::collections::HashSet::<_, MyHasherDefault>::default();
     let mut reverse_buffer = Vec::new();
     for this_word in machine_words {
@@ -162,7 +162,7 @@ fn gen_machine_drowwords(machine_words: &[Box<[u8]>]) -> Box<[Box<[u8]>]> {
         reverse_buffer.clear();
         reverse_buffer.extend_from_slice(this_word);
         reverse_buffer.reverse();
-        machine_drowword_set.insert(reverse_buffer.clone().into());
+        machine_drowword_set.insert(reverse_buffer.clone()[..].into());
         reverse_buffer.push(0); // the '@'
         for drow_prefix_len in 1..this_word.len() {
             machine_drowword_set.insert(reverse_buffer[drow_prefix_len..].into());
@@ -319,7 +319,10 @@ pub enum BuildFormat {
     Gaddawg,
 }
 
-pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::Returns<Box<[u8]>> {
+pub fn build(
+    build_format: BuildFormat,
+    machine_words: &[bites::Bites],
+) -> error::Returns<bites::Bites> {
     // The sink state always exists.
     let mut states = Vec::new();
     states.push(State {
@@ -377,7 +380,5 @@ pub fn build(build_format: BuildFormat, machine_words: &[Box<[u8]>]) -> error::R
         ));
     }
 
-    Ok(states_defragger
-        .to_vec(build_format, dawg_start_state, gaddag_start_state)
-        .into_boxed_slice())
+    Ok(states_defragger.to_vec(build_format, dawg_start_state, gaddag_start_state)[..].into())
 }

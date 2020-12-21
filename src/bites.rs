@@ -19,13 +19,6 @@ impl Bites {
     }
 }
 
-impl Clone for Bites {
-    #[inline(always)]
-    fn clone(&self) -> Self {
-        Self::new(&*self)
-    }
-}
-
 use std::convert::TryInto;
 
 impl std::ops::Deref for Bites {
@@ -61,9 +54,56 @@ impl Drop for Bites {
     }
 }
 
+impl AsRef<[u8]> for Bites {
+    #[inline(always)]
+    fn as_ref(&self) -> &[u8] {
+        &self[..]
+    }
+}
+
+impl Clone for Bites {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self::new(&self[..])
+    }
+}
+
+impl std::fmt::Debug for Bites {
+    #[inline(always)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", &self[..])
+    }
+}
+
 impl From<&[u8]> for Bites {
     #[inline(always)]
     fn from(given: &[u8]) -> Self {
         Self::new(given)
+    }
+}
+
+impl Eq for Bites {}
+
+impl std::hash::Hash for Bites {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self[..].hash(state)
+    }
+}
+
+impl Ord for Bites {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self[..].cmp(&other[..])
+    }
+}
+
+impl PartialEq for Bites {
+    fn eq(&self, other: &Self) -> bool {
+        self[..].eq(&other[..])
+    }
+}
+
+impl PartialOrd for Bites {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self[..].partial_cmp(&other[..])
     }
 }

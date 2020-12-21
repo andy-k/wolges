@@ -92,14 +92,14 @@ fn print_board<'a>(game_config: &game_config::GameConfig<'a>, board_tiles: &[u8]
     println!();
 }
 
-pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[Box<[u8]>]>> {
+pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
     // Memory wastage notes:
     // - Vec of 270k words have size 512k because vec grows by doubling.
     // - Size of vec is 24 bytes. Size of slice would have been 16 bytes.
     // - Each vec is individually allocated. We could instead join them all.
     // - We do not do this, because that O(n) already gives build().
 
-    let mut machine_words = Vec::<Box<[u8]>>::new();
+    let mut machine_words = Vec::<bites::Bites>::new();
     for s in giant_string.lines() {
         let mut v = Vec::with_capacity(s.len());
         // This is English-only, and will need adjustment for multibyte.
@@ -132,7 +132,7 @@ pub fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[Box
                 }
             }
         };
-        machine_words.push(v.into_boxed_slice());
+        machine_words.push(v[..].into());
     }
     Ok(machine_words.into_boxed_slice())
 }
@@ -300,7 +300,7 @@ fn main() -> error::Returns<()> {
             let v_nwl18 = read_english_machine_words(&std::fs::read_to_string("nwl18.txt")?)?;
             let v_nwl20 = read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?;
             let v_twl14 = read_english_machine_words(&std::fs::read_to_string("twl14.txt")?)?;
-            let mut v = Vec::<Box<[u8]>>::new();
+            let mut v = Vec::<bites::Bites>::new();
             v.extend_from_slice(&v_csw19);
             v.extend_from_slice(&v_ecwl);
             v.extend_from_slice(&v_nwl18);
