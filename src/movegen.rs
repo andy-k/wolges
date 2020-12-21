@@ -796,13 +796,9 @@ pub fn kurnia_gen_moves_alloc<'a>(
     kurnia_gen_nonplace_moves(&mut working_buffer, found_exchange_move);
     kurnia_gen_place_moves(board_snapshot, &mut working_buffer, found_place_move);
 
-    let mut borrowed = found_moves.borrow_mut();
-    println!("found {} moves", borrowed.len());
-    let mut result_vec = Vec::with_capacity(borrowed.len());
-    while let Some(play) = borrowed.pop() {
-        result_vec.push(play);
-    }
-    result_vec.reverse();
+    let mut result_vec = found_moves.into_inner().into_vec();
+    result_vec.sort_unstable();
+    println!("found {} moves", result_vec.len());
 
     let mut s = String::new();
     for play in result_vec.iter() {
