@@ -428,8 +428,8 @@ available. After n moves are generated, when considering the next move, if it
 is not strictly better than the nth best move, no copying occurs. If it is,
 then the nth best move is popped out and the new move is inserted into the
 heap. The library does not implement heappushpop or heapreplace, but the
-observed speed is good enough. At the end, the heap is drained into a vector,
-which is then reversed in-place to get the best moves first.
+observed speed is good enough. At the end, the heap's backing vector is
+recovered and sorted in-place.
 
 
 POSSIBLE FUTURE WORK
