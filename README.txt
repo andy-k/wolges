@@ -58,6 +58,7 @@ Most files are in src.
 - klv deal with the Kurnia Leave Values file.
 - build implements building kwg.
 - movegen generates moves using the Kurnia generator.
+- bites is Kurnia Bites, a data structure used to store bytes.
 - most of the rest are just data structures.
 
 
@@ -81,6 +82,13 @@ Tile labels are strings, so multi-codepoint labels are possible. This module
 does not define how strings are parsed into tiles as that is a
 non-deterministic process in the general case and is only useful when building
 the word graph.
+
+bites implements a value type that stores bytes. Assuming usize is 64 bits, a
+Vec takes 24 bytes and heap, and a boxed slice takes 16 bytes and heap. Given
+that a typical rack is just 7 bytes, storing 10000 moves takes too much space
+and runtime overhead. Bytes is the same size as a boxed slice (16 bytes, for
+alignment benefits) but stores small byte slices (up to 15 bytes) inline,
+regaining cache locality and reserving heap usage only for longer slices.
 
 board_layout encodes the board dimension and the premiums layout. Most squares
 are face-value squares. This also decides where the star is.

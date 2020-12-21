@@ -1,4 +1,4 @@
-use super::{board_layout, game_config, klv, kwg, matrix};
+use super::{bites, board_layout, game_config, klv, kwg, matrix};
 
 #[derive(Clone)]
 struct CrossSet {
@@ -516,13 +516,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
 pub enum Play {
     Pass,
     Exchange {
-        tiles: Box<[u8]>,
+        tiles: bites::Bites,
     },
     Place {
         down: bool,
         lane: i8,
         idx: i8,
-        word: Box<[u8]>,
+        word: bites::Bites,
         score: i16,
     },
 }
@@ -785,7 +785,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
                 }
             }
             Play::Exchange {
-                tiles: leave_vec.into(),
+                tiles: leave_vec[..].into(),
             }
         });
     };
