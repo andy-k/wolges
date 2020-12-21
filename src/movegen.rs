@@ -660,30 +660,17 @@ pub fn kurnia_gen_moves_alloc<'a>(
     let initial_rack_tally = working_buffer.rack_tally.clone();
 
     let play_out_bonus = if num_tiles_on_board >= 86 {
-        let mut unseen_tiles = vec![0u8; alphabet.len() as usize];
-        for i in 0..alphabet.len() {
-            let af = alphabet.freq(i);
-            let rf = working_buffer.rack_tally[i as usize];
-            if af >= rf {
-                unseen_tiles[i as usize] = af - rf;
-            } else {
-                panic!("bad pool/rack");
-            }
-        }
-        board_snapshot.board_tiles.iter().for_each(|&t| {
-            if t != 0 {
-                let ti = if t & 0x80 == 0 { t as usize } else { 0 };
-                if unseen_tiles[ti] > 0 {
-                    unseen_tiles[ti] -= 1;
-                } else {
-                    panic!("bad pool/board");
-                }
-            }
-        });
-        2 * (0u8..)
-            .zip(unseen_tiles)
-            .map(|(tile, num)| num as i16 * alphabet.score(tile) as i16)
+        2 * ((0u8..)
+            .zip(working_buffer.rack_tally.iter())
+            .map(|(tile, &num)| {
+                (alphabet.freq(tile) as i16 - num as i16) * alphabet.score(tile) as i16
+            })
             .sum::<i16>()
+            - board_snapshot
+                .board_tiles
+                .iter()
+                .map(|&t| if t != 0 { alphabet.score(t) as i16 } else { 0 })
+                .sum::<i16>())
     } else {
         0
     };
