@@ -42,6 +42,8 @@ impl std::ops::Deref for Bites {
 }
 
 impl Drop for Bites {
+    // Do not inline, this code is big but the Heap case is rare.
+    #[inline(never)]
     fn drop(&mut self) {
         if self.0[self.0.len() - 1] & 0x80 == 0 {
             // Inline: nothing to do.
@@ -85,24 +87,28 @@ impl From<&[u8]> for Bites {
 impl Eq for Bites {}
 
 impl std::hash::Hash for Bites {
+    #[inline(always)]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self[..].hash(state)
     }
 }
 
 impl Ord for Bites {
+    #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self[..].cmp(&other[..])
     }
 }
 
 impl PartialEq for Bites {
+    #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self[..].eq(&other[..])
     }
 }
 
 impl PartialOrd for Bites {
+    #[inline(always)]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self[..].partial_cmp(&other[..])
     }

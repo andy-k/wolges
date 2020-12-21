@@ -533,6 +533,7 @@ pub struct ValuedMove {
 }
 
 impl PartialEq for ValuedMove {
+    #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         other.equity == self.equity
     }
@@ -541,12 +542,14 @@ impl PartialEq for ValuedMove {
 impl Eq for ValuedMove {}
 
 impl PartialOrd for ValuedMove {
+    #[inline(always)]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         other.equity.partial_cmp(&self.equity)
     }
 }
 
 impl Ord for ValuedMove {
+    #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.partial_cmp(other) {
             Some(x) => x,
