@@ -32,6 +32,7 @@ pub struct StaticBoardLayout<'a> {
     dim: matrix::Dim,
     star_row: i8,
     star_col: i8,
+    is_symmetric: bool,
 }
 
 pub enum BoardLayout<'a> {
@@ -66,6 +67,17 @@ impl<'a> BoardLayout<'a> {
             BoardLayout::Static(x) => &x.premiums,
         }
     }
+
+    // This should return false if any of these is true:
+    // - dim.rows != dim.cols
+    // - exists (r,c) premium at (r,c) != premium at (c,r)
+    // - star_row != star_col
+    #[inline(always)]
+    pub fn is_symmetric(&self) -> bool {
+        match self {
+            BoardLayout::Static(x) => x.is_symmetric,
+        }
+    }
 }
 
 pub static COMMON_BOARD_LAYOUT: BoardLayout = BoardLayout::Static(StaticBoardLayout {
@@ -89,4 +101,5 @@ pub static COMMON_BOARD_LAYOUT: BoardLayout = BoardLayout::Static(StaticBoardLay
     dim: matrix::Dim { rows: 15, cols: 15 },
     star_row: 7,
     star_col: 7,
+    is_symmetric: true,
 });

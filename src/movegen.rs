@@ -868,11 +868,7 @@ fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[
             &board_snapshot,
             dim.down(col),
             &mut working_buffer.cross_set_for_across_plays,
-            matrix::Strider {
-                base: col as i16,
-                step: dim.cols,
-                len: dim.rows,
-            },
+            dim.down(col),
         );
     }
     if working_buffer.num_tiles_on_board == 0 {
@@ -896,18 +892,24 @@ fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[
             },
         );
     }
+    let transposed_dim = matrix::Dim {
+        rows: dim.cols,
+        cols: dim.rows,
+    };
     // striped by columns for better cache locality
     for row in 0..dim.rows {
         gen_cross_set(
             &board_snapshot,
             dim.across(row),
             &mut working_buffer.cross_set_for_down_plays,
-            matrix::Strider {
-                base: row as i16,
-                step: dim.rows,
-                len: dim.cols,
-            },
+            transposed_dim.down(row),
         );
+    }
+    if !board_layout.is_symmetric() && working_buffer.num_tiles_on_board == 0 {
+        // empty board activates star
+        working_buffer.cross_set_for_down_plays
+            [transposed_dim.at_row_col(board_layout.star_col(), board_layout.star_row())] =
+            CrossSet { bits: !1, score: 0 };
     }
     for col in 0..dim.cols {
         let cross_set_start = ((col as isize) * (dim.rows as isize)) as usize;
