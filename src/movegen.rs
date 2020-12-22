@@ -657,9 +657,11 @@ pub fn kurnia_gen_moves_alloc<'a>(
     let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
     kurnia_init_working_buffer(board_snapshot, &mut working_buffer, rack);
     let num_tiles_on_board = working_buffer.num_tiles_on_board;
+    let bag_is_empty = num_tiles_on_board + 2 * (board_snapshot.game_config.rack_size() as u16)
+        >= alphabet.num_tiles();
     let initial_rack_tally = working_buffer.rack_tally.clone();
 
-    let play_out_bonus = if num_tiles_on_board >= 86 {
+    let play_out_bonus = if bag_is_empty {
         2 * ((0u8..)
             .zip(working_buffer.rack_tally.iter())
             .map(|(tile, &num)| {
@@ -677,7 +679,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
 
     let found_place_move =
         |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-            let leave_value = if num_tiles_on_board >= 86 {
+            let leave_value = if bag_is_empty {
                 0.0
             } else {
                 board_snapshot.klv.leave_value_from_tally(rack_tally)
@@ -723,7 +725,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
                     })
                     .count() as f32
                     * -0.7
-            } else if num_tiles_on_board >= 86 {
+            } else if bag_is_empty {
                 let played_out = rack_tally.iter().all(|&num| num == 0);
                 (if played_out {
                     play_out_bonus
@@ -752,7 +754,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
         };
 
     let found_exchange_move = |rack_tally: &[u8]| {
-        let leave_value = if num_tiles_on_board >= 86 {
+        let leave_value = if bag_is_empty {
             0.0
         } else {
             board_snapshot.klv.leave_value_from_tally(rack_tally)
@@ -780,7 +782,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
         });
     };
 
-    kurnia_gen_nonplace_moves(&mut working_buffer, found_exchange_move);
+    kurnia_gen_nonplace_moves(board_snapshot, &mut working_buffer, found_exchange_move);
     kurnia_gen_place_moves(board_snapshot, &mut working_buffer, found_place_move);
 
     let mut result_vec = found_moves.into_inner().into_vec();
@@ -814,7 +816,8 @@ fn kurnia_init_working_buffer<'a>(
         .count() as u16;
 }
 
-fn kurnia_gen_nonplace_moves<FoundExchangeMove: FnMut(&[u8])>(
+fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8])>(
+    board_snapshot: &'a BoardSnapshot<'a>,
     working_buffer: &mut WorkingBuffer,
     mut found_exchange_move: FoundExchangeMove,
 ) {
@@ -839,8 +842,9 @@ fn kurnia_gen_nonplace_moves<FoundExchangeMove: FnMut(&[u8])>(
             generate_exchanges(env, idx);
         }
     }
-    // 100 tiles, 7 goes to oppo, 7 goes to me, 7 in bag = 79.
-    if working_buffer.num_tiles_on_board <= 79 {
+    if working_buffer.num_tiles_on_board + 3 * (board_snapshot.game_config.rack_size() as u16)
+        <= board_snapshot.game_config.alphabet().num_tiles()
+    {
         let initial_idx = working_buffer.rack_tally.len() as u8;
         generate_exchanges(
             &mut ExchangeEnv {

@@ -3,6 +3,7 @@ use super::{alphabet, board_layout};
 pub struct StaticGameConfig<'a> {
     alphabet: &'a alphabet::Alphabet<'a>,
     board_layout: &'a board_layout::BoardLayout<'a>,
+    rack_size: i8,
 }
 
 pub enum GameConfig<'a> {
@@ -23,9 +24,17 @@ impl<'a> GameConfig<'a> {
             GameConfig::Static(x) => x.board_layout,
         }
     }
+
+    #[inline(always)]
+    pub fn rack_size(&self) -> i8 {
+        match self {
+            GameConfig::Static(x) => x.rack_size,
+        }
+    }
 }
 
 pub static COMMON_ENGLISH_GAME_CONFIG: GameConfig = GameConfig::Static(StaticGameConfig {
     alphabet: &alphabet::ENGLISH_ALPHABET,
     board_layout: &board_layout::COMMON_BOARD_LAYOUT,
+    rack_size: 7,
 });
