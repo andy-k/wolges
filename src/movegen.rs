@@ -762,27 +762,43 @@ pub fn kurnia_gen_moves_alloc<'a>(
         } else {
             board_snapshot.klv.leave_value_from_tally(rack_tally)
         };
-        push_move(&found_moves, max_gen, leave_value, || {
-            let num_exchanged: u16 = initial_rack_tally
-                .iter()
-                .zip(rack_tally)
-                .map(|(num_initial, num_kept)| (num_initial - num_kept) as u16)
-                .sum();
-            if num_exchanged == 0 {
-                return Play::Pass;
-            }
-            let mut leave_vec = Vec::with_capacity(num_exchanged as usize);
-            for (tile, (num_initial, num_kept)) in
-                (0u8..).zip(initial_rack_tally.iter().zip(rack_tally))
-            {
-                for _ in *num_kept..*num_initial {
-                    leave_vec.push(tile);
+        let other_adjustments = if num_tiles_on_board == 0 {
+            0.0
+        } else if bag_is_empty {
+            (-10 - 2
+                * (0u8..)
+                    .zip(rack_tally)
+                    .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
+                    .sum::<i16>()) as f32
+        } else {
+            0.0
+        };
+        push_move(
+            &found_moves,
+            max_gen,
+            leave_value + other_adjustments,
+            || {
+                let num_exchanged: u16 = initial_rack_tally
+                    .iter()
+                    .zip(rack_tally)
+                    .map(|(num_initial, num_kept)| (num_initial - num_kept) as u16)
+                    .sum();
+                if num_exchanged == 0 {
+                    return Play::Pass;
                 }
-            }
-            Play::Exchange {
-                tiles: leave_vec[..].into(),
-            }
-        });
+                let mut leave_vec = Vec::with_capacity(num_exchanged as usize);
+                for (tile, (num_initial, num_kept)) in
+                    (0u8..).zip(initial_rack_tally.iter().zip(rack_tally))
+                {
+                    for _ in *num_kept..*num_initial {
+                        leave_vec.push(tile);
+                    }
+                }
+                Play::Exchange {
+                    tiles: leave_vec[..].into(),
+                }
+            },
+        );
     };
 
     kurnia_gen_nonplace_moves(board_snapshot, &mut working_buffer, found_exchange_move);
