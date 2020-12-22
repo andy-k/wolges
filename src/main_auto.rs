@@ -153,8 +153,8 @@ pub fn main() -> error::Returns<()> {
                 scores[1],
                 turn + 1
             );
-            scores[0] += 2 * rack_score(&alphabet, &racks[0]);
-            scores[1] += 2 * rack_score(&alphabet, &racks[1]);
+            scores[0] += 2 * rack_score(&alphabet, &racks[1]);
+            scores[1] += 2 * rack_score(&alphabet, &racks[0]);
             break;
         }
 
