@@ -69,6 +69,58 @@ impl<'a> GameState<'a> {
             turn: 0,
         }
     }
+
+    fn play(&mut self, mut rng: &mut dyn RngCore, play: &movegen::Play) -> error::Returns<()> {
+        let current_player = &mut self.players[self.turn as usize];
+        match play {
+            movegen::Play::Exchange { tiles } => {
+                use_tiles(&mut current_player.rack, tiles.iter().copied())?;
+                self.bag.replenish(
+                    &mut current_player.rack,
+                    self.game_config.rack_size() as usize,
+                );
+                self.bag.put_back(&mut rng, &tiles);
+            }
+            movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => {
+                let dim = self.game_config.board_layout().dim();
+                let strider = if *down {
+                    dim.down(*lane)
+                } else {
+                    dim.across(*lane)
+                };
+
+                // place the tiles
+                for (i, &tile) in (*idx..).zip(word.iter()) {
+                    if tile != 0 {
+                        self.board_tiles[strider.at(i)] = tile;
+                    }
+                }
+
+                current_player.score += score;
+                use_tiles(
+                    &mut current_player.rack,
+                    word.iter().filter_map(|&tile| {
+                        if tile != 0 {
+                            Some(tile & !((tile as i8) >> 7) as u8)
+                        } else {
+                            None
+                        }
+                    }),
+                )?;
+                self.bag.replenish(
+                    &mut current_player.rack,
+                    self.game_config.rack_size() as usize,
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn main() -> error::Returns<()> {
@@ -121,7 +173,7 @@ pub fn main() -> error::Returns<()> {
             );
         }
 
-        let current_player = &mut game_state.players[game_state.turn as usize];
+        let current_player = &game_state.players[game_state.turn as usize];
 
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
@@ -139,60 +191,19 @@ pub fn main() -> error::Returns<()> {
         }
         println!("making top move: {}", plays[0].play.fmt(board_snapshot));
 
-        zero_turns += 1;
         let play = &plays[0]; // assume at least there's always Pass
-        match &play.play {
-            movegen::Play::Exchange { tiles } => {
-                use_tiles(&mut current_player.rack, tiles.iter().copied())?;
-                game_state.bag.replenish(
-                    &mut current_player.rack,
-                    game_state.game_config.rack_size() as usize,
-                );
-                game_state.bag.put_back(&mut rng, &tiles);
-            }
-            movegen::Play::Place {
-                down,
-                lane,
-                idx,
-                word,
-                score,
-            } => {
-                let dim = game_state.game_config.board_layout().dim();
-                let strider = if *down {
-                    dim.down(*lane)
-                } else {
-                    dim.across(*lane)
-                };
+        game_state.play(&mut rng, &play.play)?;
 
-                // place the tiles
-                for (i, &tile) in (*idx..).zip(word.iter()) {
-                    if tile != 0 {
-                        game_state.board_tiles[strider.at(i)] = tile;
-                    }
-                }
-
-                current_player.score += score;
-                if *score != 0 {
-                    zero_turns = 0;
-                }
-                use_tiles(
-                    &mut current_player.rack,
-                    word.iter().filter_map(|&tile| {
-                        if tile != 0 {
-                            Some(tile & !((tile as i8) >> 7) as u8)
-                        } else {
-                            None
-                        }
-                    }),
-                )?;
-                game_state.bag.replenish(
-                    &mut current_player.rack,
-                    game_state.game_config.rack_size() as usize,
-                );
-            }
+        zero_turns += 1;
+        if match play.play {
+            movegen::Play::Exchange { .. } => 0,
+            movegen::Play::Place { score, .. } => score,
+        } != 0
+        {
+            zero_turns = 0;
         }
-        println!();
 
+        let current_player = &game_state.players[game_state.turn as usize];
         if current_player.rack.is_empty() {
             display::print_board(
                 &game_state.game_config.alphabet(),
