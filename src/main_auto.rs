@@ -133,6 +133,7 @@ pub fn main() -> error::Returns<()> {
     let mut board_tiles = vec![0u8; (dim.rows as usize) * (dim.cols as usize)];
     let alphabet = game_config.alphabet();
     let rack_size = game_config.rack_size() as usize;
+    let mut formatted_play_str = String::new();
     let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
 
     let mut bag = Bag::new(&alphabet);
@@ -189,18 +190,15 @@ pub fn main() -> error::Returns<()> {
         movegen::kurnia_gen_moves_alloc(&mut reusable_working_buffer, board_snapshot, &rack, 15);
         let plays = &reusable_working_buffer.plays;
 
-        {
-            println!("found {} moves", plays.len());
-            let mut s = String::new();
-            for play in plays.iter() {
-                s.clear();
-                movegen::write_play(board_snapshot, &play.play, &mut s);
-                println!("{} {}", play.equity, s);
-            }
-            s.clear();
-            movegen::write_play(board_snapshot, &plays[0].play, &mut s);
-            println!("making top move: {}", s);
+        println!("found {} moves", plays.len());
+        for play in plays.iter() {
+            formatted_play_str.clear();
+            movegen::write_play(board_snapshot, &play.play, &mut formatted_play_str);
+            println!("{} {}", play.equity, formatted_play_str);
         }
+        formatted_play_str.clear();
+        movegen::write_play(board_snapshot, &plays[0].play, &mut formatted_play_str);
+        println!("making top move: {}", formatted_play_str);
 
         zero_turns += 1;
         let play = &plays[0]; // assume at least there's always Pass
