@@ -12,9 +12,24 @@ fn use_tiles<II: IntoIterator<Item = u8>>(
     Ok(())
 }
 
-fn print_rack<'a>(alphabet: &'a alphabet::Alphabet<'a>, rack: &'a [u8]) {
-    for &tile in rack {
-        print!("{}", alphabet.from_rack(tile).unwrap());
+struct WriteableRack<'a> {
+    alphabet: &'a alphabet::Alphabet<'a>,
+    rack: &'a [u8],
+}
+
+impl std::fmt::Display for WriteableRack<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for &tile in self.rack {
+            write!(f, "{}", self.alphabet.from_rack(tile).unwrap())?;
+        }
+        Ok(())
+    }
+}
+
+fn printable_rack<'a>(alphabet: &'a alphabet::Alphabet<'a>, rack: &'a [u8]) -> WriteableRack<'a> {
+    WriteableRack {
+        alphabet: &alphabet,
+        rack: &rack,
     }
 }
 
@@ -42,9 +57,7 @@ pub fn main() -> error::Returns<()> {
     let mut bag = bag::Bag::new(&alphabet);
     bag.shuffle(&mut rng);
 
-    print!("bag: ");
-    print_rack(&alphabet, &bag.0);
-    println!();
+    println!("bag: {}", printable_rack(&alphabet, &bag.0));
 
     let mut racks = [Vec::with_capacity(rack_size), Vec::with_capacity(rack_size)];
     bag.replenish(&mut racks[0], rack_size);
@@ -59,15 +72,13 @@ pub fn main() -> error::Returns<()> {
             turn + 1
         );
 
-        print!("pool {:2}: ", bag.0.len());
-        print_rack(&alphabet, &bag.0);
-        println!();
-        print!("p1 rack: ");
-        print_rack(&alphabet, &racks[0]);
-        println!();
-        print!("p2 rack: ");
-        print_rack(&alphabet, &racks[1]);
-        println!();
+        println!(
+            "pool {:2}: {}",
+            bag.0.len(),
+            printable_rack(&alphabet, &bag.0)
+        );
+        println!("p1 rack: {}", printable_rack(&alphabet, &racks[0]));
+        println!("p2 rack: {}", printable_rack(&alphabet, &racks[1]));
 
         let mut rack = &mut racks[turn];
 
