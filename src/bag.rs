@@ -26,6 +26,12 @@ impl Bag {
         self.0.pop()
     }
 
+    pub fn replenish(&mut self, rack: &mut Vec<u8>, rack_size: usize) {
+        for _ in 0..std::cmp::min(rack_size - rack.len(), self.0.len()) {
+            rack.push(self.pop().unwrap());
+        }
+    }
+
     // put back the tiles in random order. keep the rest of the bag in the same order.
     pub fn put_back(&mut self, mut rng: &mut dyn RngCore, tiles: &[u8]) {
         let mut num_new_tiles = tiles.len();

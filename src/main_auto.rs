@@ -44,12 +44,8 @@ pub fn main() -> error::Returns<()> {
     println!();
 
     let mut racks = [Vec::with_capacity(rack_size), Vec::with_capacity(rack_size)];
-    for _ in 0..rack_size {
-        racks[0].push(bag.pop().unwrap());
-    }
-    for _ in 0..rack_size {
-        racks[1].push(bag.pop().unwrap());
-    }
+    bag.replenish(&mut racks[0], rack_size);
+    bag.replenish(&mut racks[1], rack_size);
 
     loop {
         display::print_board(&alphabet, &board_layout, &board_tiles);
@@ -98,9 +94,7 @@ pub fn main() -> error::Returns<()> {
             movegen::Play::Pass => {}
             movegen::Play::Exchange { tiles } => {
                 use_tiles(&mut rack, tiles.iter().copied())?;
-                for _ in 0..std::cmp::min(rack_size - rack.len(), bag.0.len()) {
-                    rack.push(bag.pop().unwrap());
-                }
+                bag.replenish(&mut rack, rack_size);
                 bag.put_back(&mut rng, &tiles);
             }
             movegen::Play::Place {
@@ -137,9 +131,7 @@ pub fn main() -> error::Returns<()> {
                         }
                     }),
                 )?;
-                for _ in 0..std::cmp::min(rack_size - rack.len(), bag.0.len()) {
-                    rack.push(bag.pop().unwrap());
-                }
+                bag.replenish(&mut rack, rack_size);
             }
         }
         println!();
