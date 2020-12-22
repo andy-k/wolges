@@ -101,7 +101,6 @@ pub fn main() -> error::Returns<()> {
         zero_turns += 1;
         let play = &plays[0]; // assume at least there's always Pass
         match &play.play {
-            movegen::Play::Pass => {}
             movegen::Play::Exchange { tiles } => {
                 use_tiles(&mut rack, tiles.iter().copied())?;
                 bag.replenish(&mut rack, rack_size);

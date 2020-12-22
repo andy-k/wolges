@@ -534,7 +534,6 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
 }
 
 pub enum Play {
-    Pass,
     Exchange {
         tiles: bites::Bites,
     },
@@ -586,14 +585,15 @@ pub struct WriteablePlay<'a> {
 impl std::fmt::Display for WriteablePlay<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.play {
-            Play::Pass => {
-                write!(f, "Pass")?;
-            }
             Play::Exchange { tiles } => {
-                let alphabet = self.board_snapshot.game_config.alphabet();
-                write!(f, "Exch. ")?;
-                for &tile in tiles.iter() {
-                    write!(f, "{}", alphabet.from_rack(tile).unwrap())?;
+                if tiles.is_empty() {
+                    write!(f, "Pass")?;
+                } else {
+                    let alphabet = self.board_snapshot.game_config.alphabet();
+                    write!(f, "Exch. ")?;
+                    for &tile in tiles.iter() {
+                        write!(f, "{}", alphabet.from_rack(tile).unwrap())?;
+                    }
                 }
             }
             Play::Place {
@@ -827,13 +827,8 @@ impl KurniaMoveGenerator {
                 &found_moves,
                 max_gen,
                 leave_value + other_adjustments,
-                || {
-                    if exchanged_tiles.is_empty() {
-                        return Play::Pass;
-                    }
-                    Play::Exchange {
-                        tiles: exchanged_tiles.into(),
-                    }
+                || Play::Exchange {
+                    tiles: exchanged_tiles.into(),
                 },
             );
         };
