@@ -1,8 +1,7 @@
 use super::kwg;
 
-// kwg is double-boxed :-(
 pub struct Klv {
-    pub kwg: Box<kwg::Kwg>,
+    pub kwg: kwg::Kwg,
     pub counts: Box<[u32]>,
     pub scaled_leaves: Box<[i16]>,
 }
@@ -36,7 +35,7 @@ impl Klv {
         }
         let counts = kwg.count_words_alloc();
         Klv {
-            kwg: Box::new(kwg),
+            kwg,
             counts,
             scaled_leaves: elts.into_boxed_slice(),
         }

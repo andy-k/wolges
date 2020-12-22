@@ -16,10 +16,10 @@ struct WorkingBuffer {
 }
 
 impl WorkingBuffer {
-    fn new(game_config: &game_config::GameConfig) -> Box<Self> {
+    fn new(game_config: &game_config::GameConfig) -> Self {
         let dim = game_config.board_layout().dim();
         let rows_times_cols = ((dim.rows as isize) * (dim.cols as isize)) as usize;
-        Box::new(Self {
+        Self {
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             word_buffer: vec![0u8; std::cmp::max(dim.rows, dim.cols) as usize].into_boxed_slice(),
             cross_set_for_across_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
@@ -28,7 +28,7 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             num_tiles_on_board: 0,
             exchange_buffer: Vec::new(),
-        })
+        }
     }
 }
 
@@ -626,8 +626,8 @@ pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
 }
 
 pub struct ReusableWorkingBuffer {
-    working_buffer: Box<WorkingBuffer>, // TODO
-    pub plays: Vec<ValuedMove>,         // TODO
+    working_buffer: WorkingBuffer,
+    pub plays: Vec<ValuedMove>,
 }
 
 impl ReusableWorkingBuffer {
@@ -639,6 +639,7 @@ impl ReusableWorkingBuffer {
     }
 }
 
+// this does not alloc except for growing the results and exchange_buffer
 pub fn kurnia_gen_moves_alloc<'a>(
     reusable_working_buffer: &mut ReusableWorkingBuffer,
     board_snapshot: &'a BoardSnapshot<'a>,
