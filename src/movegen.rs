@@ -711,7 +711,9 @@ impl KurniaMoveGenerator {
         let mut working_buffer = &mut self.working_buffer;
         working_buffer.init(board_snapshot, rack);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
-        let bag_is_empty = num_tiles_on_board + 2 * (board_snapshot.game_config.rack_size() as u16)
+        let bag_is_empty = num_tiles_on_board
+            + board_snapshot.game_config.num_players() as u16
+                * (board_snapshot.game_config.rack_size() as u16)
             >= alphabet.num_tiles();
 
         let play_out_bonus = if bag_is_empty {
@@ -877,7 +879,9 @@ fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
         env.rack_tally[idx as usize] = original_count;
         env.exchange_buffer.truncate(vec_len);
     }
-    if working_buffer.num_tiles_on_board + 3 * (board_snapshot.game_config.rack_size() as u16)
+    if working_buffer.num_tiles_on_board
+        + (board_snapshot.game_config.num_players() as u16 + 1)
+            * (board_snapshot.game_config.rack_size() as u16)
         <= board_snapshot.game_config.alphabet().num_tiles()
     {
         generate_exchanges(

@@ -51,14 +51,14 @@ struct GameState<'a> {
 }
 
 impl<'a> GameState<'a> {
-    fn new(game_config: &'a game_config::GameConfig, num_players: u8) -> Self {
+    fn new(game_config: &'a game_config::GameConfig) -> Self {
         let board_layout = game_config.board_layout();
         let dim = board_layout.dim();
         let rack_size = game_config.rack_size() as usize;
         let alphabet = game_config.alphabet();
         Self {
             game_config,
-            players: (0..num_players)
+            players: (0..game_config.num_players())
                 .map(|_| GamePlayer {
                     score: 0,
                     rack: Vec::with_capacity(rack_size),
@@ -77,7 +77,7 @@ pub fn main() -> error::Returns<()> {
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
-    let mut game_state = GameState::new(game_config, 2);
+    let mut game_state = GameState::new(game_config);
 
     let mut zero_turns = 0;
     println!("\nplaying self");

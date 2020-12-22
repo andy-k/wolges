@@ -4,6 +4,7 @@ pub struct StaticGameConfig<'a> {
     alphabet: &'a alphabet::Alphabet<'a>,
     board_layout: &'a board_layout::BoardLayout<'a>,
     rack_size: i8,
+    num_players: u8,
 }
 
 pub enum GameConfig<'a> {
@@ -33,6 +34,13 @@ impl<'a> GameConfig<'a> {
     }
 
     #[inline(always)]
+    pub fn num_players(&self) -> u8 {
+        match self {
+            GameConfig::Static(x) => x.num_players,
+        }
+    }
+
+    #[inline(always)]
     pub fn num_played_bonus(&self, num_played: i8) -> i16 {
         match self {
             GameConfig::Static(x) => {
@@ -47,4 +55,5 @@ pub static COMMON_ENGLISH_GAME_CONFIG: GameConfig = GameConfig::Static(StaticGam
     alphabet: &alphabet::ENGLISH_ALPHABET,
     board_layout: &board_layout::COMMON_BOARD_LAYOUT,
     rack_size: 7,
+    num_players: 2,
 });
