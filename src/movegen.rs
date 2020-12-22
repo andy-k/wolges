@@ -578,64 +578,80 @@ impl Ord for ValuedMove {
     }
 }
 
-use std::fmt::Write;
+pub struct WriteablePlay<'a> {
+    board_snapshot: &'a BoardSnapshot<'a>,
+    play: &'a Play,
+}
 
-pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
-    match &play {
-        Play::Pass => {
-            s.push_str("Pass");
-        }
-        Play::Exchange { tiles } => {
-            let alphabet = board_snapshot.game_config.alphabet();
-            s.push_str("Exch. ");
-            for &tile in tiles.iter() {
-                s.push_str(alphabet.from_rack(tile).unwrap());
+impl std::fmt::Display for WriteablePlay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.play {
+            Play::Pass => {
+                write!(f, "Pass")?;
             }
-        }
-        Play::Place {
-            down,
-            lane,
-            idx,
-            word,
-            score,
-        } => {
-            let dim = board_snapshot.game_config.board_layout().dim();
-            let alphabet = board_snapshot.game_config.alphabet();
-            if *down {
-                write!(s, "{}{}", (*lane as u8 + 0x41) as char, idx + 1).unwrap();
-            } else {
-                write!(s, "{}{}", lane + 1, (*idx as u8 + 0x41) as char).unwrap();
-            }
-            s.push(' ');
-            let strider = if *down {
-                dim.down(*lane)
-            } else {
-                dim.across(*lane)
-            };
-            let mut inside = false;
-            for (i, &tile) in (*idx..).zip(word.iter()) {
-                if tile == 0 {
-                    if !inside {
-                        s.push('(');
-                        inside = true;
-                    }
-                    s.push_str(
-                        alphabet
-                            .from_board(board_snapshot.board_tiles[strider.at(i)])
-                            .unwrap(),
-                    );
-                } else {
-                    if inside {
-                        s.push(')');
-                        inside = false;
-                    }
-                    s.push_str(alphabet.from_board(tile).unwrap());
+            Play::Exchange { tiles } => {
+                let alphabet = self.board_snapshot.game_config.alphabet();
+                write!(f, "Exch. ")?;
+                for &tile in tiles.iter() {
+                    write!(f, "{}", alphabet.from_rack(tile).unwrap())?;
                 }
             }
-            if inside {
-                s.push(')');
+            Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => {
+                let dim = self.board_snapshot.game_config.board_layout().dim();
+                let alphabet = self.board_snapshot.game_config.alphabet();
+                if *down {
+                    write!(f, "{}{} ", (*lane as u8 + 0x41) as char, idx + 1)?;
+                } else {
+                    write!(f, "{}{} ", lane + 1, (*idx as u8 + 0x41) as char)?;
+                }
+                let strider = if *down {
+                    dim.down(*lane)
+                } else {
+                    dim.across(*lane)
+                };
+                let mut inside = false;
+                for (i, &tile) in (*idx..).zip(word.iter()) {
+                    if tile == 0 {
+                        if !inside {
+                            write!(f, "(")?;
+                            inside = true;
+                        }
+                        write!(
+                            f,
+                            "{}",
+                            alphabet
+                                .from_board(self.board_snapshot.board_tiles[strider.at(i)])
+                                .unwrap(),
+                        )?;
+                    } else {
+                        if inside {
+                            write!(f, ")")?;
+                            inside = false;
+                        }
+                        write!(f, "{}", alphabet.from_board(tile).unwrap())?;
+                    }
+                }
+                if inside {
+                    write!(f, ")")?;
+                }
+                write!(f, " {}", score)?;
             }
-            write!(s, " {}", score).unwrap();
+        }
+        Ok(())
+    }
+}
+
+impl Play {
+    pub fn fmt<'a>(&'a self, board_snapshot: &'a BoardSnapshot) -> WriteablePlay<'a> {
+        WriteablePlay {
+            board_snapshot: &board_snapshot,
+            play: self,
         }
     }
 }

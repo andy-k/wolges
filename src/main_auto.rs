@@ -37,7 +37,6 @@ pub fn main() -> error::Returns<()> {
     let mut board_tiles = vec![0u8; (dim.rows as usize) * (dim.cols as usize)];
     let alphabet = game_config.alphabet();
     let rack_size = game_config.rack_size() as usize;
-    let mut formatted_play_str = String::new();
     let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
 
     let mut bag = bag::Bag::new(&alphabet);
@@ -84,13 +83,9 @@ pub fn main() -> error::Returns<()> {
 
         println!("found {} moves", plays.len());
         for play in plays.iter() {
-            formatted_play_str.clear();
-            movegen::write_play(board_snapshot, &play.play, &mut formatted_play_str);
-            println!("{} {}", play.equity, formatted_play_str);
+            println!("{} {}", play.equity, play.play.fmt(board_snapshot));
         }
-        formatted_play_str.clear();
-        movegen::write_play(board_snapshot, &plays[0].play, &mut formatted_play_str);
-        println!("making top move: {}", formatted_play_str);
+        println!("making top move: {}", plays[0].play.fmt(board_snapshot));
 
         zero_turns += 1;
         let play = &plays[0]; // assume at least there's always Pass
