@@ -1,4 +1,4 @@
-use super::{bag, display, error, game_config, klv, kwg, movegen};
+use super::{alphabet, bag, display, error, game_config, klv, kwg, movegen};
 use rand::prelude::*;
 
 fn use_tiles<II: IntoIterator<Item = u8>>(
@@ -10,6 +10,12 @@ fn use_tiles<II: IntoIterator<Item = u8>>(
         rack.swap_remove(pos);
     }
     Ok(())
+}
+
+fn print_rack<'a>(alphabet: &'a alphabet::Alphabet<'a>, rack: &'a [u8]) {
+    for &tile in rack {
+        print!("{}", alphabet.from_rack(tile).unwrap());
+    }
 }
 
 pub fn main() -> error::Returns<()> {
@@ -34,9 +40,7 @@ pub fn main() -> error::Returns<()> {
     bag.shuffle(&mut rng);
 
     print!("bag: ");
-    for &tile in &bag.0 {
-        print!("{}", alphabet.from_rack(tile).unwrap());
-    }
+    print_rack(&alphabet, &bag.0);
     println!();
 
     let mut racks = [Vec::with_capacity(rack_size), Vec::with_capacity(rack_size)];
@@ -57,19 +61,13 @@ pub fn main() -> error::Returns<()> {
         );
 
         print!("pool {:2}: ", bag.0.len());
-        for tile in &bag.0 {
-            print!("{}", alphabet.from_rack(*tile).unwrap());
-        }
+        print_rack(&alphabet, &bag.0);
         println!();
         print!("p1 rack: ");
-        for tile in &*racks[0] {
-            print!("{}", alphabet.from_rack(*tile).unwrap());
-        }
+        print_rack(&alphabet, &racks[0]);
         println!();
         print!("p2 rack: ");
-        for tile in &*racks[1] {
-            print!("{}", alphabet.from_rack(*tile).unwrap());
-        }
+        print_rack(&alphabet, &racks[1]);
         println!();
 
         let mut rack = &mut racks[turn];
