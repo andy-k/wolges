@@ -18,6 +18,10 @@ fn print_rack<'a>(alphabet: &'a alphabet::Alphabet<'a>, rack: &'a [u8]) {
     }
 }
 
+fn rack_score<'a>(alphabet: &'a alphabet::Alphabet<'a>, rack: &'a [u8]) -> i16 {
+    rack.iter().map(|&t| alphabet.score(t) as i16).sum::<i16>()
+}
+
 pub fn main() -> error::Returns<()> {
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
@@ -144,14 +148,8 @@ pub fn main() -> error::Returns<()> {
                 scores[1],
                 turn + 1
             );
-            scores[0] += 2 * racks[1]
-                .iter()
-                .map(|&t| alphabet.score(t) as i16)
-                .sum::<i16>();
-            scores[1] += 2 * racks[0]
-                .iter()
-                .map(|&t| alphabet.score(t) as i16)
-                .sum::<i16>();
+            scores[0] += 2 * rack_score(&alphabet, &racks[0]);
+            scores[1] += 2 * rack_score(&alphabet, &racks[1]);
             break;
         }
 
@@ -163,14 +161,8 @@ pub fn main() -> error::Returns<()> {
                 scores[1],
                 turn + 1
             );
-            scores[0] -= racks[0]
-                .iter()
-                .map(|&t| alphabet.score(t) as i16)
-                .sum::<i16>();
-            scores[1] -= racks[1]
-                .iter()
-                .map(|&t| alphabet.score(t) as i16)
-                .sum::<i16>();
+            scores[0] -= rack_score(&alphabet, &racks[0]);
+            scores[1] -= rack_score(&alphabet, &racks[1]);
             break;
         }
 
