@@ -627,14 +627,14 @@ pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
 
 pub struct ReusableWorkingBuffer {
     working_buffer: Box<WorkingBuffer>, // TODO
-    pub results: Vec<ValuedMove>,       // TODO
+    pub plays: Vec<ValuedMove>,         // TODO
 }
 
 impl ReusableWorkingBuffer {
     pub fn new(game_config: &game_config::GameConfig) -> Self {
         Self {
             working_buffer: WorkingBuffer::new(game_config),
-            results: Vec::new(),
+            plays: Vec::new(),
         }
     }
 }
@@ -644,13 +644,16 @@ pub fn kurnia_gen_moves_alloc<'a>(
     board_snapshot: &'a BoardSnapshot<'a>,
     rack: &'a [u8],
     max_gen: usize,
-) -> Vec<ValuedMove> {
+) {
     let alphabet = board_snapshot.game_config.alphabet();
 
     let board_layout = board_snapshot.game_config.board_layout();
     let dim = board_layout.dim();
 
-    let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::new());
+    reusable_working_buffer.plays.clear();
+    let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::from(std::mem::take(
+        &mut reusable_working_buffer.plays,
+    )));
 
     fn push_move<F: FnMut() -> Play>(
         found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
@@ -807,9 +810,8 @@ pub fn kurnia_gen_moves_alloc<'a>(
     kurnia_gen_nonplace_moves(board_snapshot, &mut working_buffer, found_exchange_move);
     kurnia_gen_place_moves(board_snapshot, &mut working_buffer, found_place_move);
 
-    let mut result_vec = found_moves.into_inner().into_vec();
-    result_vec.sort_unstable();
-    result_vec
+    reusable_working_buffer.plays = found_moves.into_inner().into_vec();
+    reusable_working_buffer.plays.sort_unstable();
 }
 
 fn kurnia_init_working_buffer<'a>(
