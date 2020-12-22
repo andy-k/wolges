@@ -625,7 +625,22 @@ pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
     }
 }
 
+pub struct ReusableWorkingBuffer {
+    working_buffer: Box<WorkingBuffer>, // TODO
+    pub results: Vec<ValuedMove>,       // TODO
+}
+
+impl ReusableWorkingBuffer {
+    pub fn new(game_config: &game_config::GameConfig) -> Self {
+        Self {
+            working_buffer: WorkingBuffer::new(game_config),
+            results: Vec::new(),
+        }
+    }
+}
+
 pub fn kurnia_gen_moves_alloc<'a>(
+    reusable_working_buffer: &mut ReusableWorkingBuffer,
     board_snapshot: &'a BoardSnapshot<'a>,
     rack: &'a [u8],
     max_gen: usize,
@@ -659,7 +674,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
         });
     };
 
-    let mut working_buffer = WorkingBuffer::new(board_snapshot.game_config);
+    let mut working_buffer = &mut reusable_working_buffer.working_buffer;
     kurnia_init_working_buffer(board_snapshot, &mut working_buffer, rack);
     let num_tiles_on_board = working_buffer.num_tiles_on_board;
     let bag_is_empty = num_tiles_on_board + 2 * (board_snapshot.game_config.rack_size() as u16)

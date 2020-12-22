@@ -501,7 +501,14 @@ fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            let plays = movegen::kurnia_gen_moves_alloc(board_snapshot, &rack, 15);
+            let mut reusable_working_buffer =
+                movegen::ReusableWorkingBuffer::new(board_snapshot.game_config);
+            let plays = movegen::kurnia_gen_moves_alloc(
+                &mut reusable_working_buffer,
+                board_snapshot,
+                &rack,
+                15,
+            );
 
             {
                 println!("found {} moves", plays.len());
