@@ -30,6 +30,20 @@ impl WorkingBuffer {
             exchange_buffer: Vec::new(),
         }
     }
+
+    fn init(&mut self, board_snapshot: &BoardSnapshot<'_>, rack: &[u8]) {
+        self.exchange_buffer.clear();
+        self.exchange_buffer.reserve(rack.len());
+        self.rack_tally.iter_mut().for_each(|m| *m = 0);
+        for tile in &rack[..] {
+            self.rack_tally[*tile as usize] += 1;
+        }
+        self.num_tiles_on_board = board_snapshot
+            .board_tiles
+            .iter()
+            .filter(|&t| *t != 0)
+            .count() as u16;
+    }
 }
 
 pub struct BoardSnapshot<'a> {
@@ -679,7 +693,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
     };
 
     let mut working_buffer = &mut reusable_working_buffer.working_buffer;
-    kurnia_init_working_buffer(board_snapshot, &mut working_buffer, rack);
+    working_buffer.init(board_snapshot, rack);
     let num_tiles_on_board = working_buffer.num_tiles_on_board;
     let bag_is_empty = num_tiles_on_board + 2 * (board_snapshot.game_config.rack_size() as u16)
         >= alphabet.num_tiles();
@@ -813,26 +827,6 @@ pub fn kurnia_gen_moves_alloc<'a>(
 
     reusable_working_buffer.plays = found_moves.into_inner().into_vec();
     reusable_working_buffer.plays.sort_unstable();
-}
-
-fn kurnia_init_working_buffer<'a>(
-    board_snapshot: &'a BoardSnapshot<'a>,
-    working_buffer: &mut WorkingBuffer,
-    rack: &'a [u8],
-) {
-    working_buffer.exchange_buffer.clear();
-    working_buffer.exchange_buffer.reserve(rack.len());
-
-    working_buffer.rack_tally.iter_mut().for_each(|m| *m = 0);
-    for tile in &rack[..] {
-        working_buffer.rack_tally[*tile as usize] += 1;
-    }
-
-    working_buffer.num_tiles_on_board = board_snapshot
-        .board_tiles
-        .iter()
-        .filter(|&t| *t != 0)
-        .count() as u16;
 }
 
 fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
