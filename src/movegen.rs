@@ -651,182 +651,182 @@ impl ReusableWorkingBuffer {
             plays: Vec::new(),
         }
     }
-}
 
-// this does not alloc except for growing the results and exchange_buffer
-pub fn kurnia_gen_moves_alloc<'a>(
-    reusable_working_buffer: &mut ReusableWorkingBuffer,
-    board_snapshot: &'a BoardSnapshot<'a>,
-    rack: &'a [u8],
-    max_gen: usize,
-) {
-    let alphabet = board_snapshot.game_config.alphabet();
-
-    let board_layout = board_snapshot.game_config.board_layout();
-    let dim = board_layout.dim();
-
-    reusable_working_buffer.plays.clear();
-    let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::from(std::mem::take(
-        &mut reusable_working_buffer.plays,
-    )));
-
-    fn push_move<F: FnMut() -> Play>(
-        found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
+    // this does not alloc except for growing the results and exchange_buffer
+    pub fn kurnia_gen_moves_alloc<'a>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a>,
+        rack: &'a [u8],
         max_gen: usize,
-        equity: f32,
-        mut construct_play: F,
     ) {
-        if max_gen == 0 {
-            return;
-        }
-        let mut borrowed = found_moves.borrow_mut();
-        if borrowed.len() >= max_gen {
-            if borrowed.peek().unwrap().equity >= equity {
+        let alphabet = board_snapshot.game_config.alphabet();
+
+        let board_layout = board_snapshot.game_config.board_layout();
+        let dim = board_layout.dim();
+
+        self.plays.clear();
+        let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::from(
+            std::mem::take(&mut self.plays),
+        ));
+
+        fn push_move<F: FnMut() -> Play>(
+            found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
+            max_gen: usize,
+            equity: f32,
+            mut construct_play: F,
+        ) {
+            if max_gen == 0 {
                 return;
             }
-            borrowed.pop();
-        }
-        borrowed.push(ValuedMove {
-            equity,
-            play: construct_play(),
-        });
-    };
+            let mut borrowed = found_moves.borrow_mut();
+            if borrowed.len() >= max_gen {
+                if borrowed.peek().unwrap().equity >= equity {
+                    return;
+                }
+                borrowed.pop();
+            }
+            borrowed.push(ValuedMove {
+                equity,
+                play: construct_play(),
+            });
+        };
 
-    let mut working_buffer = &mut reusable_working_buffer.working_buffer;
-    working_buffer.init(board_snapshot, rack);
-    let num_tiles_on_board = working_buffer.num_tiles_on_board;
-    let bag_is_empty = num_tiles_on_board + 2 * (board_snapshot.game_config.rack_size() as u16)
-        >= alphabet.num_tiles();
+        let mut working_buffer = &mut self.working_buffer;
+        working_buffer.init(board_snapshot, rack);
+        let num_tiles_on_board = working_buffer.num_tiles_on_board;
+        let bag_is_empty = num_tiles_on_board + 2 * (board_snapshot.game_config.rack_size() as u16)
+            >= alphabet.num_tiles();
 
-    let play_out_bonus = if bag_is_empty {
-        2 * ((0u8..)
-            .zip(working_buffer.rack_tally.iter())
-            .map(|(tile, &num)| {
-                (alphabet.freq(tile) as i16 - num as i16) * alphabet.score(tile) as i16
-            })
-            .sum::<i16>()
-            - board_snapshot
-                .board_tiles
-                .iter()
-                .map(|&t| if t != 0 { alphabet.score(t) as i16 } else { 0 })
-                .sum::<i16>())
-    } else {
-        0
-    };
-
-    let leave_value_from_tally = |rack_tally: &[u8]| {
-        if bag_is_empty {
-            0.0
+        let play_out_bonus = if bag_is_empty {
+            2 * ((0u8..)
+                .zip(working_buffer.rack_tally.iter())
+                .map(|(tile, &num)| {
+                    (alphabet.freq(tile) as i16 - num as i16) * alphabet.score(tile) as i16
+                })
+                .sum::<i16>()
+                - board_snapshot
+                    .board_tiles
+                    .iter()
+                    .map(|&t| if t != 0 { alphabet.score(t) as i16 } else { 0 })
+                    .sum::<i16>())
         } else {
-            board_snapshot.klv.leave_value_from_tally(rack_tally)
-        }
-    };
+            0
+        };
 
-    let found_place_move =
-        |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+        let leave_value_from_tally = |rack_tally: &[u8]| {
+            if bag_is_empty {
+                0.0
+            } else {
+                board_snapshot.klv.leave_value_from_tally(rack_tally)
+            }
+        };
+
+        let found_place_move =
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+                let leave_value = leave_value_from_tally(rack_tally);
+                let other_adjustments = if num_tiles_on_board == 0 {
+                    let num_lanes = if down { dim.cols } else { dim.rows };
+                    let strider1 = if lane > 0 {
+                        Some(if down {
+                            dim.down(lane - 1)
+                        } else {
+                            dim.across(lane - 1)
+                        })
+                    } else {
+                        None
+                    };
+                    let strider2 = if lane < num_lanes - 1 {
+                        Some(if down {
+                            dim.down(lane + 1)
+                        } else {
+                            dim.across(lane + 1)
+                        })
+                    } else {
+                        None
+                    };
+                    (idx..)
+                        .zip(word)
+                        .filter(|(i, &tile)| {
+                            tile != 0 && alphabet.is_vowel(tile) && {
+                                (match strider1 {
+                                    Some(strider) => {
+                                        let premium = board_layout.premiums()[strider.at(*i)];
+                                        premium.tile_multiplier != 1 || premium.word_multiplier != 1
+                                    }
+                                    None => false,
+                                }) || (match strider2 {
+                                    Some(strider) => {
+                                        let premium = board_layout.premiums()[strider.at(*i)];
+                                        premium.tile_multiplier != 1 || premium.word_multiplier != 1
+                                    }
+                                    None => false,
+                                })
+                            }
+                        })
+                        .count() as f32
+                        * -0.7
+                } else if bag_is_empty {
+                    let played_out = rack_tally.iter().all(|&num| num == 0);
+                    (if played_out {
+                        play_out_bonus
+                    } else {
+                        -10 - 2
+                            * (0u8..)
+                                .zip(rack_tally)
+                                .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
+                                .sum::<i16>()
+                    }) as f32
+                } else {
+                    0.0
+                };
+                push_move(
+                    &found_moves,
+                    max_gen,
+                    score as f32 + leave_value + other_adjustments,
+                    || Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word: word.into(),
+                        score,
+                    },
+                );
+            };
+
+        let found_exchange_move = |rack_tally: &[u8], exchanged_tiles: &[u8]| {
             let leave_value = leave_value_from_tally(rack_tally);
             let other_adjustments = if num_tiles_on_board == 0 {
-                let num_lanes = if down { dim.cols } else { dim.rows };
-                let strider1 = if lane > 0 {
-                    Some(if down {
-                        dim.down(lane - 1)
-                    } else {
-                        dim.across(lane - 1)
-                    })
-                } else {
-                    None
-                };
-                let strider2 = if lane < num_lanes - 1 {
-                    Some(if down {
-                        dim.down(lane + 1)
-                    } else {
-                        dim.across(lane + 1)
-                    })
-                } else {
-                    None
-                };
-                (idx..)
-                    .zip(word)
-                    .filter(|(i, &tile)| {
-                        tile != 0 && alphabet.is_vowel(tile) && {
-                            (match strider1 {
-                                Some(strider) => {
-                                    let premium = board_layout.premiums()[strider.at(*i)];
-                                    premium.tile_multiplier != 1 || premium.word_multiplier != 1
-                                }
-                                None => false,
-                            }) || (match strider2 {
-                                Some(strider) => {
-                                    let premium = board_layout.premiums()[strider.at(*i)];
-                                    premium.tile_multiplier != 1 || premium.word_multiplier != 1
-                                }
-                                None => false,
-                            })
-                        }
-                    })
-                    .count() as f32
-                    * -0.7
+                0.0
             } else if bag_is_empty {
-                let played_out = rack_tally.iter().all(|&num| num == 0);
-                (if played_out {
-                    play_out_bonus
-                } else {
-                    -10 - 2
-                        * (0u8..)
-                            .zip(rack_tally)
-                            .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
-                            .sum::<i16>()
-                }) as f32
+                (-10 - 2
+                    * (0u8..)
+                        .zip(rack_tally)
+                        .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
+                        .sum::<i16>()) as f32
             } else {
                 0.0
             };
             push_move(
                 &found_moves,
                 max_gen,
-                score as f32 + leave_value + other_adjustments,
-                || Play::Place {
-                    down,
-                    lane,
-                    idx,
-                    word: word.into(),
-                    score,
+                leave_value + other_adjustments,
+                || {
+                    if exchanged_tiles.is_empty() {
+                        return Play::Pass;
+                    }
+                    Play::Exchange {
+                        tiles: exchanged_tiles.into(),
+                    }
                 },
             );
         };
 
-    let found_exchange_move = |rack_tally: &[u8], exchanged_tiles: &[u8]| {
-        let leave_value = leave_value_from_tally(rack_tally);
-        let other_adjustments = if num_tiles_on_board == 0 {
-            0.0
-        } else if bag_is_empty {
-            (-10 - 2
-                * (0u8..)
-                    .zip(rack_tally)
-                    .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
-                    .sum::<i16>()) as f32
-        } else {
-            0.0
-        };
-        push_move(
-            &found_moves,
-            max_gen,
-            leave_value + other_adjustments,
-            || {
-                if exchanged_tiles.is_empty() {
-                    return Play::Pass;
-                }
-                Play::Exchange {
-                    tiles: exchanged_tiles.into(),
-                }
-            },
-        );
-    };
+        kurnia_gen_nonplace_moves(board_snapshot, &mut working_buffer, found_exchange_move);
+        kurnia_gen_place_moves(board_snapshot, &mut working_buffer, found_place_move);
 
-    kurnia_gen_nonplace_moves(board_snapshot, &mut working_buffer, found_exchange_move);
-    kurnia_gen_place_moves(board_snapshot, &mut working_buffer, found_place_move);
-
-    reusable_working_buffer.plays = found_moves.into_inner().into_vec();
-    reusable_working_buffer.plays.sort_unstable();
+        self.plays = found_moves.into_inner().into_vec();
+        self.plays.sort_unstable();
+    }
 }
 
 fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(

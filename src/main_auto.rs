@@ -79,7 +79,7 @@ pub fn main() -> error::Returns<()> {
             klv: &klv,
         };
 
-        movegen::kurnia_gen_moves_alloc(&mut reusable_working_buffer, board_snapshot, &rack, 15);
+        reusable_working_buffer.kurnia_gen_moves_alloc(board_snapshot, &rack, 15);
         let plays = &reusable_working_buffer.plays;
 
         println!("found {} moves", plays.len());
