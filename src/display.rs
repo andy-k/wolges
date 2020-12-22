@@ -35,3 +35,40 @@ pub fn board_label<'a>(
         .from_board(board_tiles[board_layout.dim().at_row_col(row, col)])
         .unwrap_or_else(|| empty_label(board_layout, row, col))
 }
+
+pub fn print_board<'a>(
+    alphabet: &'a alphabet::Alphabet<'a>,
+    board_layout: &'a board_layout::BoardLayout<'a>,
+    board_tiles: &[u8],
+) {
+    print!("  ");
+    for c in 0..board_layout.dim().cols {
+        print!(" {}", ((c as u8) + 0x61) as char);
+    }
+    println!();
+    print!("  +");
+    for _ in 1..board_layout.dim().cols {
+        print!("--");
+    }
+    println!("-+");
+    for r in 0..board_layout.dim().rows {
+        print!("{:2}|", r + 1);
+        for c in 0..board_layout.dim().cols {
+            if c > 0 {
+                print!(" ")
+            }
+            print!("{}", board_label(alphabet, board_layout, board_tiles, r, c));
+        }
+        println!("|{}", r + 1);
+    }
+    print!("  +");
+    for _ in 1..board_layout.dim().cols {
+        print!("--");
+    }
+    println!("-+");
+    print!("  ");
+    for c in 0..board_layout.dim().cols {
+        print!(" {}", ((c as u8) + 0x61) as char);
+    }
+    println!();
+}

@@ -1,44 +1,6 @@
 use super::{alphabet, display, error, game_config, klv, kwg, movegen};
 use rand::prelude::*;
 
-fn print_board<'a>(game_config: &game_config::GameConfig<'a>, board_tiles: &[u8]) {
-    let alphabet = game_config.alphabet();
-    let board_layout = game_config.board_layout();
-    print!("  ");
-    for c in 0..board_layout.dim().cols {
-        print!(" {}", ((c as u8) + 0x61) as char);
-    }
-    println!();
-    print!("  +");
-    for _ in 1..board_layout.dim().cols {
-        print!("--");
-    }
-    println!("-+");
-    for r in 0..board_layout.dim().rows {
-        print!("{:2}|", r + 1);
-        for c in 0..board_layout.dim().cols {
-            if c > 0 {
-                print!(" ")
-            }
-            print!(
-                "{}",
-                display::board_label(alphabet, board_layout, board_tiles, r, c)
-            );
-        }
-        println!("|{}", r + 1);
-    }
-    print!("  +");
-    for _ in 1..board_layout.dim().cols {
-        print!("--");
-    }
-    println!("-+");
-    print!("  ");
-    for c in 0..board_layout.dim().cols {
-        print!(" {}", ((c as u8) + 0x61) as char);
-    }
-    println!();
-}
-
 pub struct Bag(pub Vec<u8>);
 
 impl Bag {
@@ -154,7 +116,7 @@ pub fn main() -> error::Returns<()> {
     }
 
     loop {
-        print_board(game_config, &board_tiles);
+        display::print_board(&alphabet, &board_layout, &board_tiles);
         println!(
             "player 1: {}, player 2: {}, turn: player {}",
             scores[0],
@@ -253,7 +215,7 @@ pub fn main() -> error::Returns<()> {
         println!();
 
         if rack.is_empty() {
-            print_board(game_config, &board_tiles);
+            display::print_board(&alphabet, &board_layout, &board_tiles);
             println!(
                 "player 1: {}, player 2: {}, player {} went out (scores are before leftovers)",
                 scores[0],
@@ -272,7 +234,7 @@ pub fn main() -> error::Returns<()> {
         }
 
         if zero_turns >= 6 {
-            print_board(game_config, &board_tiles);
+            display::print_board(&alphabet, &board_layout, &board_tiles);
             println!(
                 "player 1: {}, player 2: {}, player {} ended game by making sixth zero score",
                 scores[0],
