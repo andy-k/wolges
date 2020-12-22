@@ -639,12 +639,12 @@ pub fn write_play(board_snapshot: &BoardSnapshot, play: &Play, s: &mut String) {
     }
 }
 
-pub struct ReusableWorkingBuffer {
+pub struct KurniaMoveGenerator {
     working_buffer: WorkingBuffer,
     pub plays: Vec<ValuedMove>,
 }
 
-impl ReusableWorkingBuffer {
+impl KurniaMoveGenerator {
     pub fn new(game_config: &game_config::GameConfig) -> Self {
         Self {
             working_buffer: WorkingBuffer::new(game_config),
@@ -653,7 +653,7 @@ impl ReusableWorkingBuffer {
     }
 
     // this does not alloc except for growing the results and exchange_buffer
-    pub fn kurnia_gen_moves_alloc<'a>(
+    pub fn gen_moves_alloc<'a>(
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a>,
         rack: &'a [u8],

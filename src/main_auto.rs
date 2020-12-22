@@ -26,7 +26,7 @@ pub fn main() -> error::Returns<()> {
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
-    let mut reusable_working_buffer = movegen::ReusableWorkingBuffer::new(game_config);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
     let mut zero_turns = 0;
     let mut scores = [0, 0];
@@ -79,8 +79,8 @@ pub fn main() -> error::Returns<()> {
             klv: &klv,
         };
 
-        reusable_working_buffer.kurnia_gen_moves_alloc(board_snapshot, &rack, 15);
-        let plays = &reusable_working_buffer.plays;
+        move_generator.gen_moves_alloc(board_snapshot, &rack, 15);
+        let plays = &move_generator.plays;
 
         println!("found {} moves", plays.len());
         for play in plays.iter() {
