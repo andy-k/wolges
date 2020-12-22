@@ -195,11 +195,10 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     ) {
         let score = main_score * (word_multiplier as i16)
             + perpendicular_score
-            + if env.num_played >= env.board_snapshot.game_config.rack_size() {
-                50
-            } else {
-                0
-            };
+            + env
+                .board_snapshot
+                .game_config
+                .num_played_bonus(env.num_played);
         (env.callback)(
             idx_left,
             &env.word_buffer[(idx_left as usize)..(idx_right as usize)],

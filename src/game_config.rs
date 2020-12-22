@@ -31,6 +31,19 @@ impl<'a> GameConfig<'a> {
             GameConfig::Static(x) => x.rack_size,
         }
     }
+
+    #[inline(always)]
+    pub fn num_played_bonus(&self, num_played: i8) -> i16 {
+        match self {
+            GameConfig::Static(x) => {
+                if num_played >= x.rack_size {
+                    50
+                } else {
+                    0
+                }
+            }
+        }
+    }
 }
 
 pub static COMMON_ENGLISH_GAME_CONFIG: GameConfig = GameConfig::Static(StaticGameConfig {
