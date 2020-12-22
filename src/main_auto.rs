@@ -223,7 +223,7 @@ pub fn main() -> error::Returns<()> {
             break;
         }
 
-        if zero_turns >= 6 {
+        if zero_turns >= game_state.players.len() * 3 {
             display::print_board(
                 &game_state.game_config.alphabet(),
                 &game_state.game_config.board_layout(),
@@ -233,7 +233,7 @@ pub fn main() -> error::Returns<()> {
                 print!("player {}: {}, ", i, player.score);
             }
             println!(
-                "player {} ended game by making sixth zero score",
+                "player {} ended game by making yet another zero score",
                 game_state.turn + 1
             );
             for mut player in game_state.players.iter_mut() {
