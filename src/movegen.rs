@@ -12,6 +12,7 @@ struct WorkingBuffer {
     cross_set_for_across_plays: Box<[CrossSet]>, // r*c
     cross_set_for_down_plays: Box<[CrossSet]>,   // c*r
     num_tiles_on_board: u16,
+    exchange_buffer: Vec<u8>, // rack.len()
 }
 
 impl WorkingBuffer {
@@ -26,6 +27,7 @@ impl WorkingBuffer {
             cross_set_for_down_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
                 .into_boxed_slice(),
             num_tiles_on_board: 0,
+            exchange_buffer: Vec::new(),
         })
     }
 }
@@ -662,7 +664,6 @@ pub fn kurnia_gen_moves_alloc<'a>(
     let num_tiles_on_board = working_buffer.num_tiles_on_board;
     let bag_is_empty = num_tiles_on_board + 2 * (board_snapshot.game_config.rack_size() as u16)
         >= alphabet.num_tiles();
-    let initial_rack_tally = working_buffer.rack_tally.clone();
 
     let play_out_bonus = if bag_is_empty {
         2 * ((0u8..)
@@ -756,7 +757,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
             );
         };
 
-    let found_exchange_move = |rack_tally: &[u8]| {
+    let found_exchange_move = |rack_tally: &[u8], exchanged_tiles: &[u8]| {
         let leave_value = if bag_is_empty {
             0.0
         } else {
@@ -778,24 +779,11 @@ pub fn kurnia_gen_moves_alloc<'a>(
             max_gen,
             leave_value + other_adjustments,
             || {
-                let num_exchanged: u16 = initial_rack_tally
-                    .iter()
-                    .zip(rack_tally)
-                    .map(|(num_initial, num_kept)| (num_initial - num_kept) as u16)
-                    .sum();
-                if num_exchanged == 0 {
+                if exchanged_tiles.is_empty() {
                     return Play::Pass;
                 }
-                let mut leave_vec = Vec::with_capacity(num_exchanged as usize);
-                for (tile, (num_initial, num_kept)) in
-                    (0u8..).zip(initial_rack_tally.iter().zip(rack_tally))
-                {
-                    for _ in *num_kept..*num_initial {
-                        leave_vec.push(tile);
-                    }
-                }
                 Play::Exchange {
-                    tiles: leave_vec[..].into(),
+                    tiles: exchanged_tiles.into(),
                 }
             },
         );
@@ -823,6 +811,9 @@ fn kurnia_init_working_buffer<'a>(
     working_buffer: &mut WorkingBuffer,
     rack: &'a [u8],
 ) {
+    working_buffer.exchange_buffer.clear();
+    working_buffer.exchange_buffer.reserve(rack.len());
+
     working_buffer.rack_tally.iter_mut().for_each(|m| *m = 0);
     for tile in &rack[..] {
         working_buffer.rack_tally[*tile as usize] += 1;
@@ -835,45 +826,55 @@ fn kurnia_init_working_buffer<'a>(
         .count() as u16;
 }
 
-fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8])>(
+fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
     board_snapshot: &'a BoardSnapshot<'a>,
     working_buffer: &mut WorkingBuffer,
     mut found_exchange_move: FoundExchangeMove,
 ) {
-    struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
+    working_buffer.exchange_buffer.clear(); // should be no-op
+    struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], &[u8])> {
         found_exchange_move: FoundExchangeMove,
         rack_tally: &'a mut [u8],
+        exchange_buffer: &'a mut Vec<u8>,
     }
-    fn generate_exchanges<'a, FoundExchangeMove: FnMut(&[u8])>(
+    fn generate_exchanges<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
         env: &mut ExchangeEnv<'a, FoundExchangeMove>,
         mut idx: u8,
     ) {
-        while idx > 0 && env.rack_tally[idx as usize - 1] == 0 {
-            idx -= 1;
+        let rack_tally_len = env.rack_tally.len();
+        while (idx as usize) < rack_tally_len && env.rack_tally[idx as usize] == 0 {
+            idx += 1;
         }
-        if idx == 0 {
-            (env.found_exchange_move)(&env.rack_tally);
+        if idx as usize >= rack_tally_len {
+            (env.found_exchange_move)(&env.rack_tally, &env.exchange_buffer);
             return;
         }
-        idx -= 1;
-        for available in 0..env.rack_tally[idx as usize] + 1 {
-            env.rack_tally[idx as usize] = available;
-            generate_exchanges(env, idx);
+        let original_count = env.rack_tally[idx as usize];
+        let vec_len = env.exchange_buffer.len();
+        loop {
+            generate_exchanges(env, idx + 1);
+            if env.rack_tally[idx as usize] == 0 {
+                break;
+            }
+            env.rack_tally[idx as usize] -= 1;
+            env.exchange_buffer.push(idx);
         }
+        env.rack_tally[idx as usize] = original_count;
+        env.exchange_buffer.truncate(vec_len);
     }
     if working_buffer.num_tiles_on_board + 3 * (board_snapshot.game_config.rack_size() as u16)
         <= board_snapshot.game_config.alphabet().num_tiles()
     {
-        let initial_idx = working_buffer.rack_tally.len() as u8;
         generate_exchanges(
             &mut ExchangeEnv {
                 found_exchange_move,
                 rack_tally: &mut working_buffer.rack_tally,
+                exchange_buffer: &mut working_buffer.exchange_buffer,
             },
-            initial_idx,
+            0,
         );
     } else {
-        found_exchange_move(&working_buffer.rack_tally);
+        found_exchange_move(&working_buffer.rack_tally, &working_buffer.exchange_buffer);
     }
 }
 
