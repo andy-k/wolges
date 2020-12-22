@@ -197,20 +197,16 @@ pub fn main() -> error::Returns<()> {
                 movegen::write_play(board_snapshot, &play.play, &mut s);
                 println!("{} {}", play.equity, s);
             }
+            s.clear();
+            movegen::write_play(board_snapshot, &plays[0].play, &mut s);
+            println!("making top move: {}", s);
         }
 
         zero_turns += 1;
-        print!("making top move: ");
         let play = &plays[0]; // assume at least there's always Pass
         match &play.play {
-            movegen::Play::Pass => {
-                print!("Pass");
-            }
+            movegen::Play::Pass => {}
             movegen::Play::Exchange { tiles } => {
-                print!("Exch. ");
-                for &tile in tiles.iter() {
-                    print!("{}", alphabet.from_board(tile).unwrap());
-                }
                 use_tiles(&mut rack, tiles.iter().copied())?;
                 for _ in 0..std::cmp::min(rack_size - rack.len(), bag.0.len()) {
                     rack.push(bag.pop().unwrap());
@@ -224,40 +220,11 @@ pub fn main() -> error::Returns<()> {
                 word,
                 score,
             } => {
-                if *down {
-                    print!("{}{}", (*lane as u8 + 0x41) as char, idx + 1);
-                } else {
-                    print!("{}{}", lane + 1, (*idx as u8 + 0x41) as char);
-                }
-                print!(" ");
                 let strider = if *down {
                     dim.down(*lane)
                 } else {
                     dim.across(*lane)
                 };
-                let mut inside = false;
-                for (i, &tile) in (*idx..).zip(word.iter()) {
-                    if tile == 0 {
-                        if !inside {
-                            print!("(");
-                            inside = true;
-                        }
-                        print!(
-                            "{}",
-                            alphabet.from_board(board_tiles[strider.at(i)]).unwrap()
-                        );
-                    } else {
-                        if inside {
-                            print!(")");
-                            inside = false;
-                        }
-                        print!("{}", alphabet.from_board(tile).unwrap());
-                    }
-                }
-                if inside {
-                    print!(")");
-                }
-                print!(" {}", score);
 
                 // place the tiles
                 for (i, &tile) in (*idx..).zip(word.iter()) {
@@ -285,7 +252,6 @@ pub fn main() -> error::Returns<()> {
                 }
             }
         }
-        println!();
         println!();
 
         if rack.is_empty() {
