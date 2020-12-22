@@ -479,6 +479,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         }
     }
 
+    #[inline(always)]
     fn gen_moves_from<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         env: &mut Env<CallbackType>,
         single_tile_plays: bool,
