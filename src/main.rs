@@ -494,16 +494,24 @@ fn main() -> error::Returns<()> {
 
             let mut rack = &mut racks[turn];
 
-            let plays = movegen::kurnia_gen_moves_alloc(
-                &movegen::BoardSnapshot {
-                    board_tiles: &board_tiles,
-                    game_config,
-                    kwg: &kwg,
-                    klv: &klv,
-                },
-                &rack,
-                15,
-            );
+            let board_snapshot = &movegen::BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config,
+                kwg: &kwg,
+                klv: &klv,
+            };
+
+            let plays = movegen::kurnia_gen_moves_alloc(board_snapshot, &rack, 15);
+
+            {
+                println!("found {} moves", plays.len());
+                let mut s = String::new();
+                for play in plays.iter() {
+                    s.clear();
+                    movegen::write_play(board_snapshot, &play.play, &mut s);
+                    println!("{} {}", play.equity, s);
+                }
+            }
 
             zero_turns += 1;
             print!("making top move: ");

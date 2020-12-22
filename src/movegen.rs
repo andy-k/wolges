@@ -794,15 +794,6 @@ pub fn kurnia_gen_moves_alloc<'a>(
 
     let mut result_vec = found_moves.into_inner().into_vec();
     result_vec.sort_unstable();
-    println!("found {} moves", result_vec.len());
-
-    let mut s = String::new();
-    for play in result_vec.iter() {
-        s.clear();
-        write_play(board_snapshot, &play.play, &mut s);
-        println!("{} {}", play.equity, s);
-    }
-
     result_vec
 }
 
