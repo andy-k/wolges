@@ -681,13 +681,17 @@ pub fn kurnia_gen_moves_alloc<'a>(
         0
     };
 
+    let leave_value_from_tally = |rack_tally: &[u8]| {
+        if bag_is_empty {
+            0.0
+        } else {
+            board_snapshot.klv.leave_value_from_tally(rack_tally)
+        }
+    };
+
     let found_place_move =
         |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-            let leave_value = if bag_is_empty {
-                0.0
-            } else {
-                board_snapshot.klv.leave_value_from_tally(rack_tally)
-            };
+            let leave_value = leave_value_from_tally(rack_tally);
             let other_adjustments = if num_tiles_on_board == 0 {
                 let num_lanes = if down { dim.cols } else { dim.rows };
                 let strider1 = if lane > 0 {
@@ -758,11 +762,7 @@ pub fn kurnia_gen_moves_alloc<'a>(
         };
 
     let found_exchange_move = |rack_tally: &[u8], exchanged_tiles: &[u8]| {
-        let leave_value = if bag_is_empty {
-            0.0
-        } else {
-            board_snapshot.klv.leave_value_from_tally(rack_tally)
-        };
+        let leave_value = leave_value_from_tally(rack_tally);
         let other_adjustments = if num_tiles_on_board == 0 {
             0.0
         } else if bag_is_empty {
