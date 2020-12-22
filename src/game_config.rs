@@ -36,11 +36,8 @@ impl<'a> GameConfig<'a> {
     pub fn num_played_bonus(&self, num_played: i8) -> i16 {
         match self {
             GameConfig::Static(x) => {
-                if num_played >= x.rack_size {
-                    50
-                } else {
-                    0
-                }
+                // branchless
+                50 & -((num_played >= x.rack_size) as i16)
             }
         }
     }

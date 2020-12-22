@@ -580,7 +580,7 @@ fn main() -> error::Returns<()> {
                         &mut rack,
                         word.iter().filter_map(|&tile| {
                             if tile != 0 {
-                                Some(if tile & 0x80 == 0 { tile } else { 0 })
+                                Some(tile & !((tile as i8) >> 7) as u8)
                             } else {
                                 None
                             }

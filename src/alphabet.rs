@@ -60,7 +60,7 @@ impl<'a> Alphabet<'a> {
 
     #[inline(always)]
     pub fn score(&self, idx: u8) -> i8 {
-        self.get(if idx & 0x80 == 0 { idx } else { 0 }).score
+        self.get(idx & !((idx as i8) >> 7) as u8).score
     }
 
     #[inline(always)]

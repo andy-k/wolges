@@ -242,9 +242,9 @@ impl StatesDefragger<'_> {
         let defragged_arc_index = self.destination[arc_index as usize];
         out[0] = defragged_arc_index as u8;
         out[1] = (defragged_arc_index >> 8) as u8;
-        out[2] = ((defragged_arc_index >> 16) & 0x3f
-            | if is_end.0 { 0x40 } else { 0 }
-            | if accepts.0 { 0x80 } else { 0 }) as u8;
+        out[2] = (((defragged_arc_index >> 16) & 0x3f) as u8)
+            | (0x40 & -(is_end.0 as i8) as u8)
+            | (0x80 & -(accepts.0 as i8) as u8);
         out[3] = tile;
     }
 

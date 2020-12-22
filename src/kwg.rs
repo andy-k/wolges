@@ -76,7 +76,7 @@ impl Kwg {
         };
         if word_counts[p as usize] == 0 {
             word_counts[p as usize] = !0; // marker
-            word_counts[p as usize] = if self[p].accepts() { 1 } else { 0 }
+            word_counts[p as usize] = self[p].accepts() as u32
                 + if self[p].arc_index() != 0 {
                     self.count_words_at(&mut word_counts, self[p].arc_index())
                 } else {
