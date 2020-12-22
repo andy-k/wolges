@@ -2,6 +2,7 @@
 mod error;
 
 mod alphabet;
+mod bag;
 mod bites;
 mod board_layout;
 mod build;

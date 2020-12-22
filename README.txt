@@ -83,6 +83,10 @@ does not define how strings are parsed into tiles as that is a
 non-deterministic process in the general case and is only useful when building
 the word graph.
 
+bag stores a bag. A new bag is sorted, shuffle it first. Tiles are drawn by
+popping from the end. When putting back tiles each returned tile is inserted at
+a random position but the rest of the bag maintains the original order.
+
 bites implements a value type that stores bytes. Assuming usize is 64 bits, a
 Vec takes 24 bytes and heap, and a boxed slice takes 16 bytes and heap. Given
 that a typical rack is just 7 bytes, storing 10000 moves takes too much space
