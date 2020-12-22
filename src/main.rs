@@ -447,6 +447,7 @@ fn main() -> error::Returns<()> {
         let dim = board_layout.dim();
         let mut board_tiles = vec![0u8; (dim.rows as usize) * (dim.cols as usize)];
         let alphabet = game_config.alphabet();
+        let rack_size = game_config.rack_size() as usize;
         let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
 
         let mut bag = Bag::new(&alphabet);
@@ -458,11 +459,11 @@ fn main() -> error::Returns<()> {
         }
         println!();
 
-        let mut racks = [Vec::with_capacity(7), Vec::with_capacity(7)];
-        for _ in 0..7 {
+        let mut racks = [Vec::with_capacity(rack_size), Vec::with_capacity(rack_size)];
+        for _ in 0..rack_size {
             racks[0].push(bag.pop().unwrap());
         }
-        for _ in 0..7 {
+        for _ in 0..rack_size {
             racks[1].push(bag.pop().unwrap());
         }
 
@@ -517,7 +518,7 @@ fn main() -> error::Returns<()> {
                         print!("{}", alphabet.from_board(tile).unwrap());
                     }
                     use_tiles(&mut rack, tiles.iter().copied())?;
-                    for _ in 0..std::cmp::min(7 - rack.len(), bag.0.len()) {
+                    for _ in 0..std::cmp::min(rack_size - rack.len(), bag.0.len()) {
                         rack.push(bag.pop().unwrap());
                     }
                     bag.put_back(&mut rng, &tiles);
@@ -585,7 +586,7 @@ fn main() -> error::Returns<()> {
                             }
                         }),
                     )?;
-                    for _ in 0..std::cmp::min(7 - rack.len(), bag.0.len()) {
+                    for _ in 0..std::cmp::min(rack_size - rack.len(), bag.0.len()) {
                         rack.push(bag.pop().unwrap());
                     }
                 }
