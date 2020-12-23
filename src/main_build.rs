@@ -213,7 +213,7 @@ pub fn main() -> error::Returns<()> {
             &read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?,
         )?,
     )?;
-    if false {
+    if true {
         let t0 = std::time::Instant::now();
         std::fs::write(
             "osps42-dawg.kwg",
@@ -227,7 +227,7 @@ pub fn main() -> error::Returns<()> {
             t0.elapsed()
         );
     }
-    if false {
+    if true {
         let t0 = std::time::Instant::now();
         std::fs::write(
             "osps42.kwg",
