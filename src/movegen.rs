@@ -72,32 +72,27 @@ fn gen_cross_set<'a>(
         let b = board_snapshot.board_tiles[strider.at(j)];
         if b != 0 {
             // board has tile
-            if p >= 0 {
-                // include current tile
-                p = board_snapshot.kwg.seek(p, b & 0x7f);
-            }
+            // include current tile
+            p = board_snapshot.kwg.seek(p, b & 0x7f);
             score += alphabet.score(b) as i16;
             if j == 0 || board_snapshot.board_tiles[strider.at(j - 1)] == 0 {
                 // there is a sequence of tiles from j inclusive to k exclusive
                 if k < len && !(k + 1 < len && board_snapshot.board_tiles[strider.at(k + 1)] != 0) {
                     // board[k + 1] is empty, compute cross_set[k].
                     let mut bits = 1u64;
-                    if p > 0 {
-                        // p = DCBA
-                        let q = board_snapshot.kwg.seek(p, 0);
+                    // p = DCBA
+                    let q = board_snapshot.kwg.seek(p, 0);
+                    if q > 0 {
+                        // q = DCBA@
+                        let mut q = board_snapshot.kwg[q].arc_index();
                         if q > 0 {
-                            // q = DCBA@
-                            let mut q = board_snapshot.kwg[q].arc_index();
-                            if q > 0 {
-                                loop {
-                                    if board_snapshot.kwg[q].accepts() {
-                                        bits |= 1 << board_snapshot.kwg[q].tile();
-                                    }
-                                    if board_snapshot.kwg[q].is_end() {
-                                        break;
-                                    }
-                                    q += 1;
+                            loop {
+                                bits |= (board_snapshot.kwg[q].accepts() as u64)
+                                    << board_snapshot.kwg[q].tile();
+                                if board_snapshot.kwg[q].is_end() {
+                                    break;
                                 }
+                                q += 1;
                             }
                         }
                     }
@@ -126,8 +121,8 @@ fn gen_cross_set<'a>(
                                             break;
                                         }
                                     }
-                                    if q > 0 && board_snapshot.kwg[q].accepts() {
-                                        bits |= 1 << tile;
+                                    if q > 0 {
+                                        bits |= (board_snapshot.kwg[q].accepts() as u64) << tile;
                                     }
                                 }
                                 if board_snapshot.kwg[p].is_end() {
@@ -303,13 +298,10 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        if has_perpendicular {
-                            perpendicular_score
-                                + (this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16)
-                        } else {
-                            perpendicular_score
-                        },
+                        perpendicular_score
+                            + (-(has_perpendicular as i16)
+                                & ((this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16))),
                         new_word_multiplier,
                         is_unique,
                     );
@@ -328,13 +320,10 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        if has_perpendicular {
-                            perpendicular_score
-                                + (this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16)
-                        } else {
-                            perpendicular_score
-                        },
+                        perpendicular_score
+                            + (-(has_perpendicular as i16)
+                                & ((this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16))),
                         new_word_multiplier,
                         is_unique,
                     );
@@ -433,13 +422,10 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        if has_perpendicular {
-                            perpendicular_score
-                                + (this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16)
-                        } else {
-                            perpendicular_score
-                        },
+                        perpendicular_score
+                            + (-(has_perpendicular as i16)
+                                & ((this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16))),
                         new_word_multiplier,
                         is_unique,
                     );
@@ -458,13 +444,10 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        if has_perpendicular {
-                            perpendicular_score
-                                + (this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16)
-                        } else {
-                            perpendicular_score
-                        },
+                        perpendicular_score
+                            + (-(has_perpendicular as i16)
+                                & ((this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16))),
                         new_word_multiplier,
                         is_unique,
                     );
@@ -502,10 +485,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         }
         {
             // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
-            let mut leftmost = leftmost; // shadowing
-            if leftmost > 0 {
-                leftmost += 1;
-            }
+            let leftmost = leftmost + (leftmost > 0) as i8; // shadowing
             for anchor in (leftmost..rightmost).rev() {
                 let cross_set_bits = cross_set_slice[anchor as usize].bits;
                 if cross_set_bits != 0 {
