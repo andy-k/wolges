@@ -16,6 +16,7 @@ mod main_build;
 mod main_lex;
 mod matrix;
 mod movegen;
+mod movegen_branch;
 
 fn main() -> error::Returns<()> {
     if false {
