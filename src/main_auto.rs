@@ -1,4 +1,4 @@
-use super::{alphabet, bag, display, error, game_config, klv, kwg, movegen, movegen_branch};
+use super::{alphabet, bag, display, error, game_config, klv, kwg, movegen};
 use rand::prelude::*;
 
 fn use_tiles<II: IntoIterator<Item = u8>>(
@@ -131,7 +131,6 @@ pub fn main() -> error::Returns<()> {
     //let game_config = &game_config::POLISH_GAME_CONFIG;
     let _ = &game_config::POLISH_GAME_CONFIG;
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
-    let mut move_generator_branch = movegen_branch::KurniaMoveGenerator::new(game_config);
 
     let mut game_state = GameState::new(game_config);
 
@@ -196,24 +195,6 @@ pub fn main() -> error::Returns<()> {
             &move_generator.plays.len()
         );
 
-        {
-            let board_snapshot = &movegen_branch::BoardSnapshot {
-                board_tiles: &game_state.board_tiles,
-                game_config,
-                kwg: &kwg,
-                klv: &klv,
-            };
-
-            let t0 = std::time::Instant::now();
-            for _ in 0..1000 {
-                move_generator_branch.gen_moves_alloc(board_snapshot, &current_player.rack, !0);
-            }
-            println!(
-                "repeating movegen took {:?} for {} plays (with branching)",
-                t0.elapsed(),
-                &move_generator_branch.plays.len()
-            );
-        }
         move_generator.gen_moves_alloc(board_snapshot, &current_player.rack, 15);
         let plays = &move_generator.plays;
 
