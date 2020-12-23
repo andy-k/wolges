@@ -18,12 +18,12 @@ mod matrix;
 mod movegen;
 
 fn main() -> error::Returns<()> {
-    if true {
+    if false {
         main_build::main()?;
         return Ok(());
     }
 
-    if false {
+    if true {
         main_lex::main()?;
         return Ok(());
     }

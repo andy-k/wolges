@@ -41,7 +41,7 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
 }
 
 pub fn main() -> error::Returns<()> {
-    if true {
+    if false {
         let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("osps42.kwg")?);
         print_dawg(&alphabet::POLISH_ALPHABET, &kwg);
         return Ok(());

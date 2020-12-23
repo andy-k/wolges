@@ -142,9 +142,7 @@ impl Kwg {
                 word_counts[p as usize] - word_counts[p as usize + 1]
             };
             if idx < words_here {
-                if self[p].accepts() {
-                    idx -= 1;
-                }
+                idx -= self[p].accepts() as u32;
                 out(self[p].tile());
                 p = self[p].arc_index();
             } else {
@@ -173,11 +171,9 @@ impl Kwg {
                 p += 1;
             }
             if remaining == 0 {
-                return if self[p].accepts() { idx } else { !0 };
+                return idx | ((self[p].accepts() as i32 - 1) as u32);
             }
-            if self[p].accepts() {
-                idx += 1;
-            }
+            idx += self[p].accepts() as u32;
             p = self[p].arc_index();
         }
         !0
@@ -209,12 +205,10 @@ impl Kwg {
                         tile = t;
                     }
                     None => {
-                        return if self[p].accepts() { idx } else { !0 };
+                        return idx | ((self[p].accepts() as i32 - 1) as u32);
                     }
                 }
-                if self[p].accepts() {
-                    idx += 1;
-                }
+                idx += self[p].accepts() as u32;
                 p = self[p].arc_index();
             }
         }
