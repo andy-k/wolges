@@ -79,10 +79,8 @@ pub fn to_macondo<'a>(
         env.nodes.push(0);
         loop {
             let tile = env.kwg[p].tile();
-            if env.kwg[p].accepts() {
-                // Remap later after dedup.
-                letter_set_bitset |= 1 << tile;
-            }
+            // Remap later after dedup.
+            letter_set_bitset |= (env.kwg[p].accepts() as u64) << tile;
             if env.kwg[p].arc_index() != 0 {
                 arc_set_bitset |= 1 << tile;
                 env.nodes.push(0); // reserve the space first
@@ -171,9 +169,8 @@ pub fn to_macondo<'a>(
         let z = w + (letter_set_index as usize) * 8;
         let mut remapped_letter_set_bitset = 0u64;
         for tile in 1..alphabet.len() {
-            if letter_set_bitset & (1 << tile) != 0 {
-                remapped_letter_set_bitset |= 1 << tile_mapping[tile as usize];
-            }
+            remapped_letter_set_bitset |=
+                ((letter_set_bitset & (1 << tile) != 0) as u64) << tile_mapping[tile as usize];
         }
         bin[z..z + 8].copy_from_slice(&(remapped_letter_set_bitset as u64).to_be_bytes());
     }
