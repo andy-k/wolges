@@ -41,6 +41,11 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
 }
 
 pub fn main() -> error::Returns<()> {
+    if true {
+        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("osps42.kwg")?);
+        print_dawg(&alphabet::POLISH_ALPHABET, &kwg);
+        return Ok(());
+    }
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
 
