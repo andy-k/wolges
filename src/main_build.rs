@@ -321,6 +321,33 @@ pub fn main() -> error::Returns<()> {
             )?;
         }
         println!("{:?} for exporting many files", t0.elapsed());
+        if true {
+            let t0 = std::time::Instant::now();
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("osps42.kwg")?);
+            println!("{:?} for rereading osps42.kwg", t0.elapsed());
+            let t0 = std::time::Instant::now();
+            std::fs::write(
+                "OSPS42.dawg",
+                lexport::to_macondo(
+                    &kwg,
+                    &alphabet::POLISH_ALPHABET,
+                    "OSPS42",
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            println!("{:?} for exporting osps42 dawg", t0.elapsed());
+            let t0 = std::time::Instant::now();
+            std::fs::write(
+                "OSPS42.gaddag",
+                lexport::to_macondo(
+                    &kwg,
+                    &alphabet::POLISH_ALPHABET,
+                    "OSPS42",
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
+            println!("{:?} for exporting osps42 gaddag", t0.elapsed());
+        }
     }
 
     if true {
@@ -339,7 +366,6 @@ pub fn main() -> error::Returns<()> {
         v.sort_unstable();
         v.dedup();
         let v = v.into_boxed_slice();
-        println!("num dedup: {}", v.len());
         let v_bits_bytes = (v.len() + 7) / 8;
         let mut v_csw19_bits = vec![0u8; v_bits_bytes];
         let mut v_ecwl_bits = vec![0u8; v_bits_bytes];
