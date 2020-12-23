@@ -185,16 +185,6 @@ pub fn main() -> error::Returns<()> {
             klv: &klv,
         };
 
-        let t0 = std::time::Instant::now();
-        for _ in 0..1000 {
-            move_generator.gen_moves_alloc(board_snapshot, &current_player.rack, !0);
-        }
-        println!(
-            "repeating movegen took {:?} for {} plays",
-            t0.elapsed(),
-            &move_generator.plays.len()
-        );
-
         move_generator.gen_moves_alloc(board_snapshot, &current_player.rack, 15);
         let plays = &move_generator.plays;
 
