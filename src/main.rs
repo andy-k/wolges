@@ -17,7 +17,7 @@ mod matrix;
 mod movegen;
 
 fn main() -> error::Returns<()> {
-    if false {
+    if true {
         main_build::main()?;
         return Ok(());
     }
