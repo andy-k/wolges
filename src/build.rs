@@ -1,6 +1,6 @@
 use super::{bites, error};
 
-struct MyHasher(u64);
+pub struct MyHasher(u64);
 
 impl std::hash::Hasher for MyHasher {
     fn finish(&self) -> u64 {
@@ -19,7 +19,7 @@ impl Default for MyHasher {
     }
 }
 
-type MyHasherDefault = std::hash::BuildHasherDefault<MyHasher>;
+pub type MyHasherDefault = std::hash::BuildHasherDefault<MyHasher>;
 
 // Unconfirmed entries.
 // Memory wastage notes:

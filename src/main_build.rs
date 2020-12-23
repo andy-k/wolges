@@ -1,4 +1,4 @@
-use super::{alphabet, bites, build, error, kwg};
+use super::{alphabet, bites, build, error, kwg, lexport};
 
 struct AlphabetReader<'a> {
     supported_tiles: Box<[(u8, &'a str)]>,
@@ -181,13 +181,17 @@ pub fn main() -> error::Returns<()> {
     }
     assert_eq!(w, bin.len());
     std::fs::write("leaves.klv", bin)?;
-    std::fs::write(
-        "csw19.kwg",
-        build::build(
-            build::BuildFormat::Gaddawg,
-            &read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?,
-        )?,
-    )?;
+    {
+        let t0 = std::time::Instant::now();
+        std::fs::write(
+            "csw19.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?,
+            )?,
+        )?;
+        println!("{:?} for reading+building+writing csw19 kwg", t0.elapsed());
+    }
     std::fs::write(
         "ecwl.kwg",
         build::build(
@@ -209,7 +213,7 @@ pub fn main() -> error::Returns<()> {
             &read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?,
         )?,
     )?;
-    {
+    if false {
         let t0 = std::time::Instant::now();
         std::fs::write(
             "osps42-dawg.kwg",
@@ -223,7 +227,7 @@ pub fn main() -> error::Returns<()> {
             t0.elapsed()
         );
     }
-    {
+    if false {
         let t0 = std::time::Instant::now();
         std::fs::write(
             "osps42.kwg",
@@ -244,6 +248,80 @@ pub fn main() -> error::Returns<()> {
             &read_english_machine_words(&std::fs::read_to_string("twl14.txt")?)?,
         )?,
     )?;
+
+    if true {
+        let t0 = std::time::Instant::now();
+        {
+            let t0 = std::time::Instant::now();
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
+            println!("{:?} for rereading csw19.kwg", t0.elapsed());
+            let t0 = std::time::Instant::now();
+            std::fs::write(
+                "CSW19.dawg",
+                lexport::to_macondo(
+                    &kwg,
+                    &alphabet::ENGLISH_ALPHABET,
+                    "CSW19",
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            println!("{:?} for exporting csw19 dawg", t0.elapsed());
+            let t0 = std::time::Instant::now();
+            std::fs::write(
+                "CSW19.gaddag",
+                lexport::to_macondo(
+                    &kwg,
+                    &alphabet::ENGLISH_ALPHABET,
+                    "CSW19",
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
+            println!("{:?} for exporting csw19 gaddag", t0.elapsed());
+        }
+        {
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl18.kwg")?);
+            std::fs::write(
+                "NWL18.dawg",
+                lexport::to_macondo(
+                    &kwg,
+                    &alphabet::ENGLISH_ALPHABET,
+                    "NWL18",
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            std::fs::write(
+                "NWL18.gaddag",
+                lexport::to_macondo(
+                    &kwg,
+                    &alphabet::ENGLISH_ALPHABET,
+                    "NWL18",
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
+        }
+        {
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("ecwl.kwg")?);
+            std::fs::write(
+                "ECWL.dawg",
+                lexport::to_macondo(
+                    &kwg,
+                    &alphabet::ENGLISH_ALPHABET,
+                    "ECWL",
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            std::fs::write(
+                "ECWL.gaddag",
+                lexport::to_macondo(
+                    &kwg,
+                    &alphabet::ENGLISH_ALPHABET,
+                    "ECWL",
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
+        }
+        println!("{:?} for exporting many files", t0.elapsed());
+    }
 
     if true {
         // this reads the files again, but this code is temporary

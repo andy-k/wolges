@@ -10,6 +10,7 @@ mod display;
 mod game_config;
 mod klv;
 mod kwg;
+mod lexport;
 mod main_auto;
 mod main_build;
 mod main_lex;

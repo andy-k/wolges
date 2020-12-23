@@ -2,6 +2,8 @@
 *.kwg
 *.klv
 *.kwi
+*.dawg
+*.gaddag
 leaves.csv
 csw19.txt
 ecwl.txt
