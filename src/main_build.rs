@@ -1,4 +1,4 @@
-use super::{bites, build, error, kwg};
+use super::{alphabet, bites, build, error, kwg};
 
 fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
     // Memory wastage notes:
@@ -42,6 +42,52 @@ fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::
         };
         machine_words.push(v[..].into());
     }
+    Ok(machine_words.into_boxed_slice())
+}
+
+fn read_polish_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
+    let t0 = std::time::Instant::now();
+    let mut machine_words = Vec::<bites::Bites>::new();
+    let alphabet = &alphabet::POLISH_ALPHABET;
+    let mut need_resorting = false;
+    for s in giant_string.lines() {
+        let mut v = Vec::with_capacity(s.len());
+        // This is generic but supports only single-char strings. It is slow.
+        for c in s.chars() {
+            if let Some(tile) = (1..alphabet.len()).find(|&tile| {
+                if let Some(label) = alphabet.from_rack(tile) {
+                    label.starts_with(c)
+                } else {
+                    false
+                }
+            }) {
+                v.push(tile);
+            } else {
+                return_error!(format!("invalid tile after {:?} in {:?}", v, s));
+            }
+        }
+        match machine_words.last() {
+            Some(previous_v) => {
+                if v[..] <= previous_v[..] {
+                    need_resorting = true;
+                }
+            }
+            None => {
+                if v.is_empty() {
+                    return_error!("first line is blank".into());
+                }
+            }
+        };
+        machine_words.push(v[..].into());
+    }
+    println!("{:?} for reading polish words", t0.elapsed());
+    if need_resorting {
+        machine_words.sort_unstable();
+    }
+    println!("{:?} for sorting polish words", t0.elapsed());
+    println!("{} words before dedup", machine_words.len());
+    machine_words.dedup();
+    println!("{} words after dedup", machine_words.len());
     Ok(machine_words.into_boxed_slice())
 }
 
@@ -113,6 +159,34 @@ pub fn main() -> error::Returns<()> {
             &read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?,
         )?,
     )?;
+    {
+        let t0 = std::time::Instant::now();
+        std::fs::write(
+            "osps42-dawg.kwg",
+            build::build(
+                build::BuildFormat::DawgOnly,
+                &read_polish_machine_words(&std::fs::read_to_string("osps42.txt")?)?,
+            )?,
+        )?;
+        println!(
+            "{:?} for reading+building+writing polish dawgonly",
+            t0.elapsed()
+        );
+    }
+    {
+        let t0 = std::time::Instant::now();
+        std::fs::write(
+            "osps42.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_polish_machine_words(&std::fs::read_to_string("osps42.txt")?)?,
+            )?,
+        )?;
+        println!(
+            "{:?} for reading+building+writing polish gaddawg",
+            t0.elapsed()
+        );
+    }
     std::fs::write(
         "twl14.kwg",
         build::build(
