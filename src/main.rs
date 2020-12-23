@@ -22,7 +22,7 @@ fn main() -> error::Returns<()> {
         return Ok(());
     }
 
-    if true {
+    if false {
         main_lex::main()?;
         return Ok(());
     }

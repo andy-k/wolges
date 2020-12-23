@@ -57,3 +57,10 @@ pub static COMMON_ENGLISH_GAME_CONFIG: GameConfig = GameConfig::Static(StaticGam
     rack_size: 7,
     num_players: 2,
 });
+
+pub static POLISH_GAME_CONFIG: GameConfig = GameConfig::Static(StaticGameConfig {
+    alphabet: &alphabet::POLISH_ALPHABET,
+    board_layout: &board_layout::COMMON_BOARD_LAYOUT,
+    rack_size: 8,
+    num_players: 3,
+});
