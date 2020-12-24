@@ -301,10 +301,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        perpendicular_score
-                            + (-(has_perpendicular as i16)
-                                & ((this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16))),
+                        if has_perpendicular {
+                            perpendicular_score
+                                + (this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16)
+                        } else {
+                            perpendicular_score
+                        },
                         new_word_multiplier,
                         is_unique,
                     );
@@ -323,10 +326,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        perpendicular_score
-                            + (-(has_perpendicular as i16)
-                                & ((this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16))),
+                        if has_perpendicular {
+                            perpendicular_score
+                                + (this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16)
+                        } else {
+                            perpendicular_score
+                        },
                         new_word_multiplier,
                         is_unique,
                     );
@@ -424,10 +430,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        perpendicular_score
-                            + (-(has_perpendicular as i16)
-                                & ((this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16))),
+                        if has_perpendicular {
+                            perpendicular_score
+                                + (this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16)
+                        } else {
+                            perpendicular_score
+                        },
                         new_word_multiplier,
                         is_unique,
                     );
@@ -446,10 +455,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        perpendicular_score
-                            + (-(has_perpendicular as i16)
-                                & ((this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16))),
+                        if has_perpendicular {
+                            perpendicular_score
+                                + (this_cross_set.score + tile_value)
+                                    * (this_premium.word_multiplier as i16)
+                        } else {
+                            perpendicular_score
+                        },
                         new_word_multiplier,
                         is_unique,
                     );
