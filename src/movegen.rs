@@ -160,6 +160,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     rack_tally: &'a mut [u8],
     strider: matrix::Strider,
     word_buffer: &'a mut [u8],
+    num_max_played: u8,
     single_tile_plays: bool,
     callback: CallbackType,
 ) {
@@ -179,6 +180,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         anchor: i8,
         leftmost: i8,
         rightmost: i8,
+        num_max_played: u8,
         num_played: i8,
         idx_left: i8,
     }
@@ -193,6 +195,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         anchor: 0,
         leftmost: 0,
         rightmost: 0,
+        num_max_played,
         num_played: 0,
         idx_left: 0,
     };
@@ -257,6 +260,9 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             );
         }
         if idx >= env.rightmost {
+            return;
+        }
+        if env.num_played as u8 >= env.num_max_played {
             return;
         }
 
@@ -372,6 +378,9 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 perpendicular_score,
                 word_multiplier,
             );
+        }
+        if env.num_played as u8 >= env.num_max_played {
+            return;
         }
 
         p = node.arc_index();
@@ -919,6 +928,7 @@ fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[
             &mut working_buffer.rack_tally,
             dim.across(row),
             &mut working_buffer.word_buffer,
+            !0,
             true,
             |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                 found_place_move(false, row, idx, word, score, rack_tally)
@@ -953,6 +963,7 @@ fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[
             &mut working_buffer.rack_tally,
             dim.down(col),
             &mut working_buffer.word_buffer,
+            !0,
             false,
             |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                 found_place_move(true, col, idx, word, score, rack_tally)
