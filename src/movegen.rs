@@ -264,20 +264,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         if p <= 0 {
             return;
         }
-        let mut this_premium = board_layout::Premium {
-            word_multiplier: 0,
-            tile_multiplier: 0,
-        };
-        let mut this_cross_set = CrossSet { bits: 0, score: 0 };
-        if idx < env.rightmost {
-            this_premium =
-                env.board_snapshot.game_config.board_layout().premiums()[env.strider.at(idx)];
-            this_cross_set = env.cross_set_slice[idx as usize].clone();
-        }
+        let this_cross_set = env.cross_set_slice[idx as usize].clone();
         if this_cross_set.bits == 1 {
             // already handled '@'
             return;
         }
+        let this_premium =
+            env.board_snapshot.game_config.board_layout().premiums()[env.strider.at(idx)];
         let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
         let this_cross_bits = if this_cross_set.bits != 0 {
             this_cross_set.bits
@@ -385,15 +378,18 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         if p <= 0 {
             return;
         }
-        let mut this_premium = board_layout::Premium {
-            word_multiplier: 0,
-            tile_multiplier: 0,
-        };
-        let mut this_cross_set = CrossSet { bits: 0, score: 0 };
+        let this_premium;
+        let this_cross_set;
         if idx >= env.leftmost {
             this_premium =
                 env.board_snapshot.game_config.board_layout().premiums()[env.strider.at(idx)];
             this_cross_set = env.cross_set_slice[idx as usize].clone();
+        } else {
+            this_premium = board_layout::Premium {
+                word_multiplier: 0,
+                tile_multiplier: 0,
+            };
+            this_cross_set = CrossSet { bits: 0, score: 0 };
         }
         let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
         let prev_is_unique = is_unique;
