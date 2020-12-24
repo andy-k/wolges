@@ -81,15 +81,15 @@ fn gen_cross_set<'a>(
                     // board[k + 1] is empty, compute cross_set[k].
                     let mut bits = 1u64;
                     // p = DCBA
-                    let q = board_snapshot.kwg.seek(p, 0);
+                    let mut q = board_snapshot.kwg.seek(p, 0);
                     if q > 0 {
                         // q = DCBA@
-                        let mut q = board_snapshot.kwg[q].arc_index();
+                        q = board_snapshot.kwg[q].arc_index();
                         if q > 0 {
                             loop {
-                                bits |= (board_snapshot.kwg[q].accepts() as u64)
-                                    << board_snapshot.kwg[q].tile();
-                                if board_snapshot.kwg[q].is_end() {
+                                let node = board_snapshot.kwg[q];
+                                bits |= (node.accepts() as u64) << node.tile();
+                                if node.is_end() {
                                     break;
                                 }
                                 q += 1;
@@ -106,7 +106,8 @@ fn gen_cross_set<'a>(
                         p = board_snapshot.kwg[p].arc_index(); // p = after DCBA
                         if p > 0 {
                             loop {
-                                let tile = board_snapshot.kwg[p].tile();
+                                let node = board_snapshot.kwg[p];
+                                let tile = node.tile();
                                 if tile != 0 {
                                     // not the gaddag marker
                                     let mut q = p;
@@ -125,7 +126,7 @@ fn gen_cross_set<'a>(
                                         bits |= (board_snapshot.kwg[q].accepts() as u64) << tile;
                                     }
                                 }
-                                if board_snapshot.kwg[p].is_end() {
+                                if node.is_end() {
                                     break;
                                 }
                                 p += 1;
@@ -240,10 +241,11 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             main_score += env.board_snapshot.game_config.alphabet().score(b) as i16;
             idx += 1;
         }
+        let node = env.board_snapshot.kwg[p];
         if idx > env.anchor + 1
             && (env.num_played + is_unique as i8) >= 2
             && idx - env.idx_left >= 2
-            && env.board_snapshot.kwg[p].accepts()
+            && node.accepts()
         {
             record(
                 env,
@@ -258,7 +260,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             return;
         }
 
-        p = env.board_snapshot.kwg[p].arc_index();
+        p = node.arc_index();
         if p <= 0 {
             return;
         }
@@ -285,7 +287,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         };
         let has_perpendicular = this_cross_set.bits & 1 != 0;
         loop {
-            let tile = env.board_snapshot.kwg[p].tile();
+            let node = env.board_snapshot.kwg[p];
+            let tile = node.tile();
             if tile != 0 && this_cross_bits & (1 << tile) != 0 {
                 if env.rack_tally[tile as usize] > 0 {
                     env.rack_tally[tile as usize] -= 1;
@@ -331,7 +334,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.rack_tally[0] += 1;
                 }
             }
-            if env.board_snapshot.kwg[p].is_end() {
+            if node.is_end() {
                 break;
             }
             p += 1;
@@ -360,10 +363,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             main_score += env.board_snapshot.game_config.alphabet().score(b) as i16;
             idx -= 1;
         }
-        if (env.num_played + is_unique as i8) >= 2
-            && env.anchor - idx >= 2
-            && env.board_snapshot.kwg[p].accepts()
-        {
+        let node = env.board_snapshot.kwg[p];
+        if (env.num_played + is_unique as i8) >= 2 && env.anchor - idx >= 2 && node.accepts() {
             record(
                 env,
                 idx + 1,
@@ -374,7 +375,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             );
         }
 
-        p = env.board_snapshot.kwg[p].arc_index();
+        p = node.arc_index();
         if p <= 0 {
             return;
         }
@@ -398,7 +399,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         };
         let has_perpendicular = this_cross_set.bits & 1 != 0;
         loop {
-            let tile = env.board_snapshot.kwg[p].tile();
+            let node = env.board_snapshot.kwg[p];
+            let tile = node.tile();
             if tile == 0 {
                 env.idx_left = idx + 1;
                 play_right(
@@ -455,7 +457,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.rack_tally[0] += 1;
                 }
             }
-            if env.board_snapshot.kwg[p].is_end() {
+            if node.is_end() {
                 break;
             }
             p += 1;

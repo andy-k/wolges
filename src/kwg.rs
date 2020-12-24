@@ -1,3 +1,4 @@
+#[derive(Clone, Copy)]
 pub struct Node(u32);
 
 impl Node {
@@ -55,13 +56,16 @@ impl Kwg {
         if p >= 0 {
             p = self[p].arc_index() as i32;
             if p > 0 {
-                while self[p].tile() != tile {
-                    if self[p].is_end() {
+                loop {
+                    let node = self[p];
+                    if node.tile() == tile {
+                        return p;
+                    }
+                    if node.is_end() {
                         return -1;
                     }
                     p += 1;
                 }
-                return p;
             }
         }
         -1 // intentionally return 0 as -1
@@ -76,13 +80,14 @@ impl Kwg {
         };
         if word_counts[p as usize] == 0 {
             word_counts[p as usize] = !0; // marker
-            word_counts[p as usize] = self[p].accepts() as u32
-                + if self[p].arc_index() != 0 {
-                    self.count_words_at(&mut word_counts, self[p].arc_index())
+            let node = self[p];
+            word_counts[p as usize] = node.accepts() as u32
+                + if node.arc_index() != 0 {
+                    self.count_words_at(&mut word_counts, node.arc_index())
                 } else {
                     0
                 }
-                + if self[p].is_end() {
+                + if node.is_end() {
                     0
                 } else {
                     self.count_words_at(&mut word_counts, p + 1)
@@ -135,25 +140,27 @@ impl Kwg {
         mut idx: u32,
         mut out: F,
     ) {
-        while !(idx == 0 && self[p].accepts()) {
-            let words_here = if self[p].is_end() {
+        let mut node = self[p];
+        while !(idx == 0 && node.accepts()) {
+            let words_here = if node.is_end() {
                 word_counts[p as usize]
             } else {
                 word_counts[p as usize] - word_counts[p as usize + 1]
             };
             if idx < words_here {
-                idx -= self[p].accepts() as u32;
-                out(self[p].tile());
-                p = self[p].arc_index();
+                idx -= node.accepts() as u32;
+                out(node.tile());
+                p = node.arc_index();
             } else {
                 idx -= words_here;
-                if self[p].is_end() {
+                if node.is_end() {
                     panic!();
                 }
                 p += 1;
             }
+            node = self[p];
         }
-        out(self[p].tile());
+        out(node.tile());
     }
 
     #[inline(always)]
@@ -163,18 +170,20 @@ impl Kwg {
             if p == 0 {
                 return !0;
             }
-            while self[p].tile() != tile {
-                if self[p].is_end() {
+            let mut node = self[p];
+            while node.tile() != tile {
+                if node.is_end() {
                     return !0;
                 }
                 idx += word_counts[p as usize] - word_counts[p as usize + 1];
                 p += 1;
+                node = self[p];
             }
             if remaining == 0 {
-                return idx | ((self[p].accepts() as i32 - 1) as u32);
+                return idx | ((node.accepts() as i32 - 1) as u32);
             }
-            idx += self[p].accepts() as u32;
-            p = self[p].arc_index();
+            idx += node.accepts() as u32;
+            p = node.arc_index();
         }
         !0
     }
@@ -189,27 +198,26 @@ impl Kwg {
     ) -> u32 {
         let mut idx = 0;
         if let Some(mut tile) = iter.next() {
-            loop {
-                if p == 0 {
-                    break;
-                }
-                while self[p].tile() != tile {
-                    if self[p].is_end() {
+            while p != 0 {
+                let mut node = self[p];
+                while node.tile() != tile {
+                    if node.is_end() {
                         return !0;
                     }
                     idx += word_counts[p as usize] - word_counts[p as usize + 1];
                     p += 1;
+                    node = self[p];
                 }
                 match iter.next() {
                     Some(t) => {
                         tile = t;
                     }
                     None => {
-                        return idx | ((self[p].accepts() as i32 - 1) as u32);
+                        return idx | ((node.accepts() as i32 - 1) as u32);
                     }
                 }
-                idx += self[p].accepts() as u32;
-                p = self[p].arc_index();
+                idx += node.accepts() as u32;
+                p = node.arc_index();
             }
         }
         !0

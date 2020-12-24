@@ -78,14 +78,15 @@ pub fn to_macondo<'a>(
         let orig_p = p;
         env.nodes.push(0);
         loop {
-            let tile = env.kwg[p].tile();
+            let node = env.kwg[p];
+            let tile = node.tile();
             // Remap later after dedup.
-            letter_set_bitset |= (env.kwg[p].accepts() as u64) << tile;
-            if env.kwg[p].arc_index() != 0 {
+            letter_set_bitset |= (node.accepts() as u64) << tile;
+            if node.arc_index() != 0 {
                 arc_set_bitset |= 1 << tile;
                 env.nodes.push(0); // reserve the space first
             }
-            if env.kwg[p].is_end() {
+            if node.is_end() {
                 break;
             }
             p += 1;
