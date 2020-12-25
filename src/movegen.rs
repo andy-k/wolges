@@ -901,8 +901,10 @@ fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[
     working_buffer: &mut WorkingBuffer,
     mut found_place_move: FoundPlaceMove,
 ) {
-    let board_layout = board_snapshot.game_config.board_layout();
+    let game_config = &board_snapshot.game_config;
+    let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
+    let max_rack_size = game_config.rack_size() as u8;
 
     // striped by row
     for col in 0..dim.cols {
@@ -928,7 +930,7 @@ fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[
             &mut working_buffer.rack_tally,
             dim.across(row),
             &mut working_buffer.word_buffer,
-            !0,
+            max_rack_size,
             true,
             |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                 found_place_move(false, row, idx, word, score, rack_tally)
@@ -963,7 +965,7 @@ fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[
             &mut working_buffer.rack_tally,
             dim.down(col),
             &mut working_buffer.word_buffer,
-            !0,
+            max_rack_size,
             false,
             |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                 found_place_move(true, col, idx, word, score, rack_tally)

@@ -6,6 +6,8 @@ pub struct Klv {
     pub scaled_leaves: Box<[i16]>,
 }
 
+pub static EMPTY_KLV_BYTES: &[u8] = b"\x01\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00";
+
 impl Klv {
     pub fn from_bytes_alloc(buf: &[u8]) -> Klv {
         let mut r = 0;

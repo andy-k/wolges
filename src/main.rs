@@ -13,11 +13,16 @@ mod kwg;
 mod lexport;
 mod main_auto;
 mod main_build;
+mod main_json;
 mod main_lex;
 mod matrix;
 mod movegen;
 
 fn main() -> error::Returns<()> {
+    if true {
+        main_json::main()?;
+        return Ok(());
+    }
     if false {
         main_build::main()?;
         return Ok(());
