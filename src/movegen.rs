@@ -119,6 +119,7 @@ fn gen_cross_set<'a>(
                                         }
                                         q = board_snapshot.kwg.seek(q, b & 0x7f);
                                         if q <= 0 {
+                                            // rust has no goto, unfortunately even opt-level=3 tests q > 0 twice.
                                             break;
                                         }
                                     }
@@ -278,17 +279,20 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         let this_premium =
             env.board_snapshot.game_config.board_layout().premiums()[env.strider.at(idx)];
         let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
-        let this_cross_bits = if this_cross_set.bits != 0 {
-            this_cross_set.bits
+        let this_cross_bits;
+        if this_cross_set.bits != 0 {
+            // turn off bit 0 so it cannot match later
+            this_cross_bits = this_cross_set.bits & !1;
         } else {
+            this_cross_bits = !1;
             is_unique = true;
-            !1
         };
-        let has_perpendicular = this_cross_set.bits & 1 != 0;
+        let perpendicular_word_multiplier =
+            this_premium.word_multiplier as i16 & -(this_cross_set.bits as i16 & 1);
         loop {
             let node = env.board_snapshot.kwg[p];
             let tile = node.tile();
-            if tile != 0 && this_cross_bits & (1 << tile) != 0 {
+            if this_cross_bits & (1 << tile) != 0 {
                 if env.rack_tally[tile as usize] > 0 {
                     env.rack_tally[tile as usize] -= 1;
                     env.num_played += 1;
@@ -300,13 +304,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        if has_perpendicular {
-                            perpendicular_score
-                                + (this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16)
-                        } else {
-                            perpendicular_score
-                        },
+                        perpendicular_score
+                            + (this_cross_set.score + tile_value) * perpendicular_word_multiplier,
                         new_word_multiplier,
                         is_unique,
                     );
@@ -325,13 +324,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx + 1,
                         p,
                         main_score + tile_value,
-                        if has_perpendicular {
-                            perpendicular_score
-                                + (this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16)
-                        } else {
-                            perpendicular_score
-                        },
+                        perpendicular_score
+                            + (this_cross_set.score + tile_value) * perpendicular_word_multiplier,
                         new_word_multiplier,
                         is_unique,
                     );
@@ -402,13 +396,18 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         }
         let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
         let prev_is_unique = is_unique;
-        let this_cross_bits = if this_cross_set.bits != 0 {
-            this_cross_set.bits
+        let this_cross_bits;
+        if idx < env.leftmost {
+            // check this case once instead of at every iteration
+            this_cross_bits = 0;
+        } else if this_cross_set.bits != 0 {
+            this_cross_bits = this_cross_set.bits;
         } else {
+            this_cross_bits = !1;
             is_unique = true;
-            !1
-        };
-        let has_perpendicular = this_cross_set.bits & 1 != 0;
+        }
+        let perpendicular_word_multiplier =
+            this_premium.word_multiplier as i16 & -(1 & this_cross_set.bits as i16);
         loop {
             let node = env.board_snapshot.kwg[p];
             let tile = node.tile();
@@ -423,7 +422,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     word_multiplier,
                     prev_is_unique,
                 );
-            } else if idx >= env.leftmost && this_cross_bits & (1 << tile) != 0 {
+            } else if this_cross_bits & (1 << tile) != 0 {
                 if env.rack_tally[tile as usize] > 0 {
                     env.rack_tally[tile as usize] -= 1;
                     env.num_played += 1;
@@ -435,13 +434,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        if has_perpendicular {
-                            perpendicular_score
-                                + (this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16)
-                        } else {
-                            perpendicular_score
-                        },
+                        perpendicular_score
+                            + (this_cross_set.score + tile_value) * perpendicular_word_multiplier,
                         new_word_multiplier,
                         is_unique,
                     );
@@ -460,13 +454,8 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         idx - 1,
                         p,
                         main_score + tile_value,
-                        if has_perpendicular {
-                            perpendicular_score
-                                + (this_cross_set.score + tile_value)
-                                    * (this_premium.word_multiplier as i16)
-                        } else {
-                            perpendicular_score
-                        },
+                        perpendicular_score
+                            + (this_cross_set.score + tile_value) * perpendicular_word_multiplier,
                         new_word_multiplier,
                         is_unique,
                     );
