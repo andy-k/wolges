@@ -155,6 +155,7 @@ fn gen_cross_set<'a>(
 }
 
 // word_buffer must have at least strider.len() length.
+#[allow(clippy::too_many_arguments)]
 fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     board_snapshot: &'a BoardSnapshot<'a>,
     cross_set_slice: &'a [CrossSet],
