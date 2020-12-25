@@ -6,11 +6,29 @@ struct CrossSet {
     score: i16,
 }
 
+#[derive(Clone, Copy)]
+struct CachedCrossSet {
+    p_left: i32,
+    p_right: i32,
+    bits: u64,
+}
+
+#[derive(Clone)]
+struct CrossSetComputation {
+    score: i16,
+    b_letter: u8,
+    end_range: i8,
+    p: i32,
+}
+
 struct WorkingBuffer {
-    rack_tally: Box<[u8]>,                       // 27 for ?A-Z
-    word_buffer: Box<[u8]>,                      // max(r, c)
-    cross_set_for_across_plays: Box<[CrossSet]>, // r*c
-    cross_set_for_down_plays: Box<[CrossSet]>,   // c*r
+    rack_tally: Box<[u8]>,                                    // 27 for ?A-Z
+    word_buffer: Box<[u8]>,                                   // max(r, c)
+    cross_set_for_across_plays: Box<[CrossSet]>,              // r*c
+    cross_set_for_down_plays: Box<[CrossSet]>,                // c*r
+    cached_cross_set_for_across_plays: Box<[CachedCrossSet]>, // c*r
+    cached_cross_set_for_down_plays: Box<[CachedCrossSet]>,   // r*c
+    cross_set_buffer: Box<[CrossSetComputation]>,             // max(r,c)
     num_tiles_on_board: u16,
     exchange_buffer: Vec<u8>, // rack.len()
 }
@@ -26,6 +44,34 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             cross_set_for_down_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
                 .into_boxed_slice(),
+            cached_cross_set_for_across_plays: vec![
+                CachedCrossSet {
+                    p_left: 0,
+                    p_right: 0,
+                    bits: 0
+                };
+                rows_times_cols
+            ]
+            .into_boxed_slice(),
+            cached_cross_set_for_down_plays: vec![
+                CachedCrossSet {
+                    p_left: 0,
+                    p_right: 0,
+                    bits: 0
+                };
+                rows_times_cols
+            ]
+            .into_boxed_slice(),
+            cross_set_buffer: vec![
+                CrossSetComputation {
+                    score: 0,
+                    b_letter: 0,
+                    end_range: 0,
+                    p: 0,
+                };
+                std::cmp::max(dim.rows, dim.cols) as usize
+            ]
+            .into_boxed_slice(),
             num_tiles_on_board: 0,
             exchange_buffer: Vec::new(),
         }
@@ -53,11 +99,14 @@ pub struct BoardSnapshot<'a> {
     pub klv: &'a klv::Klv,
 }
 
+// cached_cross_sets is just one slice, so it is transposed from cross_sets
 fn gen_cross_set<'a>(
     board_snapshot: &'a BoardSnapshot<'a>,
     strider: matrix::Strider,
     cross_sets: &'a mut [CrossSet],
     output_strider: matrix::Strider,
+    cross_set_buffer: &'a mut [CrossSetComputation],
+    mut cached_cross_sets: &'a mut [CachedCrossSet],
 ) {
     let len = strider.len();
     for i in 0..output_strider.len() {
@@ -65,92 +114,246 @@ fn gen_cross_set<'a>(
     }
 
     let alphabet = board_snapshot.game_config.alphabet();
-    let mut p = 1;
-    let mut score = 0i16;
-    let mut k = len;
-    for j in (0..len).rev() {
-        let b = board_snapshot.board_tiles[strider.at(j)];
-        if b != 0 {
-            // board has tile
-            // include current tile
-            p = board_snapshot.kwg.seek(p, b & 0x7f);
-            score += alphabet.score(b) as i16;
-            if j == 0 || board_snapshot.board_tiles[strider.at(j - 1)] == 0 {
-                // there is a sequence of tiles from j inclusive to k exclusive
-                if k < len && !(k + 1 < len && board_snapshot.board_tiles[strider.at(k + 1)] != 0) {
-                    // board[k + 1] is empty, compute cross_set[k].
-                    let mut bits = 1u64;
-                    // p = DCBA
-                    let mut q = board_snapshot.kwg.seek(p, 0);
-                    if q > 0 {
-                        // q = DCBA@
-                        q = board_snapshot.kwg[q].arc_index();
-                        if q > 0 {
-                            loop {
-                                let node = board_snapshot.kwg[q];
-                                bits |= (node.accepts() as u64) << node.tile();
-                                if node.is_end() {
-                                    break;
-                                }
-                                q += 1;
-                            }
-                        }
-                    }
-                    cross_sets[output_strider.at(k)] = CrossSet { bits, score };
-                }
-                if j > 0 {
-                    // board[j - 1] is known to be empty
-                    let mut bits = 1u64;
+
+    let reuse_cross_set =
+        |cached_cross_sets: &mut [CachedCrossSet], out_idx: i8, p_left, p_right| -> u64 {
+            if cached_cross_sets[out_idx as usize].p_left == p_left
+                && cached_cross_sets[out_idx as usize].p_right == p_right
+            {
+                cached_cross_sets[out_idx as usize].bits
+            } else {
+                cached_cross_sets[out_idx as usize].p_left = p_left;
+                cached_cross_sets[out_idx as usize].p_right = p_right;
+                0 // means unset, because bit 0 should always be set
+            }
+        };
+
+    let mut last_nonempty = len;
+    {
+        let mut p = 1;
+        let mut score = 0i16;
+        let mut last_empty = len;
+        for j in (0..len).rev() {
+            let b = board_snapshot.board_tiles[strider.at(j)];
+            if b != 0 {
+                let b_letter = b & 0x7f;
+                p = board_snapshot.kwg.seek(p, b_letter);
+                score += alphabet.score(b) as i16;
+                cross_set_buffer[j as usize] = CrossSetComputation {
+                    score,
+                    b_letter,
+                    end_range: last_empty,
+                    p,
+                };
+                last_nonempty = j;
+            } else {
+                // empty square, reset
+                p = 1; // cumulative gaddag traversal results
+                score = 0; // cumulative face-value score
+                last_empty = j; // last seen empty square
+                cross_set_buffer[j as usize].b_letter = 0;
+                cross_set_buffer[j as usize].end_range = last_nonempty;
+            }
+        }
+    }
+    let mut j = last_nonempty;
+    while j < len {
+        if j > 0 {
+            // [j-1] has right, no left.
+            let mut p = cross_set_buffer[j as usize].p;
+            let mut bits = reuse_cross_set(cached_cross_sets, j - 1, -2, p);
+            if bits == 0 {
+                bits = 1u64;
+                if p > 0 {
+                    p = board_snapshot.kwg[p].arc_index();
                     if p > 0 {
-                        // p = DCBA
-                        p = board_snapshot.kwg[p].arc_index(); // p = after DCBA
-                        if p > 0 {
-                            loop {
-                                let node = board_snapshot.kwg[p];
-                                let tile = node.tile();
-                                if tile != 0 {
-                                    // not the gaddag marker
-                                    let mut q = p;
-                                    // board[j - 2] may or may not be empty.
-                                    for k in (0..j - 1).rev() {
-                                        let b = board_snapshot.board_tiles[strider.at(k)];
-                                        if b == 0 {
-                                            break;
+                        loop {
+                            let node = board_snapshot.kwg[p];
+                            bits |= (node.accepts() as u64) << node.tile();
+                            if node.is_end() {
+                                break;
+                            }
+                            p += 1;
+                        }
+                    }
+                }
+                cached_cross_sets[j as usize - 1].bits = bits;
+            }
+            cross_sets[output_strider.at(j - 1)] = CrossSet {
+                bits,
+                score: cross_set_buffer[j as usize].score,
+            };
+        }
+        let mut prev_j = j;
+        j = cross_set_buffer[j as usize].end_range;
+        if j >= len {
+            break;
+        }
+        while j + 1 < len && cross_set_buffer[j as usize + 1].b_letter != 0 {
+            j += 1;
+            // [j-1] has left and right.
+            let j_end = cross_set_buffer[j as usize].end_range;
+            let mut p_right = cross_set_buffer[j as usize].p;
+            let mut p_left = board_snapshot
+                .kwg
+                .seek(cross_set_buffer[prev_j as usize].p, 0);
+            let mut bits = reuse_cross_set(&mut cached_cross_sets, j - 1, p_left, p_right);
+            if bits == 0 {
+                bits = 1u64;
+                if p_right > 0 && p_left > 0 {
+                    p_right = board_snapshot.kwg[p_right].arc_index();
+                    if p_right > 0 {
+                        p_left = board_snapshot.kwg[p_left].arc_index();
+                        if p_left > 0 {
+                            let mut node_left = board_snapshot.kwg[p_left];
+                            let mut node_right = board_snapshot.kwg[p_right];
+                            let mut node_left_tile = node_left.tile();
+                            if j_end - j > j - 1 - prev_j {
+                                // Right is longer than left.
+                                loop {
+                                    match node_left_tile.cmp(&node_right.tile()) {
+                                        std::cmp::Ordering::Less => {
+                                            // left < right: advance left
+                                            if node_left.is_end() {
+                                                break;
+                                            }
+                                            p_left += 1;
+                                            node_left = board_snapshot.kwg[p_left];
+                                            node_left_tile = node_left.tile();
                                         }
-                                        q = board_snapshot.kwg.seek(q, b & 0x7f);
-                                        if q <= 0 {
-                                            // rust has no goto, unfortunately even opt-level=3 tests q > 0 twice.
-                                            break;
+                                        std::cmp::Ordering::Greater => {
+                                            // left > right: advance right
+                                            if node_right.is_end() {
+                                                break;
+                                            }
+                                            p_right += 1;
+                                            node_right = board_snapshot.kwg[p_right];
+                                        }
+                                        std::cmp::Ordering::Equal => {
+                                            // left == right (right is longer than left):
+                                            // complete right half with the shorter left half
+                                            let mut q = p_right;
+                                            for qi in (prev_j..j - 1).rev() {
+                                                q = board_snapshot.kwg.seek(
+                                                    q,
+                                                    cross_set_buffer[qi as usize].b_letter,
+                                                );
+                                                if q <= 0 {
+                                                    break;
+                                                }
+                                            }
+                                            if q > 0 {
+                                                bits |= (board_snapshot.kwg[q].accepts() as u64)
+                                                    << node_left_tile;
+                                            }
+                                            if node_left.is_end() {
+                                                break;
+                                            }
+                                            p_left += 1;
+                                            node_left = board_snapshot.kwg[p_left];
+                                            node_left_tile = node_left.tile();
+                                            if node_right.is_end() {
+                                                break;
+                                            }
+                                            p_right += 1;
+                                            node_right = board_snapshot.kwg[p_right];
                                         }
                                     }
-                                    if q > 0 {
-                                        bits |= (board_snapshot.kwg[q].accepts() as u64) << tile;
+                                }
+                            } else {
+                                loop {
+                                    match node_left_tile.cmp(&node_right.tile()) {
+                                        std::cmp::Ordering::Less => {
+                                            // left < right: advance left
+                                            if node_left.is_end() {
+                                                break;
+                                            }
+                                            p_left += 1;
+                                            node_left = board_snapshot.kwg[p_left];
+                                            node_left_tile = node_left.tile();
+                                        }
+                                        std::cmp::Ordering::Greater => {
+                                            // left > right: advance right
+                                            if node_right.is_end() {
+                                                break;
+                                            }
+                                            p_right += 1;
+                                            node_right = board_snapshot.kwg[p_right];
+                                        }
+                                        std::cmp::Ordering::Equal => {
+                                            // left == right (right is not longer than left):
+                                            // complete left half with right half
+                                            let mut q = p_left;
+                                            for qi in j..j_end {
+                                                q = board_snapshot.kwg.seek(
+                                                    q,
+                                                    cross_set_buffer[qi as usize].b_letter,
+                                                );
+                                                if q <= 0 {
+                                                    break;
+                                                }
+                                            }
+                                            if q > 0 {
+                                                bits |= (board_snapshot.kwg[q].accepts() as u64)
+                                                    << node_left_tile;
+                                            }
+                                            if node_right.is_end() {
+                                                break;
+                                            }
+                                            p_right += 1;
+                                            node_right = board_snapshot.kwg[p_right];
+                                            if node_left.is_end() {
+                                                break;
+                                            }
+                                            p_left += 1;
+                                            node_left = board_snapshot.kwg[p_left];
+                                            node_left_tile = node_left.tile();
+                                        }
                                     }
                                 }
-                                if node.is_end() {
-                                    break;
-                                }
-                                p += 1;
                             }
                         }
                     }
-                    // score hasn't included the next batch.
-                    for k in (0i8..j - 1).rev() {
-                        let b = board_snapshot.board_tiles[strider.at(k)];
-                        if b == 0 {
+                }
+                cached_cross_sets[j as usize - 1].bits = bits;
+            }
+            cross_sets[output_strider.at(j - 1)] = CrossSet {
+                bits,
+                score: cross_set_buffer[prev_j as usize].score + cross_set_buffer[j as usize].score,
+            };
+            prev_j = j;
+            j = j_end;
+        }
+        if j >= len {
+            break;
+        }
+        // [j] has left, no right.
+        let mut p = board_snapshot
+            .kwg
+            .seek(cross_set_buffer[prev_j as usize].p, 0);
+        let mut bits = reuse_cross_set(&mut cached_cross_sets, j, p, -2);
+        if bits == 0 {
+            bits = 1u64;
+            if p > 0 {
+                p = board_snapshot.kwg[p].arc_index();
+                if p > 0 {
+                    loop {
+                        let node = board_snapshot.kwg[p];
+                        bits |= (node.accepts() as u64) << node.tile();
+                        if node.is_end() {
                             break;
                         }
-                        score += alphabet.score(b) as i16;
+                        p += 1;
                     }
-                    cross_sets[output_strider.at(j - 1)] = CrossSet { bits, score };
                 }
             }
-        } else {
-            // empty square, reset
-            p = 1; // cumulative gaddag traversal results
-            score = 0; // cumulative face-value score
-            k = j; // last seen empty square
+            cached_cross_sets[j as usize].bits = bits;
         }
+        cross_sets[output_strider.at(j)] = CrossSet {
+            bits,
+            score: cross_set_buffer[prev_j as usize].score,
+        };
+        j = cross_set_buffer[j as usize].end_range;
     }
 }
 
@@ -898,11 +1101,15 @@ fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[
 
     // striped by row
     for col in 0..dim.cols {
+        let cached_cross_set_start = ((col as isize) * (dim.rows as isize)) as usize;
         gen_cross_set(
             &board_snapshot,
             dim.down(col),
             &mut working_buffer.cross_set_for_across_plays,
             dim.down(col),
+            &mut working_buffer.cross_set_buffer,
+            &mut working_buffer.cached_cross_set_for_across_plays
+                [cached_cross_set_start..cached_cross_set_start + (dim.rows as usize)],
         );
     }
     if working_buffer.num_tiles_on_board == 0 {
@@ -933,11 +1140,15 @@ fn kurnia_gen_place_moves<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[
     };
     // striped by columns for better cache locality
     for row in 0..dim.rows {
+        let cached_cross_set_start = ((row as isize) * (dim.cols as isize)) as usize;
         gen_cross_set(
             &board_snapshot,
             dim.across(row),
             &mut working_buffer.cross_set_for_down_plays,
             transposed_dim.down(row),
+            &mut working_buffer.cross_set_buffer,
+            &mut working_buffer.cached_cross_set_for_down_plays
+                [cached_cross_set_start..cached_cross_set_start + (dim.cols as usize)],
         );
     }
     if !board_layout.is_symmetric() && working_buffer.num_tiles_on_board == 0 {

@@ -19,10 +19,6 @@ mod matrix;
 mod movegen;
 
 fn main() -> error::Returns<()> {
-    if true {
-        main_json::main()?;
-        return Ok(());
-    }
     if false {
         main_build::main()?;
         return Ok(());
@@ -30,6 +26,11 @@ fn main() -> error::Returns<()> {
 
     if false {
         main_lex::main()?;
+        return Ok(());
+    }
+
+    if true {
+        main_json::main()?;
         return Ok(());
     }
 
