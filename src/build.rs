@@ -162,7 +162,7 @@ fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> 
         reverse_buffer.clear();
         reverse_buffer.extend_from_slice(this_word);
         reverse_buffer.reverse();
-        machine_drowword_set.insert(reverse_buffer.clone()[..].into());
+        machine_drowword_set.insert(reverse_buffer[..].into());
         reverse_buffer.push(0); // the '@'
         for drow_prefix_len in 1..this_word.len() {
             machine_drowword_set.insert(reverse_buffer[drow_prefix_len..].into());

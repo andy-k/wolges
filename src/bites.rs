@@ -68,6 +68,23 @@ impl Clone for Bites {
     fn clone(&self) -> Self {
         Self::new(&self[..])
     }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        if self.0[self.0.len() - 1] & 0x80 != 0 && self.len() == source.len() {
+            // Heap, same length.
+            unsafe {
+                std::slice::from_raw_parts_mut(
+                    u64::from_le_bytes(self.0[0..8].try_into().unwrap()) as *mut _,
+                    (u64::from_le_bytes(self.0[8..16].try_into().unwrap()) & (!0 >> 1)) as usize,
+                )
+            }
+            .clone_from_slice(&source);
+        } else {
+            // Optimal for all other cases since boxed slices cannot be resized.
+            *self = source.clone();
+        }
+    }
 }
 
 impl std::fmt::Debug for Bites {

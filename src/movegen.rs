@@ -33,6 +33,41 @@ struct WorkingBuffer {
     exchange_buffer: Vec<u8>, // rack.len()
 }
 
+impl Clone for WorkingBuffer {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self {
+            rack_tally: self.rack_tally.clone(),
+            word_buffer: self.word_buffer.clone(),
+            cross_set_for_across_plays: self.cross_set_for_across_plays.clone(),
+            cross_set_for_down_plays: self.cross_set_for_down_plays.clone(),
+            cached_cross_set_for_across_plays: self.cached_cross_set_for_across_plays.clone(),
+            cached_cross_set_for_down_plays: self.cached_cross_set_for_down_plays.clone(),
+            cross_set_buffer: self.cross_set_buffer.clone(),
+            num_tiles_on_board: self.num_tiles_on_board,
+            exchange_buffer: self.exchange_buffer.clone(),
+        }
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        self.rack_tally.clone_from(&source.rack_tally);
+        self.word_buffer.clone_from(&source.word_buffer);
+        self.cross_set_for_across_plays
+            .clone_from(&source.cross_set_for_across_plays);
+        self.cross_set_for_down_plays
+            .clone_from(&source.cross_set_for_down_plays);
+        self.cached_cross_set_for_across_plays
+            .clone_from(&source.cached_cross_set_for_across_plays);
+        self.cached_cross_set_for_down_plays
+            .clone_from(&source.cached_cross_set_for_down_plays);
+        self.cross_set_buffer.clone_from(&source.cross_set_buffer);
+        self.num_tiles_on_board
+            .clone_from(&source.num_tiles_on_board);
+        self.exchange_buffer.clone_from(&source.exchange_buffer);
+    }
+}
+
 impl WorkingBuffer {
     fn new(game_config: &game_config::GameConfig) -> Self {
         let dim = game_config.board_layout().dim();
@@ -738,9 +773,89 @@ pub enum Play {
     },
 }
 
+impl Clone for Play {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        match self {
+            Self::Exchange { tiles } => Self::Exchange {
+                tiles: tiles.clone(),
+            },
+            Self::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => Self::Place {
+                down: *down,
+                lane: *lane,
+                idx: *idx,
+                word: word.clone(),
+                score: *score,
+            },
+        }
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        match self {
+            Self::Exchange { tiles: self_tiles } => {
+                if let Self::Exchange {
+                    tiles: source_tiles,
+                } = source
+                {
+                    self_tiles.clone_from(&source_tiles);
+                } else {
+                    *self = source.clone();
+                }
+            }
+            Self::Place {
+                down: self_down,
+                lane: self_lane,
+                idx: self_idx,
+                word: self_word,
+                score: self_score,
+            } => {
+                if let Self::Place {
+                    down: source_down,
+                    lane: source_lane,
+                    idx: source_idx,
+                    word: source_word,
+                    score: source_score,
+                } = source
+                {
+                    self_down.clone_from(&source_down);
+                    self_lane.clone_from(&source_lane);
+                    self_idx.clone_from(&source_idx);
+                    self_word.clone_from(&source_word);
+                    self_score.clone_from(&source_score);
+                } else {
+                    *self = source.clone();
+                }
+            }
+        }
+    }
+}
+
 pub struct ValuedMove {
     pub equity: f32,
     pub play: Play,
+}
+
+impl Clone for ValuedMove {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self {
+            equity: self.equity,
+            play: self.play.clone(),
+        }
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        self.equity.clone_from(&source.equity);
+        self.play.clone_from(&source.play);
+    }
 }
 
 impl PartialEq for ValuedMove {
@@ -851,6 +966,22 @@ impl Play {
 pub struct KurniaMoveGenerator {
     working_buffer: WorkingBuffer,
     pub plays: Vec<ValuedMove>,
+}
+
+impl Clone for KurniaMoveGenerator {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self {
+            working_buffer: self.working_buffer.clone(),
+            plays: self.plays.clone(),
+        }
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        self.working_buffer.clone_from(&source.working_buffer);
+        self.plays.clone_from(&source.plays);
+    }
 }
 
 impl KurniaMoveGenerator {
