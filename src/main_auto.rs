@@ -132,164 +132,111 @@ pub fn main() -> error::Returns<()> {
     let _ = &game_config::POLISH_GAME_CONFIG;
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
-    let mut game_state = GameState::new(game_config);
-
-    let mut zero_turns = 0;
-    println!("\nplaying self");
-    let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
-
-    game_state.bag.shuffle(&mut rng);
-
-    println!(
-        "bag: {}",
-        printable_rack(&game_state.game_config.alphabet(), &game_state.bag.0)
-    );
-
-    for player in game_state.players.iter_mut() {
-        game_state.bag.replenish(
-            &mut player.rack,
-            game_state.game_config.rack_size() as usize,
-        );
-    }
-
     loop {
-        display::print_board(
-            &game_state.game_config.alphabet(),
-            &game_state.game_config.board_layout(),
-            &game_state.board_tiles,
-        );
-        for (i, player) in (1..).zip(game_state.players.iter()) {
-            print!("player {}: {}, ", i, player.score);
-        }
-        println!("turn: player {}", game_state.turn + 1);
+        let mut game_state = GameState::new(game_config);
+        let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice();
+
+        let mut zero_turns = 0;
+        println!("\nplaying self");
+        let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
+
+        game_state.bag.shuffle(&mut rng);
 
         println!(
-            "pool {:2}: {}",
-            game_state.bag.0.len(),
+            "bag: {}",
             printable_rack(&game_state.game_config.alphabet(), &game_state.bag.0)
         );
-        for (i, player) in (1..).zip(game_state.players.iter()) {
-            println!(
-                "p{} rack: {}",
-                i,
-                printable_rack(&game_state.game_config.alphabet(), &player.rack)
+
+        for player in game_state.players.iter_mut() {
+            game_state.bag.replenish(
+                &mut player.rack,
+                game_state.game_config.rack_size() as usize,
             );
         }
 
-        let current_player = &game_state.players[game_state.turn as usize];
+        loop {
+            display::print_board(
+                &game_state.game_config.alphabet(),
+                &game_state.game_config.board_layout(),
+                &game_state.board_tiles,
+            );
+            for (i, player) in (1..).zip(game_state.players.iter()) {
+                print!("player {}: {}, ", i, player.score);
+            }
+            println!("turn: player {}", game_state.turn + 1);
 
-        let board_snapshot = &movegen::BoardSnapshot {
-            board_tiles: &game_state.board_tiles,
-            game_config,
-            kwg: &kwg,
-            klv: &klv,
-        };
+            println!(
+                "pool {:2}: {}",
+                game_state.bag.0.len(),
+                printable_rack(&game_state.game_config.alphabet(), &game_state.bag.0)
+            );
+            for (i, player) in (1..).zip(game_state.players.iter()) {
+                println!(
+                    "p{} rack: {}",
+                    i,
+                    printable_rack(&game_state.game_config.alphabet(), &player.rack)
+                );
+            }
 
-        move_generator.gen_moves_alloc(board_snapshot, &current_player.rack, 15);
-        let plays = &move_generator.plays;
+            let current_player = &game_state.players[game_state.turn as usize];
 
-        println!("found {} moves", plays.len());
-        for play in plays.iter() {
-            println!("{} {}", play.equity, play.play.fmt(board_snapshot));
-        }
+            let board_snapshot = &movegen::BoardSnapshot {
+                board_tiles: &game_state.board_tiles,
+                game_config,
+                kwg: &kwg,
+                klv: &klv,
+            };
 
-        let play = &plays[0]; // assume at least there's always Pass
-        println!("making top move: {}", play.play.fmt(board_snapshot));
-        let mut recounted_score = 0;
-        match &play.play {
-            movegen::Play::Exchange { .. } => {}
-            movegen::Play::Place {
-                down,
-                lane,
-                idx,
-                word,
-                ..
-            } => {
-                let alphabet = game_config.alphabet();
-                let board_layout = game_config.board_layout();
-                let premiums = board_layout.premiums();
-                let dim = board_layout.dim();
-                let strider = if *down {
-                    dim.down(*lane)
-                } else {
-                    dim.across(*lane)
-                };
-                let mut num_played = 0;
+            move_generator.gen_moves_alloc(board_snapshot, &current_player.rack, 15);
+            let plays = &move_generator.plays;
 
-                print!("main word: (down={} lane={} idx={}) ", down, lane, idx);
-                {
-                    let mut word_multiplier = 1;
-                    let mut word_score = 0i16;
-                    for (i, &tile) in (*idx..).zip(word.iter()) {
-                        let strider_at_i = strider.at(i);
-                        let tile_multiplier;
-                        let premium = premiums[strider_at_i];
-                        let placed_tile = if tile != 0 {
-                            num_played += 1;
-                            word_multiplier *= premium.word_multiplier;
-                            tile_multiplier = premium.tile_multiplier;
-                            tile
-                        } else {
-                            tile_multiplier = 1;
-                            board_snapshot.board_tiles[strider_at_i]
-                        };
-                        let face_value_tile_score = alphabet.score(placed_tile);
-                        let tile_score = face_value_tile_score as i16 * tile_multiplier as i16;
-                        word_score += tile_score;
-                        print!(
-                            "{} ({} * {} = {}), ",
-                            alphabet.from_board(placed_tile).unwrap(),
-                            face_value_tile_score,
-                            tile_multiplier,
-                            tile_score
-                        );
-                    }
-                    let multiplied_word_score = word_score * word_multiplier as i16;
-                    println!(
-                        "for {} * {} = {}",
-                        word_score, word_multiplier, multiplied_word_score
-                    );
-                    recounted_score += multiplied_word_score;
-                }
+            println!("found {} moves", plays.len());
+            for play in plays.iter() {
+                println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+            }
 
-                for (i, &tile) in (*idx..).zip(word.iter()) {
-                    if tile != 0 {
-                        let perpendicular_strider = if *down { dim.across(i) } else { dim.down(i) };
-                        let mut j = *lane;
-                        while j > 0
-                            && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
-                        {
-                            j -= 1;
-                        }
-                        let perpendicular_strider_len = perpendicular_strider.len();
-                        if j == *lane
-                            && if j + 1 < perpendicular_strider_len {
-                                board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
-                            } else {
-                                true
-                            }
-                        {
-                            // no perpendicular tile
-                            continue;
-                        }
-                        print!("perpendicular word: (down={} lane={} idx={}) ", !down, i, j);
+            let play = &plays[0]; // assume at least there's always Pass
+            println!("making top move: {}", play.play.fmt(board_snapshot));
+
+            // manually recount and double-check the score and equity given by movegen
+            let mut recounted_score = 0;
+            match &play.play {
+                movegen::Play::Exchange { .. } => {}
+                movegen::Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    ..
+                } => {
+                    let alphabet = game_config.alphabet();
+                    let board_layout = game_config.board_layout();
+                    let premiums = board_layout.premiums();
+                    let dim = board_layout.dim();
+                    let strider = if *down {
+                        dim.down(*lane)
+                    } else {
+                        dim.across(*lane)
+                    };
+                    let mut num_played = 0;
+
+                    print!("main word: (down={} lane={} idx={}) ", down, lane, idx);
+                    {
                         let mut word_multiplier = 1;
                         let mut word_score = 0i16;
-                        for j in j..perpendicular_strider.len() {
-                            let perpendicular_strider_at_j = perpendicular_strider.at(j);
+                        for (i, &tile) in (*idx..).zip(word.iter()) {
+                            let strider_at_i = strider.at(i);
                             let tile_multiplier;
-                            let premium = premiums[perpendicular_strider_at_j];
-                            let placed_tile = if j == *lane {
+                            let premium = premiums[strider_at_i];
+                            let placed_tile = if tile != 0 {
+                                num_played += 1;
                                 word_multiplier *= premium.word_multiplier;
                                 tile_multiplier = premium.tile_multiplier;
                                 tile
                             } else {
                                 tile_multiplier = 1;
-                                board_snapshot.board_tiles[perpendicular_strider_at_j]
+                                board_snapshot.board_tiles[strider_at_i]
                             };
-                            if placed_tile == 0 {
-                                break;
-                            }
                             let face_value_tile_score = alphabet.score(placed_tile);
                             let tile_score = face_value_tile_score as i16 * tile_multiplier as i16;
                             word_score += tile_score;
@@ -308,93 +255,303 @@ pub fn main() -> error::Returns<()> {
                         );
                         recounted_score += multiplied_word_score;
                     }
+
+                    for (i, &tile) in (*idx..).zip(word.iter()) {
+                        if tile != 0 {
+                            let perpendicular_strider =
+                                if *down { dim.across(i) } else { dim.down(i) };
+                            let mut j = *lane;
+                            while j > 0
+                                && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
+                            {
+                                j -= 1;
+                            }
+                            let perpendicular_strider_len = perpendicular_strider.len();
+                            if j == *lane
+                                && if j + 1 < perpendicular_strider_len {
+                                    board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
+                                } else {
+                                    true
+                                }
+                            {
+                                // no perpendicular tile
+                                continue;
+                            }
+                            print!("perpendicular word: (down={} lane={} idx={}) ", !down, i, j);
+                            let mut word_multiplier = 1;
+                            let mut word_score = 0i16;
+                            for j in j..perpendicular_strider.len() {
+                                let perpendicular_strider_at_j = perpendicular_strider.at(j);
+                                let tile_multiplier;
+                                let premium = premiums[perpendicular_strider_at_j];
+                                let placed_tile = if j == *lane {
+                                    word_multiplier *= premium.word_multiplier;
+                                    tile_multiplier = premium.tile_multiplier;
+                                    tile
+                                } else {
+                                    tile_multiplier = 1;
+                                    board_snapshot.board_tiles[perpendicular_strider_at_j]
+                                };
+                                if placed_tile == 0 {
+                                    break;
+                                }
+                                let face_value_tile_score = alphabet.score(placed_tile);
+                                let tile_score =
+                                    face_value_tile_score as i16 * tile_multiplier as i16;
+                                word_score += tile_score;
+                                print!(
+                                    "{} ({} * {} = {}), ",
+                                    alphabet.from_board(placed_tile).unwrap(),
+                                    face_value_tile_score,
+                                    tile_multiplier,
+                                    tile_score
+                                );
+                            }
+                            let multiplied_word_score = word_score * word_multiplier as i16;
+                            println!(
+                                "for {} * {} = {}",
+                                word_score, word_multiplier, multiplied_word_score
+                            );
+                            recounted_score += multiplied_word_score;
+                        }
+                    }
+                    let num_played_bonus = game_config.num_played_bonus(num_played);
+                    println!(
+                        "bonus for playing {} tiles: {}",
+                        num_played, num_played_bonus
+                    );
+                    recounted_score += num_played_bonus;
                 }
-                let num_played_bonus = game_config.num_played_bonus(num_played);
-                println!(
-                    "bonus for playing {} tiles: {}",
-                    num_played, num_played_bonus
-                );
-                recounted_score += num_played_bonus;
-            }
-        };
-        println!(
-            "recounted score = {}, difference = {}",
-            recounted_score,
-            match play.play {
+            };
+            let movegen_score = match play.play {
                 movegen::Play::Exchange { .. } => 0,
                 movegen::Play::Place { score, .. } => score,
-            } - recounted_score
-        );
-        game_state.play(&mut rng, &play.play)?;
-
-        zero_turns += 1;
-        if match play.play {
-            movegen::Play::Exchange { .. } => 0,
-            movegen::Play::Place { score, .. } => score,
-        } != 0
-        {
-            zero_turns = 0;
-        }
-
-        let current_player = &game_state.players[game_state.turn as usize];
-        if current_player.rack.is_empty() {
-            display::print_board(
-                &game_state.game_config.alphabet(),
-                &game_state.game_config.board_layout(),
-                &game_state.board_tiles,
-            );
-            for (i, player) in (1..).zip(game_state.players.iter()) {
-                print!("player {}: {}, ", i, player.score);
-            }
+            };
             println!(
-                "player {} went out (scores are before leftovers)",
-                game_state.turn + 1
+                "recounted score = {}, difference = {}",
+                recounted_score,
+                movegen_score - recounted_score
             );
-            if game_state.players.len() == 2 {
-                game_state.players[game_state.turn as usize].score += 2 * rack_score(
-                    &game_state.game_config.alphabet(),
-                    &game_state.players[(1 - game_state.turn) as usize].rack,
-                );
-            } else {
-                let mut earned = 0;
-                for mut player in game_state.players.iter_mut() {
-                    let this_rack = rack_score(&game_state.game_config.alphabet(), &player.rack);
-                    player.score -= this_rack;
-                    earned += this_rack;
+            assert_eq!(recounted_score, movegen_score);
+
+            rack_tally.iter_mut().for_each(|m| *m = 0);
+            current_player
+                .rack
+                .iter()
+                .for_each(|&tile| rack_tally[tile as usize] += 1);
+            match &play.play {
+                movegen::Play::Exchange { tiles } => {
+                    tiles
+                        .iter()
+                        .for_each(|&tile| rack_tally[tile as usize] -= 1);
                 }
-                game_state.players[game_state.turn as usize].score += earned;
-            }
-            break;
-        }
+                movegen::Play::Place { word, .. } => {
+                    word.iter().for_each(|&tile| {
+                        if tile & 0x80 != 0 {
+                            rack_tally[0] -= 1;
+                        } else if tile != 0 {
+                            rack_tally[tile as usize] -= 1;
+                        }
+                    });
+                }
+            };
+            print!("leave: ");
+            (0u8..).zip(rack_tally.iter()).for_each(|(tile, &count)| {
+                (0..count)
+                    .for_each(|_| print!("{}", game_config.alphabet().from_rack(tile).unwrap()))
+            });
+            print!(" = ");
+            let leave_value = klv.leave_value_from_tally(&rack_tally);
+            println!("{}", leave_value);
 
-        if zero_turns >= game_state.players.len() * 3 {
-            display::print_board(
-                &game_state.game_config.alphabet(),
-                &game_state.game_config.board_layout(),
-                &game_state.board_tiles,
-            );
-            for (i, player) in (1..).zip(game_state.players.iter()) {
-                print!("player {}: {}, ", i, player.score);
+            let mut recounted_equity = recounted_score as f32;
+            if game_state.bag.0.is_empty() {
+                // empty bag, do not add leave.
+                println!("bag is empty");
+                if rack_tally.iter().any(|&count| count != 0) {
+                    let kept_tiles_worth = (0u8..)
+                        .zip(rack_tally.iter())
+                        .map(|(tile, &count)| {
+                            count as i16 * game_config.alphabet().score(tile) as i16
+                        })
+                        .sum::<i16>();
+                    let kept_tiles_penalty = 10 + 2 * kept_tiles_worth;
+                    recounted_equity -= kept_tiles_penalty as f32;
+                    println!(
+                        "kept tiles are worth {}, penalizing by {}: {}",
+                        kept_tiles_worth, kept_tiles_penalty, recounted_equity
+                    );
+                } else {
+                    println!("playing out");
+                    let mut unplayed_tiles_worth = 0;
+                    for (player_idx, player) in (0u8..).zip(game_state.players.iter()) {
+                        if player_idx != game_state.turn {
+                            let their_tile_worth = player
+                                .rack
+                                .iter()
+                                .map(|&tile| game_config.alphabet().score(tile) as i16)
+                                .sum::<i16>();
+                            println!("p{} rack is worth {}", player_idx + 1, their_tile_worth);
+                            unplayed_tiles_worth += their_tile_worth;
+                        }
+                    }
+                    let unplayed_tiles_bonus = 2 * unplayed_tiles_worth;
+                    recounted_equity += unplayed_tiles_bonus as f32;
+                    println!(
+                        "total worth {}, adding {}: {}",
+                        unplayed_tiles_worth, unplayed_tiles_bonus, recounted_equity
+                    );
+                }
+            } else {
+                recounted_equity += leave_value;
+                println!("after adjusting for leave: {}", recounted_equity);
+                if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
+                    println!("nothing on board");
+                    match &play.play {
+                        movegen::Play::Exchange { .. } => {}
+                        movegen::Play::Place {
+                            down,
+                            lane,
+                            idx,
+                            word,
+                            ..
+                        } => {
+                            let alphabet = game_config.alphabet();
+                            let board_layout = game_config.board_layout();
+                            let premiums = board_layout.premiums();
+                            let dim = board_layout.dim();
+                            let num_lanes = if *down { dim.cols } else { dim.rows };
+                            let strider1 = if *lane > 0 {
+                                Some(if *down {
+                                    dim.down(*lane - 1)
+                                } else {
+                                    dim.across(*lane - 1)
+                                })
+                            } else {
+                                None
+                            };
+                            let strider2 = if *lane < num_lanes - 1 {
+                                Some(if *down {
+                                    dim.down(*lane + 1)
+                                } else {
+                                    dim.across(*lane + 1)
+                                })
+                            } else {
+                                None
+                            };
+                            let dangerous_vowel_count = (*idx..)
+                                .zip(word.iter())
+                                .filter(|(i, &tile)| {
+                                    tile != 0 && alphabet.is_vowel(tile) && {
+                                        (match strider1 {
+                                            Some(strider) => {
+                                                let premium = premiums[strider.at(*i)];
+                                                premium.tile_multiplier != 1
+                                                    || premium.word_multiplier != 1
+                                            }
+                                            None => false,
+                                        }) || (match strider2 {
+                                            Some(strider) => {
+                                                let premium = premiums[strider.at(*i)];
+                                                premium.tile_multiplier != 1
+                                                    || premium.word_multiplier != 1
+                                            }
+                                            None => false,
+                                        })
+                                    }
+                                })
+                                .count();
+                            let dangerous_vowel_penalty = dangerous_vowel_count as f32 * 0.7;
+                            recounted_equity -= dangerous_vowel_penalty as f32;
+                            println!(
+                                "dangerous vowel count {}, penalizing by {}: {}",
+                                dangerous_vowel_count, dangerous_vowel_penalty, recounted_equity
+                            );
+                        }
+                    }
+                }
             }
+            let movegen_equity = play.equity;
             println!(
-                "player {} ended game by making yet another zero score",
-                game_state.turn + 1
+                "recounted equity = {}, difference = {}",
+                recounted_equity,
+                movegen_equity - recounted_equity
             );
-            for mut player in game_state.players.iter_mut() {
-                player.score -= rack_score(&game_state.game_config.alphabet(), &player.rack);
+            assert_eq!(recounted_equity, movegen_equity);
+
+            game_state.play(&mut rng, &play.play)?;
+
+            zero_turns += 1;
+            if match play.play {
+                movegen::Play::Exchange { .. } => 0,
+                movegen::Play::Place { score, .. } => score,
+            } != 0
+            {
+                zero_turns = 0;
             }
-            break;
+
+            let current_player = &game_state.players[game_state.turn as usize];
+            if current_player.rack.is_empty() {
+                display::print_board(
+                    &game_state.game_config.alphabet(),
+                    &game_state.game_config.board_layout(),
+                    &game_state.board_tiles,
+                );
+                for (i, player) in (1..).zip(game_state.players.iter()) {
+                    print!("player {}: {}, ", i, player.score);
+                }
+                println!(
+                    "player {} went out (scores are before leftovers)",
+                    game_state.turn + 1
+                );
+                if game_state.players.len() == 2 {
+                    game_state.players[game_state.turn as usize].score += 2 * rack_score(
+                        &game_state.game_config.alphabet(),
+                        &game_state.players[(1 - game_state.turn) as usize].rack,
+                    );
+                } else {
+                    let mut earned = 0;
+                    for mut player in game_state.players.iter_mut() {
+                        let this_rack =
+                            rack_score(&game_state.game_config.alphabet(), &player.rack);
+                        player.score -= this_rack;
+                        earned += this_rack;
+                    }
+                    game_state.players[game_state.turn as usize].score += earned;
+                }
+                break;
+            }
+
+            if zero_turns >= game_state.players.len() * 3 {
+                display::print_board(
+                    &game_state.game_config.alphabet(),
+                    &game_state.game_config.board_layout(),
+                    &game_state.board_tiles,
+                );
+                for (i, player) in (1..).zip(game_state.players.iter()) {
+                    print!("player {}: {}, ", i, player.score);
+                }
+                println!(
+                    "player {} ended game by making yet another zero score",
+                    game_state.turn + 1
+                );
+                for mut player in game_state.players.iter_mut() {
+                    player.score -= rack_score(&game_state.game_config.alphabet(), &player.rack);
+                }
+                panic!("got it"); // temp debugging
+                break;
+            }
+
+            game_state.turn += 1;
+            game_state.turn -= game_state.players.len() as u8
+                & -((game_state.turn >= game_state.players.len() as u8) as i8) as u8;
         }
 
-        game_state.turn += 1;
-        game_state.turn -= game_state.players.len() as u8
-            & -((game_state.turn >= game_state.players.len() as u8) as i8) as u8;
-    }
-
-    for (i, player) in (1..).zip(game_state.players.iter()) {
-        print!("player {}: {}, ", i, player.score);
-    }
-    println!("final scrores");
+        for (i, player) in (1..).zip(game_state.players.iter()) {
+            print!("player {}: {}, ", i, player.score);
+        }
+        println!("final scrores");
+    } // temp loop
 
     Ok(())
 }
