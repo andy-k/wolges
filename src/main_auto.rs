@@ -538,7 +538,6 @@ pub fn main() -> error::Returns<()> {
                 for mut player in game_state.players.iter_mut() {
                     player.score -= rack_score(&game_state.game_config.alphabet(), &player.rack);
                 }
-                panic!("got it"); // temp debugging
                 break;
             }
 

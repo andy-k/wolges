@@ -60,10 +60,6 @@ impl<'a> Alphabet<'a> {
 
     #[inline(always)]
     pub fn score(&self, idx: u8) -> i8 {
-        let magic = idx & !((idx as i8) >> 7) as u8;
-        let no_magic = if idx & 0x80 == 0 { idx } else { 0 };
-        //println!("{} -> {} ({})", idx, magic, no_magic);
-        assert_eq!(magic, no_magic);
         self.get(idx & !((idx as i8) >> 7) as u8).score
     }
 

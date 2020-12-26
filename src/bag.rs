@@ -34,16 +34,6 @@ impl Bag {
 
     // put back the tiles in random order. keep the rest of the bag in the same order.
     pub fn put_back(&mut self, mut rng: &mut dyn RngCore, tiles: &[u8]) {
-        /*
-        pool  7: ONHUAOE
-        p2 rack: CB?DPQF
-        making top move: Exch. BDFPQ
-        pool  7: DOBQPQF
-        p2 rack: C?EOAUH
-        */
-
-        // self = ON
-        // tiles = BDFPQ
         let mut num_new_tiles = tiles.len();
         match num_new_tiles {
             0 => {
@@ -57,24 +47,13 @@ impl Bag {
         }
         let mut num_old_tiles = self.0.len();
         let new_len = num_new_tiles + num_old_tiles;
-        // num_new_tiles = 5, num_old_tiles = 2, new_len = 7
-        self.0.reserve(new_len);
-        // self.capacity >= 9
-        // p_old_tiles = 2
-        let mut p_old_tiles = self.0.len();
-        self.0.resize(2 * self.0.len(), 0);
-        self.0.copy_within(0..num_old_tiles, num_old_tiles);
-        // p_new_tiles = 4
-        let mut p_new_tiles = self.0.len();
-        self.0.extend_from_slice(tiles);
+        self.0.reserve(num_new_tiles + new_len); // cap = old+(new+old)+new
+        self.0.resize(new_len + num_old_tiles, 0); // [old,0,0]
+        let mut p_old_tiles = new_len; // after old+new
+        self.0.copy_within(0..num_old_tiles, p_old_tiles); // [old,0,old]
+        let mut p_new_tiles = self.0.len(); // after old+new+old
+        self.0.extend_from_slice(tiles); // [old,0,old,new]
         self.0[p_new_tiles..].shuffle(&mut rng);
-        // wp = 0..7
-        // pat =           nonnnon (new/old)
-        // self = ONONDBQPF
-        //        w o n    n
-        //        Dwo  n    o
-        //        DOBQPn  n  nnn
-        //           o QF       on
         for wp in 0..new_len {
             if if num_new_tiles == 0 {
                 true
