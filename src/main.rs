@@ -29,7 +29,7 @@ fn main() -> error::Returns<()> {
         return Ok(());
     }
 
-    if true {
+    if false {
         main_json::main()?;
         return Ok(());
     }

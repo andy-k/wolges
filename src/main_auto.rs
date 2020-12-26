@@ -192,9 +192,139 @@ pub fn main() -> error::Returns<()> {
         for play in plays.iter() {
             println!("{} {}", play.equity, play.play.fmt(board_snapshot));
         }
-        println!("making top move: {}", plays[0].play.fmt(board_snapshot));
 
         let play = &plays[0]; // assume at least there's always Pass
+        println!("making top move: {}", play.play.fmt(board_snapshot));
+        let mut recounted_score = 0;
+        match &play.play {
+            movegen::Play::Exchange { .. } => {}
+            movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                ..
+            } => {
+                let alphabet = game_config.alphabet();
+                let board_layout = game_config.board_layout();
+                let premiums = board_layout.premiums();
+                let dim = board_layout.dim();
+                let strider = if *down {
+                    dim.down(*lane)
+                } else {
+                    dim.across(*lane)
+                };
+                let mut num_played = 0;
+
+                print!("main word: (down={} lane={} idx={}) ", down, lane, idx);
+                {
+                    let mut word_multiplier = 1;
+                    let mut word_score = 0i16;
+                    for (i, &tile) in (*idx..).zip(word.iter()) {
+                        let strider_at_i = strider.at(i);
+                        let tile_multiplier;
+                        let premium = premiums[strider_at_i];
+                        let placed_tile = if tile != 0 {
+                            num_played += 1;
+                            word_multiplier *= premium.word_multiplier;
+                            tile_multiplier = premium.tile_multiplier;
+                            tile
+                        } else {
+                            tile_multiplier = 1;
+                            board_snapshot.board_tiles[strider_at_i]
+                        };
+                        let face_value_tile_score = alphabet.score(placed_tile);
+                        let tile_score = face_value_tile_score as i16 * tile_multiplier as i16;
+                        word_score += tile_score;
+                        print!(
+                            "{} ({} * {} = {}), ",
+                            alphabet.from_board(placed_tile).unwrap(),
+                            face_value_tile_score,
+                            tile_multiplier,
+                            tile_score
+                        );
+                    }
+                    let multiplied_word_score = word_score * word_multiplier as i16;
+                    println!(
+                        "for {} * {} = {}",
+                        word_score, word_multiplier, multiplied_word_score
+                    );
+                    recounted_score += multiplied_word_score;
+                }
+
+                for (i, &tile) in (*idx..).zip(word.iter()) {
+                    if tile != 0 {
+                        let perpendicular_strider = if *down { dim.across(i) } else { dim.down(i) };
+                        let mut j = *lane;
+                        while j > 0
+                            && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
+                        {
+                            j -= 1;
+                        }
+                        let perpendicular_strider_len = perpendicular_strider.len();
+                        if j == *lane
+                            && if j + 1 < perpendicular_strider_len {
+                                board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
+                            } else {
+                                true
+                            }
+                        {
+                            // no perpendicular tile
+                            continue;
+                        }
+                        print!("perpendicular word: (down={} lane={} idx={}) ", !down, i, j);
+                        let mut word_multiplier = 1;
+                        let mut word_score = 0i16;
+                        for j in j..perpendicular_strider.len() {
+                            let perpendicular_strider_at_j = perpendicular_strider.at(j);
+                            let tile_multiplier;
+                            let premium = premiums[perpendicular_strider_at_j];
+                            let placed_tile = if j == *lane {
+                                word_multiplier *= premium.word_multiplier;
+                                tile_multiplier = premium.tile_multiplier;
+                                tile
+                            } else {
+                                tile_multiplier = 1;
+                                board_snapshot.board_tiles[perpendicular_strider_at_j]
+                            };
+                            if placed_tile == 0 {
+                                break;
+                            }
+                            let face_value_tile_score = alphabet.score(placed_tile);
+                            let tile_score = face_value_tile_score as i16 * tile_multiplier as i16;
+                            word_score += tile_score;
+                            print!(
+                                "{} ({} * {} = {}), ",
+                                alphabet.from_board(placed_tile).unwrap(),
+                                face_value_tile_score,
+                                tile_multiplier,
+                                tile_score
+                            );
+                        }
+                        let multiplied_word_score = word_score * word_multiplier as i16;
+                        println!(
+                            "for {} * {} = {}",
+                            word_score, word_multiplier, multiplied_word_score
+                        );
+                        recounted_score += multiplied_word_score;
+                    }
+                }
+                let num_played_bonus = game_config.num_played_bonus(num_played);
+                println!(
+                    "bonus for playing {} tiles: {}",
+                    num_played, num_played_bonus
+                );
+                recounted_score += num_played_bonus;
+            }
+        };
+        println!(
+            "recounted score = {}, difference = {}",
+            recounted_score,
+            match play.play {
+                movegen::Play::Exchange { .. } => 0,
+                movegen::Play::Place { score, .. } => score,
+            } - recounted_score
+        );
         game_state.play(&mut rng, &play.play)?;
 
         zero_turns += 1;
