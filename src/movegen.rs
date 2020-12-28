@@ -147,24 +147,10 @@ fn gen_cross_set<'a>(
     for i in 0..output_strider.len() {
         cross_sets[output_strider.at(i)] = CrossSet { bits: 0, score: 0 };
     }
-
-    let alphabet = board_snapshot.game_config.alphabet();
-
-    let reuse_cross_set =
-        |cached_cross_sets: &mut [CachedCrossSet], out_idx: i8, p_left, p_right| -> u64 {
-            if cached_cross_sets[out_idx as usize].p_left == p_left
-                && cached_cross_sets[out_idx as usize].p_right == p_right
-            {
-                cached_cross_sets[out_idx as usize].bits
-            } else {
-                cached_cross_sets[out_idx as usize].p_left = p_left;
-                cached_cross_sets[out_idx as usize].p_right = p_right;
-                0 // means unset, because bit 0 should always be set
-            }
-        };
-
+    let kwg = &board_snapshot.kwg;
     let mut last_nonempty = len;
     {
+        let alphabet = board_snapshot.game_config.alphabet();
         let mut p = 1;
         let mut score = 0i16;
         let mut last_empty = len;
@@ -172,7 +158,7 @@ fn gen_cross_set<'a>(
             let b = board_snapshot.board_tiles[strider.at(j)];
             if b != 0 {
                 let b_letter = b & 0x7f;
-                p = board_snapshot.kwg.seek(p, b_letter);
+                p = kwg.seek(p, b_letter);
                 score += alphabet.score(b) as i16;
                 cross_set_buffer[j as usize] = CrossSetComputation {
                     score,
@@ -191,6 +177,20 @@ fn gen_cross_set<'a>(
             }
         }
     }
+
+    let reuse_cross_set =
+        |cached_cross_sets: &mut [CachedCrossSet], out_idx: i8, p_left, p_right| -> u64 {
+            if cached_cross_sets[out_idx as usize].p_left == p_left
+                && cached_cross_sets[out_idx as usize].p_right == p_right
+            {
+                cached_cross_sets[out_idx as usize].bits
+            } else {
+                cached_cross_sets[out_idx as usize].p_left = p_left;
+                cached_cross_sets[out_idx as usize].p_right = p_right;
+                0 // means unset, because bit 0 should always be set
+            }
+        };
+
     let mut j = last_nonempty;
     while j < len {
         if j > 0 {
@@ -200,10 +200,10 @@ fn gen_cross_set<'a>(
             if bits == 0 {
                 bits = 1u64;
                 if p > 0 {
-                    p = board_snapshot.kwg[p].arc_index();
+                    p = kwg[p].arc_index();
                     if p > 0 {
                         loop {
-                            let node = board_snapshot.kwg[p];
+                            let node = kwg[p];
                             bits |= (node.accepts() as u64) << node.tile();
                             if node.is_end() {
                                 break;
@@ -229,19 +229,17 @@ fn gen_cross_set<'a>(
             // [j-1] has left and right.
             let j_end = cross_set_buffer[j as usize].end_range;
             let mut p_right = cross_set_buffer[j as usize].p;
-            let mut p_left = board_snapshot
-                .kwg
-                .seek(cross_set_buffer[prev_j as usize].p, 0);
+            let mut p_left = kwg.seek(cross_set_buffer[prev_j as usize].p, 0);
             let mut bits = reuse_cross_set(&mut cached_cross_sets, j - 1, p_left, p_right);
             if bits == 0 {
                 bits = 1u64;
                 if p_right > 0 && p_left > 0 {
-                    p_right = board_snapshot.kwg[p_right].arc_index();
+                    p_right = kwg[p_right].arc_index();
                     if p_right > 0 {
-                        p_left = board_snapshot.kwg[p_left].arc_index();
+                        p_left = kwg[p_left].arc_index();
                         if p_left > 0 {
-                            let mut node_left = board_snapshot.kwg[p_left];
-                            let mut node_right = board_snapshot.kwg[p_right];
+                            let mut node_left = kwg[p_left];
+                            let mut node_right = kwg[p_right];
                             let mut node_left_tile = node_left.tile();
                             if j_end - j > j - 1 - prev_j {
                                 // Right is longer than left.
@@ -253,7 +251,7 @@ fn gen_cross_set<'a>(
                                                 break;
                                             }
                                             p_left += 1;
-                                            node_left = board_snapshot.kwg[p_left];
+                                            node_left = kwg[p_left];
                                             node_left_tile = node_left.tile();
                                         }
                                         std::cmp::Ordering::Greater => {
@@ -262,14 +260,14 @@ fn gen_cross_set<'a>(
                                                 break;
                                             }
                                             p_right += 1;
-                                            node_right = board_snapshot.kwg[p_right];
+                                            node_right = kwg[p_right];
                                         }
                                         std::cmp::Ordering::Equal => {
                                             // left == right (right is longer than left):
                                             // complete right half with the shorter left half
                                             let mut q = p_right;
                                             for qi in (prev_j..j - 1).rev() {
-                                                q = board_snapshot.kwg.seek(
+                                                q = kwg.seek(
                                                     q,
                                                     cross_set_buffer[qi as usize].b_letter,
                                                 );
@@ -278,20 +276,19 @@ fn gen_cross_set<'a>(
                                                 }
                                             }
                                             if q > 0 {
-                                                bits |= (board_snapshot.kwg[q].accepts() as u64)
-                                                    << node_left_tile;
+                                                bits |= (kwg[q].accepts() as u64) << node_left_tile;
                                             }
                                             if node_left.is_end() {
                                                 break;
                                             }
                                             p_left += 1;
-                                            node_left = board_snapshot.kwg[p_left];
+                                            node_left = kwg[p_left];
                                             node_left_tile = node_left.tile();
                                             if node_right.is_end() {
                                                 break;
                                             }
                                             p_right += 1;
-                                            node_right = board_snapshot.kwg[p_right];
+                                            node_right = kwg[p_right];
                                         }
                                     }
                                 }
@@ -304,7 +301,7 @@ fn gen_cross_set<'a>(
                                                 break;
                                             }
                                             p_left += 1;
-                                            node_left = board_snapshot.kwg[p_left];
+                                            node_left = kwg[p_left];
                                             node_left_tile = node_left.tile();
                                         }
                                         std::cmp::Ordering::Greater => {
@@ -313,14 +310,14 @@ fn gen_cross_set<'a>(
                                                 break;
                                             }
                                             p_right += 1;
-                                            node_right = board_snapshot.kwg[p_right];
+                                            node_right = kwg[p_right];
                                         }
                                         std::cmp::Ordering::Equal => {
                                             // left == right (right is not longer than left):
                                             // complete left half with right half
                                             let mut q = p_left;
                                             for qi in j..j_end {
-                                                q = board_snapshot.kwg.seek(
+                                                q = kwg.seek(
                                                     q,
                                                     cross_set_buffer[qi as usize].b_letter,
                                                 );
@@ -329,19 +326,18 @@ fn gen_cross_set<'a>(
                                                 }
                                             }
                                             if q > 0 {
-                                                bits |= (board_snapshot.kwg[q].accepts() as u64)
-                                                    << node_left_tile;
+                                                bits |= (kwg[q].accepts() as u64) << node_left_tile;
                                             }
                                             if node_right.is_end() {
                                                 break;
                                             }
                                             p_right += 1;
-                                            node_right = board_snapshot.kwg[p_right];
+                                            node_right = kwg[p_right];
                                             if node_left.is_end() {
                                                 break;
                                             }
                                             p_left += 1;
-                                            node_left = board_snapshot.kwg[p_left];
+                                            node_left = kwg[p_left];
                                             node_left_tile = node_left.tile();
                                         }
                                     }
@@ -363,17 +359,15 @@ fn gen_cross_set<'a>(
             break;
         }
         // [j] has left, no right.
-        let mut p = board_snapshot
-            .kwg
-            .seek(cross_set_buffer[prev_j as usize].p, 0);
+        let mut p = kwg.seek(cross_set_buffer[prev_j as usize].p, 0);
         let mut bits = reuse_cross_set(&mut cached_cross_sets, j, p, -2);
         if bits == 0 {
             bits = 1u64;
             if p > 0 {
-                p = board_snapshot.kwg[p].arc_index();
+                p = kwg[p].arc_index();
                 if p > 0 {
                     loop {
-                        let node = board_snapshot.kwg[p];
+                        let node = kwg[p];
                         bits |= (node.accepts() as u64) << node.tile();
                         if node.is_end() {
                             break;
