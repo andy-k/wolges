@@ -549,7 +549,7 @@ pub fn main() -> error::Returns<()> {
         for (i, player) in (1..).zip(game_state.players.iter()) {
             print!("player {}: {}, ", i, player.score);
         }
-        println!("final scrores");
+        println!("final scores");
     } // temp loop
 
     Ok(())
