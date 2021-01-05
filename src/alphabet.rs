@@ -6,6 +6,7 @@ pub struct Tile<'a> {
     is_vowel: bool,
 }
 
+#[derive(Default)]
 pub struct StaticAlphabet<'a> {
     tiles: &'a [Tile<'a>],
     num_tiles: u16,
@@ -16,6 +17,13 @@ pub enum Alphabet<'a> {
 }
 
 impl<'a> Alphabet<'a> {
+    pub fn new_static(x: StaticAlphabet<'a>) -> Self {
+        Self::Static(StaticAlphabet {
+            num_tiles: x.tiles.iter().map(|tile| tile.freq as u16).sum(),
+            ..x
+        })
+    }
+
     #[inline(always)]
     pub fn len(&self) -> u8 {
         match self {
@@ -75,7 +83,7 @@ impl<'a> Alphabet<'a> {
 }
 
 pub fn make_english_alphabet<'a>() -> Alphabet<'a> {
-    Alphabet::Static(StaticAlphabet {
+    Alphabet::new_static(StaticAlphabet {
         tiles: &[
             Tile {
                 label: "?",
@@ -267,12 +275,12 @@ pub fn make_english_alphabet<'a>() -> Alphabet<'a> {
                 is_vowel: false,
             },
         ],
-        num_tiles: 100,
+        ..Default::default()
     })
 }
 
 pub fn make_polish_alphabet<'a>() -> Alphabet<'a> {
-    Alphabet::Static(StaticAlphabet {
+    Alphabet::new_static(StaticAlphabet {
         tiles: &[
             Tile {
                 label: "?",
@@ -506,6 +514,6 @@ pub fn make_polish_alphabet<'a>() -> Alphabet<'a> {
                 is_vowel: false,
             },
         ],
-        num_tiles: 100,
+        ..Default::default()
     })
 }

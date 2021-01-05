@@ -27,6 +27,7 @@ static FVS: Premium = Premium {
     tile_multiplier: 1,
 };
 
+#[derive(Default)]
 pub struct StaticBoardLayout {
     premiums: Box<[Premium]>,
     dim: matrix::Dim,
@@ -40,6 +41,22 @@ pub enum BoardLayout {
 }
 
 impl BoardLayout {
+    pub fn new_static(x: StaticBoardLayout) -> Self {
+        Self::Static(StaticBoardLayout {
+            is_symmetric: x.dim.rows == x.dim.cols
+                && x.star_row == x.star_col
+                && (0..x.dim.rows).all(|row| {
+                    (0..row).all(|col| {
+                        let p1 = x.premiums[x.dim.at_row_col(row, col)];
+                        let p2 = x.premiums[x.dim.at_row_col(col, row)];
+                        p1.word_multiplier == p2.word_multiplier
+                            && p1.tile_multiplier == p2.tile_multiplier
+                    })
+                }),
+            ..x
+        })
+    }
+
     #[inline(always)]
     pub fn dim(&self) -> matrix::Dim {
         match self {
@@ -81,7 +98,7 @@ impl BoardLayout {
 }
 
 pub fn make_common_board_layout() -> BoardLayout {
-    BoardLayout::Static(StaticBoardLayout {
+    BoardLayout::new_static(StaticBoardLayout {
         premiums: Box::new([
             TWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS, TWS, //
             FVS, DWS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, DWS, FVS, //
@@ -102,6 +119,6 @@ pub fn make_common_board_layout() -> BoardLayout {
         dim: matrix::Dim { rows: 15, cols: 15 },
         star_row: 7,
         star_col: 7,
-        is_symmetric: true,
+        ..Default::default()
     })
 }
