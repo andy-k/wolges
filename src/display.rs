@@ -1,11 +1,7 @@
 use super::{alphabet, board_layout};
 
 #[inline(always)]
-pub fn empty_label<'a>(
-    board_layout: &'a board_layout::BoardLayout<'a>,
-    row: i8,
-    col: i8,
-) -> &'a str {
+pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -> &'static str {
     if row == board_layout.star_row() && col == board_layout.star_col() {
         return "*";
     }
@@ -26,7 +22,7 @@ pub fn empty_label<'a>(
 #[inline(always)]
 pub fn board_label<'a>(
     alphabet: &'a alphabet::Alphabet<'a>,
-    board_layout: &'a board_layout::BoardLayout<'a>,
+    board_layout: &board_layout::BoardLayout,
     board_tiles: &'a [u8],
     row: i8,
     col: i8,
@@ -38,7 +34,7 @@ pub fn board_label<'a>(
 
 pub fn print_board<'a>(
     alphabet: &'a alphabet::Alphabet<'a>,
-    board_layout: &'a board_layout::BoardLayout<'a>,
+    board_layout: &board_layout::BoardLayout,
     board_tiles: &[u8],
 ) {
     print!("  ");

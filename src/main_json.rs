@@ -56,27 +56,27 @@ pub fn main() -> error::Returns<()> {
         "CSW19" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
-            game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
+            game_config = game_config::make_common_english_game_config();
         }
         "NWL18" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl18.kwg")?);
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
-            game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
+            game_config = game_config::make_common_english_game_config();
         }
         "NWL20" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl20.kwg")?);
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
-            game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
+            game_config = game_config::make_common_english_game_config();
         }
         "ECWL" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("ecwl.kwg")?);
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
-            game_config = &game_config::COMMON_ENGLISH_GAME_CONFIG;
+            game_config = game_config::make_common_english_game_config();
         }
         "OSPS42" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("osps42.kwg")?);
             klv = klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
-            game_config = &game_config::POLISH_GAME_CONFIG;
+            game_config = game_config::make_polish_game_config();
         }
         _ => {
             return_error!(format!("invalid lexicon {:?}", question.lexicon));
@@ -167,11 +167,11 @@ pub fn main() -> error::Returns<()> {
         }
     }
 
-    let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
 
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &board_tiles,
-        game_config,
+        game_config: &game_config,
         kwg: &kwg,
         klv: &klv,
     };

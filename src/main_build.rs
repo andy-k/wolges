@@ -76,11 +76,11 @@ impl<'a> AlphabetReader<'a> {
 
 // This is rarely used, so it allocates a single-use AlphabetReader.
 fn read_polish_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
-    AlphabetReader::new(&alphabet::POLISH_ALPHABET, 1).read_machine_words(giant_string)
+    AlphabetReader::new(&alphabet::make_polish_alphabet(), 1).read_machine_words(giant_string)
 }
 
 // This is a much faster replacement of
-// AlphabetReader::new(&alphabet::ENGLISH_ALPHABET, 0).read_machine_words(giant_string)
+// AlphabetReader::new(&alphabet::make_english_alphabet(), 0).read_machine_words(giant_string)
 // and requires a clean, pre-sorted input.
 fn read_english_machine_words_or_leaves(
     blank: char,
@@ -250,6 +250,8 @@ pub fn main() -> error::Returns<()> {
     )?;
 
     if true {
+        let english_alphabet = alphabet::make_english_alphabet();
+        let polish_alphabet = alphabet::make_polish_alphabet();
         let t0 = std::time::Instant::now();
         {
             let t0 = std::time::Instant::now();
@@ -260,7 +262,7 @@ pub fn main() -> error::Returns<()> {
                 "CSW19.dawg",
                 lexport::to_macondo(
                     &kwg,
-                    &alphabet::ENGLISH_ALPHABET,
+                    &english_alphabet,
                     "CSW19",
                     lexport::MacondoFormat::Dawg,
                 ),
@@ -271,7 +273,7 @@ pub fn main() -> error::Returns<()> {
                 "CSW19.gaddag",
                 lexport::to_macondo(
                     &kwg,
-                    &alphabet::ENGLISH_ALPHABET,
+                    &english_alphabet,
                     "CSW19",
                     lexport::MacondoFormat::Gaddag,
                 ),
@@ -284,7 +286,7 @@ pub fn main() -> error::Returns<()> {
                 "NWL18.dawg",
                 lexport::to_macondo(
                     &kwg,
-                    &alphabet::ENGLISH_ALPHABET,
+                    &english_alphabet,
                     "NWL18",
                     lexport::MacondoFormat::Dawg,
                 ),
@@ -293,7 +295,7 @@ pub fn main() -> error::Returns<()> {
                 "NWL18.gaddag",
                 lexport::to_macondo(
                     &kwg,
-                    &alphabet::ENGLISH_ALPHABET,
+                    &english_alphabet,
                     "NWL18",
                     lexport::MacondoFormat::Gaddag,
                 ),
@@ -305,7 +307,7 @@ pub fn main() -> error::Returns<()> {
                 "ECWL.dawg",
                 lexport::to_macondo(
                     &kwg,
-                    &alphabet::ENGLISH_ALPHABET,
+                    &english_alphabet,
                     "ECWL",
                     lexport::MacondoFormat::Dawg,
                 ),
@@ -314,7 +316,7 @@ pub fn main() -> error::Returns<()> {
                 "ECWL.gaddag",
                 lexport::to_macondo(
                     &kwg,
-                    &alphabet::ENGLISH_ALPHABET,
+                    &english_alphabet,
                     "ECWL",
                     lexport::MacondoFormat::Gaddag,
                 ),
@@ -330,7 +332,7 @@ pub fn main() -> error::Returns<()> {
                 "OSPS42.dawg",
                 lexport::to_macondo(
                     &kwg,
-                    &alphabet::POLISH_ALPHABET,
+                    &polish_alphabet,
                     "OSPS42",
                     lexport::MacondoFormat::Dawg,
                 ),
@@ -341,7 +343,7 @@ pub fn main() -> error::Returns<()> {
                 "OSPS42.gaddag",
                 lexport::to_macondo(
                     &kwg,
-                    &alphabet::POLISH_ALPHABET,
+                    &polish_alphabet,
                     "OSPS42",
                     lexport::MacondoFormat::Gaddag,
                 ),
