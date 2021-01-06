@@ -1,4 +1,4 @@
-use super::{alphabet, bites, board_layout, game_config, klv, kwg, matrix};
+use super::{bites, board_layout, game_config, klv, kwg, matrix};
 
 #[derive(Clone)]
 struct CrossSet {
@@ -43,6 +43,8 @@ struct WorkingBuffer {
     remaining_word_multipliers_for_down_plays: Box<[i8]>,       // c*r
     remaining_tile_multipliers_for_across_plays: Box<[i8]>,     // r*c (1 if tile placed)
     remaining_tile_multipliers_for_down_plays: Box<[i8]>,       // c*r
+    face_value_scores_for_across_plays: Box<[i8]>,              // r*c
+    face_value_scores_for_down_plays: Box<[i8]>,                // c*r
     perpendicular_word_multipliers_for_across_plays: Box<[i8]>, // r*c (0 if no perpendicularly adjacent tile)
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i16]>, // r*c (multiplied by perpendicular_word_multipliers)
@@ -83,6 +85,8 @@ impl Clone for WorkingBuffer {
             remaining_tile_multipliers_for_down_plays: self
                 .remaining_tile_multipliers_for_down_plays
                 .clone(),
+            face_value_scores_for_across_plays: self.face_value_scores_for_across_plays.clone(),
+            face_value_scores_for_down_plays: self.face_value_scores_for_down_plays.clone(),
             perpendicular_word_multipliers_for_across_plays: self
                 .perpendicular_word_multipliers_for_across_plays
                 .clone(),
@@ -132,6 +136,10 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.remaining_tile_multipliers_for_across_plays);
         self.remaining_tile_multipliers_for_down_plays
             .clone_from(&source.remaining_tile_multipliers_for_down_plays);
+        self.face_value_scores_for_across_plays
+            .clone_from(&source.face_value_scores_for_across_plays);
+        self.face_value_scores_for_down_plays
+            .clone_from(&source.face_value_scores_for_down_plays);
         self.perpendicular_word_multipliers_for_across_plays
             .clone_from(&source.perpendicular_word_multipliers_for_across_plays);
         self.perpendicular_word_multipliers_for_down_plays
@@ -206,6 +214,8 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             remaining_tile_multipliers_for_down_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
+            face_value_scores_for_across_plays: vec![0i8; rows_times_cols].into_boxed_slice(),
+            face_value_scores_for_down_plays: vec![0i8; rows_times_cols].into_boxed_slice(),
             perpendicular_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
             perpendicular_word_multipliers_for_down_plays: vec![0i8; rows_times_cols]
@@ -235,6 +245,7 @@ impl WorkingBuffer {
             self.rack_tally[*tile as usize] += 1;
         }
 
+        let alphabet = board_snapshot.game_config.alphabet();
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
         let premiums = board_layout.premiums();
@@ -244,11 +255,16 @@ impl WorkingBuffer {
             for col in 0..dim.cols {
                 let idx = strip_range_start + col as usize;
                 let b = board_snapshot.board_tiles[idx];
-                let premium = premiums[idx];
-                self.remaining_word_multipliers_for_across_plays[idx] =
-                    if b == 0 { premium.word_multiplier } else { 1 }; // needed for premerged_multipliers_map
-                self.remaining_tile_multipliers_for_across_plays[idx] =
-                    if b == 0 { premium.tile_multiplier } else { 1 }; // not as crucial to set to 1
+                if b == 0 {
+                    let premium = premiums[idx];
+                    self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
+                    self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
+                    self.face_value_scores_for_across_plays[idx] = 0;
+                } else {
+                    self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
+                    self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
+                    self.face_value_scores_for_across_plays[idx] = alphabet.score(b);
+                }
             }
         }
         for col in 0..dim.cols {
@@ -263,11 +279,16 @@ impl WorkingBuffer {
             for row in 0..dim.rows {
                 let idx = strip_range_start + row as usize;
                 let b = self.transposed_board_tiles[idx];
-                let premium = transposed_premiums[idx];
-                self.remaining_word_multipliers_for_down_plays[idx] =
-                    if b == 0 { premium.word_multiplier } else { 1 }; // needed for premerged_multipliers_map
-                self.remaining_tile_multipliers_for_down_plays[idx] =
-                    if b == 0 { premium.tile_multiplier } else { 1 }; // not as crucial to set to 1
+                if b == 0 {
+                    let premium = transposed_premiums[idx];
+                    self.remaining_word_multipliers_for_down_plays[idx] = premium.word_multiplier;
+                    self.remaining_tile_multipliers_for_down_plays[idx] = premium.tile_multiplier;
+                    self.face_value_scores_for_down_plays[idx] = 0;
+                } else {
+                    self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
+                    self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
+                    self.face_value_scores_for_down_plays[idx] = alphabet.score(b);
+                }
             }
         }
         self.num_tiles_on_board = board_snapshot
@@ -277,7 +298,6 @@ impl WorkingBuffer {
             .count() as u16;
 
         // eg if my rack is ZY??YVA it'd be [10,4,4,4,1,1,0].
-        let alphabet = board_snapshot.game_config.alphabet();
         self.num_tiles_on_rack = 0;
         self.rack_bits = 0u64;
         for (tile, &count) in (0u8..).zip(self.rack_tally.iter()) {
@@ -688,11 +708,11 @@ fn gen_cross_set<'a>(
 
 #[allow(clippy::too_many_arguments)]
 fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
-    board_snapshot: &'a BoardSnapshot<'a>,
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
+    face_value_score_strip: &'a [i8],
     perpendicular_word_multipliers_strip: &'a [i8],
     perpendicular_scores_strip: &'a [i16],
     num_tiles_on_rack: u8,
@@ -756,10 +776,10 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
     struct Env<'a> {
         cross_set_strip: &'a [CrossSet],
         strider_len: usize,
-        alphabet: &'a alphabet::Alphabet<'a>,
         descending_scores: &'a [i8],
         board_strip: &'a [u8],
         remaining_word_multipliers_strip: &'a [i8],
+        face_value_score_strip: &'a [i8],
         perpendicular_scores_strip: &'a [i16],
         precomputed_square_multiplier_buffer: &'a [i8],
         indexes_to_descending_square_multiplier_buffer: &'a [i8],
@@ -779,10 +799,10 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
     let mut env = Env {
         cross_set_strip,
         strider_len,
-        alphabet: &board_snapshot.game_config.alphabet(),
         descending_scores: &descending_scores,
         board_strip: &board_strip,
         remaining_word_multipliers_strip: &remaining_word_multipliers_strip,
+        face_value_score_strip: &face_value_score_strip,
         perpendicular_scores_strip: &perpendicular_scores_strip,
         precomputed_square_multiplier_buffer: &precomputed_square_multiplier_buffer,
         indexes_to_descending_square_multiplier_buffer:
@@ -800,7 +820,7 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
         best_possible_equity: f32::NEG_INFINITY,
     };
 
-    fn record(
+    fn shadow_record(
         env: &mut Env,
         idx_left: i8,
         idx_right: i8,
@@ -849,7 +869,7 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.alphabet.score(b) as i16;
+            main_played_through_score += env.face_value_score_strip[idx as usize] as i16;
             idx += 1;
         }
         // tiles have been placed from env.idx_left to idx - 1.
@@ -859,7 +879,7 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
             && (env.num_played + is_unique as i8) >= 2
             && idx - env.idx_left >= 2
         {
-            record(
+            shadow_record(
                 env,
                 env.idx_left,
                 idx,
@@ -918,14 +938,14 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.alphabet.score(b) as i16;
+            main_played_through_score += env.face_value_score_strip[idx as usize] as i16;
             idx -= 1;
         }
         // tiles have been placed from env.anchor to idx + 1.
         // here idx >= env.leftmost - 1.
         // check if [idx + 1, env.anchor + 1) is a thing
         if (env.num_played + is_unique as i8) >= 2 && env.anchor - idx >= 2 {
-            record(
+            shadow_record(
                 env,
                 idx + 1,
                 env.anchor + 1,
@@ -1914,13 +1934,13 @@ fn kurnia_gen_place_moves<
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         new_gen_place_moves(
-            &board_snapshot,
             &board_snapshot.board_tiles[strip_range_start..strip_range_end],
             &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end],
             &working_buffer.remaining_word_multipliers_for_across_plays
                 [strip_range_start..strip_range_end],
             &working_buffer.remaining_tile_multipliers_for_across_plays
                 [strip_range_start..strip_range_end],
+            &working_buffer.face_value_scores_for_across_plays[strip_range_start..strip_range_end],
             &working_buffer.perpendicular_word_multipliers_for_across_plays
                 [strip_range_start..strip_range_end],
             &working_buffer.perpendicular_scores_for_across_plays
@@ -1950,13 +1970,13 @@ fn kurnia_gen_place_moves<
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
         new_gen_place_moves(
-            &board_snapshot,
             &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
             &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end],
             &working_buffer.remaining_word_multipliers_for_down_plays
                 [strip_range_start..strip_range_end],
             &working_buffer.remaining_tile_multipliers_for_down_plays
                 [strip_range_start..strip_range_end],
+            &working_buffer.face_value_scores_for_down_plays[strip_range_start..strip_range_end],
             &working_buffer.perpendicular_word_multipliers_for_down_plays
                 [strip_range_start..strip_range_end],
             &working_buffer.perpendicular_scores_for_down_plays[strip_range_start..strip_range_end],
