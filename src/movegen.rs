@@ -52,6 +52,8 @@ struct WorkingBuffer {
     perpendicular_scores_for_down_plays: Box<[i16]>,   // c*r
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
+    bag_is_empty: bool,
+    play_out_bonus: i16,
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     descending_scores: Vec<i8>, // rack.len()
@@ -101,6 +103,8 @@ impl Clone for WorkingBuffer {
             perpendicular_scores_for_down_plays: self.perpendicular_scores_for_down_plays.clone(),
             transposed_board_tiles: self.transposed_board_tiles.clone(),
             num_tiles_on_board: self.num_tiles_on_board,
+            bag_is_empty: self.bag_is_empty,
+            play_out_bonus: self.play_out_bonus,
             num_tiles_on_rack: self.num_tiles_on_rack,
             rack_bits: self.rack_bits,
             descending_scores: self.descending_scores.clone(),
@@ -157,6 +161,8 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.transposed_board_tiles);
         self.num_tiles_on_board
             .clone_from(&source.num_tiles_on_board);
+        self.bag_is_empty.clone_from(&source.bag_is_empty);
+        self.play_out_bonus.clone_from(&source.play_out_bonus);
         self.num_tiles_on_rack.clone_from(&source.num_tiles_on_rack);
         self.rack_bits.clone_from(&source.rack_bits);
         self.descending_scores.clone_from(&source.descending_scores);
@@ -230,6 +236,8 @@ impl WorkingBuffer {
             perpendicular_scores_for_down_plays: vec![0i16; rows_times_cols].into_boxed_slice(),
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
+            bag_is_empty: false,
+            play_out_bonus: 0,
             num_tiles_on_rack: 0,
             rack_bits: 0,
             descending_scores: Vec::new(),
@@ -308,6 +316,25 @@ impl WorkingBuffer {
             .iter()
             .filter(|&t| *t != 0)
             .count() as u16;
+        self.bag_is_empty = self.num_tiles_on_board
+            + board_snapshot.game_config.num_players() as u16
+                * (board_snapshot.game_config.rack_size() as u16)
+            >= alphabet.num_tiles();
+        self.play_out_bonus = if self.bag_is_empty {
+            2 * ((0u8..)
+                .zip(self.rack_tally.iter())
+                .map(|(tile, &num)| {
+                    (alphabet.freq(tile) as i16 - num as i16) * alphabet.score(tile) as i16
+                })
+                .sum::<i16>()
+                - board_snapshot
+                    .board_tiles
+                    .iter()
+                    .map(|&t| if t != 0 { alphabet.score(t) as i16 } else { 0 })
+                    .sum::<i16>())
+        } else {
+            0
+        };
 
         // eg if my rack is ZY??YVA it'd be [10,4,4,4,1,1,0].
         self.num_tiles_on_rack = 0;
@@ -333,28 +360,13 @@ impl WorkingBuffer {
         self.best_leave_values.clear();
         self.best_leave_values
             .resize(self.num_tiles_on_rack as usize + 1, f32::NEG_INFINITY);
-        let bag_is_empty = self.num_tiles_on_board
-            + board_snapshot.game_config.num_players() as u16
-                * (board_snapshot.game_config.rack_size() as u16)
-            >= alphabet.num_tiles();
-        if bag_is_empty {
+        if self.bag_is_empty {
             let mut unpaid = 0i16;
             for i in (0..self.num_tiles_on_rack).rev() {
                 unpaid += self.descending_scores[i as usize] as i16;
                 self.best_leave_values[i as usize] = (-10 - 2 * unpaid) as f32;
             }
-            self.best_leave_values[self.num_tiles_on_rack as usize] =
-                (2 * ((0u8..)
-                    .zip(self.rack_tally.iter())
-                    .map(|(tile, &num)| {
-                        (alphabet.freq(tile) as i16 - num as i16) * alphabet.score(tile) as i16
-                    })
-                    .sum::<i16>()
-                    - board_snapshot
-                        .board_tiles
-                        .iter()
-                        .map(|&t| if t != 0 { alphabet.score(t) as i16 } else { 0 })
-                        .sum::<i16>())) as f32;
+            self.best_leave_values[self.num_tiles_on_rack as usize] = self.play_out_bonus as f32;
         } else {
             struct Env<'a> {
                 klv: &'a klv::Klv,
@@ -1668,55 +1680,42 @@ impl KurniaMoveGenerator {
             std::mem::take(&mut self.plays),
         ));
 
-        fn push_move<F: FnMut() -> Play>(
+        fn push_move(
             found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
             max_gen: usize,
-            equity: f32,
-            mut construct_play: F,
+            valued_move: ValuedMove,
         ) {
             if max_gen == 0 {
                 return;
             }
             let mut borrowed = found_moves.borrow_mut();
             if borrowed.len() >= max_gen {
-                if borrowed.peek().unwrap().equity >= equity {
+                if borrowed.peek().unwrap().equity >= valued_move.equity {
                     return;
                 }
                 borrowed.pop();
             }
-            borrowed.push(ValuedMove {
-                equity,
-                play: construct_play(),
-            });
+            borrowed.push(valued_move);
         };
 
         let mut working_buffer = &mut self.working_buffer;
         working_buffer.init(board_snapshot, rack);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
-        let bag_is_empty = num_tiles_on_board
-            + board_snapshot.game_config.num_players() as u16
-                * (board_snapshot.game_config.rack_size() as u16)
-            >= alphabet.num_tiles();
-
-        let play_out_bonus = if bag_is_empty {
-            2 * ((0u8..)
-                .zip(working_buffer.rack_tally.iter())
-                .map(|(tile, &num)| {
-                    (alphabet.freq(tile) as i16 - num as i16) * alphabet.score(tile) as i16
-                })
-                .sum::<i16>()
-                - board_snapshot
-                    .board_tiles
-                    .iter()
-                    .map(|&t| if t != 0 { alphabet.score(t) as i16 } else { 0 })
-                    .sum::<i16>())
-        } else {
-            0
-        };
+        let bag_is_empty = working_buffer.bag_is_empty;
+        let play_out_bonus = working_buffer.play_out_bonus;
 
         let leave_value_from_tally = |rack_tally: &[u8]| {
             if bag_is_empty {
-                0.0
+                let played_out = rack_tally.iter().all(|&num| num == 0);
+                (if played_out {
+                    play_out_bonus
+                } else {
+                    -10 - 2
+                        * (0u8..)
+                            .zip(rack_tally)
+                            .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
+                            .sum::<i16>()
+                }) as f32
             } else {
                 board_snapshot.klv.leave_value_from_tally(rack_tally)
             }
@@ -1766,49 +1765,35 @@ impl KurniaMoveGenerator {
                         })
                         .count() as f32
                         * -0.7
-                } else if bag_is_empty {
-                    let played_out = rack_tally.iter().all(|&num| num == 0);
-                    (if played_out {
-                        play_out_bonus
-                    } else {
-                        -10 - 2
-                            * (0u8..)
-                                .zip(rack_tally)
-                                .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
-                                .sum::<i16>()
-                    }) as f32
                 } else {
                     0.0
                 };
                 let equity = score as f32 + leave_value + other_adjustments;
-                push_move(&found_moves, max_gen, equity, || Play::Place {
-                    down,
-                    lane,
-                    idx,
-                    word: word.into(),
-                    score,
-                });
+                push_move(
+                    &found_moves,
+                    max_gen,
+                    ValuedMove {
+                        equity,
+                        play: Play::Place {
+                            down,
+                            lane,
+                            idx,
+                            word: word.into(),
+                            score,
+                        },
+                    },
+                );
             };
 
         let found_exchange_move = |rack_tally: &[u8], exchanged_tiles: &[u8]| {
-            let leave_value = leave_value_from_tally(rack_tally);
-            let other_adjustments = if num_tiles_on_board == 0 {
-                0.0
-            } else if bag_is_empty {
-                (-10 - 2
-                    * (0u8..)
-                        .zip(rack_tally)
-                        .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
-                        .sum::<i16>()) as f32
-            } else {
-                0.0
-            };
             push_move(
                 &found_moves,
                 max_gen,
-                leave_value + other_adjustments,
-                || Play::Exchange {
-                    tiles: exchanged_tiles.into(),
+                ValuedMove {
+                    equity: leave_value_from_tally(rack_tally),
+                    play: Play::Exchange {
+                        tiles: exchanged_tiles.into(),
+                    },
                 },
             );
         };
