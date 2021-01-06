@@ -1,4 +1,4 @@
-use super::{bites, board_layout, game_config, klv, kwg, matrix};
+use super::{alphabet, bites, game_config, klv, kwg, matrix};
 
 #[derive(Clone)]
 struct CrossSet {
@@ -1087,9 +1087,14 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
 #[allow(clippy::too_many_arguments)]
 fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     board_snapshot: &'a BoardSnapshot<'a>,
+    board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
+    remaining_word_multipliers_strip: &'a [i8],
+    remaining_tile_multipliers_strip: &'a [i8],
+    face_value_scores_strip: &'a [i8],
+    perpendicular_word_multipliers_strip: &'a [i8],
+    perpendicular_scores_strip: &'a [i16],
     rack_tally: &'a mut [u8],
-    strider: matrix::Strider,
     word_strip_buffer: &'a mut [u8],
     num_max_played: u8,
     single_tile_plays: bool,
@@ -1099,10 +1104,16 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     rightmost: i8,
 ) {
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
+        alphabet: &'a alphabet::Alphabet<'a>,
         board_snapshot: &'a BoardSnapshot<'a>,
+        board_strip: &'a [u8],
         cross_set_strip: &'a [CrossSet],
+        remaining_word_multipliers_strip: &'a [i8],
+        remaining_tile_multipliers_strip: &'a [i8],
+        face_value_scores_strip: &'a [i8],
+        perpendicular_word_multipliers_strip: &'a [i8],
+        perpendicular_scores_strip: &'a [i16],
         rack_tally: &'a mut [u8],
-        strider: matrix::Strider,
         callback: CallbackType,
         word_strip_buffer: &'a mut [u8],
         anchor: i8,
@@ -1114,10 +1125,16 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 
     let mut env = Env {
+        alphabet: board_snapshot.game_config.alphabet(),
         board_snapshot,
+        board_strip,
         cross_set_strip,
+        remaining_word_multipliers_strip,
+        remaining_tile_multipliers_strip,
+        face_value_scores_strip,
+        perpendicular_word_multipliers_strip,
+        perpendicular_scores_strip,
         rack_tally,
-        strider,
         callback,
         word_strip_buffer,
         anchor: 0,
@@ -1133,11 +1150,11 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         idx_left: i8,
         idx_right: i8,
         main_score: i16,
-        perpendicular_score: i16,
+        perpendicular_cumulative_score: i16,
         word_multiplier: i8,
     ) {
         let score = main_score * (word_multiplier as i16)
-            + perpendicular_score
+            + perpendicular_cumulative_score
             + env
                 .board_snapshot
                 .game_config
@@ -1155,13 +1172,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         mut idx: i8,
         mut p: i32,
         mut main_score: i16,
-        perpendicular_score: i16,
+        perpendicular_cumulative_score: i16,
         word_multiplier: i8,
         mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
         while idx < env.rightmost {
-            let b = env.board_snapshot.board_tiles[env.strider.at(idx)];
+            let b = env.board_strip[idx as usize];
             if b == 0 {
                 break;
             }
@@ -1169,7 +1186,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             if p <= 0 {
                 return;
             }
-            main_score += env.board_snapshot.game_config.alphabet().score(b) as i16;
+            main_score += env.face_value_scores_strip[idx as usize] as i16;
             idx += 1;
         }
         let node = env.board_snapshot.kwg[p];
@@ -1183,87 +1200,85 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 env.idx_left,
                 idx,
                 main_score,
-                perpendicular_score,
+                perpendicular_cumulative_score,
                 word_multiplier,
             );
-        }
-        if idx >= env.rightmost {
-            return;
         }
         if env.num_played as u8 >= env.num_max_played {
             return;
         }
 
-        p = node.arc_index();
-        if p <= 0 {
-            return;
-        }
-        let this_cross_set = env.cross_set_strip[idx as usize].clone();
-        if this_cross_set.bits == 1 {
-            // already handled '@'
-            return;
-        }
-        let this_premium =
-            env.board_snapshot.game_config.board_layout().premiums()[env.strider.at(idx)];
-        let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
-        let this_cross_bits;
-        if this_cross_set.bits != 0 {
-            // turn off bit 0 so it cannot match later
-            this_cross_bits = this_cross_set.bits & !1;
-        } else {
-            this_cross_bits = !1;
-            is_unique = true;
-        };
-        let perpendicular_word_multiplier =
-            this_premium.word_multiplier as i16 & -(this_cross_set.bits as i16 & 1);
-        loop {
-            let node = env.board_snapshot.kwg[p];
-            let tile = node.tile();
-            if this_cross_bits & (1 << tile) != 0 {
-                if env.rack_tally[tile as usize] > 0 {
-                    env.rack_tally[tile as usize] -= 1;
-                    env.num_played += 1;
-                    let tile_value = (env.board_snapshot.game_config.alphabet().score(tile) as i16)
-                        * (this_premium.tile_multiplier as i16);
-                    env.word_strip_buffer[idx as usize] = tile;
-                    play_right(
-                        env,
-                        idx + 1,
-                        p,
-                        main_score + tile_value,
-                        perpendicular_score
-                            + (this_cross_set.score + tile_value) * perpendicular_word_multiplier,
-                        new_word_multiplier,
-                        is_unique,
-                    );
-                    env.num_played -= 1;
-                    env.rack_tally[tile as usize] += 1;
-                }
-                if env.rack_tally[0] > 0 {
-                    env.rack_tally[0] -= 1;
-                    env.num_played += 1;
-                    // intentional to not hardcode blank tile value as zero
-                    let tile_value = (env.board_snapshot.game_config.alphabet().score(0) as i16)
-                        * (this_premium.tile_multiplier as i16);
-                    env.word_strip_buffer[idx as usize] = tile | 0x80;
-                    play_right(
-                        env,
-                        idx + 1,
-                        p,
-                        main_score + tile_value,
-                        perpendicular_score
-                            + (this_cross_set.score + tile_value) * perpendicular_word_multiplier,
-                        new_word_multiplier,
-                        is_unique,
-                    );
-                    env.num_played -= 1;
-                    env.rack_tally[0] += 1;
-                }
+        if idx < env.rightmost {
+            p = node.arc_index();
+            if p <= 0 {
+                return;
             }
-            if node.is_end() {
-                break;
+            let mut this_cross_bits = env.cross_set_strip[idx as usize].bits;
+            if this_cross_bits == 1 {
+                // already handled '@'
+                return;
+            } else if this_cross_bits != 0 {
+                // turn off bit 0 so it cannot match later
+                this_cross_bits &= !1;
+            } else {
+                this_cross_bits = !1;
+                is_unique = true;
+            };
+            let new_word_multiplier =
+                word_multiplier * env.remaining_word_multipliers_strip[idx as usize];
+            let tile_multiplier = env.remaining_tile_multipliers_strip[idx as usize];
+            let perpendicular_word_multiplier =
+                env.perpendicular_word_multipliers_strip[idx as usize];
+            let perpendicular_score = env.perpendicular_scores_strip[idx as usize];
+            loop {
+                let node = env.board_snapshot.kwg[p];
+                let tile = node.tile();
+                if this_cross_bits & (1 << tile) != 0 {
+                    if env.rack_tally[tile as usize] > 0 {
+                        env.rack_tally[tile as usize] -= 1;
+                        env.num_played += 1;
+                        let tile_value = env.alphabet.score(tile) as i16 * tile_multiplier as i16;
+                        env.word_strip_buffer[idx as usize] = tile;
+                        play_right(
+                            env,
+                            idx + 1,
+                            p,
+                            main_score + tile_value,
+                            perpendicular_cumulative_score
+                                + perpendicular_score
+                                + tile_value * perpendicular_word_multiplier as i16,
+                            new_word_multiplier,
+                            is_unique,
+                        );
+                        env.num_played -= 1;
+                        env.rack_tally[tile as usize] += 1;
+                    }
+                    if env.rack_tally[0] > 0 {
+                        env.rack_tally[0] -= 1;
+                        env.num_played += 1;
+                        // intentional to not hardcode blank tile value as zero
+                        let tile_value = env.alphabet.score(0) as i16 * tile_multiplier as i16;
+                        env.word_strip_buffer[idx as usize] = tile | 0x80;
+                        play_right(
+                            env,
+                            idx + 1,
+                            p,
+                            main_score + tile_value,
+                            perpendicular_cumulative_score
+                                + perpendicular_score
+                                + tile_value * perpendicular_word_multiplier as i16,
+                            new_word_multiplier,
+                            is_unique,
+                        );
+                        env.num_played -= 1;
+                        env.rack_tally[0] += 1;
+                    }
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
             }
-            p += 1;
         }
     }
 
@@ -1272,13 +1287,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         mut idx: i8,
         mut p: i32,
         mut main_score: i16,
-        perpendicular_score: i16,
+        perpendicular_cumulative_score: i16,
         word_multiplier: i8,
         mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
         while idx >= env.leftmost {
-            let b = env.board_snapshot.board_tiles[env.strider.at(idx)];
+            let b = env.board_strip[idx as usize];
             if b == 0 {
                 break;
             }
@@ -1286,17 +1301,17 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             if p <= 0 {
                 return;
             }
-            main_score += env.board_snapshot.game_config.alphabet().score(b) as i16;
+            main_score += env.face_value_scores_strip[idx as usize] as i16;
             idx -= 1;
         }
-        let node = env.board_snapshot.kwg[p];
+        let mut node = env.board_snapshot.kwg[p];
         if (env.num_played + is_unique as i8) >= 2 && env.anchor - idx >= 2 && node.accepts() {
             record(
                 env,
                 idx + 1,
                 env.anchor + 1,
                 main_score,
-                perpendicular_score,
+                perpendicular_cumulative_score,
                 word_multiplier,
             );
         }
@@ -1308,96 +1323,96 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         if p <= 0 {
             return;
         }
-        let this_premium;
-        let this_cross_set;
-        if idx >= env.leftmost {
-            this_premium =
-                env.board_snapshot.game_config.board_layout().premiums()[env.strider.at(idx)];
-            this_cross_set = env.cross_set_strip[idx as usize].clone();
-        } else {
-            this_premium = board_layout::Premium {
-                word_multiplier: 0,
-                tile_multiplier: 0,
-            };
-            this_cross_set = CrossSet { bits: 0, score: 0 };
-        }
-        let new_word_multiplier = word_multiplier * this_premium.word_multiplier;
-        let prev_is_unique = is_unique;
-        let this_cross_bits;
-        if idx < env.leftmost {
-            // check this case once instead of at every iteration
-            this_cross_bits = 0;
-        } else if this_cross_set.bits != 0 {
-            this_cross_bits = this_cross_set.bits;
-        } else {
-            this_cross_bits = !1;
-            is_unique = true;
-        }
-        let perpendicular_word_multiplier =
-            this_premium.word_multiplier as i16 & -(1 & this_cross_set.bits as i16);
-        loop {
-            let node = env.board_snapshot.kwg[p];
-            let tile = node.tile();
-            if tile == 0 {
-                env.idx_left = idx + 1;
-                play_right(
-                    env,
-                    env.anchor + 1,
-                    p,
-                    main_score,
-                    perpendicular_score,
-                    word_multiplier,
-                    prev_is_unique,
-                );
-            } else if this_cross_bits & (1 << tile) != 0 {
-                if env.rack_tally[tile as usize] > 0 {
-                    env.rack_tally[tile as usize] -= 1;
-                    env.num_played += 1;
-                    let tile_value = (env.board_snapshot.game_config.alphabet().score(tile) as i16)
-                        * (this_premium.tile_multiplier as i16);
-                    env.word_strip_buffer[idx as usize] = tile;
-                    play_left(
-                        env,
-                        idx - 1,
-                        p,
-                        main_score + tile_value,
-                        perpendicular_score
-                            + (this_cross_set.score + tile_value) * perpendicular_word_multiplier,
-                        new_word_multiplier,
-                        is_unique,
-                    );
-                    env.num_played -= 1;
-                    env.rack_tally[tile as usize] += 1;
-                }
-                if env.rack_tally[0] > 0 {
-                    env.rack_tally[0] -= 1;
-                    env.num_played += 1;
-                    // intentional to not hardcode blank tile value as zero
-                    let tile_value = (env.board_snapshot.game_config.alphabet().score(0) as i16)
-                        * (this_premium.tile_multiplier as i16);
-                    env.word_strip_buffer[idx as usize] = tile | 0x80;
-                    play_left(
-                        env,
-                        idx - 1,
-                        p,
-                        main_score + tile_value,
-                        perpendicular_score
-                            + (this_cross_set.score + tile_value) * perpendicular_word_multiplier,
-                        new_word_multiplier,
-                        is_unique,
-                    );
-                    env.num_played -= 1;
-                    env.rack_tally[0] += 1;
-                }
-            }
+
+        node = env.board_snapshot.kwg[p];
+        if node.tile() == 0 {
+            // assume idx < env.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
+            env.idx_left = idx + 1;
+            play_right(
+                env,
+                env.anchor + 1,
+                p,
+                main_score,
+                perpendicular_cumulative_score,
+                word_multiplier,
+                is_unique,
+            );
             if node.is_end() {
-                break;
+                return;
             }
             p += 1;
         }
+
+        if idx >= env.leftmost {
+            let mut this_cross_bits = env.cross_set_strip[idx as usize].bits;
+            if this_cross_bits == 1 {
+                // already handled '@'
+                return;
+            } else if this_cross_bits != 0 {
+                // turn off bit 0 so it cannot match later
+                this_cross_bits &= !1;
+            } else {
+                this_cross_bits = !1;
+                is_unique = true;
+            }
+            let new_word_multiplier =
+                word_multiplier * env.remaining_word_multipliers_strip[idx as usize];
+            let tile_multiplier = env.remaining_tile_multipliers_strip[idx as usize];
+            let perpendicular_word_multiplier =
+                env.perpendicular_word_multipliers_strip[idx as usize];
+            let perpendicular_score = env.perpendicular_scores_strip[idx as usize];
+            loop {
+                let node = env.board_snapshot.kwg[p];
+                let tile = node.tile();
+                if this_cross_bits & (1 << tile) != 0 {
+                    if env.rack_tally[tile as usize] > 0 {
+                        env.rack_tally[tile as usize] -= 1;
+                        env.num_played += 1;
+                        let tile_value = env.alphabet.score(tile) as i16 * tile_multiplier as i16;
+                        env.word_strip_buffer[idx as usize] = tile;
+                        play_left(
+                            env,
+                            idx - 1,
+                            p,
+                            main_score + tile_value,
+                            perpendicular_cumulative_score
+                                + perpendicular_score
+                                + tile_value * perpendicular_word_multiplier as i16,
+                            new_word_multiplier,
+                            is_unique,
+                        );
+                        env.num_played -= 1;
+                        env.rack_tally[tile as usize] += 1;
+                    }
+                    if env.rack_tally[0] > 0 {
+                        env.rack_tally[0] -= 1;
+                        env.num_played += 1;
+                        // intentional to not hardcode blank tile value as zero
+                        let tile_value = env.alphabet.score(0) as i16 * tile_multiplier as i16;
+                        env.word_strip_buffer[idx as usize] = tile | 0x80;
+                        play_left(
+                            env,
+                            idx - 1,
+                            p,
+                            main_score + tile_value,
+                            perpendicular_cumulative_score
+                                + perpendicular_score
+                                + tile_value * perpendicular_word_multiplier as i16,
+                            new_word_multiplier,
+                            is_unique,
+                        );
+                        env.num_played -= 1;
+                        env.rack_tally[0] += 1;
+                    }
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
+            }
+        }
     }
 
-    // following already pre-done, so now just run the algo
     env.leftmost = leftmost;
     env.rightmost = rightmost;
     env.anchor = anchor;
@@ -2027,16 +2042,50 @@ fn kurnia_gen_place_moves<
         gen_place_moves(
             &board_snapshot,
             if placement.down {
+                &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end]
+            } else {
+                &board_snapshot.board_tiles[strip_range_start..strip_range_end]
+            },
+            if placement.down {
                 &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end]
             } else {
                 &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
             },
-            &mut working_buffer.rack_tally,
             if placement.down {
-                dim.down(placement.lane)
+                &working_buffer.remaining_word_multipliers_for_down_plays
+                    [strip_range_start..strip_range_end]
             } else {
-                dim.across(placement.lane)
+                &working_buffer.remaining_word_multipliers_for_across_plays
+                    [strip_range_start..strip_range_end]
             },
+            if placement.down {
+                &working_buffer.remaining_tile_multipliers_for_down_plays
+                    [strip_range_start..strip_range_end]
+            } else {
+                &working_buffer.remaining_tile_multipliers_for_across_plays
+                    [strip_range_start..strip_range_end]
+            },
+            if placement.down {
+                &working_buffer.face_value_scores_for_down_plays[strip_range_start..strip_range_end]
+            } else {
+                &working_buffer.face_value_scores_for_across_plays
+                    [strip_range_start..strip_range_end]
+            },
+            if placement.down {
+                &working_buffer.perpendicular_word_multipliers_for_down_plays
+                    [strip_range_start..strip_range_end]
+            } else {
+                &working_buffer.perpendicular_word_multipliers_for_across_plays
+                    [strip_range_start..strip_range_end]
+            },
+            if placement.down {
+                &working_buffer.perpendicular_scores_for_down_plays
+                    [strip_range_start..strip_range_end]
+            } else {
+                &working_buffer.perpendicular_scores_for_across_plays
+                    [strip_range_start..strip_range_end]
+            },
+            &mut working_buffer.rack_tally,
             if placement.down {
                 &mut working_buffer.word_buffer_for_down_plays[strip_range_start..strip_range_end]
             } else {
