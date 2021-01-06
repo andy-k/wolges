@@ -344,7 +344,7 @@ impl WorkingBuffer {
                 self.best_leave_values[i as usize] = (-10 - 2 * unpaid) as f32;
             }
             self.best_leave_values[self.num_tiles_on_rack as usize] =
-                (2 * (0u8..)
+                (2 * ((0u8..)
                     .zip(self.rack_tally.iter())
                     .map(|(tile, &num)| {
                         (alphabet.freq(tile) as i16 - num as i16) * alphabet.score(tile) as i16
@@ -354,7 +354,7 @@ impl WorkingBuffer {
                         .board_tiles
                         .iter()
                         .map(|&t| if t != 0 { alphabet.score(t) as i16 } else { 0 })
-                        .sum::<i16>()) as f32;
+                        .sum::<i16>())) as f32;
         } else {
             struct Env<'a> {
                 klv: &'a klv::Klv,
