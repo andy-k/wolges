@@ -33,7 +33,8 @@ struct PossiblePlacement {
 
 struct WorkingBuffer {
     rack_tally: Box<[u8]>,                                      // 27 for ?A-Z
-    word_buffer: Box<[u8]>,                                     // max(r, c)
+    word_buffer_for_across_plays: Box<[u8]>,                    // r*c
+    word_buffer_for_down_plays: Box<[u8]>,                      // c*r
     cross_set_for_across_plays: Box<[CrossSet]>,                // r*c
     cross_set_for_down_plays: Box<[CrossSet]>,                  // c*r
     cached_cross_set_for_across_plays: Box<[CachedCrossSet]>,   // c*r
@@ -67,7 +68,8 @@ impl Clone for WorkingBuffer {
     fn clone(&self) -> Self {
         Self {
             rack_tally: self.rack_tally.clone(),
-            word_buffer: self.word_buffer.clone(),
+            word_buffer_for_across_plays: self.word_buffer_for_across_plays.clone(),
+            word_buffer_for_down_plays: self.word_buffer_for_down_plays.clone(),
             cross_set_for_across_plays: self.cross_set_for_across_plays.clone(),
             cross_set_for_down_plays: self.cross_set_for_down_plays.clone(),
             cached_cross_set_for_across_plays: self.cached_cross_set_for_across_plays.clone(),
@@ -118,7 +120,10 @@ impl Clone for WorkingBuffer {
     #[inline(always)]
     fn clone_from(&mut self, source: &Self) {
         self.rack_tally.clone_from(&source.rack_tally);
-        self.word_buffer.clone_from(&source.word_buffer);
+        self.word_buffer_for_across_plays
+            .clone_from(&source.word_buffer_for_across_plays);
+        self.word_buffer_for_down_plays
+            .clone_from(&source.word_buffer_for_down_plays);
         self.cross_set_for_across_plays
             .clone_from(&source.cross_set_for_across_plays);
         self.cross_set_for_down_plays
@@ -173,7 +178,8 @@ impl WorkingBuffer {
         let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
         Self {
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
-            word_buffer: vec![0u8; std::cmp::max(dim.rows, dim.cols) as usize].into_boxed_slice(),
+            word_buffer_for_across_plays: vec![0u8; rows_times_cols].into_boxed_slice(),
+            word_buffer_for_down_plays: vec![0u8; rows_times_cols].into_boxed_slice(),
             cross_set_for_across_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
                 .into_boxed_slice(),
             cross_set_for_down_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
@@ -244,6 +250,12 @@ impl WorkingBuffer {
         for tile in &rack[..] {
             self.rack_tally[*tile as usize] += 1;
         }
+        self.word_buffer_for_across_plays
+            .iter_mut()
+            .for_each(|m| *m = 0);
+        self.word_buffer_for_down_plays
+            .iter_mut()
+            .for_each(|m| *m = 0);
 
         let alphabet = board_snapshot.game_config.alphabet();
         let board_layout = board_snapshot.game_config.board_layout();
@@ -707,12 +719,12 @@ fn gen_cross_set<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
+fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
-    face_value_score_strip: &'a [i8],
+    face_value_scores_strip: &'a [i8],
     perpendicular_word_multipliers_strip: &'a [i8],
     perpendicular_scores_strip: &'a [i16],
     num_tiles_on_rack: u8,
@@ -779,7 +791,7 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
         descending_scores: &'a [i8],
         board_strip: &'a [u8],
         remaining_word_multipliers_strip: &'a [i8],
-        face_value_score_strip: &'a [i8],
+        face_value_scores_strip: &'a [i8],
         perpendicular_scores_strip: &'a [i16],
         precomputed_square_multiplier_buffer: &'a [i8],
         indexes_to_descending_square_multiplier_buffer: &'a [i8],
@@ -802,7 +814,7 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
         descending_scores: &descending_scores,
         board_strip: &board_strip,
         remaining_word_multipliers_strip: &remaining_word_multipliers_strip,
-        face_value_score_strip: &face_value_score_strip,
+        face_value_scores_strip: &face_value_scores_strip,
         perpendicular_scores_strip: &perpendicular_scores_strip,
         precomputed_square_multiplier_buffer: &precomputed_square_multiplier_buffer,
         indexes_to_descending_square_multiplier_buffer:
@@ -869,7 +881,7 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.face_value_score_strip[idx as usize] as i16;
+            main_played_through_score += env.face_value_scores_strip[idx as usize] as i16;
             idx += 1;
         }
         // tiles have been placed from env.idx_left to idx - 1.
@@ -938,7 +950,7 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.face_value_score_strip[idx as usize] as i16;
+            main_played_through_score += env.face_value_scores_strip[idx as usize] as i16;
             idx -= 1;
         }
         // tiles have been placed from env.anchor to idx + 1.
@@ -1072,14 +1084,13 @@ fn new_gen_place_moves<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8,
     }
 }
 
-// word_buffer must have at least strider.len() length.
 #[allow(clippy::too_many_arguments)]
-fn orig_gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     board_snapshot: &'a BoardSnapshot<'a>,
     cross_set_strip: &'a [CrossSet],
     rack_tally: &'a mut [u8],
     strider: matrix::Strider,
-    word_buffer: &'a mut [u8],
+    word_strip_buffer: &'a mut [u8],
     num_max_played: u8,
     single_tile_plays: bool,
     callback: CallbackType,
@@ -1087,19 +1098,13 @@ fn orig_gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     leftmost: i8,
     rightmost: i8,
 ) {
-    let len = strider.len();
-    word_buffer
-        .iter_mut()
-        .take(len as usize)
-        .for_each(|m| *m = 0);
-
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
         board_snapshot: &'a BoardSnapshot<'a>,
         cross_set_strip: &'a [CrossSet],
         rack_tally: &'a mut [u8],
         strider: matrix::Strider,
         callback: CallbackType,
-        word_buffer: &'a mut [u8],
+        word_strip_buffer: &'a mut [u8],
         anchor: i8,
         leftmost: i8,
         rightmost: i8,
@@ -1114,7 +1119,7 @@ fn orig_gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         rack_tally,
         strider,
         callback,
-        word_buffer,
+        word_strip_buffer,
         anchor: 0,
         leftmost: 0,
         rightmost: 0,
@@ -1139,7 +1144,7 @@ fn orig_gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 .num_played_bonus(env.num_played);
         (env.callback)(
             idx_left,
-            &env.word_buffer[idx_left as usize..idx_right as usize],
+            &env.word_strip_buffer[idx_left as usize..idx_right as usize],
             score,
             env.rack_tally,
         );
@@ -1220,7 +1225,7 @@ fn orig_gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.num_played += 1;
                     let tile_value = (env.board_snapshot.game_config.alphabet().score(tile) as i16)
                         * (this_premium.tile_multiplier as i16);
-                    env.word_buffer[idx as usize] = tile;
+                    env.word_strip_buffer[idx as usize] = tile;
                     play_right(
                         env,
                         idx + 1,
@@ -1240,7 +1245,7 @@ fn orig_gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     // intentional to not hardcode blank tile value as zero
                     let tile_value = (env.board_snapshot.game_config.alphabet().score(0) as i16)
                         * (this_premium.tile_multiplier as i16);
-                    env.word_buffer[idx as usize] = tile | 0x80;
+                    env.word_strip_buffer[idx as usize] = tile | 0x80;
                     play_right(
                         env,
                         idx + 1,
@@ -1350,7 +1355,7 @@ fn orig_gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     env.num_played += 1;
                     let tile_value = (env.board_snapshot.game_config.alphabet().score(tile) as i16)
                         * (this_premium.tile_multiplier as i16);
-                    env.word_buffer[idx as usize] = tile;
+                    env.word_strip_buffer[idx as usize] = tile;
                     play_left(
                         env,
                         idx - 1,
@@ -1370,7 +1375,7 @@ fn orig_gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     // intentional to not hardcode blank tile value as zero
                     let tile_value = (env.board_snapshot.game_config.alphabet().score(0) as i16)
                         * (this_premium.tile_multiplier as i16);
-                    env.word_buffer[idx as usize] = tile | 0x80;
+                    env.word_strip_buffer[idx as usize] = tile | 0x80;
                     play_left(
                         env,
                         idx - 1,
@@ -1898,12 +1903,6 @@ fn kurnia_gen_place_moves<
                 [strip_range_start..strip_range_end],
         );
     }
-    if working_buffer.num_tiles_on_board == 0 {
-        // empty board activates star
-        working_buffer.cross_set_for_across_plays
-            [dim.at_row_col(board_layout.star_row(), board_layout.star_col())] =
-            CrossSet { bits: !1, score: 0 };
-    }
     let transposed_dim = matrix::Dim {
         rows: dim.cols,
         cols: dim.rows,
@@ -1921,10 +1920,15 @@ fn kurnia_gen_place_moves<
             &mut working_buffer.cached_cross_set_for_down_plays[strip_range_start..strip_range_end],
         );
     }
-    if !board_layout.is_symmetric() && working_buffer.num_tiles_on_board == 0 {
+    if working_buffer.num_tiles_on_board == 0 {
         // empty board activates star
-        working_buffer.cross_set_for_down_plays
-            [transposed_dim.at_row_col(board_layout.star_col(), board_layout.star_row())] =
+        let star_row = board_layout.star_row();
+        let star_col = board_layout.star_col();
+        if !board_layout.is_symmetric() {
+            working_buffer.cross_set_for_down_plays
+                [transposed_dim.at_row_col(star_col, star_row)] = CrossSet { bits: !1, score: 0 };
+        }
+        working_buffer.cross_set_for_across_plays[dim.at_row_col(star_row, star_col)] =
             CrossSet { bits: !1, score: 0 };
     }
     working_buffer.init_after_cross_sets(board_snapshot);
@@ -1933,7 +1937,7 @@ fn kurnia_gen_place_moves<
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
-        new_gen_place_moves(
+        gen_place_placements(
             &board_snapshot.board_tiles[strip_range_start..strip_range_end],
             &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end],
             &working_buffer.remaining_word_multipliers_for_across_plays
@@ -1969,7 +1973,7 @@ fn kurnia_gen_place_moves<
     for col in 0..dim.cols {
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
-        new_gen_place_moves(
+        gen_place_placements(
             &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
             &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end],
             &working_buffer.remaining_word_multipliers_for_down_plays
@@ -2011,16 +2015,21 @@ fn kurnia_gen_place_moves<
         if !can_accept(placement.best_possible_equity) {
             break;
         }
-        orig_gen_place_moves(
+        let strip_range_start;
+        let strip_range_end;
+        if placement.down {
+            strip_range_start = (placement.lane as isize * dim.rows as isize) as usize;
+            strip_range_end = strip_range_start + dim.rows as usize;
+        } else {
+            strip_range_start = (placement.lane as isize * dim.cols as isize) as usize;
+            strip_range_end = strip_range_start + dim.cols as usize;
+        }
+        gen_place_moves(
             &board_snapshot,
             if placement.down {
-                let cross_set_start = (placement.lane as isize * dim.rows as isize) as usize;
-                &working_buffer.cross_set_for_down_plays
-                    [cross_set_start..cross_set_start + dim.rows as usize]
+                &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end]
             } else {
-                let cross_set_start = (placement.lane as isize * dim.cols as isize) as usize;
-                &working_buffer.cross_set_for_across_plays
-                    [cross_set_start..cross_set_start + dim.cols as usize]
+                &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
             },
             &mut working_buffer.rack_tally,
             if placement.down {
@@ -2028,7 +2037,11 @@ fn kurnia_gen_place_moves<
             } else {
                 dim.across(placement.lane)
             },
-            &mut working_buffer.word_buffer,
+            if placement.down {
+                &mut working_buffer.word_buffer_for_down_plays[strip_range_start..strip_range_end]
+            } else {
+                &mut working_buffer.word_buffer_for_across_plays[strip_range_start..strip_range_end]
+            },
             max_rack_size,
             !placement.down,
             |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
