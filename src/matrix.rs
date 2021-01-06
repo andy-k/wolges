@@ -1,11 +1,21 @@
 #[derive(Clone, Copy)]
 pub struct Strider {
-    pub base: i16,
-    pub step: i8,
-    pub len: i8,
+    base: i16,
+    step: i8,
+    len: i8,
 }
 
 impl Strider {
+    #[inline(always)]
+    pub fn base(&self) -> i16 {
+        self.base
+    }
+
+    #[inline(always)]
+    pub fn step(&self) -> i8 {
+        self.step
+    }
+
     #[inline(always)]
     pub fn len(&self) -> i8 {
         self.len

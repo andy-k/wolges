@@ -33,6 +33,7 @@ pub struct StaticBoardLayout {
     dim: matrix::Dim,
     star_row: i8,
     star_col: i8,
+    transposed_premiums: Box<[Premium]>,
     is_symmetric: bool,
 }
 
@@ -42,7 +43,15 @@ pub enum BoardLayout {
 
 impl BoardLayout {
     pub fn new_static(x: StaticBoardLayout) -> Self {
+        let rows_times_cols = (x.dim.rows as isize * x.dim.cols as isize) as usize;
+        let mut transposed_premiums = Vec::with_capacity(rows_times_cols);
+        for col in 0..x.dim.cols {
+            for row in 0..x.dim.rows {
+                transposed_premiums.push(x.premiums[x.dim.at_row_col(row, col)]);
+            }
+        }
         Self::Static(StaticBoardLayout {
+            transposed_premiums: transposed_premiums.into_boxed_slice(),
             is_symmetric: x.dim.rows == x.dim.cols
                 && x.star_row == x.star_col
                 && (0..x.dim.rows).all(|row| {
@@ -82,6 +91,13 @@ impl BoardLayout {
     pub fn premiums(&self) -> &[Premium] {
         match self {
             BoardLayout::Static(x) => &x.premiums,
+        }
+    }
+
+    #[inline(always)]
+    pub fn transposed_premiums(&self) -> &[Premium] {
+        match self {
+            BoardLayout::Static(x) => &x.transposed_premiums,
         }
     }
 
