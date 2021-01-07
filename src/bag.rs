@@ -1,3 +1,5 @@
+// Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
+
 use super::alphabet;
 use rand::prelude::*;
 

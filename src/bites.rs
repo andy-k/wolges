@@ -1,3 +1,5 @@
+// Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
+
 pub struct Bites([u8; 16]);
 
 impl Bites {

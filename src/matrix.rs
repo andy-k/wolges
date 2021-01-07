@@ -1,3 +1,5 @@
+// Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
+
 #[derive(Clone, Copy)]
 pub struct Strider {
     base: i16,

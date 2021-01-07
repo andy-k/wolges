@@ -5,7 +5,7 @@ This project needs a better name.
 
 LICENSE
 
-Copyright (C) 2020 Andy Kurnia. All rights reserved.
+Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
 This is NOT free software. Any contributions must be done only with the
 understanding that Andy Kurnia has full rights to the entirety of the
@@ -16,7 +16,10 @@ some ideas, code, or data from other sources may be used. Those may not come
 with redistribution rights, and whoever interacts with this repository will
 need to separately gain access to those.
 
-Ideas taken elsewhere should be attributed to Andy Kurnia.
+The code and ideas in this repository have no warranties, they may be buggy.
+Code taken from this repository should be visibly attributed to Andy Kurnia.
+
+Ideas taken from this repository should be visibly attributed to Andy Kurnia.
 
 
 INITIAL SETUP
@@ -58,6 +61,7 @@ Most files are in src.
 - klv deal with the Kurnia Leave Values file.
 - build implements building kwg.
 - movegen generates moves using the Kurnia generator.
+- lexport implements porting with other lexicon file formats.
 - bites is Kurnia Bites, a data structure used to store bytes.
 - most of the rest are just data structures.
 
@@ -71,6 +75,17 @@ PERFORMANCE
 - Vector takes three (capacity). This wastes space if it is read-only.
 - Instead of full dynamic dispatch, use generics and enums.
 - Conserve register usage, use 8/16/32-bit types instead of 64-bit.
+- Be cache-friendly even if this needs more space.
+- Use bit twiddling to avoid unnecessary branching.
+
+
+BIT TWIDDLING IDEAS
+
+- Casting true/false to integer gives 1 and 0.
+- In two's complement, -1 has all bits set, use it with bitwise-and.
+- Right-shifting a signed integer copies the sign bit.
+- Blank tile on board has high bit set. Blank tile on rack is 00.
+- Cross set bit 0 (adjacency) toggles perpendicular word multiplier.
 
 
 DATA STRUCTURE
@@ -168,6 +183,11 @@ is necessary to not prematurely enter arc_index as the accepts flag is stored
 before following arc_index. A convenience function is provided for this
 purpose, and index 0 is intentionally reserved to avoid special-casing the
 first tile.
+
+In 1994, Steven A. Gordon introduced in the paper "A Faster Scrabble Move
+Generation Algorithm" the GADDAG structure. The KWG supports this structure
+through the Gaddawg format, which carries both GADDAG and DAWG while being
+about 33% smaller than typical GADDAG files.
 
 In the Gaddawg format, node 0 is as above and node 1 is a special node that
 points to the root node of the GADDAG. Tile 00 is used here to indicate the
@@ -275,16 +295,30 @@ arc_index. The index returned corresponds to the index in the int16 array.
 
 KURNIA MOVE GENERATOR
 
-The code is concerned only with three types of moves: place, exchange, pass.
-Exchanging zero tiles is recorded as pass. It is explicitly out of scope to
-handle challenges, time adjustments, end-of-game bookkeeping, and so on. The
-goal here is, given a board position (tiles and rack), what are the best moves.
+The code generates non-place moves and place moves. It is explicitly out of
+scope to handle challenges, time adjustments, end-of-game bookkeeping, and so
+on. The goal here is, given a board position (tiles and rack), what are the n
+best moves according to Hasty Valuation Algorithm. Note that the goal is not to
+generate all moves, just the top n.
 
+The only non-place move is exchange. Pass is exchanging zero tiles and is
+always generated. If bag allows, exchanges are generated without duplication.
+With 7 tiles, there are at most 128 non-place moves, less if there are
+duplicate tiles. This is small enough to always take place.
+
+The board may be cut into horizontal or vertical strips. Each strip is a lane.
 Place moves are generated one-dimensionally over each (across and down) lane,
-and this is based only on the tiles and the "cross sets" from the perpendicular
-(down or across, respectively) lane.
+and this is based only on the tiles on that lane and the "cross sets" from the
+perpendicular (down or across, respectively) lane.
 
 CROSS SETS
+
+Cross sets encode the set of information about the cross direction (the
+perpendicular direction) necessary to generate plays while looking only in one
+direction. This may not be the same definition of "cross sets" used in similar
+projects. Each square has a cross set for across plays and another cross set
+for down plays. The cross sets for across plays are generated from vertical
+strips, and the cross sets for down plays are generated from horizontal strips.
 
 The cross sets are computed one-dimensionally too. For each empty square before
 or after a contiguous set of non-empty squares, the code looks at the word that
@@ -302,27 +336,35 @@ nothing works because there is a perpendicular restriction.
 
 Computing the cross sets efficiently entails traversing the lane in reverse
 order (right-to-left or bottom-to-top), as this corresponds with the GADDAG
-format. When reaching the end of a contiguous set of tiles, the code updates
-the cross set just after (at the current GADDAG node) and just before
-(following the @-node from the curreng GADDAG node), and the scores. When the
-square after the next empty square is not empty, the next contiguous set of
-tiles are traversed an additional time for each possible tile to check if the
-GADDAG, and one final additional time to include the scores. This is
-necessarily non-deterministic as the GADDAG does not store all possible
-one-tile inserts. If the GADDAG traversal for the first set of contiguous tiles
-fail, it is not necessary to have the correct score, but it is done anyway to
-help debugging.
+format. This first pass records forward jumps from an empty square to the next
+non-empty square and vice-versa. This first pass also records, for a contiguous
+set of tiles, the GADDAG node index so far and the face-value score so far.
 
-Due to the access pattern, cross sets are stored transposed. So the down cross
-sets are stored by rows in a rows*cols array, and the across cross sets are
-stored by column in a cols*rows array. When generating place moves, only the
-relevant consecutive segment is referred to, for better cache locality. It is
-possible to halve the memory requirements by generating the across sets and the
-down sets at the same place, but not doing so may open up more opportunities
-for reuse.
+The second pass uses the jumps to quickly identify each empty squares next to a
+non-empty square, which may be one of three cases. An illustration may help:
+
+    . . . . P A . A B L E . . . .
+          1     2         3
+
+Case 1 is AP? in the GADDAG. Case 3 is ELBA@? in the GADDAG.
+
+Case 2 is either AP@?ABLE or ELBA?AP in the GADDAG.
+
+Since KWG does not store letter sets, generating letter sets is not fast. This
+is not an issue as cross sets rarely change in consecutive turns. Playing a
+7-tile move affects only 9 lanes out of 30, so these bit sets are typically
+cached based on the GADDAG pointer at either end (using something like -2 for
+the side with no tiles).
+
+When case 2 happens, the longer prefix is chosen to be completed, to minimize
+the non-determinism penalty.
+
+Since the cross sets are written once now in one direction but read many times
+later in the other direction, it is stored in the transposed layout.
 
 When the board is empty, the cross set on the star is set to the bitwise
-negation of 1 to allow the game to begin. This is only done for one direction.
+negation of 1 to allow the game to begin. This is only done for one direction
+if the board is symmetric.
 
 SEGMENTATION
 
@@ -346,13 +388,73 @@ The code repeatedly finds the rightmost tile, generates moves that involve that
 tile and those in the gap that do not involve that tile, and moves the
 rightmost to exclude up to the one empty square after the current set of tiles.
 
+Moves that only place a single tile are deduplicated by requiring one of the
+directions to place at least two fresh tiles unless the tile is placed on an
+empty square that is not adjacent to a cross-tile. This is the adjacency bit in
+the cross set.
+
+SHADOW-PLAYING TILES
+
+Each anchor square can participate in at most one (anchor, leftmost, rightmost)
+triplet for each direction. A placement, combining a lane and such a triplet,
+does not overlap with any other placements. Each such triplet groups many
+(actual_left, actual_right) ranges where leftmost <= actual_left <= anchor <
+actual_right <= rightmost.
+
+Even without looking at the lexicon, some of these placements may be
+impossible, perhaps because a cross set requires a vowel and the rack only has
+consonants.
+
+Recursively discovering all actual ranges from a given triplet will fix several
+values: the number of tiles being played from the rack; the face-value score of
+the tiles on board being played through that contribute to the main word; the
+additional score from perpendicular tiles as influenced by word multiplier
+squares being played through; and the effective combined word multiplier for
+that placement.
+
+Given an actual range, each empty square contributes a certain multiplier of
+the face-value of the tile being placed on it. This multiplier is influenced
+only by the effective word multiplier of the main word, the premiums on that
+square, and the existence of an adjacent cross-tile.
+
+For a given strip, there are only a few possible effective combined word
+multiplier. Each of these yield a final effective multiplier per empty square,
+and thus an optimal ordering. This is precomputed when processing each strip.
+Different effective combined word multipliers yield different orderings.
+
+Without the requirement to form a valid word, there is also an optimal ordering
+for placing tiles to gain the highest possible score. Pairing the highest value
+tile with the highest square multiplier within the actual range of squares will
+give an upper bound of the score achievable from the range. For this reason,
+the rack tiles are pre-sorted in descending order.
+
+For each possible number of tiles played, the best leave value adjustment is
+precomputed. The formula is different for empty bag, and this value can be
+negative. For example, an actual range that will place 5 tiles and keep 2 will
+be given the highest possible leave valuation from any 2 tiles, even if this is
+not achievable when making the highest possible score. In addition, placing 7
+tiles will have a +50 adjustment. Generally this part must be compatible with
+the Hasty Valuation Algorithm, however the vowel placement penalty is omitted
+because it is never positive.
+
+The end result of this part is to annotate each possible placement with the
+best possible valuation. The valuation may be overestimated but may not be
+underestimated.
+
 PLAYING TILES
+
+Having shadow-played tiles to list out possible placements and their best
+possible valuations, those placements are then sorted by best possible
+valuations and tried in that order. Once the generator finds n valid moves
+worth 69 or more, the generator can skip all placements that can generate moves
+only worth 69 or less, and with a sorted list it simply breaks early.
 
 This part of the generator recursively places a tile. Different from other
 implementations, each recursion iteratively gets past tiles already on board,
 conserving stack space for when a tile is placed from the rack, bounding the
 recursion depth to the number of tiles on rack. Only words of length two and
 above are considered, it is expected that single-tile words are not accepted.
+Similar optimizations are implemented for the shadow-playing step.
 
 The code starts at play_left and goes into play_right when encountering the
 direction switch marker in the GADDAG. A move can only be recorded after
@@ -360,15 +462,6 @@ iteratively exhausting the contiguous set of tiles, and only if the GADDAG
 pointer is at an accepting state. In play_left, the move always ends at the
 anchor square. In play_right, the move may not end at the anchor square as that
 move would duplicate the one just recorded in play_left.
-
-Ordinarily, single-tile moves are generated twice for each direction. To avoid
-this, at least two tiles must have been played from the rack, or at least one
-tile from the rack when the move is unique. For one direction, all moves are
-unique; for the other, a move is unique if there was a tile placed from the
-rack on a square with no cross sets, which implies that there is no adjacent
-tile in the perpendicular direction that would generate the same move. In the
-implementation language, true is 1 and false is 0, so the condition is simply
-(num_played + is_unique >= 2).
 
 So each iteration of play_left and play_right is concerned with completing a
 word, recording if necessary, and trying to place one more tile. If there is a
@@ -379,12 +472,14 @@ the actual tile and the blank are attempted if the rack has it. When the
 play_left encounters the 00 tile, it triggers play_right.
 
 While contemplating the word to be played, it is not necessary to allocate new
-byte arrays and make copies. Instead, the code preallocates a max(rows, cols)
-array of 00, and puts the tiles at the right places. For example, a 3-tile word
-from index 7 would be at index 7, 8, 9 and not at index 0, 1, 2. This
-arrangement obviates repeated insertions. Indices corresponding to non-empty
-squares are never overwritten and will remain 00, so assignments only occur
-when placing tiles.
+byte arrays and make copies. Instead, the code preallocates slices of 00s for
+each strip, and puts the tiles at the right places. For example, a 3-tile word
+from index 7 would be at index 7, 8, 9 and not at index 0, 1, 2 of the strip
+corresponding to the lane. This arrangement obviates repeated insertions.
+Indices corresponding to non-empty squares are never overwritten and will
+remain 00, so assignments only occur when placing tiles. It is necessary to
+have all the strips preallocated because the possible placements, sorted by
+best possible valuation, may use the lanes in any order.
 
 When a move is actually found, a callback is called. This callback would
 receive the corresponding slice of the work buffer. Unless the callback

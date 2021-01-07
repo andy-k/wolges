@@ -1,3 +1,5 @@
+// Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
+
 use super::{alphabet, bag, display, error, game_config, klv, kwg, movegen};
 use rand::prelude::*;
 

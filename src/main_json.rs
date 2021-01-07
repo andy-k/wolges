@@ -1,3 +1,5 @@
+// Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
+
 use super::{display, error, game_config, klv, kwg, movegen};
 
 // tile numbering follows alphabet order (not necessarily unicode order).
