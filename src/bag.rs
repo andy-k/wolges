@@ -40,7 +40,7 @@ impl Bag {
                 return;
             }
             1 => {
-                self.0.insert(rng.gen_range(0, self.0.len()), tiles[0]);
+                self.0.insert(rng.gen_range(0, self.0.len() + 1), tiles[0]);
                 return;
             }
             _ => {}

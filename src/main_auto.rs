@@ -46,7 +46,7 @@ impl<'a> Clone for GamePlayer {
     #[inline(always)]
     fn clone(&self) -> Self {
         Self {
-            score: self.score.clone(),
+            score: self.score,
             rack: self.rack.clone(),
         }
     }
@@ -70,11 +70,11 @@ impl<'a> Clone for GameState<'a> {
     #[inline(always)]
     fn clone(&self) -> Self {
         Self {
-            game_config: self.game_config.clone(),
+            game_config: self.game_config,
             players: self.players.clone(),
             board_tiles: self.board_tiles.clone(),
             bag: self.bag.clone(),
-            turn: self.turn.clone(),
+            turn: self.turn,
         }
     }
 
@@ -244,11 +244,30 @@ pub fn main() -> error::Returns<()> {
             println!("let's sim them");
             {
                 let mut simmer_rng = rand_chacha::ChaCha20Rng::from_entropy();
-                let mut simmer_move_generator =
-                    movegen::KurniaMoveGenerator::new(game_state.game_config);
+                let mut simmer_move_generator = movegen::KurniaMoveGenerator::new(game_config);
                 let mut simmer_initial_game_state = game_state.clone(); // will be overwritten
+                let initial_spread = if simmer_initial_game_state.players.len() < 2 {
+                    0
+                } else {
+                    simmer_initial_game_state.current_player().score
+                        - (0..)
+                            .zip(simmer_initial_game_state.players.iter())
+                            .filter(|&(i, _)| i != simmer_initial_game_state.turn)
+                            .map(|(_, player)| player.score)
+                            .max()
+                            .unwrap()
+                };
+                println!("initial spread is {}", initial_spread);
+                let mut last_seen_leave_values =
+                    vec![0.0f32; simmer_initial_game_state.players.len()];
                 let mut simmer_game_state = simmer_initial_game_state.clone(); // will be overwritten
+                let mut simmer_rack_tally = rack_tally.clone(); // will be overwritten
                 for sim_iter in 0..3 {
+                    println!("iter {}", sim_iter);
+                    println!(
+                        "bag: {}",
+                        printable_rack(&game_config.alphabet(), &simmer_initial_game_state.bag.0)
+                    );
                     loop {
                         simmer_initial_game_state.next_turn();
                         if simmer_initial_game_state.turn == game_state.turn {
@@ -256,19 +275,21 @@ pub fn main() -> error::Returns<()> {
                         }
                         let player = &mut simmer_initial_game_state.players
                             [simmer_initial_game_state.turn as usize];
+                        println!(
+                            "p{} rack was: {}",
+                            simmer_initial_game_state.turn + 1,
+                            printable_rack(&game_config.alphabet(), &player.rack,)
+                        );
                         simmer_initial_game_state
                             .bag
                             .put_back(&mut rng, &player.rack);
                         player.rack.clear();
                     }
                     simmer_initial_game_state.bag.shuffle(&mut simmer_rng);
-                    println!("iter {}", sim_iter);
+                    last_seen_leave_values.iter_mut().for_each(|m| *m = 0.0);
                     println!(
                         "bag: {}",
-                        printable_rack(
-                            &simmer_initial_game_state.game_config.alphabet(),
-                            &simmer_initial_game_state.bag.0
-                        )
+                        printable_rack(&game_config.alphabet(), &simmer_initial_game_state.bag.0)
                     );
                     loop {
                         simmer_initial_game_state.next_turn();
@@ -288,18 +309,12 @@ pub fn main() -> error::Returns<()> {
                         println!(
                             "p{} rack: {}",
                             i,
-                            printable_rack(
-                                &simmer_initial_game_state.game_config.alphabet(),
-                                &player.rack
-                            )
+                            printable_rack(&game_config.alphabet(), &player.rack)
                         );
                     }
                     println!(
                         "bag: {}",
-                        printable_rack(
-                            &simmer_initial_game_state.game_config.alphabet(),
-                            &simmer_initial_game_state.bag.0
-                        )
+                        printable_rack(&game_config.alphabet(), &simmer_initial_game_state.bag.0)
                     );
                     for play in plays.iter() {
                         simmer_game_state.clone_from(&simmer_initial_game_state);
@@ -322,10 +337,45 @@ pub fn main() -> error::Returns<()> {
                                 &simmer_move_generator.plays[0]
                             };
                             print!(
-                                "{} {}, ",
+                                "{} {} (leave ",
                                 next_play.equity,
                                 next_play.play.fmt(simmer_board_snapshot)
                             );
+                            simmer_rack_tally.iter_mut().for_each(|m| *m = 0);
+                            simmer_game_state
+                                .current_player()
+                                .rack
+                                .iter()
+                                .for_each(|&tile| simmer_rack_tally[tile as usize] += 1);
+                            match &next_play.play {
+                                movegen::Play::Exchange { tiles } => {
+                                    tiles
+                                        .iter()
+                                        .for_each(|&tile| simmer_rack_tally[tile as usize] -= 1);
+                                }
+                                movegen::Play::Place { word, .. } => {
+                                    word.iter().for_each(|&tile| {
+                                        if tile & 0x80 != 0 {
+                                            simmer_rack_tally[0] -= 1;
+                                        } else if tile != 0 {
+                                            simmer_rack_tally[tile as usize] -= 1;
+                                        }
+                                    });
+                                }
+                            };
+                            (0u8..)
+                                .zip(simmer_rack_tally.iter())
+                                .for_each(|(tile, &count)| {
+                                    (0..count).for_each(|_| {
+                                        print!(
+                                            "{}",
+                                            game_config.alphabet().from_rack(tile).unwrap()
+                                        )
+                                    })
+                                });
+                            let leave_value = klv.leave_value_from_tally(&simmer_rack_tally);
+                            print!(" = {}), ", leave_value);
+                            last_seen_leave_values[simmer_game_state.turn as usize] = leave_value;
                             simmer_game_state.play(&mut simmer_rng, &next_play.play)?;
                             if simmer_game_state.current_player().rack.is_empty() {
                                 played_out = true;
@@ -335,33 +385,85 @@ pub fn main() -> error::Returns<()> {
                             simmer_game_state.next_turn();
                         }
                         for (i, player) in (1..).zip(simmer_game_state.players.iter()) {
-                            print!("player {}: {}, ", i, player.score);
-                        }
-                        println!("...");
-                        display::print_board(
-                            &simmer_game_state.game_config.alphabet(),
-                            &simmer_game_state.game_config.board_layout(),
-                            &simmer_game_state.board_tiles,
-                        );
-                        for (i, player) in (1..).zip(simmer_game_state.players.iter()) {
-                            println!(
-                                "p{} rack: {}",
+                            print!(
+                                "player {}: {} {}, ",
                                 i,
-                                printable_rack(
-                                    &simmer_game_state.game_config.alphabet(),
-                                    &player.rack
-                                )
+                                player.score,
+                                printable_rack(&game_config.alphabet(), &player.rack)
                             );
                         }
+                        println!("leave is {:?}, board:", last_seen_leave_values);
+                        display::print_board(
+                            &game_config.alphabet(),
+                            &game_config.board_layout(),
+                            &simmer_game_state.board_tiles,
+                        );
                         println!(
                             "bag: {}",
-                            printable_rack(
-                                &simmer_game_state.game_config.alphabet(),
-                                &simmer_game_state.bag.0
-                            )
+                            printable_rack(&game_config.alphabet(), &simmer_game_state.bag.0)
                         );
-                        println!("---");
-                        // code is still incomplete for now
+                        if played_out {
+                            // not handling the too-many-zeros case
+                            if simmer_game_state.players.len() == 2 {
+                                simmer_game_state.players[simmer_game_state.turn as usize].score +=
+                                    2 * rack_score(
+                                        &game_config.alphabet(),
+                                        &simmer_game_state.players
+                                            [(1 - simmer_game_state.turn) as usize]
+                                            .rack,
+                                    );
+                            } else {
+                                let mut earned = 0;
+                                for mut player in simmer_game_state.players.iter_mut() {
+                                    let this_rack =
+                                        rack_score(&game_config.alphabet(), &player.rack);
+                                    player.score -= this_rack;
+                                    earned += this_rack;
+                                }
+                                simmer_game_state.players[simmer_game_state.turn as usize].score +=
+                                    earned;
+                            }
+                            last_seen_leave_values.iter_mut().for_each(|m| *m = 0.0);
+                        }
+                        let mut best_opponent = simmer_initial_game_state.turn;
+                        let mut best_opponent_equity = f32::NEG_INFINITY;
+                        for (i, player) in (0..).zip(simmer_game_state.players.iter()) {
+                            print!(
+                                "p{} is ({}+...={})+{}={}, ",
+                                i + 1,
+                                simmer_initial_game_state.players[i as usize].score,
+                                player.score,
+                                last_seen_leave_values[i as usize],
+                                player.score as f32 + last_seen_leave_values[i as usize]
+                            );
+                            if i != simmer_initial_game_state.turn {
+                                let opponent_equity =
+                                    player.score as f32 + last_seen_leave_values[i as usize];
+                                if opponent_equity > best_opponent_equity {
+                                    best_opponent = i;
+                                    best_opponent_equity = opponent_equity;
+                                }
+                            }
+                        }
+                        print!(
+                            "best opponent is p{} with {}, ",
+                            best_opponent + 1,
+                            best_opponent_equity
+                        );
+                        let mut this_equity = simmer_game_state.players
+                            [simmer_initial_game_state.turn as usize]
+                            .score as f32
+                            + last_seen_leave_values[simmer_initial_game_state.turn as usize];
+                        print!("valuation = {}", this_equity);
+                        if best_opponent != simmer_initial_game_state.turn {
+                            this_equity -= best_opponent_equity;
+                            print!(" - {} = {}", best_opponent_equity, this_equity);
+                        }
+                        println!(
+                            ", initial spread = {}, equity to record = {}",
+                            initial_spread,
+                            this_equity - initial_spread as f32
+                        );
                     }
                 }
             }
