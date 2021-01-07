@@ -730,61 +730,74 @@ fn gen_cross_set<'a>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
+struct GenPlacePlacementsParams<'a> {
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
-    remaining_tile_multipliers_strip: &'a [i8],
     face_value_scores_strip: &'a [i8],
-    perpendicular_word_multipliers_strip: &'a [i8],
     perpendicular_scores_strip: &'a [i16],
-    num_tiles_on_rack: u8,
     rack_bits: u64,
     descending_scores: &'a [i8],
-    square_multipliers_by_aggregated_word_multipliers_buffer: &mut std::collections::HashMap<
-        i8,
-        usize,
-    >,
-    precomputed_square_multiplier_buffer: &mut Vec<i8>,
-    indexes_to_descending_square_multiplier_buffer: &mut Vec<i8>,
+    square_multipliers_by_aggregated_word_multipliers_buffer:
+        &'a mut std::collections::HashMap<i8, usize>,
+    precomputed_square_multiplier_buffer: &'a mut Vec<i8>,
+    indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
     best_leave_values: &'a [f32],
-    mut num_max_played: u8,
+    num_max_played: u8,
+}
+
+fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
+    params: &'a mut GenPlacePlacementsParams<'a>,
+    remaining_tile_multipliers_strip: &'a [i8],
+    perpendicular_word_multipliers_strip: &'a [i8],
+    num_tiles_on_rack: u8,
     single_tile_plays: bool,
     mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
 ) {
-    let strider_len = board_strip.len();
+    let strider_len = params.board_strip.len();
 
-    if num_tiles_on_rack < num_max_played {
-        num_max_played = num_tiles_on_rack;
+    if num_tiles_on_rack < params.num_max_played {
+        params.num_max_played = num_tiles_on_rack;
     }
 
-    square_multipliers_by_aggregated_word_multipliers_buffer.clear();
+    params
+        .square_multipliers_by_aggregated_word_multipliers_buffer
+        .clear();
     let mut vec_size = 0usize;
     for i in 0..strider_len {
         let mut wm = 1;
-        for wm_val in &remaining_word_multipliers_strip[i..strider_len] {
+        for wm_val in &params.remaining_word_multipliers_strip[i..strider_len] {
             wm *= wm_val;
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                square_multipliers_by_aggregated_word_multipliers_buffer.entry(wm)
+            if let std::collections::hash_map::Entry::Vacant(entry) = params
+                .square_multipliers_by_aggregated_word_multipliers_buffer
+                .entry(wm)
             {
                 entry.insert(vec_size);
                 vec_size += strider_len;
             }
         }
     }
-    precomputed_square_multiplier_buffer.clear();
-    precomputed_square_multiplier_buffer.resize(vec_size, 0);
-    indexes_to_descending_square_multiplier_buffer.clear();
-    indexes_to_descending_square_multiplier_buffer.resize(vec_size, 0);
-    for (k, &low_end) in square_multipliers_by_aggregated_word_multipliers_buffer.iter() {
+    params.precomputed_square_multiplier_buffer.clear();
+    params
+        .precomputed_square_multiplier_buffer
+        .resize(vec_size, 0);
+    params
+        .indexes_to_descending_square_multiplier_buffer
+        .clear();
+    params
+        .indexes_to_descending_square_multiplier_buffer
+        .resize(vec_size, 0);
+    for (k, &low_end) in params
+        .square_multipliers_by_aggregated_word_multipliers_buffer
+        .iter()
+    {
         // k is the aggregated main word multiplier.
         // low_end is the index of the strider_len-length slice.
         let high_end = low_end + strider_len;
         let precomputed_square_multiplier_slice =
-            &mut precomputed_square_multiplier_buffer[low_end..high_end];
+            &mut params.precomputed_square_multiplier_buffer[low_end..high_end];
         let indexes_to_descending_square_multiplier_slice =
-            &mut indexes_to_descending_square_multiplier_buffer[low_end..high_end];
+            &mut params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
         for j in 0..strider_len {
             // perpendicular_word_multipliers_strip[j] is 0 if no perpendicular tile.
             precomputed_square_multiplier_slice[j] =
@@ -798,47 +811,22 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     struct Env<'a> {
-        cross_set_strip: &'a [CrossSet],
+        params: &'a GenPlacePlacementsParams<'a>,
         strider_len: usize,
-        descending_scores: &'a [i8],
-        board_strip: &'a [u8],
-        remaining_word_multipliers_strip: &'a [i8],
-        face_value_scores_strip: &'a [i8],
-        perpendicular_scores_strip: &'a [i16],
-        precomputed_square_multiplier_buffer: &'a [i8],
-        indexes_to_descending_square_multiplier_buffer: &'a [i8],
-        square_multipliers_by_aggregated_word_multipliers_buffer:
-            &'a std::collections::HashMap<i8, usize>,
-        best_leave_values: &'a [f32],
-        rack_bits: u64,
         anchor: i8,
         leftmost: i8,
         rightmost: i8,
-        num_max_played: u8,
         num_played: i8,
         idx_left: i8,
         best_possible_equity: f32,
     }
 
     let mut env = Env {
-        cross_set_strip,
+        params,
         strider_len,
-        descending_scores: &descending_scores,
-        board_strip: &board_strip,
-        remaining_word_multipliers_strip: &remaining_word_multipliers_strip,
-        face_value_scores_strip: &face_value_scores_strip,
-        perpendicular_scores_strip: &perpendicular_scores_strip,
-        precomputed_square_multiplier_buffer: &precomputed_square_multiplier_buffer,
-        indexes_to_descending_square_multiplier_buffer:
-            &indexes_to_descending_square_multiplier_buffer,
-        square_multipliers_by_aggregated_word_multipliers_buffer:
-            &square_multipliers_by_aggregated_word_multipliers_buffer,
-        best_leave_values: &best_leave_values,
-        rack_bits,
         anchor: 0,
         leftmost: 0,
         rightmost: 0,
-        num_max_played,
         num_played: 0,
         idx_left: 0,
         best_possible_equity: f32::NEG_INFINITY,
@@ -852,16 +840,17 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         perpendicular_additional_score: i16,
         word_multiplier: i8,
     ) {
-        let low_end =
-            env.square_multipliers_by_aggregated_word_multipliers_buffer[&word_multiplier];
+        let low_end = env
+            .params
+            .square_multipliers_by_aggregated_word_multipliers_buffer[&word_multiplier];
         let high_end = low_end + env.strider_len;
         let precomputed_square_multiplier_slice =
-            &env.precomputed_square_multiplier_buffer[low_end..high_end];
-        let mut desc_scores_iter = env.descending_scores.iter();
+            &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
+        let mut desc_scores_iter = env.params.descending_scores.iter();
         let mut best_scoring = 0;
         let mut to_assign = env.num_played;
-        for &idx in &env.indexes_to_descending_square_multiplier_buffer[low_end..high_end] {
-            if idx_left <= idx && idx < idx_right && env.board_strip[idx as usize] == 0 {
+        for &idx in &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end] {
+            if idx_left <= idx && idx < idx_right && env.params.board_strip[idx as usize] == 0 {
                 best_scoring += *desc_scores_iter.next().unwrap() as i16
                     * precomputed_square_multiplier_slice[idx as usize] as i16;
                 to_assign -= 1;
@@ -873,7 +862,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         let equity = (main_played_through_score * (word_multiplier as i16)
             + perpendicular_additional_score
             + best_scoring) as f32
-            + env.best_leave_values[env.num_played as usize];
+            + env.params.best_leave_values[env.num_played as usize];
         if equity > env.best_possible_equity {
             env.best_possible_equity = equity;
         }
@@ -889,11 +878,11 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     ) {
         // tail-recurse placing current sequence of tiles
         while idx < env.rightmost {
-            let b = env.board_strip[idx as usize];
+            let b = env.params.board_strip[idx as usize];
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.face_value_scores_strip[idx as usize] as i16;
+            main_played_through_score += env.params.face_value_scores_strip[idx as usize] as i16;
             idx += 1;
         }
         // tiles have been placed from env.idx_left to idx - 1.
@@ -912,13 +901,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 word_multiplier,
             );
         }
-        if env.num_played as u8 >= env.num_max_played {
+        if env.num_played as u8 >= env.params.num_max_played {
             return;
         }
 
         // place a tile at [idx] if it is still in bounds
         if idx < env.rightmost {
-            let this_cross_bits = env.cross_set_strip[idx as usize].bits;
+            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here
                 env.num_played += 1;
@@ -927,11 +916,11 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     idx + 1,
                     main_played_through_score,
                     perpendicular_additional_score,
-                    word_multiplier * env.remaining_word_multipliers_strip[idx as usize],
+                    word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize],
                     true,
                 );
                 env.num_played -= 1;
-            } else if this_cross_bits & env.rack_bits != 0 {
+            } else if this_cross_bits & env.params.rack_bits != 0 {
                 // something hooks here
                 // rack_bits remains unchanged because assignment is tentative.
                 env.num_played += 1;
@@ -939,8 +928,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     env,
                     idx + 1,
                     main_played_through_score,
-                    perpendicular_additional_score + env.perpendicular_scores_strip[idx as usize],
-                    word_multiplier * env.remaining_word_multipliers_strip[idx as usize],
+                    perpendicular_additional_score
+                        + env.params.perpendicular_scores_strip[idx as usize],
+                    word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize],
                     is_unique,
                 );
                 env.num_played -= 1;
@@ -958,11 +948,11 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     ) {
         // tail-recurse placing current sequence of tiles
         while idx >= env.leftmost {
-            let b = env.board_strip[idx as usize];
+            let b = env.params.board_strip[idx as usize];
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.face_value_scores_strip[idx as usize] as i16;
+            main_played_through_score += env.params.face_value_scores_strip[idx as usize] as i16;
             idx -= 1;
         }
         // tiles have been placed from env.anchor to idx + 1.
@@ -978,7 +968,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 word_multiplier,
             );
         }
-        if env.num_played as u8 >= env.num_max_played {
+        if env.num_played as u8 >= env.params.num_max_played {
             return;
         }
 
@@ -997,7 +987,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
 
         // place a tile at [idx] if it is still in bounds
         if idx >= env.leftmost {
-            let this_cross_bits = env.cross_set_strip[idx as usize].bits;
+            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here
                 env.num_played += 1;
@@ -1006,11 +996,11 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     idx - 1,
                     main_played_through_score,
                     perpendicular_additional_score,
-                    word_multiplier * env.remaining_word_multipliers_strip[idx as usize],
+                    word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize],
                     true,
                 );
                 env.num_played -= 1;
-            } else if this_cross_bits & env.rack_bits != 0 {
+            } else if this_cross_bits & env.params.rack_bits != 0 {
                 // something hooks here
                 // rack_bits remains unchanged because assignment is tentative.
                 env.num_played += 1;
@@ -1018,8 +1008,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     env,
                     idx - 1,
                     main_played_through_score,
-                    perpendicular_additional_score + env.perpendicular_scores_strip[idx as usize],
-                    word_multiplier * env.remaining_word_multipliers_strip[idx as usize],
+                    perpendicular_additional_score
+                        + env.params.perpendicular_scores_strip[idx as usize],
+                    word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize],
                     is_unique,
                 );
                 env.num_played -= 1;
@@ -1048,7 +1039,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     let mut rightmost = strider_len as i8; // processed up to here
     let mut leftmost = rightmost;
     loop {
-        while leftmost > 0 && board_strip[leftmost as usize - 1] == 0 {
+        while leftmost > 0 && params.board_strip[leftmost as usize - 1] == 0 {
             leftmost -= 1;
         }
         if leftmost > 0 {
@@ -1066,7 +1057,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
             let leftmost = leftmost + (leftmost > 0) as i8; // shadowing
             for anchor in (leftmost..rightmost).rev() {
-                let cross_set_bits = cross_set_strip[anchor as usize].bits;
+                let cross_set_bits = params.cross_set_strip[anchor as usize].bits;
                 if cross_set_bits != 0 {
                     if rightmost - leftmost < 2 {
                         // not enough room for 2-tile words
@@ -1086,7 +1077,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 }
             }
         }
-        while leftmost > 0 && board_strip[leftmost as usize - 1] != 0 {
+        while leftmost > 0 && params.board_strip[leftmost as usize - 1] != 0 {
             leftmost -= 1;
         }
         if leftmost <= 1 {
@@ -1934,25 +1925,33 @@ fn kurnia_gen_place_moves<
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         gen_place_placements(
-            &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-            &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end],
-            &working_buffer.remaining_word_multipliers_for_across_plays
-                [strip_range_start..strip_range_end],
+            &mut GenPlacePlacementsParams {
+                board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                cross_set_strip: &working_buffer.cross_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+                remaining_word_multipliers_strip: &working_buffer
+                    .remaining_word_multipliers_for_across_plays
+                    [strip_range_start..strip_range_end],
+                face_value_scores_strip: &working_buffer.face_value_scores_for_across_plays
+                    [strip_range_start..strip_range_end],
+                perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_across_plays
+                    [strip_range_start..strip_range_end],
+                rack_bits: working_buffer.rack_bits,
+                descending_scores: &working_buffer.descending_scores,
+                square_multipliers_by_aggregated_word_multipliers_buffer: &mut working_buffer
+                    .square_multipliers_by_aggregated_word_multipliers_buffer,
+                precomputed_square_multiplier_buffer: &mut working_buffer
+                    .precomputed_square_multiplier_buffer,
+                indexes_to_descending_square_multiplier_buffer: &mut working_buffer
+                    .indexes_to_descending_square_multiplier_buffer,
+                best_leave_values: &working_buffer.best_leave_values,
+                num_max_played: max_rack_size,
+            },
             &working_buffer.remaining_tile_multipliers_for_across_plays
                 [strip_range_start..strip_range_end],
-            &working_buffer.face_value_scores_for_across_plays[strip_range_start..strip_range_end],
             &working_buffer.perpendicular_word_multipliers_for_across_plays
                 [strip_range_start..strip_range_end],
-            &working_buffer.perpendicular_scores_for_across_plays
-                [strip_range_start..strip_range_end],
             working_buffer.num_tiles_on_rack,
-            working_buffer.rack_bits,
-            &working_buffer.descending_scores,
-            &mut working_buffer.square_multipliers_by_aggregated_word_multipliers_buffer,
-            &mut working_buffer.precomputed_square_multiplier_buffer,
-            &mut working_buffer.indexes_to_descending_square_multiplier_buffer,
-            &working_buffer.best_leave_values,
-            max_rack_size,
             true,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: f32| {
                 found_placements.push(PossiblePlacement {
@@ -1970,24 +1969,33 @@ fn kurnia_gen_place_moves<
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
         gen_place_placements(
-            &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-            &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end],
-            &working_buffer.remaining_word_multipliers_for_down_plays
-                [strip_range_start..strip_range_end],
+            &mut GenPlacePlacementsParams {
+                board_strip: &working_buffer.transposed_board_tiles
+                    [strip_range_start..strip_range_end],
+                cross_set_strip: &working_buffer.cross_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+                remaining_word_multipliers_strip: &working_buffer
+                    .remaining_word_multipliers_for_down_plays[strip_range_start..strip_range_end],
+                face_value_scores_strip: &working_buffer.face_value_scores_for_down_plays
+                    [strip_range_start..strip_range_end],
+                perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_down_plays
+                    [strip_range_start..strip_range_end],
+                rack_bits: working_buffer.rack_bits,
+                descending_scores: &working_buffer.descending_scores,
+                square_multipliers_by_aggregated_word_multipliers_buffer: &mut working_buffer
+                    .square_multipliers_by_aggregated_word_multipliers_buffer,
+                precomputed_square_multiplier_buffer: &mut working_buffer
+                    .precomputed_square_multiplier_buffer,
+                indexes_to_descending_square_multiplier_buffer: &mut working_buffer
+                    .indexes_to_descending_square_multiplier_buffer,
+                best_leave_values: &working_buffer.best_leave_values,
+                num_max_played: max_rack_size,
+            },
             &working_buffer.remaining_tile_multipliers_for_down_plays
                 [strip_range_start..strip_range_end],
-            &working_buffer.face_value_scores_for_down_plays[strip_range_start..strip_range_end],
             &working_buffer.perpendicular_word_multipliers_for_down_plays
                 [strip_range_start..strip_range_end],
-            &working_buffer.perpendicular_scores_for_down_plays[strip_range_start..strip_range_end],
             working_buffer.num_tiles_on_rack,
-            working_buffer.rack_bits,
-            &working_buffer.descending_scores,
-            &mut working_buffer.square_multipliers_by_aggregated_word_multipliers_buffer,
-            &mut working_buffer.precomputed_square_multiplier_buffer,
-            &mut working_buffer.indexes_to_descending_square_multiplier_buffer,
-            &working_buffer.best_leave_values,
-            max_rack_size,
             false,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: f32| {
                 found_placements.push(PossiblePlacement {
