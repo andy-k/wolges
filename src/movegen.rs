@@ -264,6 +264,14 @@ impl WorkingBuffer {
         self.word_buffer_for_down_plays
             .iter_mut()
             .for_each(|m| *m = 0);
+        self.cross_set_for_across_plays.iter_mut().for_each(|m| {
+            m.bits = 0;
+            m.score = 0;
+        });
+        self.cross_set_for_down_plays.iter_mut().for_each(|m| {
+            m.bits = 0;
+            m.score = 0;
+        });
 
         let alphabet = board_snapshot.game_config.alphabet();
         let board_layout = board_snapshot.game_config.board_layout();
@@ -507,9 +515,6 @@ fn gen_cross_set<'a>(
                 0 // means unset, because bit 0 should always be set
             }
         };
-    for i in 0..len {
-        cross_sets[output_strider.at(i)] = CrossSet { bits: 0, score: 0 };
-    }
     let mut wi = 0;
     let mut wp = output_strider.base() as usize;
 
