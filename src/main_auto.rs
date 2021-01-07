@@ -234,6 +234,32 @@ pub fn main() -> error::Returns<()> {
             };
 
             move_generator.gen_moves_alloc(board_snapshot, &game_state.current_player().rack, 15);
+            for ntry in 0..10 {
+                let t0 = std::time::Instant::now();
+                for _ in 0..10000 {
+                    move_generator.gen_moves_alloc(
+                        board_snapshot,
+                        &game_state.current_player().rack,
+                        15,
+                    );
+                }
+                let t1 = std::time::Instant::now();
+                for _ in 0..10000 {
+                    move_generator.gen_moves_alloc_no_closure(
+                        board_snapshot,
+                        &game_state.current_player().rack,
+                        15,
+                    );
+                }
+                let t2 = std::time::Instant::now();
+                println!(
+                    "try {}: {:?} closure (pass func), {:?} no closure (pass struct)",
+                    ntry,
+                    t1 - t0,
+                    t2 - t1
+                );
+            }
+
             let plays = &move_generator.plays;
 
             println!("found {} moves", plays.len());
