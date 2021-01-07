@@ -74,3 +74,15 @@ impl Bag {
         self.0.truncate(new_len);
     }
 }
+
+impl Clone for Bag {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        self.0.clone_from(&source.0);
+    }
+}

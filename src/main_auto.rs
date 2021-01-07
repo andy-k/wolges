@@ -42,12 +42,50 @@ struct GamePlayer {
     rack: Vec<u8>,
 }
 
+impl<'a> Clone for GamePlayer {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self {
+            score: self.score.clone(),
+            rack: self.rack.clone(),
+        }
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        self.score.clone_from(&source.score);
+        self.rack.clone_from(&source.rack);
+    }
+}
+
 struct GameState<'a> {
     game_config: &'a game_config::GameConfig<'a>,
     players: Box<[GamePlayer]>,
     board_tiles: Box<[u8]>,
     bag: bag::Bag,
     turn: u8,
+}
+
+impl<'a> Clone for GameState<'a> {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self {
+            game_config: self.game_config.clone(),
+            players: self.players.clone(),
+            board_tiles: self.board_tiles.clone(),
+            bag: self.bag.clone(),
+            turn: self.turn.clone(),
+        }
+    }
+
+    #[inline(always)]
+    fn clone_from(&mut self, source: &Self) {
+        self.game_config.clone_from(&source.game_config);
+        self.players.clone_from(&source.players);
+        self.board_tiles.clone_from(&source.board_tiles);
+        self.bag.clone_from(&source.bag);
+        self.turn.clone_from(&source.turn);
+    }
 }
 
 impl<'a> GameState<'a> {
@@ -68,6 +106,10 @@ impl<'a> GameState<'a> {
             bag: bag::Bag::new(&alphabet),
             turn: 0,
         }
+    }
+
+    fn current_player(&self) -> &GamePlayer {
+        &self.players[self.turn as usize]
     }
 
     fn play(&mut self, mut rng: &mut dyn RngCore, play: &movegen::Play) -> error::Returns<()> {
@@ -120,6 +162,12 @@ impl<'a> GameState<'a> {
             }
         }
         Ok(())
+    }
+
+    fn next_turn(&mut self) {
+        let num_players = self.players.len() as u8;
+        self.turn += 1;
+        self.turn -= num_players & -((self.turn >= num_players) as i8) as u8;
     }
 }
 
@@ -178,8 +226,6 @@ pub fn main() -> error::Returns<()> {
                 );
             }
 
-            let current_player = &game_state.players[game_state.turn as usize];
-
             let board_snapshot = &movegen::BoardSnapshot {
                 board_tiles: &game_state.board_tiles,
                 game_config,
@@ -187,13 +233,144 @@ pub fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            move_generator.gen_moves_alloc(board_snapshot, &current_player.rack, 15);
+            move_generator.gen_moves_alloc(board_snapshot, &game_state.current_player().rack, 15);
             let plays = &move_generator.plays;
 
             println!("found {} moves", plays.len());
             for play in plays.iter() {
                 println!("{} {}", play.equity, play.play.fmt(board_snapshot));
             }
+
+            println!("let's sim them");
+            {
+                let mut simmer_rng = rand_chacha::ChaCha20Rng::from_entropy();
+                let mut simmer_move_generator =
+                    movegen::KurniaMoveGenerator::new(game_state.game_config);
+                let mut simmer_initial_game_state = game_state.clone(); // will be overwritten
+                let mut simmer_game_state = simmer_initial_game_state.clone(); // will be overwritten
+                for sim_iter in 0..3 {
+                    loop {
+                        simmer_initial_game_state.next_turn();
+                        if simmer_initial_game_state.turn == game_state.turn {
+                            break;
+                        }
+                        let player = &mut simmer_initial_game_state.players
+                            [simmer_initial_game_state.turn as usize];
+                        simmer_initial_game_state
+                            .bag
+                            .put_back(&mut rng, &player.rack);
+                        player.rack.clear();
+                    }
+                    simmer_initial_game_state.bag.shuffle(&mut simmer_rng);
+                    println!("iter {}", sim_iter);
+                    println!(
+                        "bag: {}",
+                        printable_rack(
+                            &simmer_initial_game_state.game_config.alphabet(),
+                            &simmer_initial_game_state.bag.0
+                        )
+                    );
+                    loop {
+                        simmer_initial_game_state.next_turn();
+                        if simmer_initial_game_state.turn == game_state.turn {
+                            break;
+                        }
+                        let player = &mut simmer_initial_game_state.players
+                            [simmer_initial_game_state.turn as usize];
+                        simmer_initial_game_state.bag.replenish(
+                            &mut player.rack,
+                            game_state.players[simmer_initial_game_state.turn as usize]
+                                .rack
+                                .len(),
+                        );
+                    }
+                    for (i, player) in (1..).zip(simmer_initial_game_state.players.iter()) {
+                        println!(
+                            "p{} rack: {}",
+                            i,
+                            printable_rack(
+                                &simmer_initial_game_state.game_config.alphabet(),
+                                &player.rack
+                            )
+                        );
+                    }
+                    println!(
+                        "bag: {}",
+                        printable_rack(
+                            &simmer_initial_game_state.game_config.alphabet(),
+                            &simmer_initial_game_state.bag.0
+                        )
+                    );
+                    for play in plays.iter() {
+                        simmer_game_state.clone_from(&simmer_initial_game_state);
+                        let mut played_out = false;
+                        for plies in 0..3 {
+                            let simmer_board_snapshot = &movegen::BoardSnapshot {
+                                board_tiles: &simmer_game_state.board_tiles,
+                                game_config,
+                                kwg: &kwg,
+                                klv: &klv,
+                            };
+                            let next_play = if plies == 0 {
+                                &play
+                            } else {
+                                simmer_move_generator.gen_moves_alloc(
+                                    simmer_board_snapshot,
+                                    &simmer_game_state.current_player().rack,
+                                    1,
+                                );
+                                &simmer_move_generator.plays[0]
+                            };
+                            print!(
+                                "{} {}, ",
+                                next_play.equity,
+                                next_play.play.fmt(simmer_board_snapshot)
+                            );
+                            simmer_game_state.play(&mut simmer_rng, &next_play.play)?;
+                            if simmer_game_state.current_player().rack.is_empty() {
+                                played_out = true;
+                                print!("(that played out) ");
+                                break;
+                            }
+                            simmer_game_state.next_turn();
+                        }
+                        for (i, player) in (1..).zip(simmer_game_state.players.iter()) {
+                            print!("player {}: {}, ", i, player.score);
+                        }
+                        println!("...");
+                        display::print_board(
+                            &simmer_game_state.game_config.alphabet(),
+                            &simmer_game_state.game_config.board_layout(),
+                            &simmer_game_state.board_tiles,
+                        );
+                        for (i, player) in (1..).zip(simmer_game_state.players.iter()) {
+                            println!(
+                                "p{} rack: {}",
+                                i,
+                                printable_rack(
+                                    &simmer_game_state.game_config.alphabet(),
+                                    &player.rack
+                                )
+                            );
+                        }
+                        println!(
+                            "bag: {}",
+                            printable_rack(
+                                &simmer_game_state.game_config.alphabet(),
+                                &simmer_game_state.bag.0
+                            )
+                        );
+                        println!("---");
+                        // code is still incomplete for now
+                    }
+                }
+            }
+
+            // show that this is unaffected by sim
+            println!(
+                "bag= {}",
+                printable_rack(&game_state.game_config.alphabet(), &game_state.bag.0)
+            );
 
             let play = &plays[0]; // assume at least there's always Pass
             println!("making top move: {}", play.play.fmt(board_snapshot));
@@ -335,7 +512,8 @@ pub fn main() -> error::Returns<()> {
             assert_eq!(recounted_score, movegen_score);
 
             rack_tally.iter_mut().for_each(|m| *m = 0);
-            current_player
+            game_state
+                .current_player()
                 .rack
                 .iter()
                 .for_each(|&tile| rack_tally[tile as usize] += 1);
@@ -490,8 +668,7 @@ pub fn main() -> error::Returns<()> {
                 zero_turns = 0;
             }
 
-            let current_player = &game_state.players[game_state.turn as usize];
-            if current_player.rack.is_empty() {
+            if game_state.current_player().rack.is_empty() {
                 display::print_board(
                     &game_state.game_config.alphabet(),
                     &game_state.game_config.board_layout(),
@@ -541,9 +718,7 @@ pub fn main() -> error::Returns<()> {
                 break;
             }
 
-            game_state.turn += 1;
-            game_state.turn -= game_state.players.len() as u8
-                & -((game_state.turn >= game_state.players.len() as u8) as i8) as u8;
+            game_state.next_turn();
         }
 
         for (i, player) in (1..).zip(game_state.players.iter()) {
