@@ -174,6 +174,7 @@ impl<'a> GameState<'a> {
 }
 
 pub fn main() -> error::Returns<()> {
+    let mut reusable_vec_for_candidate_moves = Vec::new();
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
     let game_config = &game_config::make_common_english_game_config();
@@ -236,7 +237,7 @@ pub fn main() -> error::Returns<()> {
             };
 
             move_generator.gen_moves_alloc(board_snapshot, &game_state.current_player().rack, 15);
-            let plays = &move_generator.plays;
+            let plays = &mut move_generator.plays;
 
             println!("found {} moves", plays.len());
             for play in plays.iter() {
@@ -244,7 +245,21 @@ pub fn main() -> error::Returns<()> {
             }
 
             println!("let's sim them");
-            let mut stats_of_play = stats::Stats::new(); // temp
+            struct CandidateResult {
+                equity: f32,
+                stats: stats::Stats,
+            }
+            let mut candidates = std::collections::HashMap::new();
+            for play in plays.drain(..) {
+                candidates.insert(
+                    play.play,
+                    CandidateResult {
+                        equity: play.equity,
+                        stats: stats::Stats::new(),
+                    },
+                );
+            }
+            assert!(plays.is_empty());
             {
                 let mut simmer_rng = rand_chacha::ChaCha20Rng::from_entropy();
                 let mut simmer_move_generator = movegen::KurniaMoveGenerator::new(game_config);
@@ -265,11 +280,12 @@ pub fn main() -> error::Returns<()> {
                     vec![0.0f32; simmer_initial_game_state.players.len()];
                 let mut simmer_game_state = simmer_initial_game_state.clone(); // will be overwritten
                 let mut simmer_rack_tally = rack_tally.clone(); // will be overwritten
+                let num_sim_iters = 1000;
                 let num_sim_plies = 2;
                 let num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
                 let t0 = std::time::Instant::now();
-                for sim_iter in 0..1000 {
-                    if (sim_iter + 1) % 10 == 0 {
+                for sim_iter in 0..num_sim_iters {
+                    if (sim_iter + 1) % 100 == 0 {
                         println!("{} iters in {:?}", sim_iter, t0.elapsed());
                     }
                     //println!("iter {}", sim_iter);
@@ -327,7 +343,7 @@ pub fn main() -> error::Returns<()> {
                     //    "bag: {}",
                     //    printable_rack(&game_config.alphabet(), &simmer_initial_game_state.bag.0)
                     //);
-                    for play in plays.iter() {
+                    for (play, candidate_result) in candidates.iter_mut() {
                         simmer_game_state.clone_from(&simmer_initial_game_state);
                         let mut played_out = false;
                         for ply in 0..=num_sim_plies {
@@ -345,7 +361,7 @@ pub fn main() -> error::Returns<()> {
                                     &simmer_game_state.current_player().rack,
                                     1,
                                 );
-                                &simmer_move_generator.plays[0]
+                                &simmer_move_generator.plays[0].play
                             };
                             //print!(
                             //    "{} {} (leave ",
@@ -358,7 +374,7 @@ pub fn main() -> error::Returns<()> {
                                 .rack
                                 .iter()
                                 .for_each(|&tile| simmer_rack_tally[tile as usize] += 1);
-                            match &next_play.play {
+                            match &next_play {
                                 movegen::Play::Exchange { tiles } => {
                                     tiles
                                         .iter()
@@ -387,7 +403,7 @@ pub fn main() -> error::Returns<()> {
                             let leave_value = klv.leave_value_from_tally(&simmer_rack_tally);
                             //print!(" = {}), ", leave_value);
                             last_seen_leave_values[simmer_game_state.turn as usize] = leave_value;
-                            simmer_game_state.play(&mut simmer_rng, &next_play.play)?;
+                            simmer_game_state.play(&mut simmer_rng, &next_play)?;
                             if simmer_game_state.current_player().rack.is_empty() {
                                 played_out = true;
                                 //print!("(that played out) ");
@@ -475,17 +491,43 @@ pub fn main() -> error::Returns<()> {
                         //    initial_spread,
                         //    this_equity - initial_spread as f32
                         //);
-                        // stats of move!
-                        stats_of_play.update((this_equity - initial_spread as f32) as f64);
+                        candidate_result
+                            .stats
+                            .update((this_equity - initial_spread as f32) as f64);
                     }
                 }
             }
-            println!(
-                "stats: {} samples, {} mean, {} stddev",
-                stats_of_play.count(),
-                stats_of_play.mean(),
-                stats_of_play.standard_deviation()
-            );
+            assert!(plays.is_empty());
+            reusable_vec_for_candidate_moves.clear();
+            reusable_vec_for_candidate_moves.reserve(candidates.len());
+            for (play, candidate_result) in candidates.drain() {
+                let mean = candidate_result.stats.mean();
+                reusable_vec_for_candidate_moves.push((play, candidate_result, mean));
+            }
+            assert!(candidates.is_empty());
+            reusable_vec_for_candidate_moves.sort_unstable_by(|a, b| {
+                b.2.partial_cmp(&a.2)
+                    .unwrap()
+                    .then_with(|| b.1.equity.partial_cmp(&a.1.equity).unwrap())
+            });
+            for (play, candidate_result, _mean) in reusable_vec_for_candidate_moves.drain(..) {
+                println!(
+                    "{} {}: {} samples, {} mean, {} stddev",
+                    candidate_result.equity,
+                    play.fmt(board_snapshot),
+                    candidate_result.stats.count(),
+                    candidate_result.stats.mean(),
+                    candidate_result.stats.standard_deviation()
+                );
+                plays.push(movegen::ValuedMove {
+                    equity: candidate_result.equity,
+                    play,
+                });
+            }
+            assert!(reusable_vec_for_candidate_moves.is_empty());
+            for play in plays.iter() {
+                println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+            }
 
             // show that this is unaffected by sim
             println!(

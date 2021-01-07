@@ -1411,6 +1411,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     );
 }
 
+#[derive(Eq, Hash, PartialEq)]
 pub enum Play {
     Exchange {
         tiles: bites::Bites,
