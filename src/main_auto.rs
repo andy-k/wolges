@@ -264,6 +264,8 @@ pub fn main() -> error::Returns<()> {
                     vec![0.0f32; simmer_initial_game_state.players.len()];
                 let mut simmer_game_state = simmer_initial_game_state.clone(); // will be overwritten
                 let mut simmer_rack_tally = rack_tally.clone(); // will be overwritten
+                let num_sim_plies = 2;
+                let num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
                 let t0 = std::time::Instant::now();
                 for sim_iter in 0..1000 {
                     if (sim_iter + 1) % 10 == 0 {
@@ -291,7 +293,9 @@ pub fn main() -> error::Returns<()> {
                             .put_back(&mut rng, &player.rack);
                         player.rack.clear();
                     }
-                    simmer_initial_game_state.bag.shuffle(&mut simmer_rng);
+                    simmer_initial_game_state
+                        .bag
+                        .shuffle_n(&mut simmer_rng, num_tiles_that_matter);
                     last_seen_leave_values.iter_mut().for_each(|m| *m = 0.0);
                     //println!(
                     //    "bag: {}",
@@ -325,14 +329,14 @@ pub fn main() -> error::Returns<()> {
                     for play in plays.iter() {
                         simmer_game_state.clone_from(&simmer_initial_game_state);
                         let mut played_out = false;
-                        for plies in 0..3 {
+                        for ply in 0..=num_sim_plies {
                             let simmer_board_snapshot = &movegen::BoardSnapshot {
                                 board_tiles: &simmer_game_state.board_tiles,
                                 game_config,
                                 kwg: &kwg,
                                 klv: &klv,
                             };
-                            let next_play = if plies == 0 {
+                            let next_play = if ply == 0 {
                                 &play
                             } else {
                                 simmer_move_generator.gen_moves_alloc(

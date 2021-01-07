@@ -24,6 +24,11 @@ impl Bag {
         self.0.shuffle(&mut rng);
     }
 
+    pub fn shuffle_n(&mut self, mut rng: &mut dyn RngCore, amount: usize) {
+        // this "correctly" puts the shuffled amount at the end
+        self.0.partial_shuffle(&mut rng, amount);
+    }
+
     pub fn pop(&mut self) -> Option<u8> {
         self.0.pop()
     }
