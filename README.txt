@@ -62,6 +62,7 @@ Most files are in src.
 - build implements building kwg.
 - movegen generates moves using the Kurnia generator.
 - lexport implements porting with other lexicon file formats.
+- stats implements some stats logic.
 - bites is Kurnia Bites, a data structure used to store bytes.
 - most of the rest are just data structures.
 

@@ -19,6 +19,7 @@ mod main_json;
 mod main_lex;
 mod matrix;
 mod movegen;
+mod stats;
 
 fn main() -> error::Returns<()> {
     if false {

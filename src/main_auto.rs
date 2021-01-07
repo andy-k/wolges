@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use super::{alphabet, bag, display, error, game_config, klv, kwg, movegen};
+use super::{alphabet, bag, display, error, game_config, klv, kwg, movegen, stats};
 use rand::prelude::*;
 
 fn use_tiles<II: IntoIterator<Item = u8>>(
@@ -244,6 +244,7 @@ pub fn main() -> error::Returns<()> {
             }
 
             println!("let's sim them");
+            let mut stats_of_play = stats::Stats::new(); // temp
             {
                 let mut simmer_rng = rand_chacha::ChaCha20Rng::from_entropy();
                 let mut simmer_move_generator = movegen::KurniaMoveGenerator::new(game_config);
@@ -474,9 +475,17 @@ pub fn main() -> error::Returns<()> {
                         //    initial_spread,
                         //    this_equity - initial_spread as f32
                         //);
+                        // stats of move!
+                        stats_of_play.update((this_equity - initial_spread as f32) as f64);
                     }
                 }
             }
+            println!(
+                "stats: {} samples, {} mean, {} stddev",
+                stats_of_play.count(),
+                stats_of_play.mean(),
+                stats_of_play.standard_deviation()
+            );
 
             // show that this is unaffected by sim
             println!(
