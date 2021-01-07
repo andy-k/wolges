@@ -52,7 +52,7 @@ struct WorkingBuffer {
     perpendicular_scores_for_down_plays: Box<[i16]>,   // c*r
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
-    bag_is_empty: bool,
+    num_tiles_in_bag: i16, // negative when players also have less than full racks
     play_out_bonus: i16,
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
@@ -103,7 +103,7 @@ impl Clone for WorkingBuffer {
             perpendicular_scores_for_down_plays: self.perpendicular_scores_for_down_plays.clone(),
             transposed_board_tiles: self.transposed_board_tiles.clone(),
             num_tiles_on_board: self.num_tiles_on_board,
-            bag_is_empty: self.bag_is_empty,
+            num_tiles_in_bag: self.num_tiles_in_bag,
             play_out_bonus: self.play_out_bonus,
             num_tiles_on_rack: self.num_tiles_on_rack,
             rack_bits: self.rack_bits,
@@ -161,7 +161,7 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.transposed_board_tiles);
         self.num_tiles_on_board
             .clone_from(&source.num_tiles_on_board);
-        self.bag_is_empty.clone_from(&source.bag_is_empty);
+        self.num_tiles_in_bag.clone_from(&source.num_tiles_in_bag);
         self.play_out_bonus.clone_from(&source.play_out_bonus);
         self.num_tiles_on_rack.clone_from(&source.num_tiles_on_rack);
         self.rack_bits.clone_from(&source.rack_bits);
@@ -236,7 +236,7 @@ impl WorkingBuffer {
             perpendicular_scores_for_down_plays: vec![0i16; rows_times_cols].into_boxed_slice(),
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
-            bag_is_empty: false,
+            num_tiles_in_bag: 0,
             play_out_bonus: 0,
             num_tiles_on_rack: 0,
             rack_bits: 0,
@@ -316,11 +316,11 @@ impl WorkingBuffer {
             .iter()
             .filter(|&t| *t != 0)
             .count() as u16;
-        self.bag_is_empty = self.num_tiles_on_board
-            + board_snapshot.game_config.num_players() as u16
-                * (board_snapshot.game_config.rack_size() as u16)
-            >= alphabet.num_tiles();
-        self.play_out_bonus = if self.bag_is_empty {
+        self.num_tiles_in_bag = alphabet.num_tiles() as i16
+            - (self.num_tiles_on_board as i16
+                + board_snapshot.game_config.num_players() as i16
+                    * board_snapshot.game_config.rack_size() as i16);
+        self.play_out_bonus = if self.num_tiles_in_bag <= 0 {
             2 * ((0u8..)
                 .zip(self.rack_tally.iter())
                 .map(|(tile, &num)| {
@@ -360,7 +360,7 @@ impl WorkingBuffer {
         self.best_leave_values.clear();
         self.best_leave_values
             .resize(self.num_tiles_on_rack as usize + 1, f32::NEG_INFINITY);
-        if self.bag_is_empty {
+        if self.num_tiles_in_bag <= 0 {
             let mut unpaid = 0i16;
             for i in (0..self.num_tiles_on_rack).rev() {
                 unpaid += self.descending_scores[i as usize] as i16;
@@ -1701,11 +1701,11 @@ impl KurniaMoveGenerator {
         let mut working_buffer = &mut self.working_buffer;
         working_buffer.init(board_snapshot, rack);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
-        let bag_is_empty = working_buffer.bag_is_empty;
+        let num_tiles_in_bag = working_buffer.num_tiles_in_bag;
         let play_out_bonus = working_buffer.play_out_bonus;
 
         let leave_value_from_tally = |rack_tally: &[u8]| {
-            if bag_is_empty {
+            if num_tiles_in_bag <= 0 {
                 let played_out = rack_tally.iter().all(|&num| num == 0);
                 (if played_out {
                     play_out_bonus
@@ -1856,11 +1856,7 @@ fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
         env.rack_tally[idx as usize] = original_count;
         env.exchange_buffer.truncate(vec_len);
     }
-    if working_buffer.num_tiles_on_board
-        + (board_snapshot.game_config.num_players() as u16 + 1)
-            * (board_snapshot.game_config.rack_size() as u16)
-        <= board_snapshot.game_config.alphabet().num_tiles()
-    {
+    if working_buffer.num_tiles_in_bag >= board_snapshot.game_config.rack_size() as i16 {
         generate_exchanges(
             &mut ExchangeEnv {
                 found_exchange_move,
