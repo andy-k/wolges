@@ -34,6 +34,8 @@ pub struct StaticBoardLayout {
     star_row: i8,
     star_col: i8,
     transposed_premiums: Box<[Premium]>,
+    danger_star_across: Box<[bool]>,
+    danger_star_down: Box<[bool]>,
     is_symmetric: bool,
 }
 
@@ -50,8 +52,52 @@ impl BoardLayout {
                 transposed_premiums.push(x.premiums[x.dim.at_row_col(row, col)]);
             }
         }
+        let mut danger_star_across = vec![false; x.dim.cols as usize];
+        if x.star_row > 0 {
+            let range_start = ((x.star_row as isize - 1) * x.dim.cols as isize) as usize;
+            (0..)
+                .zip(x.premiums[range_start..range_start + x.dim.cols as usize].iter())
+                .for_each(|(col, premium)| {
+                    if premium.tile_multiplier != 1 || premium.word_multiplier != 1 {
+                        danger_star_across[col] = true;
+                    }
+                });
+        }
+        if x.star_row < x.dim.rows - 1 {
+            let range_start = ((x.star_row as isize + 1) * x.dim.cols as isize) as usize;
+            (0..)
+                .zip(x.premiums[range_start..range_start + x.dim.cols as usize].iter())
+                .for_each(|(col, premium)| {
+                    if premium.tile_multiplier != 1 || premium.word_multiplier != 1 {
+                        danger_star_across[col] = true;
+                    }
+                });
+        }
+        let mut danger_star_down = vec![false; x.dim.rows as usize];
+        if x.star_col > 0 {
+            let range_start = ((x.star_col as isize - 1) * x.dim.rows as isize) as usize;
+            (0..)
+                .zip(transposed_premiums[range_start..range_start + x.dim.rows as usize].iter())
+                .for_each(|(row, premium)| {
+                    if premium.tile_multiplier != 1 || premium.word_multiplier != 1 {
+                        danger_star_down[row] = true;
+                    }
+                });
+        }
+        if x.star_col < x.dim.cols - 1 {
+            let range_start = ((x.star_col as isize + 1) * x.dim.rows as isize) as usize;
+            (0..)
+                .zip(transposed_premiums[range_start..range_start + x.dim.rows as usize].iter())
+                .for_each(|(row, premium)| {
+                    if premium.tile_multiplier != 1 || premium.word_multiplier != 1 {
+                        danger_star_down[row] = true;
+                    }
+                });
+        }
         Self::Static(StaticBoardLayout {
             transposed_premiums: transposed_premiums.into_boxed_slice(),
+            danger_star_across: danger_star_across.into_boxed_slice(),
+            danger_star_down: danger_star_down.into_boxed_slice(),
             is_symmetric: x.dim.rows == x.dim.cols
                 && x.star_row == x.star_col
                 && (0..x.dim.rows).all(|row| {
@@ -98,6 +144,20 @@ impl BoardLayout {
     pub fn transposed_premiums(&self) -> &[Premium] {
         match self {
             BoardLayout::Static(x) => &x.transposed_premiums,
+        }
+    }
+
+    #[inline(always)]
+    pub fn danger_star_across(&self, col: i8) -> bool {
+        match self {
+            BoardLayout::Static(x) => x.danger_star_across[col as usize],
+        }
+    }
+
+    #[inline(always)]
+    pub fn danger_star_down(&self, row: i8) -> bool {
+        match self {
+            BoardLayout::Static(x) => x.danger_star_down[row as usize],
         }
     }
 

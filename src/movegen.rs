@@ -1644,9 +1644,7 @@ impl KurniaMoveGenerator {
         max_gen: usize,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
-
         let board_layout = board_snapshot.game_config.board_layout();
-        let dim = board_layout.dim();
 
         self.plays.clear();
         let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::from(
@@ -1698,43 +1696,16 @@ impl KurniaMoveGenerator {
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                 let leave_value = leave_value_from_tally(rack_tally);
                 let other_adjustments = if num_tiles_on_board == 0 {
-                    let num_lanes = if down { dim.cols } else { dim.rows };
-                    let strider1 = if lane > 0 {
-                        Some(if down {
-                            dim.down(lane - 1)
-                        } else {
-                            dim.across(lane - 1)
-                        })
-                    } else {
-                        None
-                    };
-                    let strider2 = if lane < num_lanes - 1 {
-                        Some(if down {
-                            dim.down(lane + 1)
-                        } else {
-                            dim.across(lane + 1)
-                        })
-                    } else {
-                        None
-                    };
                     (idx..)
                         .zip(word)
                         .filter(|(i, &tile)| {
-                            tile != 0 && alphabet.is_vowel(tile) && {
-                                (match strider1 {
-                                    Some(strider) => {
-                                        let premium = board_layout.premiums()[strider.at(*i)];
-                                        premium.tile_multiplier != 1 || premium.word_multiplier != 1
-                                    }
-                                    None => false,
-                                }) || (match strider2 {
-                                    Some(strider) => {
-                                        let premium = board_layout.premiums()[strider.at(*i)];
-                                        premium.tile_multiplier != 1 || premium.word_multiplier != 1
-                                    }
-                                    None => false,
-                                })
-                            }
+                            tile != 0
+                                && alphabet.is_vowel(tile)
+                                && if down {
+                                    board_layout.danger_star_down(*i)
+                                } else {
+                                    board_layout.danger_star_across(*i)
+                                }
                         })
                         .count() as f32
                         * -0.7
