@@ -21,7 +21,8 @@ impl Pascal {
             let mut v = 0;
             for i in start..(start + self.rows) {
                 let x = self.raw[i];
-                self.raw.push(v + x);
+                // here wrong answer is better than no answer
+                self.raw.push(x.saturating_add(v));
                 v = x;
             }
             self.raw.push(1);
