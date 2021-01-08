@@ -226,6 +226,7 @@ struct ScoringChecker {
     rack_tally: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl ScoringChecker {
     fn new() -> Self {
         Self {
@@ -523,12 +524,11 @@ impl ScoringChecker {
             recounted_equity,
             movegen_equity - recounted_equity
         );
-        assert_eq!(recounted_equity, movegen_equity);
+        assert_eq!(recounted_equity.to_le_bytes(), movegen_equity.to_le_bytes());
     }
 }
 
 pub fn main() -> error::Returns<()> {
-    let mut scoring_checker = ScoringChecker::new();
     let mut candidates = Vec::new();
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
@@ -583,6 +583,7 @@ pub fn main() -> error::Returns<()> {
             if tilt_factor < 0.0 {
                 tilt_factor = 0.0;
             }
+            let _ = tilt_factor;
             tilt_factor = 0.0; // let's just disable this
             println!("effective tilt factor for this turn: {}", tilt_factor);
             let mut leave_scale = (bot_level as f64 * 0.1 + (1.0 - tilt_factor)) as f32;
@@ -597,7 +598,7 @@ pub fn main() -> error::Returns<()> {
                 let this_wp = word_prob.count_ways(word);
                 let max_wp = max_prob_by_len[word.len()];
                 let some_prob = 1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2);
-                let mut handwavy = length_importances[word.len()] as f64 * some_prob;
+                let handwavy = length_importances[word.len()] as f64 * some_prob;
                 if handwavy >= tilt_factor {
                     return true;
                 }
@@ -628,73 +629,72 @@ pub fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            let mut validate_word_subset =
-                |board_snapshot: &movegen::BoardSnapshot,
-                 down: bool,
-                 lane: i8,
-                 idx: i8,
-                 word: &[u8],
-                 _score: i16,
-                 _rack_tally: &[u8]| {
-                    let board_layout = board_snapshot.game_config.board_layout();
-                    let dim = board_layout.dim();
-                    let strider = if down {
-                        dim.down(lane)
+            let validate_word_subset = |board_snapshot: &movegen::BoardSnapshot,
+                                        down: bool,
+                                        lane: i8,
+                                        idx: i8,
+                                        word: &[u8],
+                                        _score: i16,
+                                        _rack_tally: &[u8]| {
+                let board_layout = board_snapshot.game_config.board_layout();
+                let dim = board_layout.dim();
+                let strider = if down {
+                    dim.down(lane)
+                } else {
+                    dim.across(lane)
+                };
+                word_check_buf.clear();
+                for (i, &tile) in (idx..).zip(word.iter()) {
+                    let placed_tile = if tile != 0 {
+                        tile
                     } else {
-                        dim.across(lane)
+                        board_snapshot.board_tiles[strider.at(i)]
                     };
-                    word_check_buf.clear();
-                    for (i, &tile) in (idx..).zip(word.iter()) {
-                        let placed_tile = if tile != 0 {
-                            tile
-                        } else {
-                            board_snapshot.board_tiles[strider.at(i)]
-                        };
-                        word_check_buf.push(placed_tile & 0x7f);
-                    }
-                    if !word_is_ok(&word_check_buf) {
-                        return false;
-                    }
-                    for (i, &tile) in (idx..).zip(word.iter()) {
-                        if tile != 0 {
-                            let perpendicular_strider =
-                                if down { dim.across(i) } else { dim.down(i) };
-                            let mut j = lane;
-                            while j > 0
-                                && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
-                            {
-                                j -= 1;
+                    word_check_buf.push(placed_tile & 0x7f);
+                }
+                if !word_is_ok(&word_check_buf) {
+                    return false;
+                }
+                for (i, &tile) in (idx..).zip(word.iter()) {
+                    if tile != 0 {
+                        let perpendicular_strider = if down { dim.across(i) } else { dim.down(i) };
+                        let mut j = lane;
+                        while j > 0
+                            && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
+                        {
+                            j -= 1;
+                        }
+                        let perpendicular_strider_len = perpendicular_strider.len();
+                        if j == lane
+                            && if j + 1 < perpendicular_strider_len {
+                                board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
+                            } else {
+                                true
                             }
-                            let perpendicular_strider_len = perpendicular_strider.len();
-                            if j == lane
-                                && if j + 1 < perpendicular_strider_len {
-                                    board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
-                                } else {
-                                    true
-                                }
-                            {
-                                // no perpendicular tile
-                                continue;
+                        {
+                            // no perpendicular tile
+                            continue;
+                        }
+                        word_check_buf.clear();
+                        for j in j..perpendicular_strider_len {
+                            let placed_tile = if j == lane {
+                                tile
+                            } else {
+                                board_snapshot.board_tiles[perpendicular_strider.at(j)]
+                            };
+                            if placed_tile == 0 {
+                                break;
                             }
-                            word_check_buf.clear();
-                            for j in j..perpendicular_strider_len {
-                                let placed_tile = if j == lane {
-                                    tile
-                                } else {
-                                    board_snapshot.board_tiles[perpendicular_strider.at(j)]
-                                };
-                                if placed_tile == 0 {
-                                    break;
-                                }
-                                word_check_buf.push(placed_tile & 0x7f);
-                            }
-                            if !word_is_ok(&word_check_buf) {
-                                return false;
-                            }
+                            word_check_buf.push(placed_tile & 0x7f);
+                        }
+                        if !word_is_ok(&word_check_buf) {
+                            return false;
                         }
                     }
-                    true
-                };
+                }
+                true
+            };
+            let _ = validate_word_subset;
             let validate_word_subset =
                 |_board_snapshot: &movegen::BoardSnapshot,
                  _down: bool,
@@ -974,14 +974,9 @@ pub fn main() -> error::Returns<()> {
                         );
                         // remove candidates that cannot catch up
                         candidates.retain(|candidate| {
-                            if (candidate.stats.mean()
+                            (candidate.stats.mean()
                                 + ci_z_over_sqrt_n * candidate.stats.standard_deviation())
-                                < low_bar
-                            {
-                                false
-                            } else {
-                                true
-                            }
+                                >= low_bar
                         });
                         println!(
                             "{} iters in {:?}, {} moves",
@@ -1016,14 +1011,6 @@ pub fn main() -> error::Returns<()> {
 
             let play = &candidates[0].play; // assume at least there's always Pass
             println!("making top move: {}", play.fmt(board_snapshot));
-
-            scoring_checker.check_scoring(
-                &board_snapshot,
-                &game_state,
-                &play,
-                leave_scale,
-                candidates[0].equity,
-            );
 
             game_state.play(&mut rng, play)?;
 

@@ -25,6 +25,7 @@ impl Stats {
         self.m2 += delta * delta2;
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     pub fn update_bulk(&mut self, other: &Stats) {
         let original_count = self.count;
