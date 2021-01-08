@@ -184,6 +184,7 @@ pub fn main() -> error::Returns<()> {
         &question.rack,
         question.max_gen,
         |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i16, _rack_tally: &[u8]| true,
+        |leave_value: f32| leave_value,
     );
     let plays = &move_generator.plays;
     println!("found {} moves", plays.len());

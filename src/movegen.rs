@@ -393,6 +393,7 @@ impl WorkingBuffer {
                     idx += 1;
                 }
                 if idx as usize >= rack_tally_len {
+                    // note: tilt not applied, assume 0.0 <= tilt <= 1.0
                     let this_leave_value = env.klv.leave_value_from_tally(env.rack_tally);
                     if this_leave_value > env.best_leave_values[num_tiles_exchanged as usize] {
                         env.best_leave_values[num_tiles_exchanged as usize] = this_leave_value;
@@ -1648,12 +1649,14 @@ impl KurniaMoveGenerator {
     pub fn gen_moves_alloc<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i16, &[u8]) -> bool,
+        AdjustLeaveValue: Fn(f32) -> f32,
     >(
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a>,
         rack: &'a [u8],
         max_gen: usize,
         mut place_move_predicate: PlaceMovePredicate,
+        adjust_leave_value: AdjustLeaveValue,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
         let board_layout = board_snapshot.game_config.board_layout();
@@ -1704,7 +1707,8 @@ impl KurniaMoveGenerator {
                             .sum::<i16>()
                 }) as f32
             } else {
-                board_snapshot.klv.leave_value_from_tally(rack_tally)
+                // note: adjust_leave_value(f) must return between 0.0 and f
+                adjust_leave_value(board_snapshot.klv.leave_value_from_tally(rack_tally))
             }
         };
 

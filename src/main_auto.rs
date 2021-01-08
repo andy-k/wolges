@@ -274,6 +274,11 @@ pub fn main() -> error::Returns<()> {
                 tilt_factor = 0.0;
             }
             println!("effective tilt factor for this turn: {}", tilt_factor);
+            let mut leave_scale = (bot_level as f64 * 0.1 + (1.0 - tilt_factor)) as f32;
+            if leave_scale > 1.0 {
+                leave_scale = 1.0;
+            }
+            println!("effective leave scale for this turn: {}", leave_scale);
             let mut word_is_ok = |word: &[u8]| {
                 let this_wp = word_prob.count_ways(word);
                 let max_wp = max_prob_by_len[word.len()];
@@ -375,6 +380,7 @@ pub fn main() -> error::Returns<()> {
                     }
                     true
                 };
+            let adjust_leave_value = |leave_value: f32| leave_scale * leave_value;
             move_generator.gen_moves_alloc(
                 board_snapshot,
                 &game_state.current_player().rack,
@@ -382,6 +388,7 @@ pub fn main() -> error::Returns<()> {
                 |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                     validate_word_subset(&board_snapshot, down, lane, idx, word, score, rack_tally)
                 },
+                adjust_leave_value,
             );
             let plays = &mut move_generator.plays;
 
@@ -522,6 +529,7 @@ pub fn main() -> error::Returns<()> {
                                             rack_tally,
                                         )
                                     },
+                                    adjust_leave_value,
                                 );
                                 &simmer_move_generator.plays[0].play
                             };
@@ -906,7 +914,7 @@ pub fn main() -> error::Returns<()> {
                     );
                 }
             } else {
-                recounted_equity += leave_value;
+                recounted_equity += leave_scale * leave_value;
                 println!("after adjusting for leave: {}", recounted_equity);
                 if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
                     println!("nothing on board");
