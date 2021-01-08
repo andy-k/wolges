@@ -304,6 +304,27 @@ pub fn main() -> error::Returns<()> {
             )?;
         }
         {
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl20.kwg")?);
+            std::fs::write(
+                "NWL20.dawg",
+                lexport::to_macondo(
+                    &kwg,
+                    &english_alphabet,
+                    "NWL20",
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            std::fs::write(
+                "NWL20.gaddag",
+                lexport::to_macondo(
+                    &kwg,
+                    &english_alphabet,
+                    "NWL20",
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
+        }
+        {
             let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("ecwl.kwg")?);
             std::fs::write(
                 "ECWL.dawg",
