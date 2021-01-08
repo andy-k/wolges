@@ -281,6 +281,203 @@ pub fn make_english_alphabet<'a>() -> Alphabet<'a> {
     })
 }
 
+pub fn make_super_english_alphabet<'a>() -> Alphabet<'a> {
+    Alphabet::new_static(StaticAlphabet {
+        tiles: &[
+            Tile {
+                label: "?",
+                blank_label: "?",
+                freq: 4,
+                score: 0,
+                is_vowel: false,
+            },
+            Tile {
+                label: "A",
+                blank_label: "a",
+                freq: 16,
+                score: 1,
+                is_vowel: true,
+            },
+            Tile {
+                label: "B",
+                blank_label: "b",
+                freq: 4,
+                score: 3,
+                is_vowel: false,
+            },
+            Tile {
+                label: "C",
+                blank_label: "c",
+                freq: 6,
+                score: 3,
+                is_vowel: false,
+            },
+            Tile {
+                label: "D",
+                blank_label: "d",
+                freq: 8,
+                score: 2,
+                is_vowel: false,
+            },
+            Tile {
+                label: "E",
+                blank_label: "e",
+                freq: 24,
+                score: 1,
+                is_vowel: true,
+            },
+            Tile {
+                label: "F",
+                blank_label: "f",
+                freq: 4,
+                score: 4,
+                is_vowel: false,
+            },
+            Tile {
+                label: "G",
+                blank_label: "g",
+                freq: 5,
+                score: 2,
+                is_vowel: false,
+            },
+            Tile {
+                label: "H",
+                blank_label: "h",
+                freq: 5,
+                score: 4,
+                is_vowel: false,
+            },
+            Tile {
+                label: "I",
+                blank_label: "i",
+                freq: 13,
+                score: 1,
+                is_vowel: true,
+            },
+            Tile {
+                label: "J",
+                blank_label: "j",
+                freq: 2,
+                score: 8,
+                is_vowel: false,
+            },
+            Tile {
+                label: "K",
+                blank_label: "k",
+                freq: 2,
+                score: 5,
+                is_vowel: false,
+            },
+            Tile {
+                label: "L",
+                blank_label: "l",
+                freq: 7,
+                score: 1,
+                is_vowel: false,
+            },
+            Tile {
+                label: "M",
+                blank_label: "m",
+                freq: 6,
+                score: 3,
+                is_vowel: false,
+            },
+            Tile {
+                label: "N",
+                blank_label: "n",
+                freq: 13,
+                score: 1,
+                is_vowel: false,
+            },
+            Tile {
+                label: "O",
+                blank_label: "o",
+                freq: 15,
+                score: 1,
+                is_vowel: true,
+            },
+            Tile {
+                label: "P",
+                blank_label: "p",
+                freq: 4,
+                score: 3,
+                is_vowel: false,
+            },
+            Tile {
+                label: "Q",
+                blank_label: "q",
+                freq: 2,
+                score: 10,
+                is_vowel: false,
+            },
+            Tile {
+                label: "R",
+                blank_label: "r",
+                freq: 13,
+                score: 1,
+                is_vowel: false,
+            },
+            Tile {
+                label: "S",
+                blank_label: "s",
+                freq: 10,
+                score: 1,
+                is_vowel: false,
+            },
+            Tile {
+                label: "T",
+                blank_label: "t",
+                freq: 15,
+                score: 1,
+                is_vowel: false,
+            },
+            Tile {
+                label: "U",
+                blank_label: "u",
+                freq: 7,
+                score: 1,
+                is_vowel: true,
+            },
+            Tile {
+                label: "V",
+                blank_label: "v",
+                freq: 3,
+                score: 4,
+                is_vowel: false,
+            },
+            Tile {
+                label: "W",
+                blank_label: "w",
+                freq: 4,
+                score: 4,
+                is_vowel: false,
+            },
+            Tile {
+                label: "X",
+                blank_label: "x",
+                freq: 2,
+                score: 8,
+                is_vowel: false,
+            },
+            Tile {
+                label: "Y",
+                blank_label: "y",
+                freq: 4,
+                score: 4,
+                is_vowel: false,
+            },
+            Tile {
+                label: "Z",
+                blank_label: "z",
+                freq: 2,
+                score: 10,
+                is_vowel: false,
+            },
+        ],
+        ..Default::default()
+    })
+}
+
 pub fn make_polish_alphabet<'a>() -> Alphabet<'a> {
     Alphabet::new_static(StaticAlphabet {
         tiles: &[

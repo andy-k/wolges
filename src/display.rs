@@ -9,9 +9,11 @@ pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -
     }
     let premium = board_layout.premiums()[board_layout.dim().at_row_col(row, col)];
     match premium.word_multiplier {
+        4 => "~",
         3 => "=",
         2 => "-",
         1 => match premium.tile_multiplier {
+            4 => "^",
             3 => "\"",
             2 => "\'",
             1 => " ",

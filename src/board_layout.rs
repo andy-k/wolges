@@ -8,6 +8,10 @@ pub struct Premium {
     pub tile_multiplier: i8,
 }
 
+static QWS: Premium = Premium {
+    word_multiplier: 4,
+    tile_multiplier: 1,
+};
 static TWS: Premium = Premium {
     word_multiplier: 3,
     tile_multiplier: 1,
@@ -15,6 +19,10 @@ static TWS: Premium = Premium {
 static DWS: Premium = Premium {
     word_multiplier: 2,
     tile_multiplier: 1,
+};
+static QLS: Premium = Premium {
+    word_multiplier: 1,
+    tile_multiplier: 4,
 };
 static TLS: Premium = Premium {
     word_multiplier: 1,
@@ -197,6 +205,59 @@ pub fn make_common_board_layout() -> BoardLayout {
         dim: matrix::Dim { rows: 15, cols: 15 },
         star_row: 7,
         star_col: 7,
+        ..Default::default()
+    })
+}
+
+pub fn make_super_board_layout() -> BoardLayout {
+    BoardLayout::new_static(StaticBoardLayout {
+        premiums: Box::new([
+            QWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, DLS, FVS, FVS, TWS, FVS, FVS, FVS,
+            DLS, FVS, FVS, QWS, //
+            FVS, DWS, FVS, FVS, TLS, FVS, FVS, FVS, DWS, FVS, FVS, FVS, DWS, FVS, FVS, FVS, TLS,
+            FVS, FVS, DWS, FVS, //
+            FVS, FVS, DWS, FVS, FVS, QLS, FVS, FVS, FVS, DWS, FVS, DWS, FVS, FVS, FVS, QLS, FVS,
+            FVS, DWS, FVS, FVS, //
+            DLS, FVS, FVS, TWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS,
+            TWS, FVS, FVS, DLS, //
+            FVS, TLS, FVS, FVS, DWS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, DWS,
+            FVS, FVS, TLS, FVS, //
+            FVS, FVS, QLS, FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DWS, FVS,
+            FVS, QLS, FVS, FVS, //
+            FVS, FVS, FVS, DLS, FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS,
+            DLS, FVS, FVS, FVS, //
+            TWS, FVS, FVS, FVS, FVS, FVS, FVS, DWS, FVS, FVS, FVS, FVS, FVS, DWS, FVS, FVS, FVS,
+            FVS, FVS, FVS, TWS, //
+            FVS, DWS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS,
+            FVS, FVS, DWS, FVS, //
+            FVS, FVS, DWS, FVS, FVS, DLS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DLS, FVS,
+            FVS, DWS, FVS, FVS, //
+            DLS, FVS, FVS, TWS, FVS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, FVS,
+            TWS, FVS, FVS, DLS, //
+            FVS, FVS, DWS, FVS, FVS, DLS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DLS, FVS,
+            FVS, DWS, FVS, FVS, //
+            FVS, DWS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS,
+            FVS, FVS, DWS, FVS, //
+            TWS, FVS, FVS, FVS, FVS, FVS, FVS, DWS, FVS, FVS, FVS, FVS, FVS, DWS, FVS, FVS, FVS,
+            FVS, FVS, FVS, TWS, //
+            FVS, FVS, FVS, DLS, FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS,
+            DLS, FVS, FVS, FVS, //
+            FVS, FVS, QLS, FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DWS, FVS,
+            FVS, QLS, FVS, FVS, //
+            FVS, TLS, FVS, FVS, DWS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, DWS,
+            FVS, FVS, TLS, FVS, //
+            DLS, FVS, FVS, TWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS,
+            TWS, FVS, FVS, DLS, //
+            FVS, FVS, DWS, FVS, FVS, QLS, FVS, FVS, FVS, DWS, FVS, DWS, FVS, FVS, FVS, QLS, FVS,
+            FVS, DWS, FVS, FVS, //
+            FVS, DWS, FVS, FVS, TLS, FVS, FVS, FVS, DWS, FVS, FVS, FVS, DWS, FVS, FVS, FVS, TLS,
+            FVS, FVS, DWS, FVS, //
+            QWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, DLS, FVS, FVS, TWS, FVS, FVS, FVS,
+            DLS, FVS, FVS, QWS, //
+        ]),
+        dim: matrix::Dim { rows: 21, cols: 21 },
+        star_row: 10,
+        star_col: 10,
         ..Default::default()
     })
 }

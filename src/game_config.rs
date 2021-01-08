@@ -62,6 +62,15 @@ pub fn make_common_english_game_config<'a>() -> GameConfig<'a> {
     })
 }
 
+pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        alphabet: alphabet::make_super_english_alphabet(),
+        board_layout: board_layout::make_super_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
 pub fn make_polish_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
         alphabet: alphabet::make_polish_alphabet(),
