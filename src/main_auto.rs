@@ -217,6 +217,11 @@ fn get_max_probs_by_len<'a>(
     v.into_boxed_slice()
 }
 
+// need more realistic numbers, and should differ by bot level
+static LENGTH_IMPORTANCES: &[f32] = &[
+    0.0, 0.0, 2.0, 1.5, 1.0, 0.75, 0.5, 1.0, 1.0, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1, 0.1,
+];
+
 pub fn main() -> error::Returns<()> {
     let mut reusable_vec_for_candidate_moves = Vec::new();
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
@@ -269,6 +274,7 @@ pub fn main() -> error::Returns<()> {
             println!("turn: player {}", game_state.turn + 1);
 
             let bot_level = if game_state.turn == 0 { 6 } else { 3 };
+            let length_importances = LENGTH_IMPORTANCES; // should differ by bot level
             let mut tilt_factor = rng.gen_range(0.5 - bot_level as f64 * 0.1, 1.0);
             if tilt_factor < 0.0 {
                 tilt_factor = 0.0;
@@ -282,7 +288,11 @@ pub fn main() -> error::Returns<()> {
             let mut word_is_ok = |word: &[u8]| {
                 let this_wp = word_prob.count_ways(word);
                 let max_wp = max_prob_by_len[word.len()];
-                let handwavy = 1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2);
+                let some_prob = 1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2);
+                let mut handwavy = length_importances[word.len()] as f64 * some_prob;
+                if handwavy > 1.0 {
+                    handwavy = 1.0;
+                }
                 if handwavy >= tilt_factor {
                     return true;
                 }
