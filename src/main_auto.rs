@@ -287,13 +287,13 @@ pub fn main() -> error::Returns<()> {
             }
             println!("effective leave scale for this turn: {}", leave_scale);
             let mut word_is_ok = |word: &[u8]| {
+                if tilt_factor >= 1.0 {
+                    return true;
+                }
                 let this_wp = word_prob.count_ways(word);
                 let max_wp = max_prob_by_len[word.len()];
                 let some_prob = 1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2);
                 let mut handwavy = length_importances[word.len()] as f64 * some_prob;
-                if handwavy > 1.0 {
-                    handwavy = 1.0;
-                }
                 if handwavy >= tilt_factor {
                     return true;
                 }
