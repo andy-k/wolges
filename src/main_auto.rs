@@ -279,6 +279,7 @@ pub fn main() -> error::Returns<()> {
             if tilt_factor < 0.0 {
                 tilt_factor = 0.0;
             }
+            tilt_factor = 0.0; // let's just disable this
             println!("effective tilt factor for this turn: {}", tilt_factor);
             let mut leave_scale = (bot_level as f64 * 0.1 + (1.0 - tilt_factor)) as f32;
             if leave_scale > 1.0 {
@@ -443,7 +444,7 @@ pub fn main() -> error::Returns<()> {
                     vec![0.0f32; simmer_initial_game_state.players.len()];
                 let mut simmer_game_state = simmer_initial_game_state.clone(); // will be overwritten
                 let mut simmer_rack_tally = rack_tally.clone(); // will be overwritten
-                let num_sim_iters = 10;
+                let num_sim_iters = 1000;
                 let num_sim_plies = 2;
                 let num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
                 let t0 = std::time::Instant::now();
