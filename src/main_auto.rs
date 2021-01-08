@@ -391,6 +391,14 @@ pub fn main() -> error::Returns<()> {
                     }
                     true
                 };
+            let validate_word_subset =
+                |_board_snapshot: &movegen::BoardSnapshot,
+                 _down: bool,
+                 _lane: i8,
+                 _idx: i8,
+                 _word: &[u8],
+                 _score: i16,
+                 _rack_tally: &[u8]| { true };
             let adjust_leave_value = |leave_value: f32| leave_scale * leave_value;
             move_generator.gen_moves_alloc(
                 board_snapshot,
