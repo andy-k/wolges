@@ -412,7 +412,7 @@ pub fn main() -> error::Returns<()> {
             let plays = &mut move_generator.plays;
 
             println!("found {} moves", plays.len());
-            for play in plays.iter() {
+            for play in plays.iter().take(10) {
                 println!("{} {}", play.equity, play.play.fmt(board_snapshot));
             }
 
@@ -488,6 +488,8 @@ pub fn main() -> error::Returns<()> {
                             .put_back(&mut rng, &player.rack);
                         player.rack.clear();
                     }
+                    let possible_to_play_out =
+                        simmer_initial_game_state.bag.0.len() <= num_tiles_that_matter;
                     simmer_initial_game_state
                         .bag
                         .shuffle_n(&mut simmer_rng, num_tiles_that_matter);
@@ -686,9 +688,40 @@ pub fn main() -> error::Returns<()> {
                         //    initial_spread,
                         //    this_equity - initial_spread as f32
                         //);
-                        candidate_result
-                            .stats
-                            .update((this_equity - initial_spread as f32) as f64);
+                        let sim_spread = this_equity - initial_spread as f32;
+                        let win_probability;
+                        if played_out {
+                            win_probability = if sim_spread > 0.0 {
+                                1.0
+                            } else if sim_spread < 0.0 {
+                                0.0
+                            } else {
+                                0.5
+                            };
+                        //println!(
+                        //    "play out: sim_spread = {}, win_probability = {}",
+                        //    sim_spread, win_probability
+                        //);
+                        } else {
+                            // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
+                            let num_unseen_tiles = simmer_game_state.bag.0.len()
+                                + simmer_game_state
+                                    .players
+                                    .iter()
+                                    .map(|player| player.rack.len())
+                                    .sum::<usize>();
+                            // this could be precomputed for every possible num_unseen_tiles (1 to 93)
+                            let exp_width =
+                                -(30.0 + num_unseen_tiles as f64) / ((1.0 / 0.9 - 1.0) as f64).ln();
+                            win_probability =
+                                1.0 / (1.0 + (-(sim_spread as f64) / exp_width).exp());
+                            //println!("not play out: num_unseen_tiles = {}, exp_width = {}, sim_spread = {}, win_probability = {}", num_unseen_tiles, exp_width, sim_spread, win_probability);
+                        }
+                        candidate_result.stats.update(
+                            sim_spread as f64
+                                + win_probability
+                                    * if possible_to_play_out { 1000.0 } else { 10.0 },
+                        );
                     }
                     if (sim_iter + 1) == when_to_prune {
                         when_to_prune <<= 1;
@@ -728,6 +761,7 @@ pub fn main() -> error::Returns<()> {
                                 + ci_z_over_sqrt_n * candidate_result.stats.standard_deviation())
                                 < low_bar
                             {
+                                /*
                                 println!(
                                     "disqualifying: {} {}: {} samples, {} mean, {} stddev",
                                     candidate_result.equity,
@@ -736,6 +770,7 @@ pub fn main() -> error::Returns<()> {
                                     candidate_result.stats.mean(),
                                     candidate_result.stats.standard_deviation()
                                 );
+                                */
                                 false
                             } else {
                                 true
@@ -787,10 +822,10 @@ pub fn main() -> error::Returns<()> {
             }
 
             // show that this is unaffected by sim
-            println!(
-                "bag= {}",
-                printable_rack(&game_state.game_config.alphabet(), &game_state.bag.0)
-            );
+            //println!(
+            //    "bag= {}",
+            //    printable_rack(&game_state.game_config.alphabet(), &game_state.bag.0)
+            //);
 
             let play = &plays[0]; // assume at least there's always Pass
             println!("making top move: {}", play.play.fmt(board_snapshot));
