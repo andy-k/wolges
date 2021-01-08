@@ -403,7 +403,7 @@ pub fn main() -> error::Returns<()> {
             move_generator.gen_moves_alloc(
                 board_snapshot,
                 &game_state.current_player().rack,
-                15,
+                100,
                 |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                     validate_word_subset(&board_snapshot, down, lane, idx, word, score, rack_tally)
                 },
@@ -453,12 +453,18 @@ pub fn main() -> error::Returns<()> {
                 let mut simmer_game_state = simmer_initial_game_state.clone(); // will be overwritten
                 let mut simmer_rack_tally = rack_tally.clone(); // will be overwritten
                 let num_sim_iters = 1000;
+                let mut when_to_prune = 16;
                 let num_sim_plies = 2;
                 let num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
                 let t0 = std::time::Instant::now();
                 for sim_iter in 0..num_sim_iters {
                     if (sim_iter + 1) % 100 == 0 {
-                        println!("{} iters in {:?}", sim_iter, t0.elapsed());
+                        println!(
+                            "{} iters in {:?}, {} moves",
+                            sim_iter,
+                            t0.elapsed(),
+                            candidates.len()
+                        );
                     }
                     //println!("iter {}", sim_iter);
                     //println!(
@@ -683,6 +689,68 @@ pub fn main() -> error::Returns<()> {
                         candidate_result
                             .stats
                             .update((this_equity - initial_spread as f32) as f64);
+                    }
+                    if (sim_iter + 1) == when_to_prune {
+                        when_to_prune <<= 1;
+                        // confidence interval = mean +/- Z * stddev / sqrt(samples)
+                        // Z = 1.96 for 95% CI
+                        // first find the top candidate based on max range
+                        let ci_z = 1.96;
+                        // assume all surviving candidate moves have been simmed for the same number of samples
+                        let ci_z_over_sqrt_n = ci_z / ((sim_iter + 1) as f64).sqrt();
+                        let top_candidate = candidates
+                            .iter()
+                            .max_by(|a, b| {
+                                (a.1.stats.mean()
+                                    + ci_z_over_sqrt_n * a.1.stats.standard_deviation())
+                                .partial_cmp(
+                                    &(b.1.stats.mean()
+                                        + ci_z_over_sqrt_n * b.1.stats.standard_deviation()),
+                                )
+                                .unwrap()
+                            })
+                            .unwrap();
+                        let low_bar = top_candidate.1.stats.mean()
+                            - ci_z_over_sqrt_n * top_candidate.1.stats.standard_deviation();
+                        println!(
+                            "top play after {} iters: {} {}: {} samples, {} mean, {} stddev; low bar: {}",
+                            sim_iter+1,
+                            top_candidate.1.equity,
+                            top_candidate.0.fmt(board_snapshot),
+                            top_candidate.1.stats.count(),
+                            top_candidate.1.stats.mean(),
+                            top_candidate.1.stats.standard_deviation(),
+                            low_bar,
+                        );
+                        // remove candidates that cannot catch up
+                        candidates.retain(|play, candidate_result| {
+                            if (candidate_result.stats.mean()
+                                + ci_z_over_sqrt_n * candidate_result.stats.standard_deviation())
+                                < low_bar
+                            {
+                                println!(
+                                    "disqualifying: {} {}: {} samples, {} mean, {} stddev",
+                                    candidate_result.equity,
+                                    play.fmt(board_snapshot),
+                                    candidate_result.stats.count(),
+                                    candidate_result.stats.mean(),
+                                    candidate_result.stats.standard_deviation()
+                                );
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        println!(
+                            "{} iters in {:?}, {} moves",
+                            sim_iter + 1,
+                            t0.elapsed(),
+                            candidates.len()
+                        );
+                        if candidates.len() < 2 {
+                            println!("only one candidate move left, no need to continue");
+                            break;
+                        }
                     }
                 }
             }
