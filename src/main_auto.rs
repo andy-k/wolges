@@ -223,7 +223,7 @@ static LENGTH_IMPORTANCES: &[f32] = &[
 ];
 
 pub fn main() -> error::Returns<()> {
-    let mut reusable_vec_for_candidate_moves = Vec::new();
+    let mut candidates = Vec::new();
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
     let game_config = &game_config::make_common_english_game_config();
@@ -417,21 +417,20 @@ pub fn main() -> error::Returns<()> {
             }
 
             println!("let's sim them");
-            struct CandidateResult {
+            struct Candidate {
+                play: movegen::Play,
                 equity: f32,
                 stats: stats::Stats,
             }
-            let mut candidates = std::collections::HashMap::new();
+            candidates.clear();
+            candidates.reserve(plays.len());
             for play in plays.drain(..) {
-                candidates.insert(
-                    play.play,
-                    CandidateResult {
-                        equity: play.equity,
-                        stats: stats::Stats::new(),
-                    },
-                );
+                candidates.push(Candidate {
+                    play: play.play,
+                    equity: play.equity,
+                    stats: stats::Stats::new(),
+                });
             }
-            assert!(plays.is_empty());
             {
                 let mut simmer_rng = rand_chacha::ChaCha20Rng::from_entropy();
                 let mut simmer_move_generator = movegen::KurniaMoveGenerator::new(game_config);
@@ -523,7 +522,7 @@ pub fn main() -> error::Returns<()> {
                     //    "bag: {}",
                     //    printable_rack(&game_config.alphabet(), &simmer_initial_game_state.bag.0)
                     //);
-                    for (play, candidate_result) in candidates.iter_mut() {
+                    for candidate in candidates.iter_mut() {
                         simmer_game_state.clone_from(&simmer_initial_game_state);
                         let mut played_out = false;
                         for ply in 0..=num_sim_plies {
@@ -534,7 +533,7 @@ pub fn main() -> error::Returns<()> {
                                 klv: &klv,
                             };
                             let next_play = if ply == 0 {
-                                &play
+                                &candidate.play
                             } else {
                                 simmer_move_generator.gen_moves_alloc(
                                     simmer_board_snapshot,
@@ -717,7 +716,7 @@ pub fn main() -> error::Returns<()> {
                                 1.0 / (1.0 + (-(sim_spread as f64) / exp_width).exp());
                             //println!("not play out: num_unseen_tiles = {}, exp_width = {}, sim_spread = {}, win_probability = {}", num_unseen_tiles, exp_width, sim_spread, win_probability);
                         }
-                        candidate_result.stats.update(
+                        candidate.stats.update(
                             sim_spread as f64
                                 + win_probability
                                     * if possible_to_play_out { 1000.0 } else { 10.0 },
@@ -734,41 +733,40 @@ pub fn main() -> error::Returns<()> {
                         let top_candidate = candidates
                             .iter()
                             .max_by(|a, b| {
-                                (a.1.stats.mean()
-                                    + ci_z_over_sqrt_n * a.1.stats.standard_deviation())
-                                .partial_cmp(
-                                    &(b.1.stats.mean()
-                                        + ci_z_over_sqrt_n * b.1.stats.standard_deviation()),
-                                )
-                                .unwrap()
+                                (a.stats.mean() + ci_z_over_sqrt_n * a.stats.standard_deviation())
+                                    .partial_cmp(
+                                        &(b.stats.mean()
+                                            + ci_z_over_sqrt_n * b.stats.standard_deviation()),
+                                    )
+                                    .unwrap()
                             })
                             .unwrap();
-                        let low_bar = top_candidate.1.stats.mean()
-                            - ci_z_over_sqrt_n * top_candidate.1.stats.standard_deviation();
+                        let low_bar = top_candidate.stats.mean()
+                            - ci_z_over_sqrt_n * top_candidate.stats.standard_deviation();
                         println!(
                             "top play after {} iters: {} {}: {} samples, {} mean, {} stddev; low bar: {}",
                             sim_iter+1,
-                            top_candidate.1.equity,
-                            top_candidate.0.fmt(board_snapshot),
-                            top_candidate.1.stats.count(),
-                            top_candidate.1.stats.mean(),
-                            top_candidate.1.stats.standard_deviation(),
+                            top_candidate.equity,
+                            top_candidate.play.fmt(board_snapshot),
+                            top_candidate.stats.count(),
+                            top_candidate.stats.mean(),
+                            top_candidate.stats.standard_deviation(),
                             low_bar,
                         );
                         // remove candidates that cannot catch up
-                        candidates.retain(|play, candidate_result| {
-                            if (candidate_result.stats.mean()
-                                + ci_z_over_sqrt_n * candidate_result.stats.standard_deviation())
+                        candidates.retain(|candidate| {
+                            if (candidate.stats.mean()
+                                + ci_z_over_sqrt_n * candidate.stats.standard_deviation())
                                 < low_bar
                             {
                                 /*
                                 println!(
                                     "disqualifying: {} {}: {} samples, {} mean, {} stddev",
-                                    candidate_result.equity,
-                                    play.fmt(board_snapshot),
-                                    candidate_result.stats.count(),
-                                    candidate_result.stats.mean(),
-                                    candidate_result.stats.standard_deviation()
+                                    candidate.equity,
+                                    candidate.play.fmt(board_snapshot),
+                                    candidate.stats.count(),
+                                    candidate.stats.mean(),
+                                    candidate.stats.standard_deviation()
                                 );
                                 */
                                 false
@@ -789,36 +787,22 @@ pub fn main() -> error::Returns<()> {
                     }
                 }
             }
-            assert!(plays.is_empty());
-            reusable_vec_for_candidate_moves.clear();
-            reusable_vec_for_candidate_moves.reserve(candidates.len());
-            for (play, candidate_result) in candidates.drain() {
-                let mean = candidate_result.stats.mean();
-                reusable_vec_for_candidate_moves.push((play, candidate_result, mean));
-            }
-            assert!(candidates.is_empty());
-            reusable_vec_for_candidate_moves.sort_unstable_by(|a, b| {
-                b.2.partial_cmp(&a.2)
+            candidates.sort_unstable_by(|a, b| {
+                b.stats
+                    .mean()
+                    .partial_cmp(&a.stats.mean())
                     .unwrap()
-                    .then_with(|| b.1.equity.partial_cmp(&a.1.equity).unwrap())
+                    .then_with(|| b.equity.partial_cmp(&a.equity).unwrap())
             });
-            for (play, candidate_result, _mean) in reusable_vec_for_candidate_moves.drain(..) {
+            for candidate in candidates.iter() {
                 println!(
                     "{} {}: {} samples, {} mean, {} stddev",
-                    candidate_result.equity,
-                    play.fmt(board_snapshot),
-                    candidate_result.stats.count(),
-                    candidate_result.stats.mean(),
-                    candidate_result.stats.standard_deviation()
+                    candidate.equity,
+                    candidate.play.fmt(board_snapshot),
+                    candidate.stats.count(),
+                    candidate.stats.mean(),
+                    candidate.stats.standard_deviation()
                 );
-                plays.push(movegen::ValuedMove {
-                    equity: candidate_result.equity,
-                    play,
-                });
-            }
-            assert!(reusable_vec_for_candidate_moves.is_empty());
-            for play in plays.iter() {
-                println!("{} {}", play.equity, play.play.fmt(board_snapshot));
             }
 
             // show that this is unaffected by sim
@@ -827,12 +811,13 @@ pub fn main() -> error::Returns<()> {
             //    printable_rack(&game_state.game_config.alphabet(), &game_state.bag.0)
             //);
 
-            let play = &plays[0]; // assume at least there's always Pass
-            println!("making top move: {}", play.play.fmt(board_snapshot));
+            let play = &candidates[0].play; // assume at least there's always Pass
+            let top_equity = &candidates[0].equity;
+            println!("making top move: {}", play.fmt(board_snapshot));
 
             // manually recount and double-check the score and equity given by movegen
             let mut recounted_score = 0;
-            match &play.play {
+            match &play {
                 movegen::Play::Exchange { .. } => {}
                 movegen::Play::Place {
                     down,
@@ -955,9 +940,9 @@ pub fn main() -> error::Returns<()> {
                     recounted_score += num_played_bonus;
                 }
             };
-            let movegen_score = match play.play {
+            let movegen_score = match play {
                 movegen::Play::Exchange { .. } => 0,
-                movegen::Play::Place { score, .. } => score,
+                movegen::Play::Place { score, .. } => *score,
             };
             println!(
                 "recounted score = {}, difference = {}",
@@ -972,7 +957,7 @@ pub fn main() -> error::Returns<()> {
                 .rack
                 .iter()
                 .for_each(|&tile| rack_tally[tile as usize] += 1);
-            match &play.play {
+            match play {
                 movegen::Play::Exchange { tiles } => {
                     tiles
                         .iter()
@@ -1040,7 +1025,7 @@ pub fn main() -> error::Returns<()> {
                 println!("after adjusting for leave: {}", recounted_equity);
                 if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
                     println!("nothing on board");
-                    match &play.play {
+                    match play {
                         movegen::Play::Exchange { .. } => {}
                         movegen::Play::Place {
                             down,
@@ -1104,7 +1089,7 @@ pub fn main() -> error::Returns<()> {
                     }
                 }
             }
-            let movegen_equity = play.equity;
+            let movegen_equity = *top_equity;
             println!(
                 "recounted equity = {}, difference = {}",
                 recounted_equity,
@@ -1112,12 +1097,12 @@ pub fn main() -> error::Returns<()> {
             );
             assert_eq!(recounted_equity, movegen_equity);
 
-            game_state.play(&mut rng, &play.play)?;
+            game_state.play(&mut rng, play)?;
 
             zero_turns += 1;
-            if match play.play {
+            if match play {
                 movegen::Play::Exchange { .. } => 0,
-                movegen::Play::Place { score, .. } => score,
+                movegen::Play::Place { score, .. } => *score,
             } != 0
             {
                 zero_turns = 0;
