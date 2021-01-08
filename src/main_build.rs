@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use super::{alphabet, bites, build, error, kwg, lexport};
+use super::{alphabet, bites, build, error, kwg, lexport, prob};
 
 struct AlphabetReader<'a> {
     supported_tiles: Box<[(u8, &'a str)]>,
@@ -432,7 +432,7 @@ pub fn main() -> error::Returns<()> {
         std::fs::write("all-twl14.kwi", v_twl14_bits)?;
     }
 
-    if false {
+    if true {
         // proof-of-concept
         let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("allgdw.kwg")?);
         let word_counts = kwg.count_dawg_words_alloc();
@@ -445,6 +445,8 @@ pub fn main() -> error::Returns<()> {
         let v_twl14_bits = std::fs::read("all-twl14.kwi")?;
         let mut out_vec = Vec::new();
         let dawg_root = kwg[0].arc_index();
+        let english_alphabet = alphabet::make_english_alphabet();
+        let mut word_prob = prob::WordProbability::new(&english_alphabet);
         for i in 0..word_counts[dawg_root as usize] {
             out_vec.clear();
             kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
@@ -469,6 +471,7 @@ pub fn main() -> error::Returns<()> {
             if v_twl14_bits[byte_index] & bit != 0 {
                 print!(" twl14");
             }
+            print!(" {}", word_prob.count_ways(&out_vec));
             println!();
             assert_eq!(i, j);
         }

@@ -19,10 +19,11 @@ mod main_json;
 mod main_lex;
 mod matrix;
 mod movegen;
+mod prob;
 mod stats;
 
 fn main() -> error::Returns<()> {
-    if false {
+    if true {
         main_build::main()?;
         return Ok(());
     }
