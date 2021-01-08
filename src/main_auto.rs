@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use super::{alphabet, bag, display, error, game_config, klv, kwg, movegen, stats};
+use super::{alphabet, bag, display, error, game_config, klv, kwg, movegen, prob, stats};
 use rand::prelude::*;
 
 fn use_tiles<II: IntoIterator<Item = u8>>(
@@ -173,6 +173,50 @@ impl<'a> GameState<'a> {
     }
 }
 
+fn get_max_probs_by_len<'a>(
+    word_prob: &'a mut prob::WordProbability<'a>,
+    g: &'a kwg::Kwg,
+) -> Box<[u64]> {
+    let mut v = Vec::new();
+    struct Env<'a, 'b> {
+        g: &'a kwg::Kwg,
+        s: &'a mut Vec<u8>,
+        v: &'a mut Vec<u64>,
+        word_prob: &'b mut prob::WordProbability<'b>,
+    }
+    fn iter(env: &mut Env, mut p: i32) {
+        let l = env.s.len() + 1;
+        loop {
+            let t = env.g[p].tile();
+            env.s.push(t);
+            if env.g[p].accepts() {
+                while env.v.len() <= l {
+                    env.v.push(0);
+                }
+                env.v[l] = std::cmp::max(env.v[l], env.word_prob.count_ways(env.s));
+            }
+            if env.g[p].arc_index() != 0 {
+                iter(env, env.g[p].arc_index());
+            }
+            env.s.pop();
+            if env.g[p].is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+    iter(
+        &mut Env {
+            g: &g,
+            s: &mut Vec::new(),
+            v: &mut v,
+            word_prob,
+        },
+        g[0].arc_index(),
+    );
+    v.into_boxed_slice()
+}
+
 pub fn main() -> error::Returns<()> {
     let mut reusable_vec_for_candidate_moves = Vec::new();
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
@@ -184,7 +228,12 @@ pub fn main() -> error::Returns<()> {
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
     let mut word_check_buf = Vec::new();
 
-    let word_is_ok = |word: &[u8]| true;
+    let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
+    let max_prob_by_len = get_max_probs_by_len(&mut word_prob, &kwg);
+    println!("max prob: {:?}", max_prob_by_len);
+
+    // why is borrow checker disallowing reusing the earlier variable?
+    let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
 
     loop {
         let mut game_state = GameState::new(game_config);
@@ -219,6 +268,26 @@ pub fn main() -> error::Returns<()> {
             }
             println!("turn: player {}", game_state.turn + 1);
 
+            let bot_level = if game_state.turn == 0 { 6 } else { 3 };
+            let mut tilt_factor = rng.gen_range(0.5 - bot_level as f64 * 0.1, 1.0);
+            if tilt_factor < 0.0 {
+                tilt_factor = 0.0;
+            }
+            println!("effective tilt factor for this turn: {}", tilt_factor);
+            let mut word_is_ok = |word: &[u8]| {
+                let this_wp = word_prob.count_ways(word);
+                let max_wp = max_prob_by_len[word.len()];
+                let handwavy = 1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2);
+                if handwavy >= tilt_factor {
+                    return true;
+                }
+                println!(
+                    "Rejecting word {:?}, handwavy={} (this={} over max={}), tilt={}",
+                    word, handwavy, this_wp, max_wp, tilt_factor
+                );
+                false
+            };
+
             println!(
                 "pool {:2}: {}",
                 game_state.bag.0.len(),
@@ -240,8 +309,14 @@ pub fn main() -> error::Returns<()> {
             };
 
             let mut validate_word_subset =
-                |down: bool, lane: i8, idx: i8, word: &[u8], _score: i16, _rack_tally: &[u8]| {
-                    let board_layout = game_config.board_layout();
+                |board_snapshot: &movegen::BoardSnapshot,
+                 down: bool,
+                 lane: i8,
+                 idx: i8,
+                 word: &[u8],
+                 _score: i16,
+                 _rack_tally: &[u8]| {
+                    let board_layout = board_snapshot.game_config.board_layout();
                     let dim = board_layout.dim();
                     let strider = if down {
                         dim.down(lane)
@@ -250,13 +325,12 @@ pub fn main() -> error::Returns<()> {
                     };
                     word_check_buf.clear();
                     for (i, &tile) in (idx..).zip(word.iter()) {
-                        let strider_at_i = strider.at(i);
                         let placed_tile = if tile != 0 {
                             tile
                         } else {
-                            board_snapshot.board_tiles[strider_at_i]
+                            board_snapshot.board_tiles[strider.at(i)]
                         };
-                        word_check_buf.push(placed_tile);
+                        word_check_buf.push(placed_tile & 0x7f);
                     }
                     if !word_is_ok(&word_check_buf) {
                         return false;
@@ -284,16 +358,15 @@ pub fn main() -> error::Returns<()> {
                             }
                             word_check_buf.clear();
                             for j in j..perpendicular_strider_len {
-                                let perpendicular_strider_at_j = perpendicular_strider.at(j);
                                 let placed_tile = if j == lane {
                                     tile
                                 } else {
-                                    board_snapshot.board_tiles[perpendicular_strider_at_j]
+                                    board_snapshot.board_tiles[perpendicular_strider.at(j)]
                                 };
                                 if placed_tile == 0 {
                                     break;
                                 }
-                                word_check_buf.push(placed_tile);
+                                word_check_buf.push(placed_tile & 0x7f);
                             }
                             if !word_is_ok(&word_check_buf) {
                                 return false;
@@ -306,7 +379,9 @@ pub fn main() -> error::Returns<()> {
                 board_snapshot,
                 &game_state.current_player().rack,
                 15,
-                &mut validate_word_subset,
+                |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+                    validate_word_subset(&board_snapshot, down, lane, idx, word, score, rack_tally)
+                },
             );
             let plays = &mut move_generator.plays;
 
@@ -431,7 +506,22 @@ pub fn main() -> error::Returns<()> {
                                     simmer_board_snapshot,
                                     &simmer_game_state.current_player().rack,
                                     1,
-                                    &mut validate_word_subset,
+                                    |down: bool,
+                                     lane: i8,
+                                     idx: i8,
+                                     word: &[u8],
+                                     score: i16,
+                                     rack_tally: &[u8]| {
+                                        validate_word_subset(
+                                            &simmer_board_snapshot,
+                                            down,
+                                            lane,
+                                            idx,
+                                            word,
+                                            score,
+                                            rack_tally,
+                                        )
+                                    },
                                 );
                                 &simmer_move_generator.plays[0].play
                             };
