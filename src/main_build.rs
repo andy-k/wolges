@@ -143,6 +143,7 @@ fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::
     read_english_machine_words_or_leaves('A', giant_string)
 }
 
+use std::convert::TryInto;
 use std::str::FromStr;
 
 pub fn main() -> error::Returns<()> {
@@ -430,6 +431,61 @@ pub fn main() -> error::Returns<()> {
         std::fs::write("all-nwl18.kwi", v_nwl18_bits)?;
         std::fs::write("all-nwl20.kwi", v_nwl20_bits)?;
         std::fs::write("all-twl14.kwi", v_twl14_bits)?;
+
+        let english_alphabet = alphabet::make_english_alphabet();
+        let mut word_prob = prob::WordProbability::new(&english_alphabet);
+        let mut max_len = 0;
+        let mut tmp_vec = Vec::new();
+        let for_sorting = v
+            .iter()
+            .map(|word| {
+                tmp_vec.clear();
+                tmp_vec.extend_from_slice(word);
+                tmp_vec.sort_unstable();
+                let alphagram: bites::Bites = tmp_vec[..].into();
+                max_len = std::cmp::max(max_len, v.len());
+                (alphagram, word_prob.count_ways(word))
+            })
+            .collect::<Box<_>>();
+        let mut iter_indexes = (0u32..v.len() as u32).collect::<Box<_>>();
+        // sort by probability descending, then by alphagram ascending,
+        // then by raw index (v is already sorted)
+        iter_indexes.sort_unstable_by(|&a_idx, &b_idx| {
+            for_sorting[b_idx as usize]
+                .1
+                .cmp(&for_sorting[a_idx as usize].1)
+                .then_with(|| {
+                    for_sorting[a_idx as usize]
+                        .0
+                        .cmp(&for_sorting[b_idx as usize].0)
+                        .then_with(|| a_idx.cmp(&b_idx))
+                })
+        });
+        // assign probability indexes by length
+        // 32-bit may be overkill, no length has more than 64k words yet
+        let mut assigned_indexes = vec![0u32; max_len + 1];
+        let mut output_probability_indexes = vec![0u32; v.len()];
+        for &idx in iter_indexes.iter() {
+            let len = v[idx as usize].len();
+            assigned_indexes[len] += 1;
+            output_probability_indexes[idx as usize] = assigned_indexes[len];
+            //println!(
+            //    "[{}] {:?} (len={} alpha={:?} wp={}) index={}",
+            //    idx,
+            //    v[idx as usize],
+            //    len,
+            //    for_sorting[idx as usize].0,
+            //    for_sorting[idx as usize].1,
+            //    output_probability_indexes[idx as usize]
+            //);
+        }
+        let mut v_probability_indexes = vec![0u8; output_probability_indexes.len() * 4];
+        let mut w = 0;
+        for val in output_probability_indexes {
+            v_probability_indexes[w..w + 4].copy_from_slice(&val.to_le_bytes());
+            w += 4;
+        }
+        std::fs::write("all-probidx.kwp", v_probability_indexes)?;
     }
 
     if true {
@@ -443,6 +499,7 @@ pub fn main() -> error::Returns<()> {
         let v_nwl18_bits = std::fs::read("all-nwl18.kwi")?;
         let v_nwl20_bits = std::fs::read("all-nwl20.kwi")?;
         let v_twl14_bits = std::fs::read("all-twl14.kwi")?;
+        let v_probability_indexes = std::fs::read("all-probidx.kwp")?;
         let mut out_vec = Vec::new();
         let dawg_root = kwg[0].arc_index();
         let english_alphabet = alphabet::make_english_alphabet();
@@ -471,7 +528,15 @@ pub fn main() -> error::Returns<()> {
             if v_twl14_bits[byte_index] & bit != 0 {
                 print!(" twl14");
             }
-            print!(" {}", word_prob.count_ways(&out_vec));
+            print!(" wp={}", word_prob.count_ways(&out_vec));
+            print!(
+                " pi={}",
+                u32::from_le_bytes(
+                    v_probability_indexes[i as usize * 4..i as usize * 4 + 4]
+                        .try_into()
+                        .unwrap()
+                )
+            );
             println!();
             assert_eq!(i, j);
         }

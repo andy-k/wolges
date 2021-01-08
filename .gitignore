@@ -2,6 +2,7 @@
 *.kwg
 *.klv
 *.kwi
+*.kwp
 *.dawg
 *.gaddag
 leaves.csv
