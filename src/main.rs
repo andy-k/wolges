@@ -23,7 +23,7 @@ mod prob;
 mod stats;
 
 fn main() -> error::Returns<()> {
-    if true {
+    if false {
         main_build::main()?;
         return Ok(());
     }

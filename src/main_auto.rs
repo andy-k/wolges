@@ -236,7 +236,17 @@ pub fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            move_generator.gen_moves_alloc(board_snapshot, &game_state.current_player().rack, 15);
+            move_generator.gen_moves_alloc(
+                board_snapshot,
+                &game_state.current_player().rack,
+                15,
+                |_down: bool,
+                 _lane: i8,
+                 _idx: i8,
+                 _word: &[u8],
+                 _score: i16,
+                 _rack_tally: &[u8]| { true },
+            );
             let plays = &mut move_generator.plays;
 
             println!("found {} moves", plays.len());
@@ -360,6 +370,14 @@ pub fn main() -> error::Returns<()> {
                                     simmer_board_snapshot,
                                     &simmer_game_state.current_player().rack,
                                     1,
+                                    |_down: bool,
+                                     _lane: i8,
+                                     _idx: i8,
+                                     _word: &[u8],
+                                     _score: i16,
+                                     _rack_tally: &[u8]| {
+                                        true
+                                    },
                                 );
                                 &simmer_move_generator.plays[0].play
                             };

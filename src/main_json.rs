@@ -179,7 +179,12 @@ pub fn main() -> error::Returns<()> {
     };
     display::print_board(&alphabet, &game_config.board_layout(), &board_tiles);
 
-    move_generator.gen_moves_alloc(board_snapshot, &question.rack, question.max_gen);
+    move_generator.gen_moves_alloc(
+        board_snapshot,
+        &question.rack,
+        question.max_gen,
+        |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i16, _rack_tally: &[u8]| true,
+    );
     let plays = &move_generator.plays;
     println!("found {} moves", plays.len());
     for play in plays.iter() {

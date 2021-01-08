@@ -1645,11 +1645,15 @@ impl KurniaMoveGenerator {
     }
 
     // this does not alloc except for growing the results and exchange_buffer
-    pub fn gen_moves_alloc<'a>(
+    pub fn gen_moves_alloc<
+        'a,
+        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i16, &[u8]) -> bool,
+    >(
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a>,
         rack: &'a [u8],
         max_gen: usize,
+        mut place_move_predicate: PlaceMovePredicate,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
         let board_layout = board_snapshot.game_config.board_layout();
@@ -1706,32 +1710,34 @@ impl KurniaMoveGenerator {
 
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-                let leave_value = leave_value_from_tally(rack_tally);
-                let other_adjustments = if num_tiles_on_board == 0 {
-                    (idx..)
-                        .zip(word)
-                        .filter(|(i, &tile)| {
-                            tile != 0
-                                && alphabet.is_vowel(tile)
-                                && if down {
-                                    board_layout.danger_star_down(*i)
-                                } else {
-                                    board_layout.danger_star_across(*i)
-                                }
-                        })
-                        .count() as f32
-                        * -0.7
-                } else {
-                    0.0
-                };
-                let equity = score as f32 + leave_value + other_adjustments;
-                push_move(&found_moves, max_gen, equity, || Play::Place {
-                    down,
-                    lane,
-                    idx,
-                    word: word.into(),
-                    score,
-                });
+                if place_move_predicate(down, lane, idx, word, score, rack_tally) {
+                    let leave_value = leave_value_from_tally(rack_tally);
+                    let other_adjustments = if num_tiles_on_board == 0 {
+                        (idx..)
+                            .zip(word)
+                            .filter(|(i, &tile)| {
+                                tile != 0
+                                    && alphabet.is_vowel(tile)
+                                    && if down {
+                                        board_layout.danger_star_down(*i)
+                                    } else {
+                                        board_layout.danger_star_across(*i)
+                                    }
+                            })
+                            .count() as f32
+                            * -0.7
+                    } else {
+                        0.0
+                    };
+                    let equity = score as f32 + leave_value + other_adjustments;
+                    push_move(&found_moves, max_gen, equity, || Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word: word.into(),
+                        score,
+                    });
+                }
             };
 
         let found_exchange_move = |rack_tally: &[u8], exchanged_tiles: &[u8]| {
