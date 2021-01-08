@@ -182,6 +182,9 @@ pub fn main() -> error::Returns<()> {
     //let game_config = &game_config::make_polish_game_config();
     let _ = &game_config::make_polish_game_config();
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+    let mut word_check_buf = Vec::new();
+
+    let word_is_ok = |word: &[u8]| true;
 
     loop {
         let mut game_state = GameState::new(game_config);
@@ -236,16 +239,74 @@ pub fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
+            let mut validate_word_subset =
+                |down: bool, lane: i8, idx: i8, word: &[u8], _score: i16, _rack_tally: &[u8]| {
+                    let board_layout = game_config.board_layout();
+                    let dim = board_layout.dim();
+                    let strider = if down {
+                        dim.down(lane)
+                    } else {
+                        dim.across(lane)
+                    };
+                    word_check_buf.clear();
+                    for (i, &tile) in (idx..).zip(word.iter()) {
+                        let strider_at_i = strider.at(i);
+                        let placed_tile = if tile != 0 {
+                            tile
+                        } else {
+                            board_snapshot.board_tiles[strider_at_i]
+                        };
+                        word_check_buf.push(placed_tile);
+                    }
+                    if !word_is_ok(&word_check_buf) {
+                        return false;
+                    }
+                    for (i, &tile) in (idx..).zip(word.iter()) {
+                        if tile != 0 {
+                            let perpendicular_strider =
+                                if down { dim.across(i) } else { dim.down(i) };
+                            let mut j = lane;
+                            while j > 0
+                                && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
+                            {
+                                j -= 1;
+                            }
+                            let perpendicular_strider_len = perpendicular_strider.len();
+                            if j == lane
+                                && if j + 1 < perpendicular_strider_len {
+                                    board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
+                                } else {
+                                    true
+                                }
+                            {
+                                // no perpendicular tile
+                                continue;
+                            }
+                            word_check_buf.clear();
+                            for j in j..perpendicular_strider_len {
+                                let perpendicular_strider_at_j = perpendicular_strider.at(j);
+                                let placed_tile = if j == lane {
+                                    tile
+                                } else {
+                                    board_snapshot.board_tiles[perpendicular_strider_at_j]
+                                };
+                                if placed_tile == 0 {
+                                    break;
+                                }
+                                word_check_buf.push(placed_tile);
+                            }
+                            if !word_is_ok(&word_check_buf) {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                };
             move_generator.gen_moves_alloc(
                 board_snapshot,
                 &game_state.current_player().rack,
                 15,
-                |_down: bool,
-                 _lane: i8,
-                 _idx: i8,
-                 _word: &[u8],
-                 _score: i16,
-                 _rack_tally: &[u8]| { true },
+                &mut validate_word_subset,
             );
             let plays = &mut move_generator.plays;
 
@@ -290,7 +351,7 @@ pub fn main() -> error::Returns<()> {
                     vec![0.0f32; simmer_initial_game_state.players.len()];
                 let mut simmer_game_state = simmer_initial_game_state.clone(); // will be overwritten
                 let mut simmer_rack_tally = rack_tally.clone(); // will be overwritten
-                let num_sim_iters = 1000;
+                let num_sim_iters = 10;
                 let num_sim_plies = 2;
                 let num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
                 let t0 = std::time::Instant::now();
@@ -370,14 +431,7 @@ pub fn main() -> error::Returns<()> {
                                     simmer_board_snapshot,
                                     &simmer_game_state.current_player().rack,
                                     1,
-                                    |_down: bool,
-                                     _lane: i8,
-                                     _idx: i8,
-                                     _word: &[u8],
-                                     _score: i16,
-                                     _rack_tally: &[u8]| {
-                                        true
-                                    },
+                                    &mut validate_word_subset,
                                 );
                                 &simmer_move_generator.plays[0].play
                             };
@@ -638,7 +692,7 @@ pub fn main() -> error::Returns<()> {
                             print!("perpendicular word: (down={} lane={} idx={}) ", !down, i, j);
                             let mut word_multiplier = 1;
                             let mut word_score = 0i16;
-                            for j in j..perpendicular_strider.len() {
+                            for j in j..perpendicular_strider_len {
                                 let perpendicular_strider_at_j = perpendicular_strider.at(j);
                                 let tile_multiplier;
                                 let premium = premiums[perpendicular_strider_at_j];
