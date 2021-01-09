@@ -41,6 +41,7 @@ pub struct GameState<'a> {
     pub board_tiles: Box<[u8]>,
     pub bag: bag::Bag,
     pub turn: u8,
+    pub zero_turns: u16,
 }
 
 impl<'a> Clone for GameState<'a> {
@@ -52,6 +53,7 @@ impl<'a> Clone for GameState<'a> {
             board_tiles: self.board_tiles.clone(),
             bag: self.bag.clone(),
             turn: self.turn,
+            zero_turns: self.zero_turns,
         }
     }
 
@@ -62,6 +64,7 @@ impl<'a> Clone for GameState<'a> {
         self.board_tiles.clone_from(&source.board_tiles);
         self.bag.clone_from(&source.bag);
         self.turn.clone_from(&source.turn);
+        self.zero_turns.clone_from(&source.zero_turns);
     }
 }
 
@@ -82,6 +85,7 @@ impl<'a> GameState<'a> {
             board_tiles: vec![0u8; (dim.rows as usize) * (dim.cols as usize)].into_boxed_slice(),
             bag: bag::Bag::new(&alphabet),
             turn: 0,
+            zero_turns: 0,
         }
     }
 
@@ -99,6 +103,7 @@ impl<'a> GameState<'a> {
                     self.game_config.rack_size() as usize,
                 );
                 self.bag.put_back(&mut rng, &tiles);
+                self.zero_turns += 1;
             }
             movegen::Play::Place {
                 down,
@@ -136,6 +141,7 @@ impl<'a> GameState<'a> {
                     &mut current_player.rack,
                     self.game_config.rack_size() as usize,
                 );
+                self.zero_turns = 0;
             }
         }
         Ok(())
@@ -146,4 +152,43 @@ impl<'a> GameState<'a> {
         self.turn += 1;
         self.turn -= num_players & -((self.turn >= num_players) as i8) as u8;
     }
+
+    pub fn check_game_ended(&self, final_scores: &mut [i16]) -> CheckGameEnded {
+        if self.current_player().rack.is_empty() {
+            for i in 0..self.players.len() {
+                final_scores[i] = self.players[i].score;
+            }
+            if self.players.len() == 2 {
+                final_scores[self.turn as usize] += 2 * self
+                    .game_config
+                    .alphabet()
+                    .rack_score(&self.players[(1 - self.turn) as usize].rack);
+            } else {
+                let mut earned = 0;
+                for i in 0..self.players.len() {
+                    let player = &self.players[i];
+                    let this_rack = self.game_config.alphabet().rack_score(&player.rack);
+                    final_scores[i] -= this_rack;
+                    earned += this_rack;
+                }
+                final_scores[self.turn as usize] += earned;
+            }
+            CheckGameEnded::PlayedOut
+        } else if self.zero_turns >= self.game_config.num_players() as u16 * 3 {
+            for i in 0..self.players.len() {
+                let player = &self.players[i];
+                final_scores[i] =
+                    player.score - self.game_config.alphabet().rack_score(&player.rack);
+            }
+            CheckGameEnded::ZeroScores
+        } else {
+            CheckGameEnded::NotEnded
+        }
+    }
+}
+
+pub enum CheckGameEnded {
+    NotEnded,
+    PlayedOut,
+    ZeroScores,
 }
