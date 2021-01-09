@@ -3,103 +3,25 @@
 use super::{display, error, game_config, game_state, klv, kwg, movegen, prob, stats};
 use rand::prelude::*;
 
-// need more realistic numbers, and should differ by bot level
-static LENGTH_IMPORTANCES: &[f32] = &[
-    0.0, 0.0, 2.0, 1.5, 1.0, 0.75, 0.5, 1.0, 1.0, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1, 0.1,
-];
-
-struct Tilt<'a> {
-    word_prob: Box<prob::WordProbability<'a>>,
-    max_prob_by_len: Box<[u64]>,
-    length_importances: &'a [f32],
-    tilt_factor: f32,
-    leave_scale: f32,
-    bot_level: i8,
+struct LimitedVocabChecker {
     word_check_buf: Vec<u8>,
 }
 
-impl<'a> Tilt<'a> {
-    fn new(
-        game_config: &'a game_config::GameConfig<'a>,
-        kwg: &'a kwg::Kwg,
-        length_importances: &'a [f32],
-        bot_level: i8,
-    ) -> Self {
-        let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
-        let max_prob_by_len = word_prob.get_max_probs_by_len(&kwg);
+impl LimitedVocabChecker {
+    fn new() -> Self {
         Self {
-            word_prob: Box::new(word_prob),
-            max_prob_by_len,
-            length_importances,
-            tilt_factor: 0.0,
-            leave_scale: 1.0,
-            bot_level,
             word_check_buf: Vec::new(),
         }
     }
 
-    // to remove when rust 1.50 stabilizes x.clamp(lo, hi)
-    #[inline(always)]
-    fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
-        if x < lo {
-            lo
-        } else if x > hi {
-            hi
-        } else {
-            x
-        }
-    }
-
-    #[inline(always)]
-    fn tilt_to(&mut self, new_tilt_factor: f32) {
-        // 0.0 = untilted (can see all valid moves)
-        // 1.0 = tilted (can see no valid moves)
-        self.tilt_factor = Self::clamp(new_tilt_factor, 0.0, 1.0);
-        self.leave_scale = Self::clamp(
-            self.bot_level as f32 * 0.1 + (1.0 - self.tilt_factor),
-            0.0,
-            1.0,
-        );
-    }
-
-    fn tilt_by_rng(&mut self, rng: &mut dyn RngCore) {
-        self.tilt_to(rng.gen_range(0.5 - self.bot_level as f32 * 0.1, 1.0));
-    }
-
-    fn word_is_ok(&mut self) -> bool {
-        if self.tilt_factor <= 0.0 {
-            true
-        } else if self.tilt_factor >= 1.0 {
-            false
-        } else {
-            let word_len = self.word_check_buf.len();
-            let this_wp = self.word_prob.count_ways(&self.word_check_buf);
-            let max_wp = self.max_prob_by_len[word_len];
-            let handwavy = self.length_importances[word_len]
-                * (1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2)) as f32;
-            if handwavy >= self.tilt_factor {
-                true
-            } else {
-                if false {
-                    println!(
-                        "Rejecting word {:?}, handwavy={} (this={} over max={}), tilt={}",
-                        self.word_check_buf, handwavy, this_wp, max_wp, self.tilt_factor
-                    );
-                }
-                false
-            }
-        }
-    }
-
-    fn validate_word_subset(
+    fn words_placed_are_ok<WordIsOk: FnMut(&[u8]) -> bool>(
         &mut self,
         board_snapshot: &movegen::BoardSnapshot,
         down: bool,
         lane: i8,
         idx: i8,
         word: &[u8],
-        _score: i16,
-        _rack_tally: &[u8],
+        mut word_is_ok: WordIsOk,
     ) -> bool {
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
@@ -117,7 +39,7 @@ impl<'a> Tilt<'a> {
             };
             self.word_check_buf.push(placed_tile & 0x7f);
         }
-        if !self.word_is_ok() {
+        if !word_is_ok(&self.word_check_buf) {
             return false;
         }
         for (i, &tile) in (idx..).zip(word.iter()) {
@@ -150,31 +72,130 @@ impl<'a> Tilt<'a> {
                     }
                     self.word_check_buf.push(placed_tile & 0x7f);
                 }
-                if !self.word_is_ok() {
+                if !word_is_ok(&self.word_check_buf) {
                     return false;
                 }
             }
         }
         true
     }
+}
 
-    fn gen_moves<'b>(
+// need more realistic numbers, and should differ by bot level
+static LENGTH_IMPORTANCES: &[f32] = &[
+    0.0, 0.0, 2.0, 1.5, 1.0, 0.75, 0.5, 1.0, 1.0, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1, 0.1,
+];
+
+struct Tilt<'a> {
+    word_prob: Box<prob::WordProbability<'a>>,
+    max_prob_by_len: Box<[u64]>,
+    length_importances: &'a [f32],
+    tilt_factor: f32,
+    leave_scale: f32,
+    bot_level: i8,
+    limited_vocab_checker: LimitedVocabChecker,
+}
+
+impl<'a> Tilt<'a> {
+    fn new(
+        game_config: &'a game_config::GameConfig<'a>,
+        kwg: &'a kwg::Kwg,
+        length_importances: &'a [f32],
+        bot_level: i8,
+    ) -> Self {
+        let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
+        let max_prob_by_len = word_prob.get_max_probs_by_len(&kwg);
+        Self {
+            word_prob: Box::new(word_prob),
+            max_prob_by_len,
+            length_importances,
+            tilt_factor: 0.0,
+            leave_scale: 1.0,
+            bot_level,
+            limited_vocab_checker: LimitedVocabChecker::new(),
+        }
+    }
+
+    // to remove when rust 1.50 stabilizes x.clamp(lo, hi)
+    #[inline(always)]
+    fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
+        if x < lo {
+            lo
+        } else if x > hi {
+            hi
+        } else {
+            x
+        }
+    }
+
+    #[inline(always)]
+    fn tilt_to(&mut self, new_tilt_factor: f32) {
+        // 0.0 = untilted (can see all valid moves)
+        // 1.0 = tilted (can see no valid moves)
+        self.tilt_factor = Self::clamp(new_tilt_factor, 0.0, 1.0);
+        self.leave_scale = Self::clamp(
+            self.bot_level as f32 * 0.1 + (1.0 - self.tilt_factor),
+            0.0,
+            1.0,
+        );
+    }
+
+    fn tilt_by_rng(&mut self, rng: &mut dyn RngCore) {
+        self.tilt_to(rng.gen_range(0.5 - self.bot_level as f32 * 0.1, 1.0));
+    }
+
+    fn word_is_ok(&mut self, word: &[u8]) -> bool {
+        if self.tilt_factor <= 0.0 {
+            true
+        } else if self.tilt_factor >= 1.0 {
+            false
+        } else {
+            let word_len = word.len();
+            let this_wp = self.word_prob.count_ways(word);
+            let max_wp = self.max_prob_by_len[word_len];
+            let handwavy = self.length_importances[word_len]
+                * (1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2)) as f32;
+            if handwavy >= self.tilt_factor {
+                true
+            } else {
+                if false {
+                    println!(
+                        "Rejecting word {:?}, handwavy={} (this={} over max={}), tilt={}",
+                        word, handwavy, this_wp, max_wp, self.tilt_factor
+                    );
+                }
+                false
+            }
+        }
+    }
+
+    fn gen_moves(
         &mut self,
         move_generator: &mut movegen::KurniaMoveGenerator,
-        board_snapshot: &'b movegen::BoardSnapshot<'b>,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
         rack: &[u8],
         max_gen: usize,
     ) {
         let leave_scale = self.leave_scale;
+        let mut limited_vocab_checker =
+            std::mem::replace(&mut self.limited_vocab_checker, LimitedVocabChecker::new());
         move_generator.gen_moves_alloc(
             board_snapshot,
             rack,
             max_gen,
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-                self.validate_word_subset(&board_snapshot, down, lane, idx, word, score, rack_tally)
+            |down: bool, lane: i8, idx: i8, word: &[u8], _score: i16, _rack_tally: &[u8]| {
+                limited_vocab_checker.words_placed_are_ok(
+                    board_snapshot,
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    |word: &[u8]| self.word_is_ok(word),
+                )
             },
             |leave_value: f32| leave_scale * leave_value,
-        )
+        );
+        self.limited_vocab_checker = limited_vocab_checker;
     }
 }
 
