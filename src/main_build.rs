@@ -101,7 +101,7 @@ fn read_english_machine_words_or_leaves(
         // The output must be 1-based because 0 has special meaning.
         // It should also not be too high to fit in a u64 cross-set.
         for c in s.chars() {
-            if c >= 'A' && c <= 'Z' {
+            if ('A'..='Z').contains(&c) {
                 v.push((c as u8) & 0x3f);
             } else if c == blank {
                 // Test this after the letters. Pass a letter to disable.

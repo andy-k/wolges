@@ -1792,8 +1792,8 @@ fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
         rack_tally: &'a mut [u8],
         exchange_buffer: &'a mut Vec<u8>,
     }
-    fn generate_exchanges<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
-        env: &mut ExchangeEnv<'a, FoundExchangeMove>,
+    fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], &[u8])>(
+        env: &mut ExchangeEnv<FoundExchangeMove>,
         mut idx: u8,
     ) {
         let rack_tally_len = env.rack_tally.len();
