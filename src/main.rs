@@ -19,6 +19,7 @@ mod main_build;
 mod main_json;
 mod main_lex;
 mod matrix;
+mod move_filter;
 mod movegen;
 mod prob;
 mod stats;
