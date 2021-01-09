@@ -89,6 +89,29 @@ impl<'a> GameState<'a> {
         }
     }
 
+    fn reset(&mut self) {
+        for player in self.players.iter_mut() {
+            player.score = 0;
+            self.bag.0.extend_from_slice(&player.rack);
+            player.rack.clear();
+        }
+        for &tile in self.board_tiles.iter().filter(|&&tile| tile != 0) {
+            self.bag.0.push(tile);
+        }
+        self.board_tiles.iter_mut().for_each(|m| *m = 0);
+        self.turn = 0;
+        self.zero_turns = 0;
+    }
+
+    pub fn reset_and_draw_tiles(&mut self, mut rng: &mut dyn RngCore) {
+        self.reset();
+        self.bag.shuffle(&mut rng);
+        for player in self.players.iter_mut() {
+            self.bag
+                .replenish(&mut player.rack, self.game_config.rack_size() as usize);
+        }
+    }
+
     pub fn current_player(&self) -> &GamePlayer {
         &self.players[self.turn as usize]
     }
@@ -155,8 +178,8 @@ impl<'a> GameState<'a> {
 
     pub fn check_game_ended(&self, final_scores: &mut [i16]) -> CheckGameEnded {
         if self.current_player().rack.is_empty() {
-            for i in 0..self.players.len() {
-                final_scores[i] = self.players[i].score;
+            for (i, player) in self.players.iter().enumerate() {
+                final_scores[i] = player.score;
             }
             if self.players.len() == 2 {
                 final_scores[self.turn as usize] += 2 * self
@@ -165,8 +188,7 @@ impl<'a> GameState<'a> {
                     .rack_score(&self.players[(1 - self.turn) as usize].rack);
             } else {
                 let mut earned = 0;
-                for i in 0..self.players.len() {
-                    let player = &self.players[i];
+                for (i, player) in self.players.iter().enumerate() {
                     let this_rack = self.game_config.alphabet().rack_score(&player.rack);
                     final_scores[i] -= this_rack;
                     earned += this_rack;
@@ -175,8 +197,7 @@ impl<'a> GameState<'a> {
             }
             CheckGameEnded::PlayedOut
         } else if self.zero_turns >= self.game_config.num_players() as u16 * 3 {
-            for i in 0..self.players.len() {
-                let player = &self.players[i];
+            for (i, player) in self.players.iter().enumerate() {
                 final_scores[i] =
                     player.score - self.game_config.alphabet().rack_score(&player.rack);
             }

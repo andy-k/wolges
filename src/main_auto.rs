@@ -21,15 +21,7 @@ pub fn main() -> error::Returns<()> {
     loop {
         let mut game_state = game_state::GameState::new(game_config);
         let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
-
-        game_state.bag.shuffle(&mut rng);
-
-        for player in game_state.players.iter_mut() {
-            game_state.bag.replenish(
-                &mut player.rack,
-                game_state.game_config.rack_size() as usize,
-            );
-        }
+        game_state.reset_and_draw_tiles(&mut rng);
 
         let mut final_scores = vec![0; game_state.players.len()];
 
