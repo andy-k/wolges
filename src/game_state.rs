@@ -89,6 +89,15 @@ impl<'a> GameState<'a> {
         }
     }
 
+    pub fn clone_transient_stuffs_from(&mut self, source: &GameState) {
+        // does not clone game_config
+        self.players.clone_from(&source.players);
+        self.board_tiles.clone_from(&source.board_tiles);
+        self.bag.clone_from(&source.bag);
+        self.turn.clone_from(&source.turn);
+        self.zero_turns.clone_from(&source.zero_turns);
+    }
+
     fn reset(&mut self) {
         for player in self.players.iter_mut() {
             player.score = 0;

@@ -14,6 +14,7 @@ impl LimitedVocabChecker {
         }
     }
 
+    #[inline(always)]
     fn words_placed_are_ok<WordIsOk: FnMut(&[u8]) -> bool>(
         &mut self,
         board_snapshot: &movegen::BoardSnapshot,
@@ -144,10 +145,12 @@ impl<'a> Tilt<'a> {
         );
     }
 
+    #[inline(always)]
     pub fn tilt_by_rng(&mut self, rng: &mut dyn RngCore) {
         self.tilt_to(rng.gen_range(0.5 - self.bot_level as f32 * 0.1, 1.0));
     }
 
+    #[inline(always)]
     fn word_is_ok(&mut self, word: &[u8]) -> bool {
         if self.tilt_factor <= 0.0 {
             true
@@ -180,6 +183,7 @@ pub enum GenMoves<'a> {
 }
 
 impl GenMoves<'_> {
+    #[inline(always)]
     pub fn gen_moves(
         &mut self,
         move_generator: &mut movegen::KurniaMoveGenerator,
@@ -189,18 +193,7 @@ impl GenMoves<'_> {
     ) {
         match self {
             Self::Unfiltered => {
-                move_generator.gen_moves_alloc(
-                    board_snapshot,
-                    rack,
-                    max_gen,
-                    |_down: bool,
-                     _lane: i8,
-                     _idx: i8,
-                     _word: &[u8],
-                     _score: i16,
-                     _rack_tally: &[u8]| true,
-                    |leave_value: f32| leave_value,
-                );
+                move_generator.gen_moves_unfiltered(board_snapshot, rack, max_gen);
             }
             Self::Tilt(tilt) => {
                 let leave_scale = tilt.leave_scale;

@@ -3,8 +3,310 @@
 use super::{display, error, game_config, game_state, klv, kwg, move_filter, movegen, stats};
 use rand::prelude::*;
 
+fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen::Play) {
+    rack_tally.iter_mut().for_each(|m| *m = 0);
+    rack.iter().for_each(|&tile| rack_tally[tile as usize] += 1);
+    match &play {
+        movegen::Play::Exchange { tiles } => {
+            tiles
+                .iter()
+                .for_each(|&tile| rack_tally[tile as usize] -= 1);
+        }
+        movegen::Play::Place { word, .. } => {
+            word.iter().for_each(|&tile| {
+                if tile & 0x80 != 0 {
+                    rack_tally[0] -= 1;
+                } else if tile != 0 {
+                    rack_tally[tile as usize] -= 1;
+                }
+            });
+        }
+    };
+}
+
+struct Candidate {
+    play: movegen::Play,
+    equity: f32,
+    stats: stats::Stats,
+}
+
+struct Simmer<'a> {
+    candidates: Vec<Candidate>,
+    rng: Box<dyn RngCore>,
+    move_generator: movegen::KurniaMoveGenerator,
+    initial_game_state: game_state::GameState<'a>,
+    game_state: game_state::GameState<'a>,
+    kwg: &'a kwg::Kwg,
+    klv: &'a klv::Klv,
+    last_seen_leave_values: Box<[f32]>,
+    final_scores: Box<[i16]>,
+    rack_tally: Box<[u8]>,
+    initial_score_spread: i16,
+    possible_to_play_out: bool,
+    num_sim_plies: usize,
+    num_tiles_that_matter: usize,
+}
+
+impl<'a> Simmer<'a> {
+    fn new(game_config: &'a game_config::GameConfig, kwg: &'a kwg::Kwg, klv: &'a klv::Klv) -> Self {
+        Self {
+            candidates: Vec::new(),
+            rng: Box::new(rand_chacha::ChaCha20Rng::from_entropy()),
+            move_generator: movegen::KurniaMoveGenerator::new(game_config),
+            initial_game_state: game_state::GameState::new(game_config),
+            game_state: game_state::GameState::new(game_config),
+            kwg,
+            klv,
+            last_seen_leave_values: vec![0.0f32; game_config.num_players() as usize]
+                .into_boxed_slice(),
+            final_scores: vec![0; game_config.num_players() as usize].into_boxed_slice(),
+            rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
+            initial_score_spread: 0,
+            possible_to_play_out: false,
+            num_sim_plies: 0,
+            num_tiles_that_matter: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn drain_from_plays(&mut self, plays: &mut Vec<movegen::ValuedMove>) {
+        self.candidates.clear();
+        self.candidates.reserve(plays.len());
+        for play in plays.drain(..) {
+            self.candidates.push(Candidate {
+                play: play.play,
+                equity: play.equity,
+                stats: stats::Stats::new(),
+            });
+        }
+    }
+
+    #[inline(always)]
+    fn prepare(&mut self, game_state: &game_state::GameState, num_sim_plies: usize) {
+        self.initial_game_state
+            .clone_transient_stuffs_from(&game_state);
+        self.game_state.clone_transient_stuffs_from(&game_state);
+        self.initial_score_spread = game_state.current_player().score
+            - (0..)
+                .zip(game_state.players.iter())
+                .filter(|&(i, _)| i != game_state.turn)
+                .map(|(_, player)| player.score)
+                .max()
+                .unwrap_or(0);
+        self.num_sim_plies = num_sim_plies;
+        self.num_tiles_that_matter = num_sim_plies * game_state.game_config.rack_size() as usize;
+    }
+
+    #[inline(always)]
+    fn prepare_iteration(&mut self) {
+        let initial_turn = self.initial_game_state.turn as usize;
+        for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
+            if i != initial_turn {
+                self.final_scores[i] = player.rack.len() as i16;
+                self.initial_game_state
+                    .bag
+                    .0
+                    .extend_from_slice(&player.rack);
+                player.rack.clear();
+            }
+        }
+        self.possible_to_play_out =
+            self.initial_game_state.bag.0.len() <= self.num_tiles_that_matter;
+        self.initial_game_state
+            .bag
+            .shuffle_n(&mut self.rng, self.num_tiles_that_matter);
+        for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
+            if i != initial_turn {
+                self.initial_game_state
+                    .bag
+                    .replenish(&mut player.rack, self.final_scores[i] as usize);
+            }
+        }
+    }
+
+    // true iff played out
+    #[inline(always)]
+    fn simulate(&mut self, candidate_play: &movegen::Play) -> bool {
+        self.game_state.clone_from(&self.initial_game_state);
+        // reset leave values from previous iteration
+        self.last_seen_leave_values
+            .iter_mut()
+            .for_each(|m| *m = 0.0);
+        for ply in 0..=self.num_sim_plies {
+            let next_play = if ply == 0 {
+                &candidate_play
+            } else {
+                self.move_generator.gen_moves_unfiltered(
+                    &movegen::BoardSnapshot {
+                        board_tiles: &self.game_state.board_tiles,
+                        game_config: &self.game_state.game_config,
+                        kwg: &self.kwg,
+                        klv: &self.klv,
+                    },
+                    &self.game_state.current_player().rack,
+                    1,
+                );
+                &self.move_generator.plays[0].play
+            };
+            set_rack_tally_from_leave(
+                &mut self.rack_tally,
+                &self.game_state.current_player().rack,
+                &next_play,
+            );
+            self.last_seen_leave_values[self.game_state.turn as usize] =
+                self.klv.leave_value_from_tally(&self.rack_tally);
+            self.game_state.play(&mut self.rng, &next_play).unwrap();
+            match self.game_state.check_game_ended(&mut self.final_scores) {
+                game_state::CheckGameEnded::NotEnded => {}
+                _ => {
+                    // game has ended, move leave values to actual score
+                    for (i, player) in self.game_state.players.iter_mut().enumerate() {
+                        player.score = self.final_scores[i];
+                    }
+                    self.last_seen_leave_values
+                        .iter_mut()
+                        .for_each(|m| *m = 0.0);
+                    return true;
+                }
+            }
+            self.game_state.next_turn();
+        }
+        false
+    }
+
+    #[inline(always)]
+    fn final_equity_spread(&self) -> f32 {
+        let mut best_opponent_equity = f32::NEG_INFINITY;
+        for (i, player) in (0..).zip(self.game_state.players.iter()) {
+            if i != self.initial_game_state.turn {
+                let opponent_equity = player.score as f32 + self.last_seen_leave_values[i as usize];
+                if opponent_equity > best_opponent_equity {
+                    best_opponent_equity = opponent_equity;
+                }
+            }
+        }
+        let mut this_equity = self.game_state.players[self.initial_game_state.turn as usize].score
+            as f32
+            + self.last_seen_leave_values[self.initial_game_state.turn as usize];
+        if best_opponent_equity != f32::NEG_INFINITY {
+            this_equity -= best_opponent_equity;
+        }
+        this_equity - self.initial_score_spread as f32
+    }
+
+    #[inline(always)]
+    fn compute_win_prob(&self, game_ended: bool, final_spread: f32) -> f64 {
+        if game_ended {
+            if final_spread > 0.0 {
+                1.0
+            } else if final_spread < 0.0 {
+                0.0
+            } else {
+                0.5
+            }
+        } else {
+            // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
+            let num_unseen_tiles = self.game_state.bag.0.len()
+                + self
+                    .game_state
+                    .players
+                    .iter()
+                    .map(|player| player.rack.len())
+                    .sum::<usize>();
+            // this could be precomputed for every possible num_unseen_tiles (1 to 93)
+            let exp_width = -(30.0 + num_unseen_tiles as f64) / ((1.0 / 0.9 - 1.0) as f64).ln();
+            1.0 / (1.0 + (-(final_spread as f64) / exp_width).exp())
+        }
+    }
+
+    #[inline(always)]
+    fn win_prob_weightage(&self) -> f64 {
+        if self.possible_to_play_out {
+            1000.0
+        } else {
+            10.0
+        }
+    }
+
+    #[inline(always)]
+    fn extract_top_candidate_by_mean(&mut self) -> movegen::ValuedMove {
+        let top_candidate = self.candidates.swap_remove(
+            self.candidates
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
+                .unwrap()
+                .0,
+        );
+        movegen::ValuedMove {
+            equity: top_candidate.equity,
+            play: top_candidate.play,
+        }
+    }
+}
+
+#[allow(clippy::large_enum_variant)]
+enum MovePicker<'a> {
+    Hasty,
+    Simmer(Simmer<'a>),
+}
+
+impl MovePicker<'_> {
+    #[inline(always)]
+    fn pick_a_move(
+        &mut self,
+        filtered_movegen: &mut move_filter::GenMoves,
+        mut move_generator: &mut movegen::KurniaMoveGenerator,
+        board_snapshot: &movegen::BoardSnapshot,
+        game_state: &game_state::GameState,
+        rack: &[u8],
+    ) {
+        match self {
+            MovePicker::Hasty => {
+                filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 1);
+            }
+            MovePicker::Simmer(simmer) => {
+                filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 100);
+                simmer.drain_from_plays(&mut move_generator.plays);
+                let mut candidates = std::mem::take(&mut simmer.candidates);
+                simmer.prepare(&game_state, 2);
+                let num_sim_iters = 1000;
+                let mut prune_iter = 16;
+                for sim_iter in 1..=num_sim_iters {
+                    simmer.prepare_iteration();
+                    for candidate in candidates.iter_mut() {
+                        let game_ended = simmer.simulate(&candidate.play);
+                        let final_spread = simmer.final_equity_spread();
+                        let win_prob = simmer.compute_win_prob(game_ended, final_spread);
+                        let sim_spread = final_spread - simmer.initial_score_spread as f32;
+                        candidate
+                            .stats
+                            .update(sim_spread as f64 + win_prob * simmer.win_prob_weightage());
+                    }
+                    if sim_iter == prune_iter {
+                        prune_iter += 16;
+                        let z = 1.96; // 95% confidence interval
+                        let low_bar = candidates
+                            .iter()
+                            .map(|candidate| candidate.stats.ci_max(-z))
+                            .max_by(|a, b| a.partial_cmp(&b).unwrap())
+                            .unwrap();
+                        candidates.retain(|candidate| candidate.stats.ci_max(z) >= low_bar);
+                        if candidates.len() < 2 {
+                            break;
+                        }
+                    }
+                }
+                simmer.candidates = candidates;
+                move_generator
+                    .plays
+                    .push(simmer.extract_top_candidate_by_mean());
+            }
+        }
+    }
+}
+
 pub fn main() -> error::Returns<()> {
-    let mut candidates = Vec::new();
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
     let game_config = &game_config::make_common_english_game_config();
@@ -18,11 +320,13 @@ pub fn main() -> error::Returns<()> {
     ));
     let mut filtered_movegen_1 = move_filter::GenMoves::Unfiltered;
 
+    let mut move_picker_0 = MovePicker::Hasty;
+    let mut move_picker_1 = MovePicker::Simmer(Simmer::new(game_config, &kwg, &klv));
+
     loop {
         let mut game_state = game_state::GameState::new(game_config);
         let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
         game_state.reset_and_draw_tiles(&mut rng);
-
         let mut final_scores = vec![0; game_state.players.len()];
 
         loop {
@@ -41,6 +345,12 @@ pub fn main() -> error::Returns<()> {
                 );
             }
 
+            let move_picker = if game_state.turn == 0 {
+                &mut move_picker_0
+            } else {
+                &mut move_picker_1
+            };
+
             let board_snapshot = &movegen::BoardSnapshot {
                 board_tiles: &game_state.board_tiles,
                 game_config,
@@ -48,300 +358,16 @@ pub fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            filtered_movegen.gen_moves(
+            move_picker.pick_a_move(
+                filtered_movegen,
                 &mut move_generator,
-                board_snapshot,
+                &board_snapshot,
+                &game_state,
                 &game_state.current_player().rack,
-                100,
             );
             let plays = &mut move_generator.plays;
-
-            println!("found {} moves", plays.len());
-            for play in plays.iter().take(10) {
-                println!("{} {}", play.equity, play.play.fmt(board_snapshot));
-            }
-
-            println!("let's sim them");
-            struct Candidate {
-                play: movegen::Play,
-                equity: f32,
-                stats: stats::Stats,
-            }
-            candidates.clear();
-            candidates.reserve(plays.len());
-            for play in plays.drain(..) {
-                candidates.push(Candidate {
-                    play: play.play,
-                    equity: play.equity,
-                    stats: stats::Stats::new(),
-                });
-            }
-            {
-                let mut simmer_rng = rand_chacha::ChaCha20Rng::from_entropy();
-                let mut simmer_move_generator = movegen::KurniaMoveGenerator::new(game_config);
-                let mut simmer_initial_game_state = game_state.clone(); // will be overwritten
-                let initial_spread = if simmer_initial_game_state.players.len() < 2 {
-                    0
-                } else {
-                    simmer_initial_game_state.current_player().score
-                        - (0..)
-                            .zip(simmer_initial_game_state.players.iter())
-                            .filter(|&(i, _)| i != simmer_initial_game_state.turn)
-                            .map(|(_, player)| player.score)
-                            .max()
-                            .unwrap()
-                };
-                let mut last_seen_leave_values =
-                    vec![0.0f32; simmer_initial_game_state.players.len()];
-                let mut simmer_game_state = simmer_initial_game_state.clone(); // will be overwritten
-                let mut simmer_rack_tally =
-                    vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(); // will be overwritten
-                let num_sim_iters = 1000;
-                let mut when_to_prune = 16;
-                let num_sim_plies = 2;
-                let num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
-                let t0 = std::time::Instant::now();
-                for sim_iter in 0..num_sim_iters {
-                    if (sim_iter + 1) % 100 == 0 {
-                        println!(
-                            "{} iters in {:?}, {} moves",
-                            sim_iter,
-                            t0.elapsed(),
-                            candidates.len()
-                        );
-                    }
-                    loop {
-                        simmer_initial_game_state.next_turn();
-                        if simmer_initial_game_state.turn == game_state.turn {
-                            break;
-                        }
-                        let player = &mut simmer_initial_game_state.players
-                            [simmer_initial_game_state.turn as usize];
-                        simmer_initial_game_state
-                            .bag
-                            .put_back(&mut rng, &player.rack);
-                        player.rack.clear();
-                    }
-                    let possible_to_play_out =
-                        simmer_initial_game_state.bag.0.len() <= num_tiles_that_matter;
-                    simmer_initial_game_state
-                        .bag
-                        .shuffle_n(&mut simmer_rng, num_tiles_that_matter);
-                    last_seen_leave_values.iter_mut().for_each(|m| *m = 0.0);
-                    loop {
-                        simmer_initial_game_state.next_turn();
-                        if simmer_initial_game_state.turn == game_state.turn {
-                            break;
-                        }
-                        let player = &mut simmer_initial_game_state.players
-                            [simmer_initial_game_state.turn as usize];
-                        simmer_initial_game_state.bag.replenish(
-                            &mut player.rack,
-                            game_state.players[simmer_initial_game_state.turn as usize]
-                                .rack
-                                .len(),
-                        );
-                    }
-                    for candidate in candidates.iter_mut() {
-                        simmer_game_state.clone_from(&simmer_initial_game_state);
-                        let mut played_out = false;
-                        for ply in 0..=num_sim_plies {
-                            let simmer_board_snapshot = &movegen::BoardSnapshot {
-                                board_tiles: &simmer_game_state.board_tiles,
-                                game_config,
-                                kwg: &kwg,
-                                klv: &klv,
-                            };
-                            let next_play = if ply == 0 {
-                                &candidate.play
-                            } else {
-                                simmer_move_generator.gen_moves_alloc(
-                                    simmer_board_snapshot,
-                                    &simmer_game_state.current_player().rack,
-                                    1,
-                                    |_down: bool,
-                                     _lane: i8,
-                                     _idx: i8,
-                                     _word: &[u8],
-                                     _score: i16,
-                                     _rack_tally: &[u8]| {
-                                        true
-                                    },
-                                    |leave_value: f32| leave_value,
-                                );
-                                &simmer_move_generator.plays[0].play
-                            };
-                            simmer_rack_tally.iter_mut().for_each(|m| *m = 0);
-                            simmer_game_state
-                                .current_player()
-                                .rack
-                                .iter()
-                                .for_each(|&tile| simmer_rack_tally[tile as usize] += 1);
-                            match &next_play {
-                                movegen::Play::Exchange { tiles } => {
-                                    tiles
-                                        .iter()
-                                        .for_each(|&tile| simmer_rack_tally[tile as usize] -= 1);
-                                }
-                                movegen::Play::Place { word, .. } => {
-                                    word.iter().for_each(|&tile| {
-                                        if tile & 0x80 != 0 {
-                                            simmer_rack_tally[0] -= 1;
-                                        } else if tile != 0 {
-                                            simmer_rack_tally[tile as usize] -= 1;
-                                        }
-                                    });
-                                }
-                            };
-                            let leave_value = klv.leave_value_from_tally(&simmer_rack_tally);
-                            last_seen_leave_values[simmer_game_state.turn as usize] = leave_value;
-                            simmer_game_state.play(&mut simmer_rng, &next_play)?;
-                            if simmer_game_state.current_player().rack.is_empty() {
-                                played_out = true;
-                                break;
-                            }
-                            simmer_game_state.next_turn();
-                        }
-                        if played_out {
-                            // not handling the too-many-zeros case
-                            if simmer_game_state.players.len() == 2 {
-                                simmer_game_state.players[simmer_game_state.turn as usize].score +=
-                                    2 * game_config.alphabet().rack_score(
-                                        &simmer_game_state.players
-                                            [(1 - simmer_game_state.turn) as usize]
-                                            .rack,
-                                    );
-                            } else {
-                                let mut earned = 0;
-                                for mut player in simmer_game_state.players.iter_mut() {
-                                    let this_rack = game_config.alphabet().rack_score(&player.rack);
-                                    player.score -= this_rack;
-                                    earned += this_rack;
-                                }
-                                simmer_game_state.players[simmer_game_state.turn as usize].score +=
-                                    earned;
-                            }
-                            last_seen_leave_values.iter_mut().for_each(|m| *m = 0.0);
-                        }
-                        let mut best_opponent = simmer_initial_game_state.turn;
-                        let mut best_opponent_equity = f32::NEG_INFINITY;
-                        for (i, player) in (0..).zip(simmer_game_state.players.iter()) {
-                            if i != simmer_initial_game_state.turn {
-                                let opponent_equity =
-                                    player.score as f32 + last_seen_leave_values[i as usize];
-                                if opponent_equity > best_opponent_equity {
-                                    best_opponent = i;
-                                    best_opponent_equity = opponent_equity;
-                                }
-                            }
-                        }
-                        let mut this_equity = simmer_game_state.players
-                            [simmer_initial_game_state.turn as usize]
-                            .score as f32
-                            + last_seen_leave_values[simmer_initial_game_state.turn as usize];
-                        if best_opponent != simmer_initial_game_state.turn {
-                            this_equity -= best_opponent_equity;
-                        }
-                        let sim_spread = this_equity - initial_spread as f32;
-                        let win_probability;
-                        if played_out {
-                            win_probability = if sim_spread > 0.0 {
-                                1.0
-                            } else if sim_spread < 0.0 {
-                                0.0
-                            } else {
-                                0.5
-                            };
-                        } else {
-                            // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
-                            let num_unseen_tiles = simmer_game_state.bag.0.len()
-                                + simmer_game_state
-                                    .players
-                                    .iter()
-                                    .map(|player| player.rack.len())
-                                    .sum::<usize>();
-                            // this could be precomputed for every possible num_unseen_tiles (1 to 93)
-                            let exp_width =
-                                -(30.0 + num_unseen_tiles as f64) / ((1.0 / 0.9 - 1.0) as f64).ln();
-                            win_probability =
-                                1.0 / (1.0 + (-(sim_spread as f64) / exp_width).exp());
-                        }
-                        candidate.stats.update(
-                            sim_spread as f64
-                                + win_probability
-                                    * if possible_to_play_out { 1000.0 } else { 10.0 },
-                        );
-                    }
-                    if (sim_iter + 1) == when_to_prune {
-                        when_to_prune <<= 1;
-                        // confidence interval = mean +/- Z * stddev / sqrt(samples)
-                        // Z = 1.96 for 95% CI
-                        // first find the top candidate based on max range
-                        let ci_z = 1.96;
-                        // assume all surviving candidate moves have been simmed for the same number of samples
-                        let ci_z_over_sqrt_n = ci_z / ((sim_iter + 1) as f64).sqrt();
-                        let top_candidate = candidates
-                            .iter()
-                            .max_by(|a, b| {
-                                (a.stats.mean() + ci_z_over_sqrt_n * a.stats.standard_deviation())
-                                    .partial_cmp(
-                                        &(b.stats.mean()
-                                            + ci_z_over_sqrt_n * b.stats.standard_deviation()),
-                                    )
-                                    .unwrap()
-                            })
-                            .unwrap();
-                        let low_bar = top_candidate.stats.mean()
-                            - ci_z_over_sqrt_n * top_candidate.stats.standard_deviation();
-                        println!(
-                            "top play after {} iters: {} {}: {} samples, {} mean, {} stddev; low bar: {}",
-                            sim_iter+1,
-                            top_candidate.equity,
-                            top_candidate.play.fmt(board_snapshot),
-                            top_candidate.stats.count(),
-                            top_candidate.stats.mean(),
-                            top_candidate.stats.standard_deviation(),
-                            low_bar,
-                        );
-                        // remove candidates that cannot catch up
-                        candidates.retain(|candidate| {
-                            (candidate.stats.mean()
-                                + ci_z_over_sqrt_n * candidate.stats.standard_deviation())
-                                >= low_bar
-                        });
-                        println!(
-                            "{} iters in {:?}, {} moves",
-                            sim_iter + 1,
-                            t0.elapsed(),
-                            candidates.len()
-                        );
-                        if candidates.len() < 2 {
-                            println!("only one candidate move left, no need to continue");
-                            break;
-                        }
-                    }
-                }
-            }
-            candidates.sort_unstable_by(|a, b| {
-                b.stats
-                    .mean()
-                    .partial_cmp(&a.stats.mean())
-                    .unwrap()
-                    .then_with(|| b.equity.partial_cmp(&a.equity).unwrap())
-            });
-            for candidate in candidates.iter() {
-                println!(
-                    "{} {}: {} samples, {} mean, {} stddev",
-                    candidate.equity,
-                    candidate.play.fmt(board_snapshot),
-                    candidate.stats.count(),
-                    candidate.stats.mean(),
-                    candidate.stats.standard_deviation()
-                );
-            }
-
-            let play = &candidates[0].play; // assume at least there's always Pass
-            println!("making top move: {}", play.fmt(board_snapshot));
+            let play = &plays[0].play; // assume at least there's always Pass
+            println!("Playing: {}", play.fmt(board_snapshot));
 
             game_state.play(&mut rng, play)?;
 
@@ -357,10 +383,9 @@ pub fn main() -> error::Returns<()> {
                     );
                     break;
                 }
-                game_state::CheckGameEnded::NotEnded => {
-                    game_state.next_turn();
-                }
+                game_state::CheckGameEnded::NotEnded => {}
             }
+            game_state.next_turn();
         }
 
         display::print_game_state(&game_state);

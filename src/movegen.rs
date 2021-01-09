@@ -382,7 +382,7 @@ impl WorkingBuffer {
                 klv: &'a klv::Klv,
                 best_leave_values: &'a mut [f32],
                 rack_tally: &'a mut [u8],
-            };
+            }
             fn pretend_to_generate_exchanges(
                 mut env: &mut Env<'_>,
                 mut num_tiles_exchanged: u16,
@@ -1690,7 +1690,7 @@ impl KurniaMoveGenerator {
                 equity,
                 play: construct_play(),
             });
-        };
+        }
 
         let mut working_buffer = &mut self.working_buffer;
         working_buffer.init(board_snapshot, rack);
@@ -1778,6 +1778,22 @@ impl KurniaMoveGenerator {
 
         self.plays = found_moves.into_inner().into_vec();
         self.plays.sort_unstable();
+    }
+
+    #[inline(always)]
+    pub fn gen_moves_unfiltered<'a>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a>,
+        rack: &'a [u8],
+        max_gen: usize,
+    ) {
+        self.gen_moves_alloc(
+            board_snapshot,
+            rack,
+            max_gen,
+            |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i16, _rack_tally: &[u8]| true,
+            |leave_value: f32| leave_value,
+        );
     }
 }
 

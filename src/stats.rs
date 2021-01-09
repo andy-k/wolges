@@ -39,6 +39,7 @@ impl Stats {
         }
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     pub fn count(&self) -> f64 {
         self.count
@@ -59,8 +60,14 @@ impl Stats {
         }
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     pub fn standard_deviation(&self) -> f64 {
         self.variance().sqrt()
+    }
+
+    #[inline(always)]
+    pub fn ci_max(&self, z: f64) -> f64 {
+        self.mean + z * (self.variance() / self.count).sqrt()
     }
 }
