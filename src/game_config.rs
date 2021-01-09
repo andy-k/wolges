@@ -62,6 +62,7 @@ pub fn make_common_english_game_config<'a>() -> GameConfig<'a> {
     })
 }
 
+#[allow(dead_code)]
 pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
         alphabet: alphabet::make_super_english_alphabet(),
@@ -71,6 +72,7 @@ pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
     })
 }
 
+#[allow(dead_code)]
 pub fn make_polish_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
         alphabet: alphabet::make_polish_alphabet(),

@@ -8,19 +8,166 @@ static LENGTH_IMPORTANCES: &[f32] = &[
     0.0, 0.0, 2.0, 1.5, 1.0, 0.75, 0.5, 1.0, 1.0, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1, 0.1,
 ];
 
+struct Tilt<'a> {
+    word_prob: Box<prob::WordProbability<'a>>,
+    max_prob_by_len: Box<[u64]>,
+    length_importances: &'a [f32],
+    tilt_factor: f32,
+    leave_scale: f32,
+    bot_level: i8,
+    word_check_buf: Vec<u8>,
+}
+
+impl<'a> Tilt<'a> {
+    fn new(
+        game_config: &'a game_config::GameConfig<'a>,
+        kwg: &'a kwg::Kwg,
+        length_importances: &'a [f32],
+        bot_level: i8,
+    ) -> Self {
+        let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
+        let max_prob_by_len = word_prob.get_max_probs_by_len(&kwg);
+        Self {
+            word_prob: Box::new(word_prob),
+            max_prob_by_len,
+            length_importances,
+            tilt_factor: 0.0,
+            leave_scale: 1.0,
+            bot_level,
+            word_check_buf: Vec::new(),
+        }
+    }
+
+    // to remove when rust 1.50 stabilizes x.clamp(lo, hi)
+    #[inline(always)]
+    fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
+        if x < lo {
+            lo
+        } else if x > hi {
+            hi
+        } else {
+            x
+        }
+    }
+
+    #[inline(always)]
+    fn tilt_to(&mut self, new_tilt_factor: f32) {
+        // 0.0 = untilted (can see all valid moves)
+        // 1.0 = tilted (can see no valid moves)
+        self.tilt_factor = Self::clamp(new_tilt_factor, 0.0, 1.0);
+        self.leave_scale = Self::clamp(
+            self.bot_level as f32 * 0.1 + (1.0 - self.tilt_factor),
+            0.0,
+            1.0,
+        );
+    }
+
+    fn tilt_by_rng(&mut self, rng: &mut dyn RngCore) {
+        self.tilt_to(rng.gen_range(0.5 - self.bot_level as f32 * 0.1, 1.0));
+    }
+
+    fn word_is_ok(&mut self) -> bool {
+        if self.tilt_factor <= 0.0 {
+            true
+        } else if self.tilt_factor >= 1.0 {
+            false
+        } else {
+            let word_len = self.word_check_buf.len();
+            let this_wp = self.word_prob.count_ways(&self.word_check_buf);
+            let max_wp = self.max_prob_by_len[word_len];
+            let handwavy = self.length_importances[word_len]
+                * (1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2)) as f32;
+            if handwavy >= self.tilt_factor {
+                true
+            } else {
+                if false {
+                    println!(
+                        "Rejecting word {:?}, handwavy={} (this={} over max={}), tilt={}",
+                        self.word_check_buf, handwavy, this_wp, max_wp, self.tilt_factor
+                    );
+                }
+                false
+            }
+        }
+    }
+
+    fn validate_word_subset(
+        &mut self,
+        board_snapshot: &movegen::BoardSnapshot,
+        down: bool,
+        lane: i8,
+        idx: i8,
+        word: &[u8],
+        _score: i16,
+        _rack_tally: &[u8],
+    ) -> bool {
+        let board_layout = board_snapshot.game_config.board_layout();
+        let dim = board_layout.dim();
+        let strider = if down {
+            dim.down(lane)
+        } else {
+            dim.across(lane)
+        };
+        self.word_check_buf.clear();
+        for (i, &tile) in (idx..).zip(word.iter()) {
+            let placed_tile = if tile != 0 {
+                tile
+            } else {
+                board_snapshot.board_tiles[strider.at(i)]
+            };
+            self.word_check_buf.push(placed_tile & 0x7f);
+        }
+        if !self.word_is_ok() {
+            return false;
+        }
+        for (i, &tile) in (idx..).zip(word.iter()) {
+            if tile != 0 {
+                let perpendicular_strider = if down { dim.across(i) } else { dim.down(i) };
+                let mut j = lane;
+                while j > 0 && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0 {
+                    j -= 1;
+                }
+                let perpendicular_strider_len = perpendicular_strider.len();
+                if j == lane
+                    && if j + 1 < perpendicular_strider_len {
+                        board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
+                    } else {
+                        true
+                    }
+                {
+                    // no perpendicular tile
+                    continue;
+                }
+                self.word_check_buf.clear();
+                for j in j..perpendicular_strider_len {
+                    let placed_tile = if j == lane {
+                        tile
+                    } else {
+                        board_snapshot.board_tiles[perpendicular_strider.at(j)]
+                    };
+                    if placed_tile == 0 {
+                        break;
+                    }
+                    self.word_check_buf.push(placed_tile & 0x7f);
+                }
+                if !self.word_is_ok() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
 pub fn main() -> error::Returns<()> {
     let mut candidates = Vec::new();
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
     let game_config = &game_config::make_common_english_game_config();
-    let _ = &game_config::make_super_english_game_config();
-    let _ = &game_config::make_polish_game_config();
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
-    let mut word_check_buf = Vec::new();
 
-    let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
-    let max_prob_by_len = word_prob.get_max_probs_by_len(&kwg);
-    println!("max prob: {:?}", max_prob_by_len);
+    let mut tilt0 = Tilt::new(&game_config, &kwg, LENGTH_IMPORTANCES, 6);
+    let mut tilt1 = Tilt::new(&game_config, &kwg, LENGTH_IMPORTANCES, 3);
 
     loop {
         let mut game_state = game_state::GameState::new(game_config);
@@ -57,37 +204,15 @@ pub fn main() -> error::Returns<()> {
             }
             println!("turn: player {}", game_state.turn + 1);
 
-            let bot_level = if game_state.turn == 0 { 6 } else { 3 };
-            let length_importances = LENGTH_IMPORTANCES; // should differ by bot level
-            let mut tilt_factor = rng.gen_range(0.5 - bot_level as f64 * 0.1, 1.0);
-            if tilt_factor < 0.0 {
-                tilt_factor = 0.0;
-            }
-            let _ = tilt_factor;
-            tilt_factor = 0.0; // let's just disable this
-            println!("effective tilt factor for this turn: {}", tilt_factor);
-            let mut leave_scale = (bot_level as f64 * 0.1 + (1.0 - tilt_factor)) as f32;
-            if leave_scale > 1.0 {
-                leave_scale = 1.0;
-            }
-            println!("effective leave scale for this turn: {}", leave_scale);
-            let mut word_is_ok = |word: &[u8]| {
-                if tilt_factor >= 1.0 {
-                    return true;
-                }
-                let this_wp = word_prob.count_ways(word);
-                let max_wp = max_prob_by_len[word.len()];
-                let some_prob = 1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2);
-                let handwavy = length_importances[word.len()] as f64 * some_prob;
-                if handwavy >= tilt_factor {
-                    return true;
-                }
-                println!(
-                    "Rejecting word {:?}, handwavy={} (this={} over max={}), tilt={}",
-                    word, handwavy, this_wp, max_wp, tilt_factor
-                );
-                false
+            let tilt = if game_state.turn == 0 {
+                &mut tilt0
+            } else {
+                &mut tilt1
             };
+            tilt.tilt_by_rng(&mut rng);
+            tilt.tilt_to(0.0); // disable tilt, but still slow
+            println!("effective tilt factor for this turn: {}", tilt.tilt_factor);
+            println!("effective leave scale for this turn: {}", tilt.leave_scale);
 
             println!(
                 "pool {:2}: {}",
@@ -112,80 +237,25 @@ pub fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            let validate_word_subset = |board_snapshot: &movegen::BoardSnapshot,
-                                        down: bool,
-                                        lane: i8,
-                                        idx: i8,
-                                        word: &[u8],
-                                        _score: i16,
-                                        _rack_tally: &[u8]| {
-                let board_layout = board_snapshot.game_config.board_layout();
-                let dim = board_layout.dim();
-                let strider = if down {
-                    dim.down(lane)
-                } else {
-                    dim.across(lane)
+            let leave_scale = tilt.leave_scale;
+            let mut validate_word_subset =
+                |board_snapshot: &movegen::BoardSnapshot,
+                 down: bool,
+                 lane: i8,
+                 idx: i8,
+                 word: &[u8],
+                 score: i16,
+                 rack_tally: &[u8]| {
+                    tilt.validate_word_subset(
+                        board_snapshot,
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        score,
+                        rack_tally,
+                    )
                 };
-                word_check_buf.clear();
-                for (i, &tile) in (idx..).zip(word.iter()) {
-                    let placed_tile = if tile != 0 {
-                        tile
-                    } else {
-                        board_snapshot.board_tiles[strider.at(i)]
-                    };
-                    word_check_buf.push(placed_tile & 0x7f);
-                }
-                if !word_is_ok(&word_check_buf) {
-                    return false;
-                }
-                for (i, &tile) in (idx..).zip(word.iter()) {
-                    if tile != 0 {
-                        let perpendicular_strider = if down { dim.across(i) } else { dim.down(i) };
-                        let mut j = lane;
-                        while j > 0
-                            && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
-                        {
-                            j -= 1;
-                        }
-                        let perpendicular_strider_len = perpendicular_strider.len();
-                        if j == lane
-                            && if j + 1 < perpendicular_strider_len {
-                                board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
-                            } else {
-                                true
-                            }
-                        {
-                            // no perpendicular tile
-                            continue;
-                        }
-                        word_check_buf.clear();
-                        for j in j..perpendicular_strider_len {
-                            let placed_tile = if j == lane {
-                                tile
-                            } else {
-                                board_snapshot.board_tiles[perpendicular_strider.at(j)]
-                            };
-                            if placed_tile == 0 {
-                                break;
-                            }
-                            word_check_buf.push(placed_tile & 0x7f);
-                        }
-                        if !word_is_ok(&word_check_buf) {
-                            return false;
-                        }
-                    }
-                }
-                true
-            };
-            let _ = validate_word_subset;
-            let validate_word_subset =
-                |_board_snapshot: &movegen::BoardSnapshot,
-                 _down: bool,
-                 _lane: i8,
-                 _idx: i8,
-                 _word: &[u8],
-                 _score: i16,
-                 _rack_tally: &[u8]| { true };
             let adjust_leave_value = |leave_value: f32| leave_scale * leave_value;
             move_generator.gen_moves_alloc(
                 board_snapshot,
