@@ -105,7 +105,7 @@ impl<'a> GameState<'a> {
             player.rack.clear();
         }
         for &tile in self.board_tiles.iter().filter(|&&tile| tile != 0) {
-            self.bag.0.push(tile);
+            self.bag.0.push(tile & !((tile as i8) >> 7) as u8);
         }
         self.board_tiles.iter_mut().for_each(|m| *m = 0);
         self.turn = 0;
