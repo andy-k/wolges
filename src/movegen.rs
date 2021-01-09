@@ -1995,12 +1995,12 @@ fn kurnia_gen_place_moves<
             },
         );
     }
+    working_buffer.found_placements = found_placements;
     working_buffer.found_placements.sort_unstable_by(|a, b| {
         b.best_possible_equity
             .partial_cmp(&a.best_possible_equity)
             .unwrap()
     });
-    std::mem::swap(&mut found_placements, &mut working_buffer.found_placements);
     for placement in &working_buffer.found_placements {
         if !can_accept(placement.best_possible_equity) {
             break;
