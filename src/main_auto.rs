@@ -256,7 +256,6 @@ pub fn main() -> error::Returns<()> {
                         rack_tally,
                     )
                 };
-            let adjust_leave_value = |leave_value: f32| leave_scale * leave_value;
             move_generator.gen_moves_alloc(
                 board_snapshot,
                 &game_state.current_player().rack,
@@ -264,7 +263,7 @@ pub fn main() -> error::Returns<()> {
                 |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
                     validate_word_subset(&board_snapshot, down, lane, idx, word, score, rack_tally)
                 },
-                adjust_leave_value,
+                |leave_value: f32| leave_scale * leave_value,
             );
             let plays = &mut move_generator.plays;
 
@@ -371,23 +370,15 @@ pub fn main() -> error::Returns<()> {
                                     simmer_board_snapshot,
                                     &simmer_game_state.current_player().rack,
                                     1,
-                                    |down: bool,
-                                     lane: i8,
-                                     idx: i8,
-                                     word: &[u8],
-                                     score: i16,
-                                     rack_tally: &[u8]| {
-                                        validate_word_subset(
-                                            &simmer_board_snapshot,
-                                            down,
-                                            lane,
-                                            idx,
-                                            word,
-                                            score,
-                                            rack_tally,
-                                        )
+                                    |_down: bool,
+                                     _lane: i8,
+                                     _idx: i8,
+                                     _word: &[u8],
+                                     _score: i16,
+                                     _rack_tally: &[u8]| {
+                                        true
                                     },
-                                    adjust_leave_value,
+                                    |leave_value: f32| leave_value,
                                 );
                                 &simmer_move_generator.plays[0].play
                             };
