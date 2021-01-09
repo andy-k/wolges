@@ -172,7 +172,14 @@ impl<'a> Tilt<'a> {
             }
         }
     }
+}
 
+pub enum GenMoves<'a> {
+    Unfiltered,
+    Tilt(Tilt<'a>),
+}
+
+impl GenMoves<'_> {
     pub fn gen_moves(
         &mut self,
         move_generator: &mut movegen::KurniaMoveGenerator,
@@ -180,25 +187,48 @@ impl<'a> Tilt<'a> {
         rack: &[u8],
         max_gen: usize,
     ) {
-        let leave_scale = self.leave_scale;
-        let mut limited_vocab_checker =
-            std::mem::replace(&mut self.limited_vocab_checker, LimitedVocabChecker::new());
-        move_generator.gen_moves_alloc(
-            board_snapshot,
-            rack,
-            max_gen,
-            |down: bool, lane: i8, idx: i8, word: &[u8], _score: i16, _rack_tally: &[u8]| {
-                limited_vocab_checker.words_placed_are_ok(
+        match self {
+            Self::Unfiltered => {
+                move_generator.gen_moves_alloc(
                     board_snapshot,
-                    down,
-                    lane,
-                    idx,
-                    word,
-                    |word: &[u8]| self.word_is_ok(word),
-                )
-            },
-            |leave_value: f32| leave_scale * leave_value,
-        );
-        self.limited_vocab_checker = limited_vocab_checker;
+                    rack,
+                    max_gen,
+                    |_down: bool,
+                     _lane: i8,
+                     _idx: i8,
+                     _word: &[u8],
+                     _score: i16,
+                     _rack_tally: &[u8]| true,
+                    |leave_value: f32| leave_value,
+                );
+            }
+            Self::Tilt(tilt) => {
+                let leave_scale = tilt.leave_scale;
+                let mut limited_vocab_checker =
+                    std::mem::replace(&mut tilt.limited_vocab_checker, LimitedVocabChecker::new());
+                move_generator.gen_moves_alloc(
+                    board_snapshot,
+                    rack,
+                    max_gen,
+                    |down: bool,
+                     lane: i8,
+                     idx: i8,
+                     word: &[u8],
+                     _score: i16,
+                     _rack_tally: &[u8]| {
+                        limited_vocab_checker.words_placed_are_ok(
+                            board_snapshot,
+                            down,
+                            lane,
+                            idx,
+                            word,
+                            |word: &[u8]| tilt.word_is_ok(word),
+                        )
+                    },
+                    |leave_value: f32| leave_scale * leave_value,
+                );
+                tilt.limited_vocab_checker = limited_vocab_checker;
+            }
+        }
     }
 }

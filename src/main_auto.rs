@@ -10,18 +10,13 @@ pub fn main() -> error::Returns<()> {
     let game_config = &game_config::make_common_english_game_config();
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
-    let mut tilt0 = move_filter::Tilt::new(
+    let mut filtered_movegen_0 = move_filter::GenMoves::Tilt(move_filter::Tilt::new(
         &game_config,
         &kwg,
         move_filter::Tilt::length_importances(),
-        6,
-    );
-    let mut tilt1 = move_filter::Tilt::new(
-        &game_config,
-        &kwg,
-        move_filter::Tilt::length_importances(),
-        3,
-    );
+        1,
+    ));
+    let mut filtered_movegen_1 = move_filter::GenMoves::Unfiltered;
 
     loop {
         let mut game_state = game_state::GameState::new(game_config);
@@ -58,15 +53,20 @@ pub fn main() -> error::Returns<()> {
             }
             println!("turn: player {}", game_state.turn + 1);
 
-            let tilt = if game_state.turn == 0 {
-                &mut tilt0
+            let filtered_movegen = if game_state.turn == 0 {
+                &mut filtered_movegen_0
             } else {
-                &mut tilt1
+                &mut filtered_movegen_1
             };
-            tilt.tilt_by_rng(&mut rng);
-            tilt.tilt_to(0.0); // disable tilt, but still slow
-            println!("effective tilt factor for this turn: {}", tilt.tilt_factor);
-            println!("effective leave scale for this turn: {}", tilt.leave_scale);
+            match filtered_movegen {
+                move_filter::GenMoves::Tilt(tilt) => {
+                    tilt.tilt_by_rng(&mut rng);
+                    tilt.tilt_to(0.0); // disable tilt, but still slow
+                    println!("effective tilt factor for this turn: {}", tilt.tilt_factor);
+                    println!("effective leave scale for this turn: {}", tilt.leave_scale);
+                }
+                _ => {}
+            }
 
             println!(
                 "pool {:2}: {}",
@@ -91,7 +91,7 @@ pub fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            tilt.gen_moves(
+            filtered_movegen.gen_moves(
                 &mut move_generator,
                 board_snapshot,
                 &game_state.current_player().rack,
