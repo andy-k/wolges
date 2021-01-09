@@ -173,50 +173,6 @@ impl<'a> GameState<'a> {
     }
 }
 
-fn get_max_probs_by_len<'a>(
-    word_prob: &'a mut prob::WordProbability<'a>,
-    g: &'a kwg::Kwg,
-) -> Box<[u64]> {
-    let mut v = Vec::new();
-    struct Env<'a, 'b> {
-        g: &'a kwg::Kwg,
-        s: &'a mut Vec<u8>,
-        v: &'a mut Vec<u64>,
-        word_prob: &'b mut prob::WordProbability<'b>,
-    }
-    fn iter(env: &mut Env, mut p: i32) {
-        let l = env.s.len() + 1;
-        loop {
-            let t = env.g[p].tile();
-            env.s.push(t);
-            if env.g[p].accepts() {
-                while env.v.len() <= l {
-                    env.v.push(0);
-                }
-                env.v[l] = std::cmp::max(env.v[l], env.word_prob.count_ways(env.s));
-            }
-            if env.g[p].arc_index() != 0 {
-                iter(env, env.g[p].arc_index());
-            }
-            env.s.pop();
-            if env.g[p].is_end() {
-                break;
-            }
-            p += 1;
-        }
-    }
-    iter(
-        &mut Env {
-            g: &g,
-            s: &mut Vec::new(),
-            v: &mut v,
-            word_prob,
-        },
-        g[0].arc_index(),
-    );
-    v.into_boxed_slice()
-}
-
 // need more realistic numbers, and should differ by bot level
 static LENGTH_IMPORTANCES: &[f32] = &[
     0.0, 0.0, 2.0, 1.5, 1.0, 0.75, 0.5, 1.0, 1.0, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1, 0.1,
@@ -539,11 +495,8 @@ pub fn main() -> error::Returns<()> {
     let mut word_check_buf = Vec::new();
 
     let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
-    let max_prob_by_len = get_max_probs_by_len(&mut word_prob, &kwg);
+    let max_prob_by_len = word_prob.get_max_probs_by_len(&kwg);
     println!("max prob: {:?}", max_prob_by_len);
-
-    // why is borrow checker disallowing reusing the earlier variable?
-    let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
 
     loop {
         let mut game_state = GameState::new(game_config);

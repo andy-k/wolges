@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use super::alphabet;
+use super::{alphabet, kwg};
 
 struct Pascal {
     raw: Vec<u64>,
@@ -74,5 +74,40 @@ impl<'a> WordProbability<'a> {
             .zip(self.pascal.row(n_blanks as usize))
             .map(|(prob, pas)| prob * pas)
             .sum()
+    }
+
+    fn get_max_probs_by_len_iter(
+        &mut self,
+        kwg: &kwg::Kwg,
+        word: &mut Vec<u8>,
+        v: &mut Vec<u64>,
+        mut p: i32,
+    ) {
+        let l = word.len() + 1;
+        loop {
+            let node = kwg[p];
+            let t = node.tile();
+            word.push(t);
+            if node.accepts() {
+                while v.len() <= l {
+                    v.push(0);
+                }
+                v[l] = std::cmp::max(v[l], self.count_ways(word));
+            }
+            if node.arc_index() != 0 {
+                self.get_max_probs_by_len_iter(kwg, word, v, node.arc_index());
+            }
+            word.pop();
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+
+    pub fn get_max_probs_by_len(&mut self, kwg: &kwg::Kwg) -> Box<[u64]> {
+        let mut v = Vec::new();
+        self.get_max_probs_by_len_iter(&kwg, &mut Vec::new(), &mut v, kwg[0].arc_index());
+        v.into_boxed_slice()
     }
 }
