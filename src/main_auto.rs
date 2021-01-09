@@ -1,7 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
 use super::{alphabet, display, error, game_config, game_state, klv, kwg, movegen, prob, stats};
-mod scoring_checker;
 use rand::prelude::*;
 
 struct WriteableRack<'a> {
@@ -514,13 +513,6 @@ pub fn main() -> error::Returns<()> {
 
             let play = &candidates[0].play; // assume at least there's always Pass
             println!("making top move: {}", play.fmt(board_snapshot));
-            scoring_checker::ScoringChecker::new().check_scoring(
-                &board_snapshot,
-                &game_state,
-                &play,
-                leave_scale,
-                candidates[0].equity,
-            );
 
             game_state.play(&mut rng, play)?;
 
