@@ -351,11 +351,7 @@ pub fn main() -> error::Returns<()> {
             game_state.play(&mut rng, play)?;
 
             zero_turns += 1;
-            if match play {
-                movegen::Play::Exchange { .. } => 0,
-                movegen::Play::Place { score, .. } => *score,
-            } != 0
-            {
+            if let movegen::Play::Exchange { .. } = play {
                 zero_turns = 0;
             }
 
