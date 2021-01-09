@@ -20,20 +20,10 @@ pub fn main() -> error::Returns<()> {
 
     loop {
         let mut game_state = game_state::GameState::new(game_config);
-
         let mut zero_turns = 0;
-        println!("\nplaying self");
         let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
 
         game_state.bag.shuffle(&mut rng);
-
-        println!(
-            "bag: {}",
-            game_state
-                .game_config
-                .alphabet()
-                .fmt_rack(&game_state.bag.0)
-        );
 
         for player in game_state.players.iter_mut() {
             game_state.bag.replenish(
@@ -43,45 +33,17 @@ pub fn main() -> error::Returns<()> {
         }
 
         loop {
-            display::print_board(
-                &game_state.game_config.alphabet(),
-                &game_state.game_config.board_layout(),
-                &game_state.board_tiles,
-            );
-            for (i, player) in (1..).zip(game_state.players.iter()) {
-                print!("player {}: {}, ", i, player.score);
-            }
-            println!("turn: player {}", game_state.turn + 1);
+            display::print_game_state(&game_state);
 
             let filtered_movegen = if game_state.turn == 0 {
                 &mut filtered_movegen_0
             } else {
                 &mut filtered_movegen_1
             };
-            match filtered_movegen {
-                move_filter::GenMoves::Tilt(tilt) => {
-                    tilt.tilt_by_rng(&mut rng);
-                    tilt.tilt_to(0.0); // disable tilt, but still slow
-                    println!("effective tilt factor for this turn: {}", tilt.tilt_factor);
-                    println!("effective leave scale for this turn: {}", tilt.leave_scale);
-                }
-                _ => {}
-            }
-
-            println!(
-                "pool {:2}: {}",
-                game_state.bag.0.len(),
-                game_state
-                    .game_config
-                    .alphabet()
-                    .fmt_rack(&game_state.bag.0)
-            );
-            for (i, player) in (1..).zip(game_state.players.iter()) {
-                println!(
-                    "p{} rack: {}",
-                    i,
-                    game_state.game_config.alphabet().fmt_rack(&player.rack)
-                );
+            if let move_filter::GenMoves::Tilt(tilt) = filtered_movegen {
+                tilt.tilt_by_rng(&mut rng);
+                //tilt.tilt_to(0.0); // disable tilt, but still slow
+                println!("Effective tilt: tilt factor = {}, leave scale = {}", tilt.tilt_factor, tilt.leave_scale);
             }
 
             let board_snapshot = &movegen::BoardSnapshot {
@@ -398,18 +360,8 @@ pub fn main() -> error::Returns<()> {
             }
 
             if game_state.current_player().rack.is_empty() {
-                display::print_board(
-                    &game_state.game_config.alphabet(),
-                    &game_state.game_config.board_layout(),
-                    &game_state.board_tiles,
-                );
-                for (i, player) in (1..).zip(game_state.players.iter()) {
-                    print!("player {}: {}, ", i, player.score);
-                }
-                println!(
-                    "player {} went out (scores are before leftovers)",
-                    game_state.turn + 1
-                );
+                display::print_game_state(&game_state);
+                println!("Player {} went out", game_state.turn + 1);
                 if game_state.players.len() == 2 {
                     game_state.players[game_state.turn as usize].score += 2 * game_state
                         .game_config
@@ -428,16 +380,9 @@ pub fn main() -> error::Returns<()> {
             }
 
             if zero_turns >= game_state.players.len() * 3 {
-                display::print_board(
-                    &game_state.game_config.alphabet(),
-                    &game_state.game_config.board_layout(),
-                    &game_state.board_tiles,
-                );
-                for (i, player) in (1..).zip(game_state.players.iter()) {
-                    print!("player {}: {}, ", i, player.score);
-                }
+                display::print_game_state(&game_state);
                 println!(
-                    "player {} ended game by making yet another zero score",
+                    "Player {} ended game by making yet another zero score",
                     game_state.turn + 1
                 );
                 for mut player in game_state.players.iter_mut() {
@@ -449,10 +394,14 @@ pub fn main() -> error::Returns<()> {
             game_state.next_turn();
         }
 
-        for (i, player) in (1..).zip(game_state.players.iter()) {
-            print!("player {}: {}, ", i, player.score);
-        }
-        println!("final scores");
+        println!(
+            "Final scores: {:?}",
+            game_state
+                .players
+                .iter()
+                .map(|player| player.score)
+                .collect::<Box<_>>()
+        );
     } // temp loop
 
     //Ok(())

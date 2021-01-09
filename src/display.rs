@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use super::{alphabet, board_layout};
+use super::{alphabet, board_layout, game_state};
 
 #[inline(always)]
 pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -> &'static str {
@@ -36,8 +36,8 @@ pub fn board_label<'a>(
         .unwrap_or_else(|| empty_label(board_layout, row, col))
 }
 
-pub fn print_board<'a>(
-    alphabet: &'a alphabet::Alphabet<'a>,
+pub fn print_board(
+    alphabet: &alphabet::Alphabet<'_>,
     board_layout: &board_layout::BoardLayout,
     board_tiles: &[u8],
 ) {
@@ -71,4 +71,32 @@ pub fn print_board<'a>(
         print!(" {}", ((c as u8) + 0x61) as char);
     }
     println!();
+}
+
+pub fn print_game_state(game_state: &game_state::GameState) {
+    print_board(
+        &game_state.game_config.alphabet(),
+        &game_state.game_config.board_layout(),
+        &game_state.board_tiles,
+    );
+    println!(
+        "Pool {}: {}",
+        game_state.bag.0.len(),
+        game_state
+            .game_config
+            .alphabet()
+            .fmt_rack(&game_state.bag.0)
+    );
+    for (i, player) in (1..).zip(game_state.players.iter()) {
+        print!(
+            "Player {}: {} {}",
+            i,
+            player.score,
+            game_state.game_config.alphabet().fmt_rack(&player.rack)
+        );
+        if game_state.turn + 1 == i {
+            print!(" (turn)");
+        }
+        println!();
+    }
 }
