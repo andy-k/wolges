@@ -10,6 +10,7 @@ mod board_layout;
 mod build;
 mod display;
 mod game_config;
+mod game_state;
 mod klv;
 mod kwg;
 mod lexport;
