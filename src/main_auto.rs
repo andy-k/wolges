@@ -157,6 +157,25 @@ impl<'a> Tilt<'a> {
         }
         true
     }
+
+    fn gen_moves<'b>(
+        &mut self,
+        move_generator: &mut movegen::KurniaMoveGenerator,
+        board_snapshot: &'b movegen::BoardSnapshot<'b>,
+        rack: &[u8],
+        max_gen: usize,
+    ) {
+        let leave_scale = self.leave_scale;
+        move_generator.gen_moves_alloc(
+            board_snapshot,
+            rack,
+            max_gen,
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+                self.validate_word_subset(&board_snapshot, down, lane, idx, word, score, rack_tally)
+            },
+            |leave_value: f32| leave_scale * leave_value,
+        )
+    }
 }
 
 pub fn main() -> error::Returns<()> {
@@ -237,33 +256,11 @@ pub fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            let leave_scale = tilt.leave_scale;
-            let mut validate_word_subset =
-                |board_snapshot: &movegen::BoardSnapshot,
-                 down: bool,
-                 lane: i8,
-                 idx: i8,
-                 word: &[u8],
-                 score: i16,
-                 rack_tally: &[u8]| {
-                    tilt.validate_word_subset(
-                        board_snapshot,
-                        down,
-                        lane,
-                        idx,
-                        word,
-                        score,
-                        rack_tally,
-                    )
-                };
-            move_generator.gen_moves_alloc(
+            tilt.gen_moves(
+                &mut move_generator,
                 board_snapshot,
                 &game_state.current_player().rack,
                 100,
-                |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
-                    validate_word_subset(&board_snapshot, down, lane, idx, word, score, rack_tally)
-                },
-                |leave_value: f32| leave_scale * leave_value,
             );
             let plays = &mut move_generator.plays;
 
