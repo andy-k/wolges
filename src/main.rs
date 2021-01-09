@@ -20,6 +20,7 @@ mod main_json;
 mod main_lex;
 mod matrix;
 mod move_filter;
+mod move_picker;
 mod movegen;
 mod prob;
 mod stats;
