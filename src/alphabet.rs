@@ -82,6 +82,31 @@ impl<'a> Alphabet<'a> {
     pub fn freq(&self, idx: u8) -> u8 {
         self.get(idx).freq
     }
+
+    pub fn fmt_rack(&'a self, rack: &'a [u8]) -> WriteableRack<'a> {
+        WriteableRack {
+            alphabet: &self,
+            rack: &rack,
+        }
+    }
+
+    pub fn rack_score(&self, rack: &[u8]) -> i16 {
+        rack.iter().map(|&t| self.score(t) as i16).sum::<i16>()
+    }
+}
+
+pub struct WriteableRack<'a> {
+    alphabet: &'a Alphabet<'a>,
+    rack: &'a [u8],
+}
+
+impl std::fmt::Display for WriteableRack<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for &tile in self.rack {
+            write!(f, "{}", self.alphabet.from_rack(tile).unwrap())?;
+        }
+        Ok(())
+    }
 }
 
 pub fn make_english_alphabet<'a>() -> Alphabet<'a> {

@@ -1,32 +1,7 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use super::{alphabet, display, error, game_config, game_state, klv, kwg, movegen, prob, stats};
+use super::{display, error, game_config, game_state, klv, kwg, movegen, prob, stats};
 use rand::prelude::*;
-
-struct WriteableRack<'a> {
-    alphabet: &'a alphabet::Alphabet<'a>,
-    rack: &'a [u8],
-}
-
-impl std::fmt::Display for WriteableRack<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for &tile in self.rack {
-            write!(f, "{}", self.alphabet.from_rack(tile).unwrap())?;
-        }
-        Ok(())
-    }
-}
-
-fn printable_rack<'a>(alphabet: &'a alphabet::Alphabet<'a>, rack: &'a [u8]) -> WriteableRack<'a> {
-    WriteableRack {
-        alphabet: &alphabet,
-        rack: &rack,
-    }
-}
-
-fn rack_score<'a>(alphabet: &'a alphabet::Alphabet<'a>, rack: &'a [u8]) -> i16 {
-    rack.iter().map(|&t| alphabet.score(t) as i16).sum::<i16>()
-}
 
 // need more realistic numbers, and should differ by bot level
 static LENGTH_IMPORTANCES: &[f32] = &[
@@ -58,7 +33,10 @@ pub fn main() -> error::Returns<()> {
 
         println!(
             "bag: {}",
-            printable_rack(&game_state.game_config.alphabet(), &game_state.bag.0)
+            game_state
+                .game_config
+                .alphabet()
+                .fmt_rack(&game_state.bag.0)
         );
 
         for player in game_state.players.iter_mut() {
@@ -114,13 +92,16 @@ pub fn main() -> error::Returns<()> {
             println!(
                 "pool {:2}: {}",
                 game_state.bag.0.len(),
-                printable_rack(&game_state.game_config.alphabet(), &game_state.bag.0)
+                game_state
+                    .game_config
+                    .alphabet()
+                    .fmt_rack(&game_state.bag.0)
             );
             for (i, player) in (1..).zip(game_state.players.iter()) {
                 println!(
                     "p{} rack: {}",
                     i,
-                    printable_rack(&game_state.game_config.alphabet(), &player.rack)
+                    game_state.game_config.alphabet().fmt_rack(&player.rack)
                 );
             }
 
@@ -375,8 +356,7 @@ pub fn main() -> error::Returns<()> {
                             // not handling the too-many-zeros case
                             if simmer_game_state.players.len() == 2 {
                                 simmer_game_state.players[simmer_game_state.turn as usize].score +=
-                                    2 * rack_score(
-                                        &game_config.alphabet(),
+                                    2 * game_config.alphabet().rack_score(
                                         &simmer_game_state.players
                                             [(1 - simmer_game_state.turn) as usize]
                                             .rack,
@@ -384,8 +364,7 @@ pub fn main() -> error::Returns<()> {
                             } else {
                                 let mut earned = 0;
                                 for mut player in simmer_game_state.players.iter_mut() {
-                                    let this_rack =
-                                        rack_score(&game_config.alphabet(), &player.rack);
+                                    let this_rack = game_config.alphabet().rack_score(&player.rack);
                                     player.score -= this_rack;
                                     earned += this_rack;
                                 }
@@ -539,15 +518,14 @@ pub fn main() -> error::Returns<()> {
                     game_state.turn + 1
                 );
                 if game_state.players.len() == 2 {
-                    game_state.players[game_state.turn as usize].score += 2 * rack_score(
-                        &game_state.game_config.alphabet(),
-                        &game_state.players[(1 - game_state.turn) as usize].rack,
-                    );
+                    game_state.players[game_state.turn as usize].score += 2 * game_state
+                        .game_config
+                        .alphabet()
+                        .rack_score(&game_state.players[(1 - game_state.turn) as usize].rack);
                 } else {
                     let mut earned = 0;
                     for mut player in game_state.players.iter_mut() {
-                        let this_rack =
-                            rack_score(&game_state.game_config.alphabet(), &player.rack);
+                        let this_rack = game_state.game_config.alphabet().rack_score(&player.rack);
                         player.score -= this_rack;
                         earned += this_rack;
                     }
@@ -570,7 +548,7 @@ pub fn main() -> error::Returns<()> {
                     game_state.turn + 1
                 );
                 for mut player in game_state.players.iter_mut() {
-                    player.score -= rack_score(&game_state.game_config.alphabet(), &player.rack);
+                    player.score -= game_state.game_config.alphabet().rack_score(&player.rack);
                 }
                 break;
             }
