@@ -267,6 +267,7 @@ impl MovePicker<'_> {
                 let mut candidates = std::mem::take(&mut simmer.candidates);
                 let num_sim_iters = 1000;
                 let mut prune_iter = 16;
+                let mut max_candidates_allowed = !0;
                 for sim_iter in 1..=num_sim_iters {
                     simmer.prepare_iteration();
                     for candidate in candidates.iter_mut() {
@@ -288,6 +289,20 @@ impl MovePicker<'_> {
                             .max_by(|a, b| a.partial_cmp(&b).unwrap())
                             .unwrap();
                         candidates.retain(|candidate| candidate.stats.ci_max(z) >= low_bar);
+                        max_candidates_allowed =
+                            std::cmp::min(candidates.len() + 10, max_candidates_allowed - 1);
+                        while candidates.len() > max_candidates_allowed {
+                            // if they're all about the same, let's forget one move.
+                            candidates.swap_remove(
+                                candidates
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, candidate)| (i, candidate.stats.ci_max(-z)))
+                                    .min_by(|(_, a), (_, b)| a.partial_cmp(&b).unwrap())
+                                    .unwrap()
+                                    .0,
+                            );
+                        }
                         if candidates.len() < 2 {
                             break;
                         }
