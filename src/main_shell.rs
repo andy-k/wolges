@@ -1,9 +1,10 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
 use super::error;
+mod rlhelper;
 
 pub fn main() -> error::Returns<()> {
-    let mut rl = rustyline::Editor::<()>::new();
+    let mut rl = rlhelper::new_rl_editor();
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     loop {
         if let Some((line, source)) = cmd_stack.pop() {
