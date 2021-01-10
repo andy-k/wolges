@@ -43,7 +43,7 @@ fn main() -> error::Returns<()> {
         return Ok(());
     }
 
-    if true {
+    if false {
         main_shell::main()?;
         return Ok(());
     }
