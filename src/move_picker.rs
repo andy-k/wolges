@@ -262,13 +262,25 @@ impl MovePicker<'_> {
                 filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 1);
             }
             MovePicker::Simmer(simmer) => {
+                let t0 = std::time::Instant::now();
                 filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 100);
                 simmer.prepare(&game_state, move_generator.plays.len(), 2);
                 let mut candidates = std::mem::take(&mut simmer.candidates);
                 let num_sim_iters = 1000;
                 let mut prune_iter = 16;
                 let mut max_candidates_allowed = !0;
+                let mut last_reported_elapsed_time_secs = 0;
                 for sim_iter in 1..=num_sim_iters {
+                    let elapsed_time_secs = t0.elapsed().as_secs();
+                    if elapsed_time_secs != last_reported_elapsed_time_secs {
+                        println!(
+                            "After {} seconds, doing iteration {} with {} candidates",
+                            elapsed_time_secs,
+                            sim_iter,
+                            candidates.len()
+                        );
+                        last_reported_elapsed_time_secs = elapsed_time_secs;
+                    }
                     simmer.prepare_iteration();
                     for candidate in candidates.iter_mut() {
                         let game_ended =
