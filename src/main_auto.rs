@@ -30,7 +30,8 @@ pub fn main() -> error::Returns<()> {
     loop {
         game_state.reset_and_draw_tiles(&mut rng);
         let mut final_scores = vec![0; game_state.players.len()];
-        timers.reset_to(25 * 60 * 1000);
+        //timers.reset_to(25 * 60 * 1000);
+        timers.reset_to(15 * 1000);
 
         loop {
             timers.set_turn(game_state.turn as i8);
@@ -95,16 +96,16 @@ pub fn main() -> error::Returns<()> {
 
         display::print_game_state(&game_state, Some(&timers));
         println!("Final scores: {:?}", final_scores);
-        let mut has_time_penalty = false;
-        for (i, &timer) in timers.clocks_ms.iter().enumerate() {
-            if timer < 0 {
-                let penalty = (((!timer / 60000) + 1) * 10) as i16;
-                println!("Player {} penalty {}", i + 1, penalty);
-                final_scores[i] -= penalty;
-                has_time_penalty = true;
+        let mut has_time_adjustment = false;
+        for (i, &clock_ms) in timers.clocks_ms.iter().enumerate() {
+            let adjustment = game_config.time_adjustment(clock_ms);
+            if adjustment != 0 {
+                println!("Player {} adjustment {}", i + 1, adjustment);
+                final_scores[i] += adjustment;
+                has_time_adjustment = true;
             }
         }
-        if has_time_penalty {
+        if has_time_adjustment {
             println!("Really final scores: {:?}", final_scores);
         }
     } // temp loop

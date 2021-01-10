@@ -110,8 +110,13 @@ pub fn print_game_state(
             game_state.game_config.alphabet().fmt_rack(&player.rack)
         );
         if let Some(game_timers) = optional_game_timers {
+            let clock_ms = game_timers.clocks_ms[i];
             print!(" ");
-            print_ms(game_timers.clocks_ms[i]);
+            print_ms(clock_ms);
+            let adjustment = game_state.game_config.time_adjustment(clock_ms);
+            if adjustment != 0 {
+                print!(" ({})", adjustment);
+            }
             if game_timers.turn as usize == i {
                 // may differ from game_state.turn if timer is paused
                 print!(" (timer running)");

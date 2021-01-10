@@ -51,6 +51,17 @@ impl<'a> GameConfig<'a> {
             }
         }
     }
+
+    // never positive
+    #[inline(always)]
+    pub fn time_adjustment(&self, clock_ms: i64) -> i16 {
+        match self {
+            GameConfig::Static(..) => {
+                // branchless
+                (-(((!clock_ms / 60000) + 1) * 10) as i16) & -((clock_ms < 0) as i16)
+            }
+        }
+    }
 }
 
 pub fn make_common_english_game_config<'a>() -> GameConfig<'a> {
