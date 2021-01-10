@@ -11,6 +11,7 @@ mod build;
 mod display;
 mod game_config;
 mod game_state;
+mod game_timers;
 mod klv;
 mod kwg;
 mod lexport;

@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use super::{alphabet, board_layout, game_state};
+use super::{alphabet, board_layout, game_state, game_timers};
 
 #[inline(always)]
 pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -> &'static str {
@@ -73,7 +73,22 @@ pub fn print_board(
     println!();
 }
 
-pub fn print_game_state(game_state: &game_state::GameState) {
+fn print_ms(mut ms: i64) {
+    if ms < 0 {
+        print!("-");
+        ms = -ms;
+    }
+    let just_ms = ms % 1000;
+    let sec = ms / 1000;
+    let just_sec = sec % 60;
+    let min = sec / 60;
+    print!("{:02}:{:02}.{:03}", min, just_sec, just_ms);
+}
+
+pub fn print_game_state(
+    game_state: &game_state::GameState,
+    optional_game_timers: Option<&game_timers::GameTimers>,
+) {
     print_board(
         &game_state.game_config.alphabet(),
         &game_state.game_config.board_layout(),
@@ -87,14 +102,22 @@ pub fn print_game_state(game_state: &game_state::GameState) {
             .alphabet()
             .fmt_rack(&game_state.bag.0)
     );
-    for (i, player) in (1..).zip(game_state.players.iter()) {
+    for (i, player) in game_state.players.iter().enumerate() {
         print!(
             "Player {}: {} {}",
-            i,
+            i + 1,
             player.score,
             game_state.game_config.alphabet().fmt_rack(&player.rack)
         );
-        if game_state.turn + 1 == i {
+        if let Some(game_timers) = optional_game_timers {
+            print!(" ");
+            print_ms(game_timers.clocks_ms[i]);
+            if game_timers.turn as usize == i {
+                // may differ from game_state.turn if timer is paused
+                print!(" (timer running)");
+            }
+        }
+        if game_state.turn as usize == i {
             print!(" (turn)");
         }
         println!();
