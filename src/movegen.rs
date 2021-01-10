@@ -1650,7 +1650,7 @@ impl KurniaMoveGenerator {
     }
 
     // this does not alloc except for growing the results and exchange_buffer
-    pub fn gen_moves_alloc<
+    pub fn gen_moves_filtered<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i16, &[u8]) -> bool,
         AdjustLeaveValue: Fn(f32) -> f32,
@@ -1662,10 +1662,14 @@ impl KurniaMoveGenerator {
         mut place_move_predicate: PlaceMovePredicate,
         adjust_leave_value: AdjustLeaveValue,
     ) {
+        self.plays.clear();
+        if max_gen == 0 {
+            return;
+        }
+
         let alphabet = board_snapshot.game_config.alphabet();
         let board_layout = board_snapshot.game_config.board_layout();
 
-        self.plays.clear();
         let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::from(
             std::mem::take(&mut self.plays),
         ));
@@ -1676,9 +1680,6 @@ impl KurniaMoveGenerator {
             equity: f32,
             mut construct_play: F,
         ) {
-            if max_gen == 0 {
-                return;
-            }
             let mut borrowed = found_moves.borrow_mut();
             if borrowed.len() >= max_gen {
                 if borrowed.peek().unwrap().equity >= equity {
@@ -1760,21 +1761,18 @@ impl KurniaMoveGenerator {
         };
 
         let can_accept = |best_possible_equity: f32| {
-            if max_gen == 0 {
-                return false;
-            }
             let borrowed = found_moves.borrow();
             return !(borrowed.len() >= max_gen
                 && borrowed.peek().unwrap().equity >= best_possible_equity);
         };
 
-        kurnia_gen_nonplace_moves(board_snapshot, &mut working_buffer, found_exchange_move);
         kurnia_gen_place_moves(
             board_snapshot,
             &mut working_buffer,
             found_place_move,
             can_accept,
         );
+        kurnia_gen_nonplace_moves(board_snapshot, &mut working_buffer, found_exchange_move);
 
         self.plays = found_moves.into_inner().into_vec();
         self.plays.sort_unstable();
@@ -1787,7 +1785,7 @@ impl KurniaMoveGenerator {
         rack: &'a [u8],
         max_gen: usize,
     ) {
-        self.gen_moves_alloc(
+        self.gen_moves_filtered(
             board_snapshot,
             rack,
             max_gen,

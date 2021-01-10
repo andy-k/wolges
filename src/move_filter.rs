@@ -199,7 +199,7 @@ impl GenMoves<'_> {
                 let leave_scale = tilt.leave_scale;
                 let mut limited_vocab_checker =
                     std::mem::replace(&mut tilt.limited_vocab_checker, LimitedVocabChecker::new());
-                move_generator.gen_moves_alloc(
+                move_generator.gen_moves_filtered(
                     board_snapshot,
                     rack,
                     max_gen,
