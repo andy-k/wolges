@@ -30,7 +30,6 @@ struct Candidate {
 }
 
 pub struct Simmer<'a> {
-    candidate_plays: Vec<movegen::ValuedMove>,
     candidates: Vec<Candidate>,
     rng: Box<dyn RngCore>,
     move_generator: movegen::KurniaMoveGenerator,
@@ -54,7 +53,6 @@ impl<'a> Simmer<'a> {
         klv: &'a klv::Klv,
     ) -> Self {
         Self {
-            candidate_plays: Vec::new(),
             candidates: Vec::new(),
             rng: Box::new(rand_chacha::ChaCha20Rng::from_entropy()),
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
@@ -74,20 +72,20 @@ impl<'a> Simmer<'a> {
     }
 
     #[inline(always)]
-    fn take_plays(&mut self, plays: &mut Vec<movegen::ValuedMove>) {
-        self.candidate_plays = std::mem::take(plays);
+    fn prepare(
+        &mut self,
+        game_state: &game_state::GameState,
+        num_plays: usize,
+        num_sim_plies: usize,
+    ) {
         self.candidates.clear();
-        self.candidates.reserve(plays.len());
-        for idx in 0..self.candidate_plays.len() {
+        self.candidates.reserve(num_plays);
+        for idx in 0..num_plays {
             self.candidates.push(Candidate {
                 play_index: idx,
                 stats: stats::Stats::new(),
             });
         }
-    }
-
-    #[inline(always)]
-    fn prepare(&mut self, game_state: &game_state::GameState, num_sim_plies: usize) {
         self.initial_game_state
             .clone_transient_stuffs_from(&game_state);
         self.game_state.clone_transient_stuffs_from(&game_state);
@@ -234,18 +232,12 @@ impl<'a> Simmer<'a> {
     }
 
     #[inline(always)]
-    fn extract_top_candidate_by_mean(&mut self) -> movegen::ValuedMove {
-        let top_candidate = self.candidate_plays.swap_remove(
-            self.candidates
-                .iter()
-                .max_by(|a, b| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
-                .unwrap()
-                .play_index,
-        );
-        movegen::ValuedMove {
-            equity: top_candidate.equity,
-            play: top_candidate.play,
-        }
+    fn top_candidate_play_index_by_mean(&self) -> usize {
+        self.candidates
+            .iter()
+            .max_by(|a, b| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
+            .unwrap()
+            .play_index
     }
 }
 
@@ -271,17 +263,15 @@ impl MovePicker<'_> {
             }
             MovePicker::Simmer(simmer) => {
                 filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 100);
-                simmer.take_plays(&mut move_generator.plays);
-                let candidate_plays = std::mem::take(&mut simmer.candidate_plays);
+                simmer.prepare(&game_state, move_generator.plays.len(), 2);
                 let mut candidates = std::mem::take(&mut simmer.candidates);
-                simmer.prepare(&game_state, 2);
                 let num_sim_iters = 1000;
                 let mut prune_iter = 16;
                 for sim_iter in 1..=num_sim_iters {
                     simmer.prepare_iteration();
                     for candidate in candidates.iter_mut() {
                         let game_ended =
-                            simmer.simulate(&candidate_plays[candidate.play_index].play);
+                            simmer.simulate(&move_generator.plays[candidate.play_index].play);
                         let final_spread = simmer.final_equity_spread();
                         let win_prob = simmer.compute_win_prob(game_ended, final_spread);
                         let sim_spread = final_spread - simmer.initial_score_spread as f32;
@@ -303,11 +293,11 @@ impl MovePicker<'_> {
                         }
                     }
                 }
-                simmer.candidate_plays = candidate_plays;
                 simmer.candidates = candidates;
                 move_generator
                     .plays
-                    .push(simmer.extract_top_candidate_by_mean());
+                    .swap(0, simmer.top_candidate_play_index_by_mean());
+                move_generator.plays.truncate(1);
             }
         }
     }
