@@ -19,6 +19,7 @@ mod main_auto;
 mod main_build;
 mod main_json;
 mod main_lex;
+mod main_shell;
 mod matrix;
 mod move_filter;
 mod move_picker;
@@ -39,6 +40,11 @@ fn main() -> error::Returns<()> {
 
     if false {
         main_json::main()?;
+        return Ok(());
+    }
+
+    if true {
+        main_shell::main()?;
         return Ok(());
     }
 
