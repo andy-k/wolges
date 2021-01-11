@@ -19,6 +19,9 @@ pub fn main() -> error::Returns<()> {
         1,
     ));
     let mut filtered_movegen_1 = move_filter::GenMoves::Unfiltered;
+    if true {
+        filtered_movegen_0 = move_filter::GenMoves::Unfiltered;
+    }
 
     let mut move_picker_0 = move_picker::MovePicker::Hasty;
     let mut move_picker_1 =
