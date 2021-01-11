@@ -88,15 +88,11 @@ fn read_english_machine_words_or_leaves(
     blank: char,
     giant_string: &str,
 ) -> error::Returns<Box<[bites::Bites]>> {
-    // Memory wastage notes:
-    // - Vec of 270k words have size 512k because vec grows by doubling.
-    // - Size of vec is 24 bytes. Size of slice would have been 16 bytes.
-    // - Each vec is individually allocated. We could instead join them all.
-    // - We do not do this, because that O(n) already gives build().
-
     let mut machine_words = Vec::<bites::Bites>::new();
+    let mut v = Vec::new();
     for s in giant_string.lines() {
-        let mut v = Vec::with_capacity(s.len());
+        v.clear();
+        v.reserve(s.len());
         // This is English-only, and will need adjustment for multibyte.
         // The output must be 1-based because 0 has special meaning.
         // It should also not be too high to fit in a u64 cross-set.
