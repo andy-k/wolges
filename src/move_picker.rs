@@ -267,19 +267,23 @@ impl MovePicker<'_> {
                 simmer.prepare(&game_state, move_generator.plays.len(), 2);
                 let mut candidates = std::mem::take(&mut simmer.candidates);
                 let num_sim_iters = 1000;
-                let mut prune_iter = 16;
-                let mut max_candidates_allowed = !0;
                 let mut last_reported_elapsed_time_secs = 0;
+                let mut last_prune_time_prune_intervals = 0;
+                let max_time_for_move_ms = 15000u64;
+                let orig_candidates_len = candidates.len();
+                let prune_interval_ms =
+                    std::cmp::max(1, max_time_for_move_ms / orig_candidates_len as u64);
                 for sim_iter in 1..=num_sim_iters {
-                    let elapsed_time_secs = t0.elapsed().as_secs();
+                    let elapsed_time_ms = t0.elapsed().as_millis() as u64;
+                    let elapsed_time_secs = elapsed_time_ms / 1000;
                     if elapsed_time_secs != last_reported_elapsed_time_secs {
+                        last_reported_elapsed_time_secs = elapsed_time_secs;
                         println!(
                             "After {} seconds, doing iteration {} with {} candidates",
-                            elapsed_time_secs,
+                            last_reported_elapsed_time_secs,
                             sim_iter,
                             candidates.len()
                         );
-                        last_reported_elapsed_time_secs = elapsed_time_secs;
                     }
                     simmer.prepare_iteration();
                     for candidate in candidates.iter_mut() {
@@ -292,8 +296,11 @@ impl MovePicker<'_> {
                             .stats
                             .update(sim_spread as f64 + win_prob * simmer.win_prob_weightage());
                     }
-                    if sim_iter == prune_iter {
-                        prune_iter += 16;
+                    let elapsed_time_prune_intervals = elapsed_time_ms / prune_interval_ms;
+                    if sim_iter >= 20
+                        && elapsed_time_prune_intervals != last_prune_time_prune_intervals
+                    {
+                        last_prune_time_prune_intervals = elapsed_time_prune_intervals;
                         let z = 1.96; // 95% confidence interval
                         let low_bar = candidates
                             .iter()
@@ -301,10 +308,11 @@ impl MovePicker<'_> {
                             .max_by(|a, b| a.partial_cmp(&b).unwrap())
                             .unwrap();
                         candidates.retain(|candidate| candidate.stats.ci_max(z) >= low_bar);
-                        max_candidates_allowed =
-                            std::cmp::min(candidates.len() + 10, max_candidates_allowed - 1);
+                        let max_candidates_allowed = 1
+                            + ((max_time_for_move_ms.saturating_sub(elapsed_time_ms)
+                                / (2 * prune_interval_ms)) as usize);
                         while candidates.len() > max_candidates_allowed {
-                            // if they're all about the same, let's forget one move.
+                            // they're all about the same anyway
                             candidates.swap_remove(
                                 candidates
                                     .iter()
