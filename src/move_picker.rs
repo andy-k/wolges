@@ -310,8 +310,8 @@ impl MovePicker<'_> {
                             .unwrap();
                         candidates.retain(|candidate| candidate.stats.ci_max(z) >= low_bar);
                         let max_candidates_allowed = 1
-                            + ((max_time_for_move_ms.saturating_sub(elapsed_time_ms)
-                                / (2 * prune_interval_ms)) as usize);
+                            + (2 * max_time_for_move_ms.saturating_sub(elapsed_time_ms)
+                                / prune_interval_ms) as usize;
                         while candidates.len() > max_candidates_allowed {
                             // they're all about the same anyway
                             candidates.swap_remove(
