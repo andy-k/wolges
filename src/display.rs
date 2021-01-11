@@ -102,6 +102,7 @@ pub fn print_game_state(
             .alphabet()
             .fmt_rack(&game_state.bag.0)
     );
+    let now = std::time::Instant::now();
     for (i, player) in game_state.players.iter().enumerate() {
         print!(
             "Player {}: {} {}",
@@ -110,7 +111,7 @@ pub fn print_game_state(
             game_state.game_config.alphabet().fmt_rack(&player.rack)
         );
         if let Some(game_timers) = optional_game_timers {
-            let clock_ms = game_timers.clocks_ms[i];
+            let clock_ms = game_timers.get_timer_as_at(now, i);
             print!(" ");
             print_ms(clock_ms);
             let adjustment = game_state.game_config.time_adjustment(clock_ms);

@@ -31,4 +31,14 @@ impl GameTimers {
         self.instant = new_instant;
         self.turn = new_turn;
     }
+
+    pub fn get_timer_as_at(&self, instant: std::time::Instant, turn: usize) -> i64 {
+        if turn < self.clocks_ms.len() {
+            self.clocks_ms[turn]
+                - (-((turn == self.turn as usize) as i64)
+                    & instant.saturating_duration_since(self.instant).as_millis() as i64)
+        } else {
+            0
+        }
+    }
 }
