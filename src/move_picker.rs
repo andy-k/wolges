@@ -241,6 +241,20 @@ impl<'a> Simmer<'a> {
     }
 }
 
+struct Periods(u64);
+
+impl Periods {
+    #[inline(always)]
+    fn update(&mut self, new_periods: u64) -> bool {
+        if new_periods != self.0 {
+            self.0 = new_periods;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 pub enum MovePicker<'a> {
     Hasty,
@@ -248,6 +262,27 @@ pub enum MovePicker<'a> {
 }
 
 impl MovePicker<'_> {
+    #[inline(always)]
+    fn limit_surviving_candidates(
+        candidates: &mut Vec<Candidate>,
+        z: f64,
+        max_candidates_allowed: usize,
+    ) {
+        while candidates.len() > max_candidates_allowed {
+            // pruning regularly means binary heap is not justified here.
+            // also, this means candidates are almost indistinguishable.
+            candidates.swap_remove(
+                candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(i, candidate)| (i, candidate.stats.ci_max(-z)))
+                    .min_by(|(_, a), (_, b)| a.partial_cmp(&b).unwrap())
+                    .unwrap()
+                    .0,
+            );
+        }
+    }
+
     #[inline(always)]
     pub fn pick_a_move(
         &mut self,
@@ -267,20 +302,17 @@ impl MovePicker<'_> {
                 simmer.prepare(&game_state, move_generator.plays.len(), 2);
                 let mut candidates = std::mem::take(&mut simmer.candidates);
                 let num_sim_iters = 1000;
-                let mut last_reported_elapsed_time_secs = 0;
-                let mut last_prune_time_prune_intervals = 0;
+                let mut tick_periods = Periods(0);
+                let mut prune_periods = Periods(0);
                 let max_time_for_move_ms = 15000u64;
-                let orig_candidates_len = candidates.len();
                 let prune_interval_ms =
-                    std::cmp::max(1, max_time_for_move_ms / orig_candidates_len as u64);
+                    std::cmp::max(1, max_time_for_move_ms / candidates.len() as u64);
                 for sim_iter in 1..=num_sim_iters {
                     let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-                    let elapsed_time_secs = elapsed_time_ms / 1000;
-                    if elapsed_time_secs != last_reported_elapsed_time_secs {
-                        last_reported_elapsed_time_secs = elapsed_time_secs;
+                    if tick_periods.update(elapsed_time_ms / 1000) {
                         println!(
                             "After {} seconds, doing iteration {} with {} candidates",
-                            last_reported_elapsed_time_secs,
+                            tick_periods.0,
                             sim_iter,
                             candidates.len()
                         );
@@ -296,34 +328,22 @@ impl MovePicker<'_> {
                             .stats
                             .update(sim_spread as f64 + win_prob * simmer.win_prob_weightage());
                     }
-                    let elapsed_time_prune_intervals = elapsed_time_ms / prune_interval_ms;
-                    if sim_iter >= 20
-                        && (sim_iter % 32 == 0
-                            || elapsed_time_prune_intervals != last_prune_time_prune_intervals)
+                    if sim_iter % 16 == 0
+                        && prune_periods.update(elapsed_time_ms / prune_interval_ms)
                     {
-                        last_prune_time_prune_intervals = elapsed_time_prune_intervals;
-                        let z = 1.96; // 95% confidence interval
+                        const Z: f64 = 1.96; // 95% confidence interval
                         let low_bar = candidates
                             .iter()
-                            .map(|candidate| candidate.stats.ci_max(-z))
+                            .map(|candidate| candidate.stats.ci_max(-Z))
                             .max_by(|a, b| a.partial_cmp(&b).unwrap())
                             .unwrap();
-                        candidates.retain(|candidate| candidate.stats.ci_max(z) >= low_bar);
-                        let max_candidates_allowed = 1
-                            + (2 * max_time_for_move_ms.saturating_sub(elapsed_time_ms)
-                                / prune_interval_ms) as usize;
-                        while candidates.len() > max_candidates_allowed {
-                            // they're all about the same anyway
-                            candidates.swap_remove(
-                                candidates
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, candidate)| (i, candidate.stats.ci_max(-z)))
-                                    .min_by(|(_, a), (_, b)| a.partial_cmp(&b).unwrap())
-                                    .unwrap()
-                                    .0,
-                            );
-                        }
+                        candidates.retain(|candidate| candidate.stats.ci_max(Z) >= low_bar);
+                        Self::limit_surviving_candidates(
+                            &mut candidates,
+                            Z,
+                            1 + (2 * max_time_for_move_ms.saturating_sub(elapsed_time_ms)
+                                / prune_interval_ms) as usize,
+                        );
                         if candidates.len() < 2 {
                             break;
                         }
