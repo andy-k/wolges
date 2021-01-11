@@ -298,7 +298,8 @@ impl MovePicker<'_> {
                     }
                     let elapsed_time_prune_intervals = elapsed_time_ms / prune_interval_ms;
                     if sim_iter >= 20
-                        && elapsed_time_prune_intervals != last_prune_time_prune_intervals
+                        && (sim_iter % 32 == 0
+                            || elapsed_time_prune_intervals != last_prune_time_prune_intervals)
                     {
                         last_prune_time_prune_intervals = elapsed_time_prune_intervals;
                         let z = 1.96; // 95% confidence interval
