@@ -95,15 +95,10 @@ pub fn to_macondo<'a>(
         }
         letter_set_bitset &= !1; // disregard the 00 bit
         let mut letter_set_index = env.letter_sets.len() as u32;
-        use std::collections::hash_map::Entry::{Occupied, Vacant};
-        match env.letter_sets.entry(letter_set_bitset) {
-            Occupied(entry) => {
-                letter_set_index = *entry.get();
-            }
-            Vacant(entry) => {
-                entry.insert(letter_set_index);
-            }
-        };
+        letter_set_index = *env
+            .letter_sets
+            .entry(letter_set_bitset)
+            .or_insert(letter_set_index);
         let orig_w = w;
         w += 1;
         env.nodes[orig_w as usize] =

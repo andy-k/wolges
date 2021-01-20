@@ -86,16 +86,10 @@ impl StateMaker<'_> {
                 arc_index: node_transition.arc_index,
                 next_index: ret,
             };
-            use std::collections::hash_map::Entry::{Occupied, Vacant};
-            match self.states_finder.entry(state) {
-                Occupied(entry) => {
-                    ret = *entry.get();
-                }
-                Vacant(entry) => {
-                    ret = self.states.len() as u32;
-                    self.states.push(entry.key().clone());
-                    entry.insert(ret);
-                }
+            let new_ret = self.states.len() as u32;
+            ret = *self.states_finder.entry(state.clone()).or_insert(new_ret);
+            if ret == new_ret {
+                self.states.push(state);
             }
         }
         ret
