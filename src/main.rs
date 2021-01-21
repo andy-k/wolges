@@ -9,6 +9,7 @@ mod bites;
 mod board_layout;
 mod build;
 mod display;
+mod endgame;
 mod game_config;
 mod game_state;
 mod game_timers;
@@ -17,6 +18,7 @@ mod kwg;
 mod lexport;
 mod main_auto;
 mod main_build;
+mod main_endgame;
 mod main_json;
 mod main_lex;
 mod main_shell;
@@ -45,6 +47,11 @@ fn main() -> error::Returns<()> {
 
     if false {
         main_shell::main()?;
+        return Ok(());
+    }
+
+    if true {
+        main_endgame::main()?;
         return Ok(());
     }
 
