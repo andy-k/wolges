@@ -320,13 +320,12 @@ pub fn build(
     machine_words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
     // The sink state always exists.
-    let mut states = Vec::new();
-    states.push(State {
+    let mut states = vec![State {
         tile: 0,
         accepts: false,
         arc_index: 0,
         next_index: 0,
-    });
+    }];
 
     let mut states_finder = std::collections::HashMap::<_, _, MyHasherDefault>::default();
     states_finder.insert(states[0].clone(), 0);
