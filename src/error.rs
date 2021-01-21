@@ -25,6 +25,7 @@ pub fn new(s: String) -> MyError {
 pub type BoxAnyError = Box<dyn std::error::Error>;
 pub type Returns<T> = Result<T, BoxAnyError>;
 
+#[macro_export]
 macro_rules! return_error {
     ($error:expr) => {
         return Err(crate::error::new($error).into());

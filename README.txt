@@ -31,10 +31,7 @@ rustup-init
 
 (cd src for convenience)
 (put some word list .txt files and leaves.csv files in current directory)
-(toggle "if false" in fn main in main.rs to compile leaves and word graphs)
-cargo run --release
-
-(toggle it back to false)
+cargo run --release --bin buildlex
 
 
 RUNNING
@@ -54,7 +51,7 @@ Code quality is mediocre at best.
 
 Most files are in src.
 
-- main is the entry point, what it does is not defined.
+- there are several mains, look at Cargo.toml and pass --bin to cargo run.
 - display collects display helpers.
 - error provides a generic error value.
 - kwg deal with the Kurnia Word Graph file.

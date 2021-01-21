@@ -3,6 +3,7 @@ name = "board"
 version = "0.1.0"
 authors = ["Andy Kurnia"]
 edition = "2018"
+default-run = "auto"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,3 +19,27 @@ rustyline-derive = "0.4.0"
 serde = { version = "1.0.118", features = ["derive"] }
 serde_json = "1.0.60"
 shell-words = "1.0.0"
+
+[[bin]]
+name = "auto"
+path = "src/main_auto.rs"
+
+[[bin]]
+name = "buildlex"
+path = "src/main_build.rs"
+
+[[bin]]
+name = "endgame"
+path = "src/main_endgame.rs"
+
+[[bin]]
+name = "json"
+path = "src/main_json.rs"
+
+[[bin]]
+name = "lex"
+path = "src/main_lex.rs"
+
+[[bin]]
+name = "shell"
+path = "src/main_shell.rs"

@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use super::{
+use board::{
     display, error, game_config, game_state, game_timers, klv, kwg, move_filter, move_picker,
     movegen,
 };

@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use super::error;
+use board::error;
 mod rlhelper;
 
 pub fn main() -> error::Returns<()> {
