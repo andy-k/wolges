@@ -24,6 +24,11 @@ impl Strider {
     }
 
     #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline(always)]
     pub fn at(&self, idx: i8) -> usize {
         ((self.base as isize) + (idx as isize) * (self.step as isize)) as usize
     }

@@ -34,6 +34,11 @@ impl<'a> Alphabet<'a> {
     }
 
     #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline(always)]
     pub fn get(&self, idx: u8) -> &'a Tile<'a> {
         match self {
             Alphabet::Static(x) => &x.tiles[idx as usize],

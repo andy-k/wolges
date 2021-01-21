@@ -6,6 +6,13 @@ pub struct Stats {
     m2: f64,
 }
 
+impl Default for Stats {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Stats {
     #[inline(always)]
     pub fn new() -> Self {
