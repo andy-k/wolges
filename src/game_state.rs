@@ -98,7 +98,7 @@ impl<'a> GameState<'a> {
         self.zero_turns.clone_from(&source.zero_turns);
     }
 
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         for player in self.players.iter_mut() {
             player.score = 0;
             self.bag.0.extend_from_slice(&player.rack);
