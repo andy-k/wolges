@@ -47,7 +47,7 @@ impl Bag {
                 return;
             }
             1 => {
-                self.0.insert(rng.gen_range(0, self.0.len() + 1), tiles[0]);
+                self.0.insert(rng.gen_range(0..self.0.len() + 1), tiles[0]);
                 return;
             }
             _ => {}
@@ -67,7 +67,7 @@ impl Bag {
             } else if num_old_tiles == 0 {
                 false
             } else {
-                rng.gen_range(0, num_old_tiles + num_new_tiles) < num_old_tiles
+                rng.gen_range(0..num_old_tiles + num_new_tiles) < num_old_tiles
             } {
                 self.0[wp] = self.0[p_old_tiles];
                 p_old_tiles += 1;

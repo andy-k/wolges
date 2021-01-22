@@ -147,7 +147,7 @@ impl<'a> Tilt<'a> {
 
     #[inline(always)]
     pub fn tilt_by_rng(&mut self, rng: &mut dyn RngCore) {
-        self.tilt_to(rng.gen_range(0.5 - self.bot_level as f32 * 0.1, 1.0));
+        self.tilt_to(rng.gen_range(0.5 - self.bot_level as f32 * 0.1..1.0));
     }
 
     #[inline(always)]
