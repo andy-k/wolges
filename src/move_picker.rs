@@ -307,6 +307,7 @@ impl MovePicker<'_> {
                 let max_time_for_move_ms = 15000u64;
                 let prune_interval_ms =
                     std::cmp::max(1, max_time_for_move_ms / candidates.len() as u64);
+                const Z: f64 = 1.96; // 95% confidence interval
                 for sim_iter in 1..=num_sim_iters {
                     let elapsed_time_ms = t0.elapsed().as_millis() as u64;
                     if tick_periods.update(elapsed_time_ms / 1000) {
@@ -331,7 +332,6 @@ impl MovePicker<'_> {
                     if sim_iter % 16 == 0
                         && prune_periods.update(elapsed_time_ms / prune_interval_ms)
                     {
-                        const Z: f64 = 1.96; // 95% confidence interval
                         let low_bar = candidates
                             .iter()
                             .map(|candidate| candidate.stats.ci_max(-Z))
@@ -350,6 +350,26 @@ impl MovePicker<'_> {
                     }
                 }
                 simmer.candidates = candidates;
+                let top_idx = simmer
+                    .candidates
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
+                    .unwrap()
+                    .0;
+                println!(
+                    "top candidate mean = {} (sd={} count={} range {}..{}) took {:?}",
+                    simmer.candidates[top_idx].stats.mean(),
+                    simmer.candidates[top_idx].stats.standard_deviation(),
+                    simmer.candidates[top_idx].stats.count(),
+                    simmer.candidates[top_idx].stats.ci_max(-Z),
+                    simmer.candidates[top_idx].stats.ci_max(Z),
+                    t0.elapsed()
+                );
+                assert_eq!(
+                    simmer.candidates[top_idx].play_index,
+                    simmer.top_candidate_play_index_by_mean()
+                );
                 move_generator
                     .plays
                     .swap(0, simmer.top_candidate_play_index_by_mean());

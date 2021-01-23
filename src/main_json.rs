@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use board::{display, error, game_config, klv, kwg, movegen};
+use board::{display, error, game_config, game_state, klv, kwg, move_filter, move_picker, movegen};
+use rand::prelude::*;
 
 // tile numbering follows alphabet order (not necessarily unicode order).
 // rack: array of numbers. 0 for blank, 1 for A.
@@ -26,8 +27,8 @@ pub fn main() -> error::Returns<()> {
     let data = r#"
       {
         "lexicon": "CSW19",
-        "rack": [ 1, 3, 10, 16, 17, 18, 19 ],
-        "board": [
+        "xrack": [ 1, 3, 10, 16, 17, 18, 19 ],
+        "xboard": [
           [  0,  0,  0,  0,  0,  0,  0, 18,  0,  0,  0,  8, 15, 12,  4 ],
           [  0,  0,  0,  0,  9,  4,  5,  1, 20,  9, 22, -5,  0,  0,  0 ],
           [  0,  0,  0,  0,  0,  0,  0,  9,  0,  0,  0,  0,  0,  0,  0 ],
@@ -38,6 +39,24 @@ pub fn main() -> error::Returns<()> {
           [  0,  4, 15, 13,  9, 14,  5,  5,  0,  0,  0,  0,  0,  0,  0 ],
           [  7,  1,  2, 25,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
           [  0, 23, 15,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ]
+        ],
+        "rack": [ 3, 4, 5, 12, 13, 15, 15 ],
+        "board": [
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0, 26,  1,  7,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  1, 11,  5,  5,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
           [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
           [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
           [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 ],
@@ -85,6 +104,13 @@ pub fn main() -> error::Returns<()> {
         }
     };
 
+    let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
+    let mut game_state = game_state::GameState::new(&game_config);
+    game_state.reset();
+    // temp hardcode
+    game_state.players[0].score = 16;
+    game_state.players[1].score = 44;
+
     let alphabet = game_config.alphabet();
     let alphabet_len_without_blank = alphabet.len() - 1;
 
@@ -109,6 +135,7 @@ pub fn main() -> error::Returns<()> {
                 alphabet.freq(tile),
             ));
         }
+        game_state.players[0].rack.push(tile);
     }
 
     let expected_dim = game_config.board_layout().dim();
@@ -178,6 +205,37 @@ pub fn main() -> error::Returns<()> {
         klv: &klv,
     };
     display::print_board(&alphabet, &game_config.board_layout(), &board_tiles);
+
+    let mut move_filter = move_filter::GenMoves::Unfiltered;
+    let mut move_picker =
+        move_picker::MovePicker::Simmer(move_picker::Simmer::new(&game_config, &kwg, &klv));
+    game_state.board_tiles.copy_from_slice(&board_tiles);
+
+    // put the bag and shuffle it
+    game_state.bag.0.clear();
+    game_state
+        .bag
+        .0
+        .reserve(available_tally.iter().map(|&x| x as usize).sum());
+    game_state.bag.0.extend(
+        (0u8..)
+            .zip(available_tally.iter())
+            .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize)),
+    );
+    game_state.bag.shuffle(&mut rng);
+
+    move_picker.pick_a_move(
+        &mut move_filter,
+        &mut move_generator,
+        &board_snapshot,
+        &game_state,
+        &game_state.current_player().rack,
+    );
+    let plays = &move_generator.plays;
+    println!("found {} moves", plays.len());
+    for play in plays.iter() {
+        println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+    }
 
     move_generator.gen_moves_unfiltered(board_snapshot, &question.rack, question.max_gen);
     let plays = &move_generator.plays;
