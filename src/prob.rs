@@ -57,16 +57,18 @@ impl<'a> WordProbability<'a> {
         word.iter().for_each(|&c| self.word_tally[c as usize] += 1);
         let n_blanks = self.alphabet.freq(0) as isize;
         for c in 1..self.alphabet.len() {
-            let n_c_in_bag = self.alphabet.freq(c) as isize;
             let n_c_in_word = self.word_tally[c as usize] as isize;
-            let this_pas = self.pascal.row(n_c_in_bag as usize);
-            for j in (0..=n_blanks).rev() {
-                let baseline = j - n_c_in_word;
-                let mut v = 0;
-                for k in std::cmp::max(0, baseline)..=std::cmp::min(baseline + n_c_in_bag, j) {
-                    v += self.dp[k as usize] * this_pas[(k - baseline) as usize];
+            if n_c_in_word != 0 {
+                let n_c_in_bag = self.alphabet.freq(c) as isize;
+                let this_pas = self.pascal.row(n_c_in_bag as usize);
+                for j in (0..=n_blanks).rev() {
+                    let baseline = j - n_c_in_word;
+                    let mut v = 0;
+                    for k in std::cmp::max(0, baseline)..=std::cmp::min(baseline + n_c_in_bag, j) {
+                        v += self.dp[k as usize] * this_pas[(k - baseline) as usize];
+                    }
+                    self.dp[j as usize] = v;
                 }
-                self.dp[j as usize] = v;
             }
         }
         self.dp
