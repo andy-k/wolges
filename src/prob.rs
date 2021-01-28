@@ -2,6 +2,7 @@
 
 use super::{alphabet, kwg};
 
+#[derive(Clone)]
 struct Pascal {
     raw: Vec<u64>,
     rows: usize,
@@ -33,20 +34,25 @@ impl Pascal {
     }
 }
 
-pub struct WordProbability<'a> {
+#[derive(Clone)]
+pub struct WordProbability {
     dp: Box<[u64]>,
     pascal: Pascal,
-    alphabet: &'a alphabet::Alphabet<'a>,
+    alphabet_freqs: Box<[u8]>,
     word_tally: Box<[u8]>,
 }
 
-impl<'a> WordProbability<'a> {
-    pub fn new(alphabet: &'a alphabet::Alphabet<'a>) -> Self {
+impl WordProbability {
+    pub fn new(alphabet: &alphabet::Alphabet<'_>) -> Self {
+        let alphabet_freqs = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile))
+            .collect::<Box<_>>();
+        let word_tally = vec![0; alphabet_freqs.len()].into_boxed_slice();
         Self {
-            dp: vec![0; alphabet.freq(0) as usize + 1].into_boxed_slice(),
+            dp: vec![0; alphabet_freqs[0] as usize + 1].into_boxed_slice(),
             pascal: Pascal::new(),
-            alphabet,
-            word_tally: vec![0; alphabet.len() as usize].into_boxed_slice(),
+            alphabet_freqs,
+            word_tally,
         }
     }
 
@@ -55,11 +61,11 @@ impl<'a> WordProbability<'a> {
         self.dp[0] = 1;
         self.word_tally.iter_mut().for_each(|m| *m = 0);
         word.iter().for_each(|&c| self.word_tally[c as usize] += 1);
-        let n_blanks = self.alphabet.freq(0) as isize;
-        for c in 1..self.alphabet.len() {
+        let n_blanks = self.alphabet_freqs[0] as isize;
+        for c in 1..self.alphabet_freqs.len() {
             let n_c_in_word = self.word_tally[c as usize] as isize;
             if n_c_in_word != 0 {
-                let n_c_in_bag = self.alphabet.freq(c) as isize;
+                let n_c_in_bag = self.alphabet_freqs[c as usize] as isize;
                 let this_pas = self.pascal.row(n_c_in_bag as usize);
                 for j in (0..=n_blanks).rev() {
                     let baseline = j - n_c_in_word;

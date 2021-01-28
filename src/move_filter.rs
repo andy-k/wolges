@@ -3,6 +3,7 @@
 use super::{game_config, kwg, movegen, prob};
 use rand::prelude::*;
 
+#[derive(Clone)]
 struct LimitedVocabChecker {
     word_check_buf: Vec<u8>,
 }
@@ -87,13 +88,13 @@ static LENGTH_IMPORTANCES: &[f32] = &[
     0.0, 0.0, 2.0, 1.5, 1.0, 0.75, 0.5, 1.0, 1.0, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1, 0.1,
 ];
 
+#[derive(Clone)]
 pub struct Tilt<'a> {
-    word_prob: Box<prob::WordProbability<'a>>,
+    word_prob: Box<prob::WordProbability>,
     max_prob_by_len: Box<[u64]>,
     length_importances: &'a [f32],
     pub tilt_factor: f32,
     pub leave_scale: f32,
-    bot_level: i8,
     limited_vocab_checker: LimitedVocabChecker,
 }
 
@@ -103,10 +104,9 @@ impl<'a> Tilt<'a> {
     }
 
     pub fn new(
-        game_config: &'a game_config::GameConfig<'a>,
-        kwg: &'a kwg::Kwg,
+        game_config: &game_config::GameConfig<'_>,
+        kwg: &kwg::Kwg,
         length_importances: &'a [f32],
-        bot_level: i8,
     ) -> Self {
         let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
         let max_prob_by_len = word_prob.get_max_probs_by_len(&kwg);
@@ -116,7 +116,6 @@ impl<'a> Tilt<'a> {
             length_importances,
             tilt_factor: 0.0,
             leave_scale: 1.0,
-            bot_level,
             limited_vocab_checker: LimitedVocabChecker::new(),
         }
     }
@@ -134,20 +133,16 @@ impl<'a> Tilt<'a> {
     }
 
     #[inline(always)]
-    pub fn tilt_to(&mut self, new_tilt_factor: f32) {
+    pub fn tilt_to(&mut self, new_tilt_factor: f32, bot_level: i8) {
         // 0.0 = untilted (can see all valid moves)
         // 1.0 = tilted (can see no valid moves)
         self.tilt_factor = Self::clamp(new_tilt_factor, 0.0, 1.0);
-        self.leave_scale = Self::clamp(
-            self.bot_level as f32 * 0.1 + (1.0 - self.tilt_factor),
-            0.0,
-            1.0,
-        );
+        self.leave_scale = Self::clamp(bot_level as f32 * 0.1 + (1.0 - self.tilt_factor), 0.0, 1.0);
     }
 
     #[inline(always)]
-    pub fn tilt_by_rng(&mut self, rng: &mut dyn RngCore) {
-        self.tilt_to(rng.gen_range(0.5 - self.bot_level as f32 * 0.1..1.0));
+    pub fn tilt_by_rng(&mut self, rng: &mut dyn RngCore, bot_level: i8) {
+        self.tilt_to(rng.gen_range(0.5 - bot_level as f32 * 0.1..1.0), bot_level);
     }
 
     #[inline(always)]
@@ -179,7 +174,7 @@ impl<'a> Tilt<'a> {
 
 pub enum GenMoves<'a> {
     Unfiltered,
-    Tilt(Tilt<'a>),
+    Tilt { tilt: Tilt<'a>, bot_level: i8 },
 }
 
 impl GenMoves<'_> {
@@ -195,7 +190,7 @@ impl GenMoves<'_> {
             Self::Unfiltered => {
                 move_generator.gen_moves_unfiltered(board_snapshot, rack, max_gen);
             }
-            Self::Tilt(tilt) => {
+            Self::Tilt { tilt, bot_level: _ } => {
                 let leave_scale = tilt.leave_scale;
                 let mut limited_vocab_checker =
                     std::mem::replace(&mut tilt.limited_vocab_checker, LimitedVocabChecker::new());

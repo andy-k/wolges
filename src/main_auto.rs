@@ -12,12 +12,10 @@ pub fn main() -> error::Returns<()> {
     let game_config = &game_config::make_common_english_game_config();
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
-    let mut filtered_movegen_0 = move_filter::GenMoves::Tilt(move_filter::Tilt::new(
-        &game_config,
-        &kwg,
-        move_filter::Tilt::length_importances(),
-        1,
-    ));
+    let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {
+        tilt: move_filter::Tilt::new(&game_config, &kwg, move_filter::Tilt::length_importances()),
+        bot_level: 1,
+    };
     let mut filtered_movegen_1 = move_filter::GenMoves::Unfiltered;
     if true {
         filtered_movegen_0 = move_filter::GenMoves::Unfiltered;
@@ -45,8 +43,8 @@ pub fn main() -> error::Returns<()> {
             } else {
                 &mut filtered_movegen_1
             };
-            if let move_filter::GenMoves::Tilt(tilt) = filtered_movegen {
-                tilt.tilt_by_rng(&mut rng);
+            if let move_filter::GenMoves::Tilt { tilt, bot_level } = filtered_movegen {
+                tilt.tilt_by_rng(&mut rng, *bot_level);
                 println!(
                     "Effective tilt: tilt factor = {}, leave scale = {}",
                     tilt.tilt_factor, tilt.leave_scale
