@@ -29,9 +29,12 @@ struct Candidate {
     stats: stats::Stats,
 }
 
+thread_local! {
+static RNG: std::cell::RefCell<Box<dyn RngCore>> = std::cell::RefCell::new(Box::new( rand_chacha::ChaCha20Rng::from_entropy()));
+}
+
 pub struct Simmer<'a> {
     candidates: Vec<Candidate>,
-    rng: Box<dyn RngCore>,
     move_generator: movegen::KurniaMoveGenerator,
     initial_game_state: game_state::GameState<'a>,
     game_state: game_state::GameState<'a>,
@@ -54,7 +57,6 @@ impl<'a> Simmer<'a> {
     ) -> Self {
         Self {
             candidates: Vec::new(),
-            rng: Box::new(rand_chacha::ChaCha20Rng::from_entropy()),
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             initial_game_state: game_state::GameState::new(game_config),
             game_state: game_state::GameState::new(game_config),
@@ -115,9 +117,11 @@ impl<'a> Simmer<'a> {
         }
         self.possible_to_play_out =
             self.initial_game_state.bag.0.len() <= self.num_tiles_that_matter;
-        self.initial_game_state
-            .bag
-            .shuffle_n(&mut self.rng, self.num_tiles_that_matter);
+        RNG.with(|rng| {
+            self.initial_game_state
+                .bag
+                .shuffle_n(&mut *rng.borrow_mut(), self.num_tiles_that_matter);
+        });
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
             if i != initial_turn {
                 self.initial_game_state
@@ -135,8 +139,11 @@ impl<'a> Simmer<'a> {
         self.last_seen_leave_values
             .iter_mut()
             .for_each(|m| *m = 0.0);
+        let mut next_play = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
         for ply in 0..=self.num_sim_plies {
-            let next_play = if ply == 0 {
+            next_play.clone_from(if ply == 0 {
                 &candidate_play
             } else {
                 self.move_generator.gen_moves_unfiltered(
@@ -150,7 +157,7 @@ impl<'a> Simmer<'a> {
                     1,
                 );
                 &self.move_generator.plays[0].play
-            };
+            });
             set_rack_tally_from_leave(
                 &mut self.rack_tally,
                 &self.game_state.current_player().rack,
@@ -158,7 +165,11 @@ impl<'a> Simmer<'a> {
             );
             self.last_seen_leave_values[self.game_state.turn as usize] =
                 self.klv.leave_value_from_tally(&self.rack_tally);
-            self.game_state.play(&mut self.rng, &next_play).unwrap();
+            RNG.with(|rng| {
+                self.game_state
+                    .play(&mut *rng.borrow_mut(), &next_play)
+                    .unwrap();
+            });
             match self.game_state.check_game_ended(&mut self.final_scores) {
                 game_state::CheckGameEnded::NotEnded => {}
                 _ => {
@@ -261,6 +272,8 @@ pub enum MovePicker<'a> {
     Simmer(Simmer<'a>),
 }
 
+unsafe impl Send for MovePicker<'_> {}
+
 impl MovePicker<'_> {
     #[inline(always)]
     fn limit_surviving_candidates(
@@ -284,12 +297,12 @@ impl MovePicker<'_> {
     }
 
     #[inline(always)]
-    pub fn pick_a_move(
+    pub async fn pick_a_move_async(
         &mut self,
-        filtered_movegen: &mut move_filter::GenMoves,
+        filtered_movegen: &mut move_filter::GenMoves<'_>,
         mut move_generator: &mut movegen::KurniaMoveGenerator,
-        board_snapshot: &movegen::BoardSnapshot,
-        game_state: &game_state::GameState,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
+        game_state: &game_state::GameState<'_>,
         rack: &[u8],
     ) {
         match self {
@@ -298,17 +311,22 @@ impl MovePicker<'_> {
             }
             MovePicker::Simmer(simmer) => {
                 let t0 = std::time::Instant::now();
+                tokio::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+                    println!("3 secs have passed");
+                });
                 filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 100);
                 simmer.prepare(&game_state, move_generator.plays.len(), 2);
                 let mut candidates = std::mem::take(&mut simmer.candidates);
                 let num_sim_iters = 1000;
                 let mut tick_periods = Periods(0);
                 let mut prune_periods = Periods(0);
-                let max_time_for_move_ms = 15000u64;
+                let max_time_for_move_ms = 8000u64;
                 let prune_interval_ms =
                     std::cmp::max(1, max_time_for_move_ms / candidates.len() as u64);
                 const Z: f64 = 1.96; // 95% confidence interval
                 for sim_iter in 1..=num_sim_iters {
+                    tokio::task::yield_now().await;
                     let elapsed_time_ms = t0.elapsed().as_millis() as u64;
                     if tick_periods.update(elapsed_time_ms / 1000) {
                         println!(
@@ -376,5 +394,25 @@ impl MovePicker<'_> {
                 move_generator.plays.truncate(1);
             }
         }
+    }
+
+    #[inline(always)]
+    #[tokio::main]
+    pub async fn pick_a_move(
+        &mut self,
+        filtered_movegen: &mut move_filter::GenMoves<'_>,
+        move_generator: &mut movegen::KurniaMoveGenerator,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
+        game_state: &game_state::GameState<'_>,
+        rack: &[u8],
+    ) {
+        self.pick_a_move_async(
+            filtered_movegen,
+            move_generator,
+            board_snapshot,
+            game_state,
+            rack,
+        )
+        .await
     }
 }
