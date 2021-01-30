@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
+// Copyright (C) 2020-2021 Andy Kurnia.
 
 use super::{game_config, game_state, klv, kwg, move_filter, movegen, stats};
 use rand::prelude::*;

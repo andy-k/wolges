@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
+// Copyright (C) 2020-2021 Andy Kurnia.
 
 pub struct Tile<'a> {
     label: &'a str,

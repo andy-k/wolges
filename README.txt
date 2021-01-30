@@ -8,21 +8,10 @@ It is named after Woogles.io, the best site to play the game on.
 
 LICENSE
 
-Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
+Copyright (C) 2020-2021 Andy Kurnia.
+Released under the MIT license.
 
-This is NOT free software. Any contributions must be done only with the
-understanding that Andy Kurnia has full rights to the entirety of the
-repository.
-
-This repository contains experimental stuffs. In the course of experimenting,
-some ideas, code, or data from other sources may be used. Those may not come
-with redistribution rights, and whoever interacts with this repository will
-need to separately gain access to those.
-
-The code and ideas in this repository have no warranties, they may be buggy.
-Code taken from this repository should be visibly attributed to Andy Kurnia.
-
-Ideas taken from this repository should be visibly attributed to Andy Kurnia.
+Bugs included.
 
 
 INITIAL SETUP
