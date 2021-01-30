@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use board::{alphabet, bites, build, error, kwg, lexport, prob};
+use wolges::{alphabet, bites, build, error, kwg, lexport, prob};
 
 struct AlphabetReader<'a> {
     supported_tiles: Box<[(u8, &'a str)]>,
@@ -65,7 +65,7 @@ impl<'a> AlphabetReader<'a> {
                     }
                 }
                 if !found {
-                    board::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
+                    wolges::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
                 }
             }
             machine_words.push(v[..].into());
@@ -103,7 +103,7 @@ fn read_english_machine_words_or_leaves(
                 // Test this after the letters. Pass a letter to disable.
                 v.push(0);
             } else {
-                board::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
+                wolges::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
             }
         }
         // Performance notes:
@@ -112,7 +112,7 @@ fn read_english_machine_words_or_leaves(
         match machine_words.last() {
             Some(previous_v) => {
                 if v[..] <= previous_v[..] {
-                    board::return_error!(format!(
+                    wolges::return_error!(format!(
                         "input is not sorted, {:?} cannot come after {:?}",
                         v, previous_v
                     ));
@@ -120,7 +120,7 @@ fn read_english_machine_words_or_leaves(
             }
             None => {
                 if v.is_empty() {
-                    board::return_error!("first line is blank".into());
+                    wolges::return_error!("first line is blank".into());
                 }
             }
         };

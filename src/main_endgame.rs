@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use board::{display, endgame, error, game_config, klv, kwg, movegen};
+use wolges::{display, endgame, error, game_config, klv, kwg, movegen};
 
 // this is reusing most of main_json, but main_json is the most current code.
 
@@ -103,7 +103,7 @@ pub fn main() -> error::Returns<()> {
             game_config = game_config::make_polish_game_config();
         }
         _ => {
-            board::return_error!(format!("invalid lexicon {:?}", question.lexicon));
+            wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
         }
     };
 
@@ -117,7 +117,7 @@ pub fn main() -> error::Returns<()> {
 
     for &tile in &question.rack {
         if tile > alphabet_len_without_blank {
-            board::return_error!(format!(
+            wolges::return_error!(format!(
                 "rack has invalid tile {}, alphabet size is {}",
                 tile, alphabet_len_without_blank
             ));
@@ -125,7 +125,7 @@ pub fn main() -> error::Returns<()> {
         if available_tally[tile as usize] > 0 {
             available_tally[tile as usize] -= 1;
         } else {
-            board::return_error!(format!(
+            wolges::return_error!(format!(
                 "too many tile {} (bag contains only {})",
                 tile,
                 alphabet.freq(tile),
@@ -135,7 +135,7 @@ pub fn main() -> error::Returns<()> {
 
     let expected_dim = game_config.board_layout().dim();
     if question.board_tiles.len() != expected_dim.rows as usize {
-        board::return_error!(format!(
+        wolges::return_error!(format!(
             "board: need {} rows, found {} rows",
             expected_dim.rows,
             question.board_tiles.len()
@@ -143,7 +143,7 @@ pub fn main() -> error::Returns<()> {
     }
     for (row_num, row) in (0..).zip(question.board_tiles.iter()) {
         if row.len() != expected_dim.cols as usize {
-            board::return_error!(format!(
+            wolges::return_error!(format!(
                 "board row {} (0-based): need {} cols, found {} cols",
                 row_num,
                 expected_dim.cols,
@@ -163,7 +163,7 @@ pub fn main() -> error::Returns<()> {
                 if available_tally[tile as usize] > 0 {
                     available_tally[tile as usize] -= 1;
                 } else {
-                    board::return_error!(format!(
+                    wolges::return_error!(format!(
                         "too many tile {} (bag contains only {})",
                         tile,
                         alphabet.freq(tile),
@@ -176,14 +176,14 @@ pub fn main() -> error::Returns<()> {
                 if available_tally[0] > 0 {
                     available_tally[0] -= 1;
                 } else {
-                    board::return_error!(format!(
+                    wolges::return_error!(format!(
                         "too many tile {} (bag contains only {})",
                         0,
                         alphabet.freq(0),
                     ));
                 }
             } else {
-                board::return_error!(format!(
+                wolges::return_error!(format!(
                     "board row {} col {} (0-based): invalid tile {}, alphabet size is {}",
                     row_num, col_num, signed_tile, alphabet_len_without_blank
                 ));
@@ -197,7 +197,7 @@ pub fn main() -> error::Returns<()> {
         .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize))
         .collect::<Box<_>>();
     if oppo_rack.len() > game_config.rack_size() as usize {
-        board::return_error!(format!(
+        wolges::return_error!(format!(
             "not endgame yet as there are {} unseen tiles",
             oppo_rack.len()
         ));

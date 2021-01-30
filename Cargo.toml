@@ -1,5 +1,5 @@
 [package]
-name = "board"
+name = "wolges"
 version = "0.1.0"
 authors = ["Andy Kurnia"]
 edition = "2018"

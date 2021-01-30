@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia. All rights reserved.
 
-use board::{alphabet, error, game_config, kwg};
+use wolges::{alphabet, error, game_config, kwg};
 
 fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
     struct Env<'a> {

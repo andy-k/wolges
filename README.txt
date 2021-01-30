@@ -1,6 +1,9 @@
-PROJECT NAME
+ABOUT
 
-This project needs a better name.
+Wolges, a library of Andy Kurnia's experiments to understand how to better play
+the Orthogonal Morphemes Game of Words, also known as OMGWords.
+
+It is named after Woogles.io, the best site to play the game on.
 
 
 LICENSE
