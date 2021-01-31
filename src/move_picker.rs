@@ -30,7 +30,8 @@ struct Candidate {
 }
 
 thread_local! {
-static RNG: std::cell::RefCell<Box<dyn RngCore>> = std::cell::RefCell::new(Box::new( rand_chacha::ChaCha20Rng::from_entropy()));
+    static RNG: std::cell::RefCell<Box<dyn RngCore>> =
+        std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_entropy()));
 }
 
 pub struct Simmer<'a> {
