@@ -114,6 +114,7 @@ impl std::fmt::Display for WriteableRack<'_> {
     }
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#English
 pub fn make_english_alphabet<'a>() -> Alphabet<'a> {
     Alphabet::new_static(StaticAlphabet {
         tiles: &[
@@ -311,6 +312,7 @@ pub fn make_english_alphabet<'a>() -> Alphabet<'a> {
     })
 }
 
+// https://en.wikipedia.org/wiki/Super_Scrabble
 pub fn make_super_english_alphabet<'a>() -> Alphabet<'a> {
     Alphabet::new_static(StaticAlphabet {
         tiles: &[
@@ -508,6 +510,9 @@ pub fn make_super_english_alphabet<'a>() -> Alphabet<'a> {
     })
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Polish
+// https://en.wikipedia.org/wiki/Polish_alphabet#Letters
+// https://en.wikipedia.org/wiki/Polish_phonology#Vowels
 pub fn make_polish_alphabet<'a>() -> Alphabet<'a> {
     Alphabet::new_static(StaticAlphabet {
         tiles: &[

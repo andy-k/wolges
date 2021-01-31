@@ -183,6 +183,7 @@ impl BoardLayout {
     }
 }
 
+// https://en.wikipedia.org/wiki/Scrabble
 pub fn make_common_board_layout() -> BoardLayout {
     BoardLayout::new_static(StaticBoardLayout {
         premiums: Box::new([
@@ -209,6 +210,7 @@ pub fn make_common_board_layout() -> BoardLayout {
     })
 }
 
+// https://www.boardgamegeek.com/image/52794/super-scrabble
 pub fn make_super_board_layout() -> BoardLayout {
     BoardLayout::new_static(StaticBoardLayout {
         premiums: Box::new([

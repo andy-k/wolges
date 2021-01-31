@@ -23,6 +23,7 @@ impl Stats {
         }
     }
 
+    // https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_online_algorithm
     #[inline(always)]
     pub fn update(&mut self, new_value: f64) {
         self.count += 1.0;
@@ -32,6 +33,7 @@ impl Stats {
         self.m2 += delta * delta2;
     }
 
+    // https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
     #[allow(dead_code)]
     #[inline(always)]
     pub fn update_bulk(&mut self, other: &Stats) {
@@ -73,6 +75,7 @@ impl Stats {
         self.variance().sqrt()
     }
 
+    // https://www.mathsisfun.com/data/confidence-interval.html
     #[inline(always)]
     pub fn ci_max(&self, z: f64) -> f64 {
         self.mean + z * (self.variance() / self.count).sqrt()
