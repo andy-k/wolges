@@ -1667,11 +1667,7 @@ impl std::fmt::Display for WriteablePlay<'_> {
                 } else {
                     write!(f, "{}{} ", lane + 1, (*idx as u8 + 0x41) as char)?;
                 }
-                let strider = if *down {
-                    dim.down(*lane)
-                } else {
-                    dim.across(*lane)
-                };
+                let strider = dim.lane(*down, *lane);
                 let mut inside = false;
                 for (i, &tile) in (*idx..).zip(word.iter()) {
                     if tile == 0 {

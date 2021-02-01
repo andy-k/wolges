@@ -27,11 +27,7 @@ impl LimitedVocabChecker {
     ) -> bool {
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
-        let strider = if down {
-            dim.down(lane)
-        } else {
-            dim.across(lane)
-        };
+        let strider = dim.lane(down, lane);
         self.word_check_buf.clear();
         for (i, &tile) in (idx..).zip(word.iter()) {
             let placed_tile = if tile != 0 {
@@ -46,7 +42,7 @@ impl LimitedVocabChecker {
         }
         for (i, &tile) in (idx..).zip(word.iter()) {
             if tile != 0 {
-                let perpendicular_strider = if down { dim.across(i) } else { dim.down(i) };
+                let perpendicular_strider = dim.lane(!down, i);
                 let mut j = lane;
                 while j > 0 && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0 {
                     j -= 1;

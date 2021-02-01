@@ -42,11 +42,7 @@ impl ScoringChecker {
                 let board_layout = game_config.board_layout();
                 let premiums = board_layout.premiums();
                 let dim = board_layout.dim();
-                let strider = if *down {
-                    dim.down(*lane)
-                } else {
-                    dim.across(*lane)
-                };
+                let strider = dim.lane(*down, *lane);
                 let mut num_played = 0;
 
                 print!("main word: (down={} lane={} idx={}) ", down, lane, idx);
@@ -87,7 +83,7 @@ impl ScoringChecker {
 
                 for (i, &tile) in (*idx..).zip(word.iter()) {
                     if tile != 0 {
-                        let perpendicular_strider = if *down { dim.across(i) } else { dim.down(i) };
+                        let perpendicular_strider = dim.lane(!*down, i);
                         let mut j = *lane;
                         while j > 0
                             && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
@@ -252,20 +248,12 @@ impl ScoringChecker {
                         let dim = board_layout.dim();
                         let num_lanes = if *down { dim.cols } else { dim.rows };
                         let strider1 = if *lane > 0 {
-                            Some(if *down {
-                                dim.down(*lane - 1)
-                            } else {
-                                dim.across(*lane - 1)
-                            })
+                            Some(dim.lane(*down, *lane - 1))
                         } else {
                             None
                         };
                         let strider2 = if *lane < num_lanes - 1 {
-                            Some(if *down {
-                                dim.down(*lane + 1)
-                            } else {
-                                dim.across(*lane + 1)
-                            })
+                            Some(dim.lane(*down, *lane + 1))
                         } else {
                             None
                         };

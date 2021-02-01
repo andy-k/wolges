@@ -60,6 +60,15 @@ impl Dim {
     }
 
     #[inline(always)]
+    pub fn lane(&self, down: bool, lane: i8) -> Strider {
+        if down {
+            self.down(lane)
+        } else {
+            self.across(lane)
+        }
+    }
+
+    #[inline(always)]
     pub fn at_row_col(&self, row: i8, col: i8) -> usize {
         (((row as isize) * (self.cols as isize)) + (col as isize)) as usize
     }

@@ -155,11 +155,7 @@ impl<'a> EndgameSolver<'a> {
 
                 // place the tiles
                 let dim = self.game_config.board_layout().dim();
-                let strider = if *down {
-                    dim.down(*lane)
-                } else {
-                    dim.across(*lane)
-                };
+                let strider = dim.lane(*down, *lane);
                 for (i, &tile) in (*idx..).zip(word.iter()) {
                     if tile != 0 {
                         self.work_buffer.vec_placed_tile.push(PlacedTile {

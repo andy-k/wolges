@@ -144,12 +144,7 @@ impl<'a> GameState<'a> {
                 word,
                 score,
             } => {
-                let dim = self.game_config.board_layout().dim();
-                let strider = if *down {
-                    dim.down(*lane)
-                } else {
-                    dim.across(*lane)
-                };
+                let strider = self.game_config.board_layout().dim().lane(*down, *lane);
 
                 // place the tiles
                 for (i, &tile) in (*idx..).zip(word.iter()) {
