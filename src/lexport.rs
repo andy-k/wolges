@@ -20,7 +20,7 @@ pub fn to_macondo<'a>(
         alphabet_len_excluding_blank < 0x32,
         "too many letters for gaddag"
     );
-    let mut letter_sets = std::collections::HashMap::<u64, u32, build::MyHasherDefault>::default();
+    let mut letter_sets = Default::default();
     let mut nodes = Vec::new();
     let mut node_indexes = vec![0u32; kwg.0.len()];
 
@@ -56,7 +56,7 @@ pub fn to_macondo<'a>(
         tile_mapping: &'a [u8],
         node_indexes: &'a mut [u32],
         nodes: &'a mut Vec<u32>,
-        letter_sets: &'a mut std::collections::HashMap<u64, u32, build::MyHasherDefault>,
+        letter_sets: &'a mut build::MyHashMap<u64, u32>,
     }
     let mut env = Env {
         kwg,

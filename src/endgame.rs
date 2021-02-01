@@ -55,8 +55,8 @@ struct WorkBuffer {
     vec_placed_tile: Vec<PlacedTile>,
     ply_buffer: Vec<PlyBuffer>,
     states: Vec<State>,
-    state_finder: std::collections::HashMap<State, usize, build::MyHasherDefault>,
-    state_eval: std::collections::HashMap<usize, StateEval, build::MyHasherDefault>,
+    state_finder: build::MyHashMap<State, usize>,
+    state_eval: build::MyHashMap<usize, StateEval>,
 }
 
 impl WorkBuffer {
@@ -65,10 +65,8 @@ impl WorkBuffer {
             vec_placed_tile: Vec::new(),
             ply_buffer: Vec::new(),
             states: Vec::new(),
-            state_finder:
-                std::collections::HashMap::<State, usize, build::MyHasherDefault>::default(),
-            state_eval:
-                std::collections::HashMap::<usize, StateEval, build::MyHasherDefault>::default(),
+            state_finder: Default::default(),
+            state_eval: Default::default(),
         }
     }
 

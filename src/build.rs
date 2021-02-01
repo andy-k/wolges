@@ -22,6 +22,8 @@ impl Default for MyHasher {
 }
 
 pub type MyHasherDefault = std::hash::BuildHasherDefault<MyHasher>;
+pub type MyHashMap<K, V> = std::collections::HashMap<K, V, MyHasherDefault>;
+pub type MyHashSet<T> = std::collections::HashSet<T, MyHasherDefault>;
 
 // Unconfirmed entries.
 // Memory wastage notes:
@@ -72,7 +74,7 @@ struct State {
 
 struct StateMaker<'a> {
     states: &'a mut Vec<State>,
-    states_finder: &'a mut std::collections::HashMap<State, u32, MyHasherDefault>,
+    states_finder: &'a mut MyHashMap<State, u32>,
 }
 
 impl StateMaker<'_> {
@@ -151,7 +153,7 @@ impl StateMaker<'_> {
 }
 
 fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
-    let mut machine_drowword_set = std::collections::HashSet::<_, MyHasherDefault>::default();
+    let mut machine_drowword_set = MyHashSet::default();
     let mut reverse_buffer = Vec::new();
     for this_word in machine_words {
         // CARE = ERAC, RAC@, AC@, C@
@@ -327,7 +329,7 @@ pub fn build(
         next_index: 0,
     }];
 
-    let mut states_finder = std::collections::HashMap::<_, _, MyHasherDefault>::default();
+    let mut states_finder = MyHashMap::default();
     states_finder.insert(states[0].clone(), 0);
 
     let mut state_maker = StateMaker {
