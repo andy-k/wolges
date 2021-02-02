@@ -10,6 +10,8 @@ pub fn main() -> error::Returns<()> {
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
     let game_config = &game_config::make_common_english_game_config();
+    let _ = game_config;
+    let game_config = &game_config::make_hong_kong_english_game_config();
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
     let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {

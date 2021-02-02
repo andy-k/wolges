@@ -74,6 +74,16 @@ pub fn make_common_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
+pub fn make_hong_kong_english_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        alphabet: alphabet::make_hong_kong_english_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 9,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
 pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
         alphabet: alphabet::make_super_english_alphabet(),
