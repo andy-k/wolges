@@ -253,11 +253,11 @@ impl<'a> Simmer<'a> {
     }
 }
 
-struct Periods(u64);
+pub struct Periods(pub u64);
 
 impl Periods {
     #[inline(always)]
-    fn update(&mut self, new_periods: u64) -> bool {
+    pub fn update(&mut self, new_periods: u64) -> bool {
         if new_periods != self.0 {
             self.0 = new_periods;
             true

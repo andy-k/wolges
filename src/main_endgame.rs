@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use wolges::{display, endgame, error, game_config, klv, kwg, movegen};
+use wolges::{endgame, error, game_config, kwg};
 
 // this is reusing most of main_json, but main_json is the most current code.
 
@@ -17,18 +17,16 @@ struct Question {
     rack: Vec<u8>,
     #[serde(rename = "board")]
     board_tiles: Vec<Vec<i8>>,
-    #[serde(rename = "count")]
-    max_gen: usize,
 }
 
 // note: only this representation uses -1i8 for blank-as-A (in "board" input
 // and "word" response for "action":"play"). everywhere else, use 0x81u8.
 
 pub fn main() -> error::Returns<()> {
-    let data = r#"
+    let data = [
+        r#"
       {
         "lexicon": "NWL18",
-        "ignored": {
         "rack": [ 0, 1, 5, 9, 14, 18, 21 ],
         "board": [
           [  0,  0,  0,  0,  0,  2,  5, 18,  7, 19,  0,  0,  0,  0,  0 ],
@@ -47,59 +45,106 @@ pub fn main() -> error::Returns<()> {
           [  0,  9, 14,  4, 15, 23,  0, 21,  0,  0,  0,  0,  0,  0,  0 ],
           [  0,  0,  0,  0,  4, 15, 18, 18,  0,  0,  0,  0,  0,  0,  0 ]
         ]
-        },
-        "rack": [ 1, 21 ],
-        "board": [
-          [  0,  0,  0,  0,  0,  2,  5, 18,  7, 19,  0,  0,  0,  0,  0 ],
-          [  0,  0,  0,  0, 16,  1,  0,  0,  0, 21,  0,  0,  0,  0,  0 ],
-          [  0,  0, 17,  1,  9,  4,  0,  0,  0, 18,  0,  0,  0,  0,  0 ],
-          [  0,  0,  0,  2,  5,  5,  0,  0,  0,  6,  0, 20, 19, 11,  0 ],
-          [  0, 16,  0,  5, 20,  0,  0, 22,  9,  1, 20,  9,  3,  0,  0 ],
-          [ 13,  1,  0, 20,  1, 23,  0,  0,  0, -3,  0,  0,  8,  0,  0 ],
-          [  5, 19,  0,  0,  0,  9, 19,  0,  0,  5,  0,  0,  1,  0,  0 ],
-          [  1, 20,  0,  6, 15, 12,  9,  1,  0, -4, 18,  9, 22,  5, 14 ],
-          [ 12,  9,  0, 12,  0,  5, 24,  0,  5,  0,  0,  0,  0,  0,  0 ],
-          [  0, 14,  0, 15,  0,  4,  0,  0, 14,  0,  0, 25,  0,  0,  0 ],
-          [  0,  7, 14, 21,  0,  0,  3,  0, 10,  5, 20,  5,  0,  0,  0 ],
-          [  0,  0,  5, 18,  0,  0, 15,  8, 15,  0,  0, 14,  0,  0,  0 ],
-          [  0,  0, 15,  0,  0,  0,  7, 15, 25,  0,  0,  0,  0,  0,  0 ],
-          [  0,  9, 14,  4, 15, 23,  0, 21,  0,  0,  0,  0,  0,  0,  0 ],
-          [  0,  0,  0,  0,  4, 15, 18, 18,  0,  0,  0,  0,  0,  0,  0 ]
-        ],
-        "count": 15
       }
-    "#;
+    "#,
+        r#"
+      {
+        "lexicon": "NWL18",
+        "source": "https://woogles.io/game/SBRtWRzo?turn=22",
+        "rack": [ 5, 9, 10, 12, 13, 19, 20 ],
+        "board": [
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 23 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 17,  9 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  0, 18 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0, 22,  9, 18,  5,-12,  1, 25 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 14,  0,  0 ],
+          [  0, 11,  0,  0,  0,  0,  0,  0,  0,  6,  0, 20,  9, 26,  0 ],
+          [  0,  1,  0,  0,  0,  0,  0,  0,  0, 12,  0,  0,  3,  0,  0 ],
+          [  3, 18,  9,  2,  0, 19,  8,  1, 22,  5,  0,  2, 15, 14,  4 ],
+          [  0, 18,  0,  0,  7, 21, 13,  0,  0,  5, 23,  5, 19,  0,  9 ],
+          [ 16,  9,  0,  0,  0, 12,  0,  0,  0, 20,  1, 14,  0,  0, 19 ],
+          [ 12,  0,  0,  0,  0,  6,  0,  7,  0,  0,  5, 20,  0,  0,  5 ],
+          [ 21,  0, 21,  8,  0,  9,  0, 21,  0,  0,  0, 15,  0, 16,  1 ],
+          [ 14,  0, 14, 15,  0, 20,  0, 25,  0,  0,  0,  0,  0, 15,-19 ],
+          [  7,  1,  4,  1, 18,  5, 14,  5,  0,  0,  0,  0,  0, 15,  5 ],
+          [  5,  0, 15, 24,  0,  0,  0,  4,  0,  0,  0,  0,  0,  0,  4 ]
+        ]
+      }
+    "#,
+        r#"
+      {
+        "lexicon": "NWL18",
+        "source": "https://woogles.io/game/SBRtWRzo?turn=22, LIM(A)S, G(AE)",
+        "rack": [ 5, 10, 20 ],
+        "board": [
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 23 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 17,  9 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  0, 18 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0, 22,  9, 18,  5,-12,  1, 25 ],
+          [  0,  0,  0,  0,  0,  0,  0, 12,  0,  0,  0,  0, 14,  0,  0 ],
+          [  0, 11,  0,  0,  0,  0,  0,  9,  0,  6,  0, 20,  9, 26,  0 ],
+          [  0,  1,  0,  0,  0,  0,  0, 13,  0, 12,  0,  0,  3,  0,  0 ],
+          [  3, 18,  9,  2,  0, 19,  8,  1, 22,  5,  0,  2, 15, 14,  4 ],
+          [  0, 18,  0,  0,  7, 21, 13, 19,  0,  5, 23,  5, 19,  0,  9 ],
+          [ 16,  9,  0,  0,  1, 12,  0,  0,  0, 20,  1, 14,  0,  0, 19 ],
+          [ 12,  0,  0,  0,  5,  6,  0,  7,  0,  0,  5, 20,  0,  0,  5 ],
+          [ 21,  0, 21,  8,  0,  9,  0, 21,  0,  0,  0, 15,  0, 16,  1 ],
+          [ 14,  0, 14, 15,  0, 20,  0, 25,  0,  0,  0,  0,  0, 15,-19 ],
+          [  7,  1,  4,  1, 18,  5, 14,  5,  0,  0,  0,  0,  0, 15,  5 ],
+          [  5,  0, 15, 24,  0,  0,  0,  4,  0,  0,  0,  0,  0,  0,  4 ]
+        ]
+      }
+    "#,
+        r#"
+      {
+        "lexicon": "NWL18",
+        "source": "https://woogles.io/game/SBRtWRzo?turn=22, MIS",
+        "rack": [ 1, 5, 9, 15, 15, 18, 20 ],
+        "board": [
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 23 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 17,  9 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  0, 18 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0, 22,  9, 18,  5,-12,  1, 25 ],
+          [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 14,  0,  0 ],
+          [  0, 11,  0,  0,  0,  0,  0,  0,  0,  6,  0, 20,  9, 26,  0 ],
+          [  0,  1,  0,  0,  0,  0,  0,  0,  0, 12,  0,  0,  3,  0,  0 ],
+          [  3, 18,  9,  2,  0, 19,  8,  1, 22,  5,  0,  2, 15, 14,  4 ],
+          [  0, 18,  0,  0,  7, 21, 13,  0,  0,  5, 23,  5, 19,  0,  9 ],
+          [ 16,  9,  0,  0,  0, 12,  0,  0,  0, 20,  1, 14,  0,  0, 19 ],
+          [ 12,  0,  0,  0,  0,  6,  0,  7,  0,  0,  5, 20,  0,  0,  5 ],
+          [ 21,  0, 21,  8,  0,  9,  0, 21,  0,  0,  0, 15,  0, 16,  1 ],
+          [ 14,  0, 14, 15,  0, 20,  0, 25,  0, 13,  9, 19,  0, 15,-19 ],
+          [  7,  1,  4,  1, 18,  5, 14,  5,  0,  0,  0,  0,  0, 15,  5 ],
+          [  5,  0, 15, 24,  0,  0,  0,  4,  0,  0,  0,  0,  0,  0,  4 ]
+        ]
+      }
+    "#,
+    ][1];
     let question = serde_json::from_str::<Question>(data)?;
 
     let kwg;
-    let klv;
     let game_config;
 
     // of course this should be cached
     match question.lexicon.as_str() {
         "CSW19" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
             game_config = game_config::make_common_english_game_config();
         }
         "NWL18" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl18.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
             game_config = game_config::make_common_english_game_config();
         }
         "NWL20" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl20.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
             game_config = game_config::make_common_english_game_config();
         }
         "ECWL" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("ecwl.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
             game_config = game_config::make_common_english_game_config();
         }
         "OSPS42" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("osps42.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
             game_config = game_config::make_polish_game_config();
         }
         _ => {
@@ -203,144 +248,13 @@ pub fn main() -> error::Returns<()> {
         ));
     }
 
-    let mut egs = endgame::EndgameSolver::new(&game_config, &kwg, &klv);
+    let mut egs = endgame::EndgameSolver::new(&game_config, &kwg);
     egs.init(&board_tiles, [&question.rack, &oppo_rack]);
-    let out = egs.solve(0);
-    let board_snapshot = &movegen::BoardSnapshot {
-        board_tiles: &board_tiles,
-        game_config: &game_config,
-        kwg: &kwg,
-        klv: &klv,
-    };
     for player_idx in 0..2 {
         println!();
         println!("for player {}:", player_idx);
-        println!(
-            "p{}: {} {}",
-            player_idx,
-            out.best[player_idx].value,
-            out.best[player_idx].play.fmt(board_snapshot)
-        );
+        egs.evaluate(player_idx);
     }
-    let mut soln = Vec::new();
-    for player_idx in 0..2 {
-        println!();
-        println!("details for player {}:", player_idx);
-        let mut latest_board_tiles = board_tiles.clone(); // this allocates and is not reused
-        soln.clear();
-        egs.append_solution(0, player_idx as u8, &mut soln, [&question.rack, &oppo_rack]);
-        for (i, ply) in soln.iter().enumerate() {
-            println!(
-                "{}: p{}: {} {}",
-                i,
-                (player_idx + i) % 2,
-                ply.value,
-                ply.play.fmt(&movegen::BoardSnapshot {
-                    board_tiles: &latest_board_tiles,
-                    ..*board_snapshot
-                })
-            );
-            match &ply.play {
-                movegen::Play::Exchange { .. } => {}
-                movegen::Play::Place {
-                    down,
-                    lane,
-                    idx,
-                    word,
-                    score: _,
-                } => {
-                    let dim = game_config.board_layout().dim();
-                    let strider = if *down {
-                        dim.down(*lane)
-                    } else {
-                        dim.across(*lane)
-                    };
-
-                    // place the tiles
-                    for (i, &tile) in (*idx..).zip(word.iter()) {
-                        if tile != 0 {
-                            latest_board_tiles[strider.at(i)] = tile;
-                        }
-                    }
-                }
-            }
-        }
-        display::print_board(&alphabet, &game_config.board_layout(), &latest_board_tiles);
-    }
-
-    if true {
-        return Ok(());
-    }
-    // the rest of this is from move_json, but not used here
-
-    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-
-    let board_snapshot = &movegen::BoardSnapshot {
-        board_tiles: &board_tiles,
-        game_config: &game_config,
-        kwg: &kwg,
-        klv: &klv,
-    };
-    display::print_board(&alphabet, &game_config.board_layout(), &board_tiles);
-
-    move_generator.gen_moves_unfiltered(board_snapshot, &question.rack, question.max_gen);
-    let plays = &move_generator.plays;
-    println!("found {} moves", plays.len());
-    for play in plays.iter() {
-        println!("{} {}", play.equity, play.play.fmt(board_snapshot));
-    }
-
-    let mut result = Vec::<serde_json::Value>::with_capacity(plays.len());
-    for play in plays.iter() {
-        match &play.play {
-            movegen::Play::Exchange { tiles } => {
-                if tiles.is_empty() {
-                    result.push(serde_json::json!({
-                        "equity": play.equity,
-                        "action": "pass" }));
-                } else {
-                    // tiles: array of numbers. 0 for blank, 1 for A.
-                    result.push(serde_json::json!({
-                        "equity": play.equity,
-                        "action": "exchange",
-                        "tiles": tiles[..] }));
-                }
-            }
-            movegen::Play::Place {
-                down,
-                lane,
-                idx,
-                word,
-                score,
-            } => {
-                // turn 0x81u8, 0x82u8 into -1i8, -2i8
-                let word_played = word
-                    .iter()
-                    .map(|&x| {
-                        if x & 0x80 != 0 {
-                            -((x & !0x80) as i8)
-                        } else {
-                            x as i8
-                        }
-                    })
-                    .collect::<Vec<i8>>();
-                // across plays: down=false, lane=row, idx=col (0-based).
-                // down plays: down=true, lane=col, idx=row (0-based).
-                // word: 0 for play-through, 1 for A, -1 for blank-as-A.
-                result.push(serde_json::json!({
-                    "equity": play.equity,
-                    "action": "play",
-                    "down": down,
-                    "lane": lane,
-                    "idx": idx,
-                    "word": word_played,
-                    "score": score }));
-            }
-        }
-    }
-    let ret = serde_json::to_value(result)?;
-    println!("{}", ret);
-    println!("{}", serde_json::to_string_pretty(&ret)?);
 
     Ok(())
 }
