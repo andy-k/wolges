@@ -84,6 +84,7 @@ struct WorkBuffer {
     state_finder: build::MyHashMap<State, usize>, // maps all states except 0
     state_eval: build::MyHashMap<usize, StateEval>,
     plays: Vec<movegen::Play>, // global usize->Play mapping. [0] = pass, [1..] = place
+    play_finder: build::MyHashMap<movegen::Play, usize>, // maps all plays except pass
     child_plays: Vec<ChildPlay>, // subslices of StateEval, often re-sorted
 }
 
@@ -103,6 +104,7 @@ impl WorkBuffer {
             state_finder: Default::default(),
             state_eval: Default::default(),
             plays: Vec::new(),
+            play_finder: build::MyHashMap::default(),
             child_plays: Vec::new(),
         }
     }
@@ -128,6 +130,7 @@ impl WorkBuffer {
         self.plays.push(movegen::Play::Exchange {
             tiles: [][..].into(),
         });
+        self.play_finder.clear();
         self.child_plays.clear();
     }
 }
@@ -493,12 +496,20 @@ impl<'a> EndgameSolver<'a> {
                             });
                         }
                         movegen::Play::Place { .. } => {
+                            let new_new_play_idx = self.work_buffer.plays.len();
+                            let new_play_idx = *self
+                                .work_buffer
+                                .play_finder
+                                .entry(candidate.play.clone())
+                                .or_insert(new_new_play_idx);
+                            if new_play_idx == new_new_play_idx {
+                                self.work_buffer.plays.push(candidate.play.clone());
+                            }
                             self.work_buffer.child_plays.push(ChildPlay {
-                                play_idx: self.work_buffer.plays.len(),
+                                play_idx: new_play_idx,
                                 new_state_idx: !0, // filled in later
                                 valuation: 0.0,    // filled in later
                             });
-                            self.work_buffer.plays.push(candidate.play.clone());
                         }
                     }
                 }
