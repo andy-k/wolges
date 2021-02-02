@@ -627,111 +627,129 @@ impl<'a> EndgameSolver<'a> {
             .sort_unstable_by(|a, b| b.valuation.partial_cmp(&a.valuation).unwrap());
 
         // perform actual negamax
-        let mut best_idx = low_idx;
-        let mut pass_idx = low_idx;
+        let mut best_idx = !0;
+        let mut best_valuation = f32::NEG_INFINITY;
         for child_play_idx in low_idx..high_idx {
-            let child_valuation = match &self.work_buffer.plays
-                [self.work_buffer.child_plays[child_play_idx].play_idx]
-            {
+            match &self.work_buffer.plays[self.work_buffer.child_plays[child_play_idx].play_idx] {
                 movegen::Play::Exchange { .. } => {
-                    pass_idx = child_play_idx; // there should be exactly one pass
                     self.work_buffer.child_plays[child_play_idx].valuation = pass_valuation;
-                    continue; // pass does not affect alpha/beta
+                    // pass should not update best place move
                 }
                 movegen::Play::Place { score, .. } => {
-                    if self.work_buffer.child_plays[child_play_idx].new_state_idx == 0 {
-                        // playing out, valuation is already correct
-                        self.work_buffer.child_plays[child_play_idx].valuation
-                    } else {
-                        let score = *score as f32;
-                        if self.work_buffer.child_plays[child_play_idx].new_state_idx == !0 {
-                            // construct the new state
-                            self.work_buffer.child_plays[child_play_idx].new_state_idx = self
-                                .get_new_state_idx(
-                                    state_idx,
-                                    player_idx,
-                                    self.work_buffer.child_plays[child_play_idx].play_idx,
-                                );
+                    let child_valuation =
+                        if self.work_buffer.child_plays[child_play_idx].new_state_idx == 0 {
+                            // playing out, valuation is already correct
+                            self.work_buffer.child_plays[child_play_idx].valuation
+                        } else {
+                            let score = *score as f32;
+                            if self.work_buffer.child_plays[child_play_idx].new_state_idx == !0 {
+                                // construct the new state
+                                self.work_buffer.child_plays[child_play_idx].new_state_idx = self
+                                    .get_new_state_idx(
+                                        state_idx,
+                                        player_idx,
+                                        self.work_buffer.child_plays[child_play_idx].play_idx,
+                                    );
+                            }
+                            score
+                                - self.negamax_eval(
+                                    self.work_buffer.child_plays[child_play_idx].new_state_idx,
+                                    player_idx ^ 1,
+                                    depth - 1,
+                                    -beta,
+                                    -alpha,
+                                    false,
+                                )
+                        };
+                    self.work_buffer.child_plays[child_play_idx].valuation = child_valuation;
+                    // only place moves affect alpha/beta
+                    if child_valuation > best_valuation {
+                        best_valuation = child_valuation;
+                        best_idx = child_play_idx;
+                        if child_valuation > alpha {
+                            alpha = child_valuation;
+                            if alpha >= beta {
+                                break;
+                            }
                         }
-                        score
-                            - self.negamax_eval(
-                                self.work_buffer.child_plays[child_play_idx].new_state_idx,
-                                player_idx ^ 1,
-                                depth - 1,
-                                -beta,
-                                -alpha,
-                                false,
-                            )
                     }
                 }
             };
-            self.work_buffer.child_plays[child_play_idx].valuation = child_valuation;
-            if child_valuation > self.work_buffer.child_plays[best_idx].valuation {
-                best_idx = child_play_idx;
-            }
-            if child_valuation > alpha {
-                alpha = child_valuation;
-                if alpha >= beta {
-                    break;
-                }
-            }
         }
 
-        // fill in best_place_move. iff no valid place move, use pass.
+        // fill in best_place_move
         let mut state_eval = self.work_buffer.state_eval.get_mut(&state_idx).unwrap();
-        let best_play = &self.work_buffer.child_plays[best_idx];
-        let valuation_for_alpha_beta = if best_idx == pass_idx {
-            f32::NEG_INFINITY
+        if best_idx == !0 {
+            // no valid place moves exist, must pass
+            state_eval.best_place_move[player_idx as usize] = StateSideEval {
+                equity: pass_valuation,
+                play_idx: 0,
+                new_state_idx: state_idx,
+                equity_type: StateSideEvalEquityType::Exact,
+                depth,
+            };
         } else {
-            best_play.valuation
-        };
-        state_eval.best_place_move[player_idx as usize] = StateSideEval {
-            equity: best_play.valuation,
-            play_idx: best_play.play_idx,
-            new_state_idx: best_play.new_state_idx,
-            equity_type: if valuation_for_alpha_beta <= alpha_orig {
-                StateSideEvalEquityType::UpperBound
-            } else if valuation_for_alpha_beta >= beta {
-                StateSideEvalEquityType::LowerBound
-            } else {
-                StateSideEvalEquityType::Exact
-            },
-            depth,
-        };
+            let best_play = &self.work_buffer.child_plays[best_idx];
+            state_eval.best_place_move[player_idx as usize] = StateSideEval {
+                equity: best_valuation,
+                play_idx: best_play.play_idx,
+                new_state_idx: best_play.new_state_idx,
+                equity_type: if best_valuation <= alpha_orig {
+                    StateSideEvalEquityType::UpperBound
+                } else if best_valuation >= beta {
+                    StateSideEvalEquityType::LowerBound
+                } else {
+                    StateSideEvalEquityType::Exact
+                },
+                depth,
+            };
+        }
 
         // best_move is the better of best_place_move or pass_valuation.
-        if pass_valuation > best_play.valuation {
+        if pass_valuation > best_valuation {
             state_eval.best_move[player_idx as usize] = StateSideEval {
                 equity: pass_valuation,
                 play_idx: 0,
                 new_state_idx: state_idx,
-                equity_type: StateSideEvalEquityType::Exact, // actually indeterminate
+                equity_type: StateSideEvalEquityType::Exact,
                 depth,
             };
+            best_valuation = pass_valuation;
         } else {
             state_eval.best_move[player_idx as usize] =
                 state_eval.best_place_move[player_idx as usize].clone();
         }
 
         if !just_passed {
+            // the initial player has just_passed=false.
             // to the initial player, the following have been evaluated:
             // - A = the opponent's best_place_move,
-            // - B = the opponent's best_move (where pass ends the game),
+            // - B = the opponent's best_move,
             // - C = the player's best_place_move,
-            // - D = the player's best_move based on opponent's best_move.
-            // the player's best_move correctly reflects D = max(C, -B).
-            // the opponent's best_move may not reflect B = max(A, -D) yet.
-            // this happens if -D is less than when passing ends the game,
-            // because B may be reused when the player doesn't have to pass.
-            if -best_play.valuation > state_eval.best_place_move[player_idx as usize ^ 1].equity {
-                // -valuation_for_alpha_beta within -beta_orig..-alpha_orig.
+            // - D = the player's best_move.
+            // let's assume A and C are correct.
+            // let P = opponent's rack minus player's rack.
+            // the goal is to have
+            // - player's best_move = max(C, -max(A, -P)).
+            // - opponent's best_move = max(A, -max(C, P)).
+            // at this point, B = max(A, -P), so it's incorrect.
+            // but D = max(C, -B), so it's correct.
+            // so, set opponent's best_move to E.
+            // let E = max(A, -D).
+            // so E = max(A, -max(C, -max(A, -P))).
+            // if -P >= A, this is trivially correct.
+            // and if A > -P, it becomes max(A, -max(C, -A)),
+            // which is max(A, min(-C, A)), which is A.
+
+            if -best_valuation > state_eval.best_place_move[player_idx as usize ^ 1].equity {
+                // -best_valuation within -beta_orig..-alpha_orig.
                 state_eval.best_move[player_idx as usize ^ 1] = StateSideEval {
-                    equity: -best_play.valuation,
+                    equity: -best_valuation,
                     play_idx: 0,
                     new_state_idx: state_idx,
-                    equity_type: if beta_orig <= valuation_for_alpha_beta {
+                    equity_type: if beta_orig <= best_valuation {
                         StateSideEvalEquityType::UpperBound
-                    } else if alpha_orig >= valuation_for_alpha_beta {
+                    } else if alpha_orig >= best_valuation {
                         StateSideEvalEquityType::LowerBound
                     } else {
                         StateSideEvalEquityType::Exact
@@ -753,7 +771,7 @@ impl<'a> EndgameSolver<'a> {
             self.print_progress();
         }
 
-        best_play.valuation
+        best_valuation
     }
 
     // must have been precomputed
