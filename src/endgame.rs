@@ -86,7 +86,7 @@ struct WorkBuffer {
     state_eval: build::MyHashMap<usize, StateEval>,
     plays: Vec<movegen::Play>, // global usize->Play mapping. [0] = pass, [1..] = place
     play_finder: build::MyHashMap<movegen::Play, usize>, // maps all plays except pass
-    child_plays: Vec<ChildPlay>, // subslices of StateEval, often re-sorted
+    child_plays: Vec<ChildPlay>, // subslices of StateEval, often re-sorted; excludes pass
 }
 
 impl WorkBuffer {
@@ -494,11 +494,7 @@ impl<'a> EndgameSolver<'a> {
                 for candidate in &self.work_buffer.movegen.plays {
                     match &candidate.play {
                         movegen::Play::Exchange { .. } => {
-                            self.work_buffer.child_plays.push(ChildPlay {
-                                play_idx: 0,
-                                new_state_idx: state_idx,
-                                valuation: 0.0, // filled in later
-                            });
+                            // no need to store pass explicitly
                         }
                         movegen::Play::Place { .. } => {
                             let new_new_play_idx = self.work_buffer.plays.len();
@@ -548,9 +544,7 @@ impl<'a> EndgameSolver<'a> {
                     for child_play in my_child_plays.iter_mut() {
                         match &self.work_buffer.plays[child_play.play_idx] {
                             movegen::Play::Exchange { .. } => {
-                                child_play.valuation = -move_score(
-                                    &self.work_buffer.plays[oppo_child_plays[0].play_idx],
-                                ) as f32;
+                                unreachable!();
                             }
                             movegen::Play::Place {
                                 down,
@@ -637,8 +631,7 @@ impl<'a> EndgameSolver<'a> {
         for child_play_idx in low_idx..high_idx {
             match &self.work_buffer.plays[self.work_buffer.child_plays[child_play_idx].play_idx] {
                 movegen::Play::Exchange { .. } => {
-                    self.work_buffer.child_plays[child_play_idx].valuation = pass_valuation;
-                    // pass should not update best place move
+                    unreachable!();
                 }
                 movegen::Play::Place { score, .. } => {
                     let child_valuation =
