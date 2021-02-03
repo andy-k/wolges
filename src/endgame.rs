@@ -829,18 +829,23 @@ impl<'a> EndgameSolver<'a> {
         let mut soln = Vec::new(); // allocates
         let mut latest_board_tiles = self.board_tiles.clone(); // this allocates and is not reused
         self.append_solution(0, player_idx, |x| soln.push(x));
+        let mut racks = self.racks.clone();
         for (i, ply) in soln.iter().enumerate() {
+            let player_turn_idx = (player_idx as usize + i) % 2;
+            let rack = &mut racks[player_turn_idx];
             println!(
-                "{}: p{}: {} {}",
+                "{}: p{}: {:<width$} {} {}",
                 i,
-                (player_idx as usize + i) % 2,
+                player_turn_idx,
+                format!("{}", self.game_config.alphabet().fmt_rack(rack)),
                 ply.equity,
                 ply.play.fmt(&movegen::BoardSnapshot {
                     board_tiles: &latest_board_tiles,
                     game_config: self.game_config,
                     kwg: self.kwg,
                     klv: &self.klv,
-                })
+                }),
+                width = self.game_config.rack_size() as usize,
             );
             match &ply.play {
                 movegen::Play::Exchange { .. } => {}
@@ -857,10 +862,24 @@ impl<'a> EndgameSolver<'a> {
                     for (i, &tile) in (*idx..).zip(word.iter()) {
                         if tile != 0 {
                             latest_board_tiles[strider.at(i)] = tile;
+                            let blanked_tile = tile & !((tile as i8) >> 7) as u8;
+                            let tombstone_idx =
+                                rack.iter().rposition(|&t| t == blanked_tile).unwrap();
+                            rack[tombstone_idx] = 0x80;
                         }
                     }
+                    rack.retain(|&t| t != 0x80);
                 }
             }
+        }
+        for i in soln.len()..std::cmp::max(soln.len() + 1, 2) {
+            let player_turn_idx = (player_idx as usize + i) % 2;
+            let rack = &racks[player_turn_idx];
+            println!(
+                "e: p{}: {}",
+                player_turn_idx,
+                self.game_config.alphabet().fmt_rack(rack),
+            );
         }
         display::print_board(
             &self.game_config.alphabet(),
