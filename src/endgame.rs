@@ -33,7 +33,7 @@ enum StateSideEvalEquityType {
 #[derive(Clone)]
 struct StateSideEval {
     equity: f32,
-    play_idx: usize,
+    play_idx: u32,
     new_state_idx: usize, // not cheap to regen
     equity_type: StateSideEvalEquityType,
     depth: i8,
@@ -66,8 +66,8 @@ struct PlyBuffer {
 }
 
 struct ChildPlay {
-    play_idx: usize,      // workbuf.plays
     new_state_idx: usize, // workbuf.states; 0=play out, !0=missing, same idx = pass
+    play_idx: u32,        // workbuf.plays
     valuation: f32,       // refined over time
 }
 
@@ -84,8 +84,8 @@ struct WorkBuffer {
     states: Vec<State>,                           // [0] = dummy initial state, excludes play outs
     state_finder: build::MyHashMap<State, usize>, // maps all states except 0
     state_eval: build::MyHashMap<usize, StateEval>,
-    plays: Vec<movegen::Play>, // global usize->Play mapping. [0] = pass, [1..] = place
-    play_finder: build::MyHashMap<movegen::Play, usize>, // maps all plays except pass
+    plays: Vec<movegen::Play>, // global u32->Play mapping. [0] = pass, [1..] = place
+    play_finder: build::MyHashMap<movegen::Play, u32>, // maps all plays except pass
     child_plays: Vec<ChildPlay>, // subslices of StateEval, often re-sorted; excludes pass
 }
 
@@ -191,8 +191,8 @@ impl<'a> EndgameSolver<'a> {
     }
 
     #[inline(always)]
-    fn get_new_state_idx(&mut self, state_idx: usize, which_player: u8, play_idx: usize) -> usize {
-        match &self.work_buffer.plays[play_idx] {
+    fn get_new_state_idx(&mut self, state_idx: usize, which_player: u8, play_idx: u32) -> usize {
+        match &self.work_buffer.plays[play_idx as usize] {
             movegen::Play::Exchange { .. } => state_idx,
             movegen::Play::Place {
                 down,
@@ -497,7 +497,7 @@ impl<'a> EndgameSolver<'a> {
                             // no need to store pass explicitly
                         }
                         movegen::Play::Place { .. } => {
-                            let new_new_play_idx = self.work_buffer.plays.len();
+                            let new_new_play_idx = self.work_buffer.plays.len() as u32;
                             let new_play_idx = *self
                                 .work_buffer
                                 .play_finder
@@ -505,11 +505,15 @@ impl<'a> EndgameSolver<'a> {
                                 .or_insert(new_new_play_idx);
                             if new_play_idx == new_new_play_idx {
                                 self.work_buffer.plays.push(candidate.play.clone());
+                                if new_new_play_idx == !0 {
+                                    // this should not happen
+                                    panic!("too many plays");
+                                }
                             }
                             self.work_buffer.child_plays.push(ChildPlay {
-                                play_idx: new_play_idx,
                                 new_state_idx: !0, // filled in later
-                                valuation: 0.0,    // filled in later
+                                play_idx: new_play_idx,
+                                valuation: 0.0, // filled in later
                             });
                         }
                     }
@@ -526,10 +530,12 @@ impl<'a> EndgameSolver<'a> {
             {
                 let plays = std::mem::take(&mut self.work_buffer.plays);
                 p0_child_plays.sort_unstable_by(|a, b| {
-                    move_score(&plays[b.play_idx]).cmp(&move_score(&plays[a.play_idx]))
+                    move_score(&plays[b.play_idx as usize])
+                        .cmp(&move_score(&plays[a.play_idx as usize]))
                 });
                 p1_child_plays.sort_unstable_by(|a, b| {
-                    move_score(&plays[b.play_idx]).cmp(&move_score(&plays[a.play_idx]))
+                    move_score(&plays[b.play_idx as usize])
+                        .cmp(&move_score(&plays[a.play_idx as usize]))
                 });
                 self.work_buffer.plays = plays;
             }
@@ -542,7 +548,7 @@ impl<'a> EndgameSolver<'a> {
                     let my_child_plays = std::mem::take(&mut px_child_plays[which_player]);
                     let oppo_child_plays = std::mem::take(&mut px_child_plays[which_player ^ 1]);
                     for child_play in my_child_plays.iter_mut() {
-                        match &self.work_buffer.plays[child_play.play_idx] {
+                        match &self.work_buffer.plays[child_play.play_idx as usize] {
                             movegen::Play::Exchange { .. } => {
                                 unreachable!();
                             }
@@ -578,7 +584,9 @@ impl<'a> EndgameSolver<'a> {
                                     // (slow if top moves share the same squares)
                                     let mut best_unblocked_oppo_score = 0;
                                     for oppo_child_play in oppo_child_plays.iter() {
-                                        match &self.work_buffer.plays[oppo_child_play.play_idx] {
+                                        match &self.work_buffer.plays
+                                            [oppo_child_play.play_idx as usize]
+                                        {
                                             movegen::Play::Exchange { .. } => {
                                                 break;
                                             }
@@ -629,7 +637,9 @@ impl<'a> EndgameSolver<'a> {
         let mut best_idx = !0;
         let mut best_valuation = f32::NEG_INFINITY;
         for child_play_idx in low_idx..high_idx {
-            match &self.work_buffer.plays[self.work_buffer.child_plays[child_play_idx].play_idx] {
+            match &self.work_buffer.plays
+                [self.work_buffer.child_plays[child_play_idx].play_idx as usize]
+            {
                 movegen::Play::Exchange { .. } => {
                     unreachable!();
                 }
@@ -784,7 +794,7 @@ impl<'a> EndgameSolver<'a> {
     {
         while let Some(ans) = self.work_buffer.state_eval.get(&state_idx) {
             let mut ans1 = &ans.best_move[player_idx as usize];
-            let play = &self.work_buffer.plays[ans1.play_idx];
+            let play = &self.work_buffer.plays[ans1.play_idx as usize];
             out(FoundPlay {
                 equity: ans1.equity,
                 play,
@@ -792,7 +802,7 @@ impl<'a> EndgameSolver<'a> {
             if let movegen::Play::Exchange { .. } = play {
                 player_idx ^= 1;
                 ans1 = &ans.best_move[player_idx as usize];
-                let play = &self.work_buffer.plays[ans1.play_idx];
+                let play = &self.work_buffer.plays[ans1.play_idx as usize];
                 out(FoundPlay {
                     equity: ans1.equity,
                     play,
