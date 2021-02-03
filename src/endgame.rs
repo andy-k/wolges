@@ -75,6 +75,7 @@ struct ChildPlay {
 struct WorkBuffer {
     t0: std::time::Instant, // for timing only
     tick_periods: move_picker::Periods,
+    dur_movegen: std::time::Duration,
     vec_placed_tile: Vec<PlacedTile>,
     ply_buffer: Vec<PlyBuffer>,
     movegen: movegen::KurniaMoveGenerator,
@@ -95,6 +96,7 @@ impl WorkBuffer {
         Self {
             t0: std::time::Instant::now(),
             tick_periods: move_picker::Periods(0),
+            dur_movegen: Default::default(),
             vec_placed_tile: Vec::new(),
             ply_buffer: Vec::new(),
             movegen: movegen::KurniaMoveGenerator::new(game_config),
@@ -112,6 +114,7 @@ impl WorkBuffer {
     fn init(&mut self) {
         self.t0 = std::time::Instant::now();
         self.tick_periods = move_picker::Periods(0);
+        self.dur_movegen = Default::default();
         // no need to clear temp spaces here
         // put an unused entry in states, because index 0 is special
         self.states.clear();
@@ -482,10 +485,12 @@ impl<'a> EndgameSolver<'a> {
                 child_play_idxs: [self.work_buffer.child_plays.len(), 0, 0],
             };
             for which_player in 0..2 {
+                let t1 = std::time::Instant::now();
                 self.work_buffer.movegen.gen_all_raw_moves_unsorted(
                     &board_snapshot,
                     &current_ply_buffer.racks[which_player],
                 );
+                self.work_buffer.dur_movegen += t1.elapsed();
                 for candidate in &self.work_buffer.movegen.plays {
                     match &candidate.play {
                         movegen::Play::Exchange { .. } => {
@@ -868,9 +873,12 @@ impl<'a> EndgameSolver<'a> {
     }
 
     fn print_progress(&self) {
+        let dur0 = self.work_buffer.t0.elapsed();
+        let dur1 = self.work_buffer.dur_movegen;
         println!(
-            "after {:?}, there are {} states, {} evaluated, {} child_plays, {} plays",
-            self.work_buffer.t0.elapsed(),
+            "after {:?} ({:?} on movegen), there are {} states, {} evaluated, {} child_plays, {} plays",
+            dur0,
+            dur1,
             self.work_buffer.states.len(),
             self.work_buffer.state_eval.len(),
             self.work_buffer.child_plays.len(),
