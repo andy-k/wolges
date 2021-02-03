@@ -791,11 +791,6 @@ impl<'a> EndgameSolver<'a> {
     {
         while let Some(ans) = self.work_buffer.state_eval.get(&state_idx) {
             let mut ans1 = &ans.best_move[player_idx as usize];
-            // TODO: temp workaround
-            if ans1.play_idx >= self.work_buffer.plays.len() {
-                println!("still happening: missing play");
-                break;
-            }
             let play = &self.work_buffer.plays[ans1.play_idx];
             out(FoundPlay {
                 equity: ans1.equity,
@@ -804,11 +799,6 @@ impl<'a> EndgameSolver<'a> {
             if let movegen::Play::Exchange { .. } = play {
                 player_idx ^= 1;
                 ans1 = &ans.best_move[player_idx as usize];
-                // TODO: temp workaround
-                if ans1.play_idx >= self.work_buffer.plays.len() {
-                    println!("still happening: missing counterplay");
-                    break;
-                }
                 let play = &self.work_buffer.plays[ans1.play_idx];
                 out(FoundPlay {
                     equity: ans1.equity,
