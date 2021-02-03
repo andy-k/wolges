@@ -18,7 +18,7 @@ struct PlacedTile {
 // - each (blank-wiped) tile coming from both players are placed by p0 first
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct State {
-    parent: usize,
+    parent: u32,
     placed_tile: PlacedTile,
 }
 
@@ -34,7 +34,7 @@ enum StateSideEvalEquityType {
 struct StateSideEval {
     equity: f32,
     play_idx: u32,
-    new_state_idx: usize, // not cheap to regen
+    new_state_idx: u32, // not cheap to regen
     equity_type: StateSideEvalEquityType,
     depth: i8,
 }
@@ -66,9 +66,9 @@ struct PlyBuffer {
 }
 
 struct ChildPlay {
-    new_state_idx: usize, // workbuf.states; 0=play out, !0=missing, same idx = pass
-    play_idx: u32,        // workbuf.plays
-    valuation: f32,       // refined over time
+    new_state_idx: u32, // workbuf.states; 0=play out, !0=missing, same idx = pass
+    play_idx: u32,      // workbuf.plays
+    valuation: f32,     // refined over time
 }
 
 // reusable allocations
@@ -79,11 +79,11 @@ struct WorkBuffer {
     vec_placed_tile: Vec<PlacedTile>,
     ply_buffer: Vec<PlyBuffer>,
     movegen: movegen::KurniaMoveGenerator,
-    blocked: Box<[[i16; 4]]>,                     // r*c, 4 directions
-    vec_blocked: Vec<i16>,                        // up to 5*7
-    states: Vec<State>,                           // [0] = dummy initial state, excludes play outs
-    state_finder: build::MyHashMap<State, usize>, // maps all states except 0
-    state_eval: build::MyHashMap<usize, StateEval>,
+    blocked: Box<[[i16; 4]]>,                   // r*c, 4 directions
+    vec_blocked: Vec<i16>,                      // up to 5*7
+    states: Vec<State>,                         // [0] = dummy initial state, excludes play outs
+    state_finder: build::MyHashMap<State, u32>, // maps all states except 0
+    state_eval: build::MyHashMap<u32, StateEval>,
     plays: Vec<movegen::Play>, // global u32->Play mapping. [0] = pass, [1..] = place
     play_finder: build::MyHashMap<movegen::Play, u32>, // maps all plays except pass
     child_plays: Vec<ChildPlay>, // subslices of StateEval, often re-sorted; excludes pass
@@ -191,7 +191,7 @@ impl<'a> EndgameSolver<'a> {
     }
 
     #[inline(always)]
-    fn get_new_state_idx(&mut self, state_idx: usize, which_player: u8, play_idx: u32) -> usize {
+    fn get_new_state_idx(&mut self, state_idx: u32, which_player: u8, play_idx: u32) -> u32 {
         match &self.work_buffer.plays[play_idx as usize] {
             movegen::Play::Exchange { .. } => state_idx,
             movegen::Play::Place {
@@ -206,7 +206,7 @@ impl<'a> EndgameSolver<'a> {
                     self.work_buffer.vec_placed_tile.clear();
                     let mut state_idx = state_idx;
                     while state_idx != 0 {
-                        let state = &self.work_buffer.states[state_idx];
+                        let state = &self.work_buffer.states[state_idx as usize];
                         self.work_buffer
                             .vec_placed_tile
                             .push(state.placed_tile.clone());
@@ -277,7 +277,7 @@ impl<'a> EndgameSolver<'a> {
                         parent: new_state_idx,
                         placed_tile: placed_tile.clone(),
                     };
-                    let new_new_state_idx = self.work_buffer.states.len();
+                    let new_new_state_idx = self.work_buffer.states.len() as u32;
                     new_state_idx = *self
                         .work_buffer
                         .state_finder
@@ -285,6 +285,10 @@ impl<'a> EndgameSolver<'a> {
                         .or_insert(new_new_state_idx);
                     if new_state_idx == new_new_state_idx {
                         self.work_buffer.states.push(new_state);
+                        if new_new_state_idx == !0 {
+                            // this might happen, but only after a very long time
+                            panic!("too many states");
+                        }
                     }
                 }
 
@@ -294,11 +298,11 @@ impl<'a> EndgameSolver<'a> {
     }
 
     #[inline(always)]
-    fn both_pass_value(&self, mut state_idx: usize, player_idx: u8) -> f32 {
+    fn both_pass_value(&self, mut state_idx: u32, player_idx: u8) -> f32 {
         let mut rack_scores = [self.rack_scores[0], self.rack_scores[1]];
         let alphabet = self.game_config.alphabet();
         while state_idx != 0 {
-            let state = &self.work_buffer.states[state_idx];
+            let state = &self.work_buffer.states[state_idx as usize];
             let blanked_tile =
                 state.placed_tile.tile & !((state.placed_tile.tile as i8) >> 7) as u8;
             rack_scores[state.placed_tile.whose as usize] -= alphabet.score(blanked_tile) as i16;
@@ -331,7 +335,7 @@ impl<'a> EndgameSolver<'a> {
     // based on https://en.wikipedia.org/wiki/Negamax
     fn negamax_eval(
         &mut self,
-        state_idx: usize,
+        state_idx: u32,
         player_idx: u8,
         depth: i8,
         mut alpha: f32,
@@ -398,7 +402,7 @@ impl<'a> EndgameSolver<'a> {
             {
                 let mut state_idx = state_idx;
                 while state_idx != 0 {
-                    let state = &self.work_buffer.states[state_idx];
+                    let state = &self.work_buffer.states[state_idx as usize];
                     current_ply_buffer.board_tiles[state.placed_tile.idx as usize] =
                         state.placed_tile.tile;
                     let rack = &mut current_ply_buffer.racks[state.placed_tile.whose as usize];
@@ -786,7 +790,7 @@ impl<'a> EndgameSolver<'a> {
     #[inline(always)]
     pub fn append_solution<'b, F: FnMut(FoundPlay<'b>)>(
         &'a self,
-        mut state_idx: usize,
+        mut state_idx: u32,
         mut player_idx: u8,
         mut out: F,
     ) where
