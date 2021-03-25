@@ -257,7 +257,7 @@ impl WorkingBuffer {
         self.exchange_buffer.clear();
         self.exchange_buffer.reserve(rack.len());
         self.rack_tally.iter_mut().for_each(|m| *m = 0);
-        for tile in &rack[..] {
+        for tile in rack {
             self.rack_tally[*tile as usize] += 1;
         }
         self.word_buffer_for_across_plays
