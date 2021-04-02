@@ -142,8 +142,7 @@ fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::
 use std::convert::TryInto;
 use std::str::FromStr;
 
-pub fn main() -> error::Returns<()> {
-    let f = std::fs::File::open("leaves.csv")?;
+fn build_english_leaves(f: Box<dyn std::io::Read>) -> error::Returns<Vec<u8>> {
     let mut leave_values = Vec::new();
     // extern crate csv;
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
@@ -179,7 +178,72 @@ pub fn main() -> error::Returns<()> {
         w += 2;
     }
     assert_eq!(w, bin.len());
-    std::fs::write("leaves.klv", bin)?;
+    Ok(bin)
+}
+
+pub fn main() -> error::Returns<()> {
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.len() <= 1 {
+        old_main()
+    } else {
+        let t0 = std::time::Instant::now();
+        if args[1] == "english-klv" {
+            std::fs::write(
+                &args[3],
+                build_english_leaves(Box::new(std::fs::File::open(&args[2])?))?,
+            )?;
+        } else if args[1] == "english-kwg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::Gaddawg,
+                    &read_english_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "english-kwg-dawg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::DawgOnly,
+                    &read_english_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "polish-kwg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::Gaddawg,
+                    &read_polish_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "polish-kwg-dawg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::DawgOnly,
+                    &read_polish_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else {
+            return Err("invalid argument".into());
+        }
+        std::fs::write(
+            "csw19.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?,
+            )?,
+        )?;
+        println!("time taken: {:?}", t0.elapsed());
+        Ok(())
+    }
+}
+
+fn old_main() -> error::Returns<()> {
+    std::fs::write(
+        "leaves.klv",
+        build_english_leaves(Box::new(std::fs::File::open("leaves.csv")?))?,
+    )?;
     {
         let t0 = std::time::Instant::now();
         std::fs::write(
