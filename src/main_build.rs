@@ -208,6 +208,27 @@ pub fn main() -> error::Returns<()> {
                     &read_english_machine_words(&std::fs::read_to_string(&args[2])?)?,
                 )?,
             )?;
+        } else if args[1] == "english-macondo" {
+            let english_alphabet = alphabet::make_english_alphabet();
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
+            std::fs::write(
+                &args[4],
+                lexport::to_macondo(
+                    &kwg,
+                    &english_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            std::fs::write(
+                &args[5],
+                lexport::to_macondo(
+                    &kwg,
+                    &english_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
         } else if args[1] == "polish-kwg" {
             std::fs::write(
                 &args[3],
@@ -223,6 +244,27 @@ pub fn main() -> error::Returns<()> {
                     build::BuildFormat::DawgOnly,
                     &read_polish_machine_words(&std::fs::read_to_string(&args[2])?)?,
                 )?,
+            )?;
+        } else if args[1] == "polish-macondo" {
+            let polish_alphabet = alphabet::make_polish_alphabet();
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
+            std::fs::write(
+                &args[4],
+                lexport::to_macondo(
+                    &kwg,
+                    &polish_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            std::fs::write(
+                &args[5],
+                lexport::to_macondo(
+                    &kwg,
+                    &polish_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Gaddag,
+                ),
             )?;
         } else {
             return Err("invalid argument".into());
