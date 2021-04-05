@@ -25,6 +25,30 @@ struct Question {
 // note: only this representation uses -1i8 for blank-as-A (in "board" input
 // and "word" response for "action":"play"). everywhere else, use 0x81u8.
 
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[serde(tag = "action")]
+enum JsonPlay {
+    #[serde(rename = "pass")]
+    Pass,
+    #[serde(rename = "exchange")]
+    Exchange { tiles: Box<[u8]> },
+    #[serde(rename = "play")]
+    Play {
+        down: bool,
+        lane: i8,
+        idx: i8,
+        word: Box<[i8]>,
+        score: i16,
+    },
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+struct JsonPlayWithEquity {
+    equity: f32,
+    #[serde(flatten)]
+    play: JsonPlay,
+}
+
 pub fn main() -> error::Returns<()> {
     let data = r#"
       {
@@ -246,20 +270,23 @@ pub fn main() -> error::Returns<()> {
         println!("{} {}", play.equity, play.play.fmt(board_snapshot));
     }
 
-    let mut result = Vec::<serde_json::Value>::with_capacity(plays.len());
+    let mut result = Vec::with_capacity(plays.len());
     for play in plays.iter() {
         match &play.play {
             movegen::Play::Exchange { tiles } => {
                 if tiles.is_empty() {
-                    result.push(serde_json::json!({
-                        "equity": play.equity,
-                        "action": "pass" }));
+                    result.push(JsonPlayWithEquity {
+                        equity: play.equity,
+                        play: JsonPlay::Pass,
+                    });
                 } else {
                     // tiles: array of numbers. 0 for blank, 1 for A.
-                    result.push(serde_json::json!({
-                        "equity": play.equity,
-                        "action": "exchange",
-                        "tiles": tiles[..] }));
+                    result.push(JsonPlayWithEquity {
+                        equity: play.equity,
+                        play: JsonPlay::Exchange {
+                            tiles: tiles[..].into(),
+                        },
+                    });
                 }
             }
             movegen::Play::Place {
@@ -283,14 +310,16 @@ pub fn main() -> error::Returns<()> {
                 // across plays: down=false, lane=row, idx=col (0-based).
                 // down plays: down=true, lane=col, idx=row (0-based).
                 // word: 0 for play-through, 1 for A, -1 for blank-as-A.
-                result.push(serde_json::json!({
-                    "equity": play.equity,
-                    "action": "play",
-                    "down": down,
-                    "lane": lane,
-                    "idx": idx,
-                    "word": word_played,
-                    "score": score }));
+                result.push(JsonPlayWithEquity {
+                    equity: play.equity,
+                    play: JsonPlay::Play {
+                        down: *down,
+                        lane: *lane,
+                        idx: *idx,
+                        word: word_played.into(),
+                        score: *score,
+                    },
+                });
             }
         }
     }
