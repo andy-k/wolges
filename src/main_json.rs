@@ -28,8 +28,6 @@ struct Question {
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 #[serde(tag = "action")]
 enum JsonPlay {
-    #[serde(rename = "pass")]
-    Pass,
     #[serde(rename = "exchange")]
     Exchange { tiles: Box<[u8]> },
     #[serde(rename = "play")]
@@ -274,20 +272,13 @@ pub fn main() -> error::Returns<()> {
     for play in plays.iter() {
         match &play.play {
             movegen::Play::Exchange { tiles } => {
-                if tiles.is_empty() {
-                    result.push(JsonPlayWithEquity {
-                        equity: play.equity,
-                        play: JsonPlay::Pass,
-                    });
-                } else {
-                    // tiles: array of numbers. 0 for blank, 1 for A.
-                    result.push(JsonPlayWithEquity {
-                        equity: play.equity,
-                        play: JsonPlay::Exchange {
-                            tiles: tiles[..].into(),
-                        },
-                    });
-                }
+                // tiles: array of numbers. 0 for blank, 1 for A.
+                result.push(JsonPlayWithEquity {
+                    equity: play.equity,
+                    play: JsonPlay::Exchange {
+                        tiles: tiles[..].into(),
+                    },
+                });
             }
             movegen::Play::Place {
                 down,
