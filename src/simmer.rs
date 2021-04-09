@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{game_config, game_state, klv, kwg, movegen, stats};
+use super::{game_config, game_state, klv, kwg, movegen};
 use rand::prelude::*;
 
 fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen::Play) {
@@ -24,11 +24,6 @@ fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen:
     };
 }
 
-pub struct Candidate {
-    pub play_index: usize,
-    pub stats: stats::Stats,
-}
-
 thread_local! {
     static RNG: std::cell::RefCell<Box<dyn RngCore>> =
         std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_entropy()));
@@ -38,9 +33,6 @@ pub struct Simmer<'a> {
     // new() sets these on construction
     kwg: &'a kwg::Kwg,
     klv: &'a klv::Klv,
-
-    // only used by move_picker
-    pub candidates: Vec<Candidate>,
 
     // prepare() sets/resets these
     initial_game_state: game_state::GameState<'a>,
@@ -68,7 +60,6 @@ impl<'a> Simmer<'a> {
         klv: &'a klv::Klv,
     ) -> Self {
         Self {
-            candidates: Vec::new(),
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             initial_game_state: game_state::GameState::new(game_config),
             game_state: game_state::GameState::new(game_config),
@@ -99,20 +90,6 @@ impl<'a> Simmer<'a> {
                 .unwrap_or(0);
         self.num_sim_plies = num_sim_plies;
         self.num_tiles_that_matter = num_sim_plies * game_state.game_config.rack_size() as usize;
-    }
-
-    #[inline(always)]
-    pub fn take_candidates(&mut self, num_plays: usize) -> Vec<Candidate> {
-        let mut candidates = std::mem::take(&mut self.candidates);
-        candidates.clear();
-        candidates.reserve(num_plays);
-        for idx in 0..num_plays {
-            candidates.push(Candidate {
-                play_index: idx,
-                stats: stats::Stats::new(),
-            });
-        }
-        candidates
     }
 
     #[inline(always)]

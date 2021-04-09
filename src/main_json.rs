@@ -2,7 +2,7 @@
 
 use rand::prelude::*;
 use wolges::{
-    display, error, game_config, game_state, klv, kwg, move_filter, move_picker, movegen, simmer,
+    display, error, game_config, game_state, klv, kwg, move_filter, move_picker, movegen,
 };
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -232,7 +232,7 @@ pub fn main() -> error::Returns<()> {
 
     let mut move_filter = move_filter::GenMoves::Unfiltered;
     let mut move_picker =
-        move_picker::MovePicker::Simmer(simmer::Simmer::new(&game_config, &kwg, &klv));
+        move_picker::MovePicker::Simmer(move_picker::Simmer::new(&game_config, &kwg, &klv));
     game_state.board_tiles.copy_from_slice(&board_tiles);
 
     // put the bag and shuffle it

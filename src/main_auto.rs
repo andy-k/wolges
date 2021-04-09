@@ -3,7 +3,7 @@
 use rand::prelude::*;
 use wolges::{
     display, error, game_config, game_state, game_timers, klv, kwg, move_filter, move_picker,
-    movegen, simmer,
+    movegen,
 };
 
 pub fn main() -> error::Returns<()> {
@@ -25,7 +25,7 @@ pub fn main() -> error::Returns<()> {
 
     let mut move_picker_0 = move_picker::MovePicker::Hasty;
     let mut move_picker_1 =
-        move_picker::MovePicker::Simmer(simmer::Simmer::new(game_config, &kwg, &klv));
+        move_picker::MovePicker::Simmer(move_picker::Simmer::new(game_config, &kwg, &klv));
 
     let mut game_state = game_state::GameState::new(game_config);
     let mut rng = rand_chacha::ChaCha20Rng::from_entropy();

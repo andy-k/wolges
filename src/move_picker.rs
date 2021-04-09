@@ -1,9 +1,46 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{game_state, move_filter, movegen, simmer};
+use super::{game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats};
+
+struct Candidate {
+    play_index: usize,
+    stats: stats::Stats,
+}
+
+pub struct Simmer<'a> {
+    candidates: Vec<Candidate>,
+    simmer: simmer::Simmer<'a>,
+}
+
+impl<'a> Simmer<'a> {
+    pub fn new(
+        game_config: &'a game_config::GameConfig,
+        kwg: &'a kwg::Kwg,
+        klv: &'a klv::Klv,
+    ) -> Self {
+        Self {
+            candidates: Vec::new(),
+            simmer: simmer::Simmer::new(game_config, kwg, klv),
+        }
+    }
+
+    #[inline(always)]
+    fn take_candidates(&mut self, num_plays: usize) -> Vec<Candidate> {
+        let mut candidates = std::mem::take(&mut self.candidates);
+        candidates.clear();
+        candidates.reserve(num_plays);
+        for idx in 0..num_plays {
+            candidates.push(Candidate {
+                play_index: idx,
+                stats: stats::Stats::new(),
+            });
+        }
+        candidates
+    }
+}
 
 #[inline(always)]
-fn top_candidate_play_index_by_mean(candidates: &[simmer::Candidate]) -> usize {
+fn top_candidate_play_index_by_mean(candidates: &[Candidate]) -> usize {
     candidates
         .iter()
         .max_by(|a, b| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
@@ -28,7 +65,7 @@ impl Periods {
 #[allow(clippy::large_enum_variant)]
 pub enum MovePicker<'a> {
     Hasty,
-    Simmer(simmer::Simmer<'a>),
+    Simmer(Simmer<'a>),
 }
 
 unsafe impl Send for MovePicker<'_> {}
@@ -36,7 +73,7 @@ unsafe impl Send for MovePicker<'_> {}
 impl MovePicker<'_> {
     #[inline(always)]
     fn limit_surviving_candidates(
-        candidates: &mut Vec<simmer::Candidate>,
+        candidates: &mut Vec<Candidate>,
         z: f64,
         max_candidates_allowed: usize,
     ) {
@@ -75,7 +112,7 @@ impl MovePicker<'_> {
                     println!("3 secs have passed");
                 });
                 filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 100);
-                simmer.prepare(&game_state, 2);
+                simmer.simmer.prepare(&game_state, 2);
                 let mut candidates = simmer.take_candidates(move_generator.plays.len());
                 let num_sim_iters = 1000;
                 let mut tick_periods = Periods(0);
@@ -95,16 +132,17 @@ impl MovePicker<'_> {
                             candidates.len()
                         );
                     }
-                    simmer.prepare_iteration();
+                    simmer.simmer.prepare_iteration();
                     for candidate in candidates.iter_mut() {
-                        let game_ended =
-                            simmer.simulate(&move_generator.plays[candidate.play_index].play);
-                        let final_spread = simmer.final_equity_spread();
-                        let win_prob = simmer.compute_win_prob(game_ended, final_spread);
-                        let sim_spread = final_spread - simmer.initial_score_spread as f32;
-                        candidate
-                            .stats
-                            .update(sim_spread as f64 + win_prob * simmer.win_prob_weightage());
+                        let game_ended = simmer
+                            .simmer
+                            .simulate(&move_generator.plays[candidate.play_index].play);
+                        let final_spread = simmer.simmer.final_equity_spread();
+                        let win_prob = simmer.simmer.compute_win_prob(game_ended, final_spread);
+                        let sim_spread = final_spread - simmer.simmer.initial_score_spread as f32;
+                        candidate.stats.update(
+                            sim_spread as f64 + win_prob * simmer.simmer.win_prob_weightage(),
+                        );
                     }
                     if sim_iter % 16 == 0
                         && prune_periods.update(elapsed_time_ms / prune_interval_ms)
