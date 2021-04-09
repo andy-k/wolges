@@ -20,6 +20,7 @@ pub mod matrix;
 pub mod move_filter;
 pub mod move_picker;
 pub mod movegen;
+pub mod play_scorer;
 pub mod prob;
 pub mod simmer;
 pub mod stats;

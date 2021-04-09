@@ -3,7 +3,7 @@
 use rand::prelude::*;
 use wolges::{
     display, error, game_config, game_state, game_timers, klv, kwg, move_filter, move_picker,
-    movegen,
+    movegen, play_scorer,
 };
 
 pub fn main() -> error::Returns<()> {
@@ -26,6 +26,9 @@ pub fn main() -> error::Returns<()> {
     let mut move_picker_0 = move_picker::MovePicker::Hasty;
     let mut move_picker_1 =
         move_picker::MovePicker::Simmer(move_picker::Simmer::new(game_config, &kwg, &klv));
+    if true {
+        move_picker_1 = move_picker::MovePicker::Hasty;
+    }
 
     let mut game_state = game_state::GameState::new(game_config);
     let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
@@ -65,6 +68,65 @@ pub fn main() -> error::Returns<()> {
                 kwg: &kwg,
                 klv: &klv,
             };
+
+            // stress-test scoring algorithm
+            if true {
+                move_generator.gen_moves_unfiltered(
+                    &board_snapshot,
+                    &game_state.current_player().rack,
+                    usize::MAX,
+                );
+                let plays = &mut move_generator.plays;
+                println!("{} moves found...", plays.len());
+                let mut issues = 0;
+                let mut ps = play_scorer::PlayScorer::new();
+                for play in plays.iter() {
+                    if !ps.play_is_valid(board_snapshot, &play.play) {
+                        issues += 1;
+                        println!("{} is not valid!", play.play.fmt(board_snapshot));
+                    } else {
+                        let movegen_score = match &play.play {
+                            movegen::Play::Exchange { .. } => 0,
+                            movegen::Play::Place { score, .. } => *score,
+                        };
+                        let recounted_score = ps.compute_score(board_snapshot, &play.play);
+                        if movegen_score != recounted_score {
+                            issues += 1;
+                            println!(
+                                "{} should score {} instead of {}!",
+                                play.play.fmt(board_snapshot),
+                                recounted_score,
+                                movegen_score
+                            );
+                        } else {
+                            let leave_scale = if let move_filter::GenMoves::Tilt { tilt, .. } =
+                                filtered_movegen
+                            {
+                                tilt.leave_scale
+                            } else {
+                                1.0
+                            };
+                            let recounted_equity = ps.compute_equity(
+                                board_snapshot,
+                                &game_state,
+                                &play.play,
+                                leave_scale,
+                                recounted_score,
+                            );
+                            if play.equity.to_le_bytes() != recounted_equity.to_le_bytes() {
+                                issues += 1;
+                                println!(
+                                    "{} should have equity {} instead of {}!",
+                                    play.play.fmt(board_snapshot),
+                                    recounted_equity,
+                                    play.equity
+                                );
+                            }
+                        }
+                    }
+                }
+                assert_eq!(issues, 0);
+            }
 
             move_picker.pick_a_move(
                 filtered_movegen,
