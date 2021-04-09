@@ -35,19 +35,30 @@ thread_local! {
 }
 
 pub struct Simmer<'a> {
-    pub candidates: Vec<Candidate>,
-    move_generator: movegen::KurniaMoveGenerator,
-    initial_game_state: game_state::GameState<'a>,
-    game_state: game_state::GameState<'a>,
+    // new() sets these on construction
     kwg: &'a kwg::Kwg,
     klv: &'a klv::Klv,
-    last_seen_leave_values: Box<[f32]>,
-    final_scores: Box<[i16]>,
-    rack_tally: Box<[u8]>,
+
+    // only used by move_picker
+    pub candidates: Vec<Candidate>,
+
+    // prepare() sets/resets these
+    initial_game_state: game_state::GameState<'a>,
     pub initial_score_spread: i16,
-    possible_to_play_out: bool,
     num_sim_plies: usize,
     num_tiles_that_matter: usize,
+
+    // prepare_iteration() sets these
+    possible_to_play_out: bool,
+
+    // simulate() simulates a single iteration and sets these
+    game_state: game_state::GameState<'a>,
+    last_seen_leave_values: Box<[f32]>,
+    final_scores: Box<[i16]>,
+
+    // simulate() reuses these internally
+    move_generator: movegen::KurniaMoveGenerator,
+    rack_tally: Box<[u8]>,
 }
 
 impl<'a> Simmer<'a> {
@@ -75,20 +86,7 @@ impl<'a> Simmer<'a> {
     }
 
     #[inline(always)]
-    pub fn prepare(
-        &mut self,
-        game_state: &game_state::GameState,
-        num_plays: usize,
-        num_sim_plies: usize,
-    ) {
-        self.candidates.clear();
-        self.candidates.reserve(num_plays);
-        for idx in 0..num_plays {
-            self.candidates.push(Candidate {
-                play_index: idx,
-                stats: stats::Stats::new(),
-            });
-        }
+    pub fn prepare(&mut self, game_state: &game_state::GameState, num_sim_plies: usize) {
         self.initial_game_state
             .clone_transient_stuffs_from(&game_state);
         self.game_state.clone_transient_stuffs_from(&game_state);
@@ -101,6 +99,20 @@ impl<'a> Simmer<'a> {
                 .unwrap_or(0);
         self.num_sim_plies = num_sim_plies;
         self.num_tiles_that_matter = num_sim_plies * game_state.game_config.rack_size() as usize;
+    }
+
+    #[inline(always)]
+    pub fn take_candidates(&mut self, num_plays: usize) -> Vec<Candidate> {
+        let mut candidates = std::mem::take(&mut self.candidates);
+        candidates.clear();
+        candidates.reserve(num_plays);
+        for idx in 0..num_plays {
+            candidates.push(Candidate {
+                play_index: idx,
+                stats: stats::Stats::new(),
+            });
+        }
+        candidates
     }
 
     #[inline(always)]
@@ -241,14 +253,5 @@ impl<'a> Simmer<'a> {
         } else {
             10.0
         }
-    }
-
-    #[inline(always)]
-    pub fn top_candidate_play_index_by_mean(&self) -> usize {
-        self.candidates
-            .iter()
-            .max_by(|a, b| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
-            .unwrap()
-            .play_index
     }
 }

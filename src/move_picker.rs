@@ -2,6 +2,15 @@
 
 use super::{game_state, move_filter, movegen, simmer};
 
+#[inline(always)]
+fn top_candidate_play_index_by_mean(candidates: &[simmer::Candidate]) -> usize {
+    candidates
+        .iter()
+        .max_by(|a, b| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
+        .unwrap()
+        .play_index
+}
+
 pub struct Periods(pub u64);
 
 impl Periods {
@@ -66,8 +75,8 @@ impl MovePicker<'_> {
                     println!("3 secs have passed");
                 });
                 filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 100);
-                simmer.prepare(&game_state, move_generator.plays.len(), 2);
-                let mut candidates = std::mem::take(&mut simmer.candidates);
+                simmer.prepare(&game_state, 2);
+                let mut candidates = simmer.take_candidates(move_generator.plays.len());
                 let num_sim_iters = 1000;
                 let mut tick_periods = Periods(0);
                 let mut prune_periods = Periods(0);
@@ -117,9 +126,7 @@ impl MovePicker<'_> {
                         }
                     }
                 }
-                simmer.candidates = candidates;
-                let top_idx = simmer
-                    .candidates
+                let top_idx = candidates
                     .iter()
                     .enumerate()
                     .max_by(|(_, a), (_, b)| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
@@ -127,21 +134,22 @@ impl MovePicker<'_> {
                     .0;
                 println!(
                     "top candidate mean = {} (sd={} count={} range {}..{}) took {:?}",
-                    simmer.candidates[top_idx].stats.mean(),
-                    simmer.candidates[top_idx].stats.standard_deviation(),
-                    simmer.candidates[top_idx].stats.count(),
-                    simmer.candidates[top_idx].stats.ci_max(-Z),
-                    simmer.candidates[top_idx].stats.ci_max(Z),
+                    candidates[top_idx].stats.mean(),
+                    candidates[top_idx].stats.standard_deviation(),
+                    candidates[top_idx].stats.count(),
+                    candidates[top_idx].stats.ci_max(-Z),
+                    candidates[top_idx].stats.ci_max(Z),
                     t0.elapsed()
                 );
                 assert_eq!(
-                    simmer.candidates[top_idx].play_index,
-                    simmer.top_candidate_play_index_by_mean()
+                    candidates[top_idx].play_index,
+                    top_candidate_play_index_by_mean(&candidates)
                 );
                 move_generator
                     .plays
-                    .swap(0, simmer.top_candidate_play_index_by_mean());
+                    .swap(0, top_candidate_play_index_by_mean(&candidates));
                 move_generator.plays.truncate(1);
+                simmer.candidates = candidates;
             }
         }
     }
