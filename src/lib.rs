@@ -21,4 +21,5 @@ pub mod move_filter;
 pub mod move_picker;
 pub mod movegen;
 pub mod prob;
+pub mod simmer;
 pub mod stats;
