@@ -234,6 +234,88 @@ pub fn make_super_english_alphabet<'a>() -> Alphabet<'a> {
     })
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#German
+pub fn make_german_alphabet<'a>() -> Alphabet<'a> {
+    Alphabet::new_static(StaticAlphabet {
+        tiles: &[
+            tile!("?", "?", 2, 0, 0),
+            tile!("A", "a", 5, 1, 1),
+            tile!("Ä", "ä", 1, 6, 1),
+            tile!("B", "b", 2, 3, 0),
+            tile!("C", "c", 2, 4, 0),
+            tile!("D", "d", 4, 1, 0),
+            tile!("E", "e", 15, 1, 1),
+            tile!("F", "f", 2, 4, 0),
+            tile!("G", "g", 3, 2, 0),
+            tile!("H", "h", 4, 2, 0),
+            tile!("I", "i", 6, 1, 1),
+            tile!("J", "j", 1, 6, 0),
+            tile!("K", "k", 2, 4, 0),
+            tile!("L", "l", 3, 2, 0),
+            tile!("M", "m", 4, 3, 0),
+            tile!("N", "n", 9, 1, 0),
+            tile!("O", "o", 3, 2, 1),
+            tile!("Ö", "ö", 1, 8, 1),
+            tile!("P", "p", 1, 4, 0),
+            tile!("Q", "q", 1, 10, 0),
+            tile!("R", "r", 6, 1, 0),
+            tile!("S", "s", 7, 1, 0),
+            tile!("T", "t", 6, 1, 0),
+            tile!("U", "u", 6, 1, 1),
+            tile!("Ü", "ü", 1, 6, 1),
+            tile!("V", "v", 1, 6, 0),
+            tile!("W", "w", 1, 3, 0),
+            tile!("X", "x", 1, 8, 0),
+            tile!("Y", "y", 1, 10, 0),
+            tile!("Z", "z", 1, 3, 0),
+        ],
+        ..Default::default()
+    })
+}
+
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Norwegian
+// https://en.wikipedia.org/wiki/Norwegian_orthography
+pub fn make_norwegian_alphabet<'a>() -> Alphabet<'a> {
+    Alphabet::new_static(StaticAlphabet {
+        tiles: &[
+            tile!("?", "?", 2, 0, 0),
+            tile!("A", "a", 7, 1, 1),
+            tile!("Ä", "ä", 0, 0, 0),
+            tile!("B", "b", 3, 4, 0),
+            tile!("C", "c", 1, 10, 0),
+            tile!("D", "d", 5, 1, 0),
+            tile!("E", "e", 9, 1, 1),
+            tile!("F", "f", 4, 2, 0),
+            tile!("G", "g", 4, 2, 0),
+            tile!("H", "h", 3, 3, 0),
+            tile!("I", "i", 5, 1, 1),
+            tile!("J", "j", 2, 4, 0),
+            tile!("K", "k", 4, 2, 0),
+            tile!("L", "l", 5, 1, 0),
+            tile!("M", "m", 3, 2, 0),
+            tile!("N", "n", 6, 1, 0),
+            tile!("O", "o", 4, 2, 1),
+            tile!("Ö", "ö", 0, 0, 0),
+            tile!("P", "p", 2, 4, 0),
+            tile!("Q", "q", 0, 0, 0),
+            tile!("R", "r", 6, 1, 0),
+            tile!("S", "s", 6, 1, 0),
+            tile!("T", "t", 6, 1, 0),
+            tile!("U", "u", 3, 4, 1),
+            tile!("Ü", "ü", 0, 0, 0),
+            tile!("V", "v", 3, 4, 0),
+            tile!("W", "w", 1, 8, 0),
+            tile!("X", "x", 0, 0, 0),
+            tile!("Y", "y", 1, 6, 1),
+            tile!("Z", "z", 0, 0, 0),
+            tile!("Æ", "æ", 1, 6, 1),
+            tile!("Ø", "ø", 2, 5, 1),
+            tile!("Å", "å", 2, 4, 1),
+        ],
+        ..Default::default()
+    })
+}
+
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Polish
 // https://en.wikipedia.org/wiki/Polish_alphabet#Letters
 // https://en.wikipedia.org/wiki/Polish_phonology#Vowels
@@ -273,6 +355,45 @@ pub fn make_polish_alphabet<'a>() -> Alphabet<'a> {
             tile!("Z", "z", 5, 1, 0),
             tile!("Ź", "ź", 1, 9, 0),
             tile!("Ż", "ż", 1, 5, 0),
+        ],
+        ..Default::default()
+    })
+}
+
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Spanish
+// based on Spanish-language sets sold outside North America
+pub fn make_spanish_alphabet<'a>() -> Alphabet<'a> {
+    Alphabet::new_static(StaticAlphabet {
+        tiles: &[
+            tile!("?", "?", 2, 0, 0),
+            tile!("A", "a", 12, 1, 1),
+            tile!("B", "b", 2, 3, 0),
+            tile!("C", "c", 4, 3, 0),
+            tile!("CH", "ch", 1, 5, 0),
+            tile!("D", "d", 5, 2, 0),
+            tile!("E", "e", 12, 1, 1),
+            tile!("F", "f", 1, 4, 0),
+            tile!("G", "g", 2, 2, 0),
+            tile!("H", "h", 2, 4, 0),
+            tile!("I", "i", 6, 1, 1),
+            tile!("J", "j", 1, 8, 0),
+            tile!("L", "l", 4, 1, 0),
+            tile!("LL", "ll", 1, 8, 0),
+            tile!("M", "m", 2, 3, 0),
+            tile!("N", "n", 5, 1, 0),
+            tile!("Ñ", "ñ", 1, 8, 0),
+            tile!("O", "o", 9, 1, 1),
+            tile!("P", "p", 2, 3, 0),
+            tile!("Q", "q", 1, 5, 0),
+            tile!("R", "r", 5, 1, 0),
+            tile!("RR", "rr", 1, 8, 0),
+            tile!("S", "s", 6, 1, 0),
+            tile!("T", "t", 4, 1, 0),
+            tile!("U", "u", 5, 1, 1),
+            tile!("V", "v", 1, 4, 0),
+            tile!("X", "x", 1, 8, 0),
+            tile!("Y", "y", 1, 4, 0),
+            tile!("Z", "z", 1, 10, 0),
         ],
         ..Default::default()
     })
