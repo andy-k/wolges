@@ -83,6 +83,43 @@ impl From<&movegen::Play> for JsonPlay {
     }
 }
 
+impl From<&JsonPlay> for movegen::Play {
+    #[inline(always)]
+    fn from(play: &JsonPlay) -> Self {
+        match &play {
+            JsonPlay::Exchange { tiles } => {
+                // tiles: array of numbers. 0 for blank, 1 for A.
+                Self::Exchange {
+                    tiles: tiles[..].into(),
+                }
+            }
+            JsonPlay::Play {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => {
+                // turn -1i8, -2i8 into 0x81u8, 0x82u8
+                let word_played = word
+                    .iter()
+                    .map(|&x| if x < 0 { 0x81 + !x as u8 } else { x as u8 })
+                    .collect::<Vec<u8>>();
+                // across plays: down=false, lane=row, idx=col (0-based).
+                // down plays: down=true, lane=col, idx=row (0-based).
+                // word: 0 for play-through, 1 for A, -1 for blank-as-A.
+                Self::Place {
+                    down: *down,
+                    lane: *lane,
+                    idx: *idx,
+                    word: word_played[..].into(),
+                    score: *score,
+                }
+            }
+        }
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct JsonPlayWithEquity {
     equity: f32,
@@ -93,6 +130,16 @@ struct JsonPlayWithEquity {
 impl From<&movegen::ValuedMove> for JsonPlayWithEquity {
     #[inline(always)]
     fn from(play: &movegen::ValuedMove) -> Self {
+        Self {
+            equity: play.equity,
+            play: (&play.play).into(),
+        }
+    }
+}
+
+impl From<&JsonPlayWithEquity> for movegen::ValuedMove {
+    #[inline(always)]
+    fn from(play: &JsonPlayWithEquity) -> Self {
         Self {
             equity: play.equity,
             play: (&play.play).into(),
