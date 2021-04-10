@@ -81,46 +81,58 @@ pub fn main() -> error::Returns<()> {
                 let mut issues = 0;
                 let mut ps = play_scorer::PlayScorer::new();
                 for play in plays.iter() {
-                    if !ps.play_is_valid(board_snapshot, &play.play) {
-                        issues += 1;
-                        println!("{} is not valid!", play.play.fmt(board_snapshot));
-                    } else {
-                        let movegen_score = match &play.play {
-                            movegen::Play::Exchange { .. } => 0,
-                            movegen::Play::Place { score, .. } => *score,
-                        };
-                        let recounted_score = ps.compute_score(board_snapshot, &play.play);
-                        if movegen_score != recounted_score {
+                    match ps.validate_play(board_snapshot, &game_state, &play.play) {
+                        Err(err) => {
+                            issues += 1;
+                            println!("{} is not valid, {}!", play.play.fmt(board_snapshot), err);
+                        }
+                        Ok(Some(canonical_play)) => {
                             issues += 1;
                             println!(
-                                "{} should score {} instead of {}!",
+                                "{} is valid, but reformats into {}!",
                                 play.play.fmt(board_snapshot),
-                                recounted_score,
-                                movegen_score
+                                canonical_play.fmt(board_snapshot)
                             );
-                        } else {
-                            let leave_scale = if let move_filter::GenMoves::Tilt { tilt, .. } =
-                                filtered_movegen
-                            {
-                                tilt.leave_scale
-                            } else {
-                                1.0
+                        }
+                        Ok(None) => {
+                            let movegen_score = match &play.play {
+                                movegen::Play::Exchange { .. } => 0,
+                                movegen::Play::Place { score, .. } => *score,
                             };
-                            let recounted_equity = ps.compute_equity(
-                                board_snapshot,
-                                &game_state,
-                                &play.play,
-                                leave_scale,
-                                recounted_score,
-                            );
-                            if play.equity.to_le_bytes() != recounted_equity.to_le_bytes() {
+                            let recounted_score = ps.compute_score(board_snapshot, &play.play);
+                            if movegen_score != recounted_score {
                                 issues += 1;
                                 println!(
-                                    "{} should have equity {} instead of {}!",
+                                    "{} should score {} instead of {}!",
                                     play.play.fmt(board_snapshot),
-                                    recounted_equity,
-                                    play.equity
+                                    recounted_score,
+                                    movegen_score
                                 );
+                            } else {
+                                let leave_scale =
+                                    if let move_filter::GenMoves::Tilt { tilt, .. } =
+                                        filtered_movegen
+                                    {
+                                        tilt.leave_scale
+                                    } else {
+                                        1.0
+                                    };
+                                let recounted_equity = ps.compute_equity(
+                                    board_snapshot,
+                                    &game_state,
+                                    &play.play,
+                                    leave_scale,
+                                    recounted_score,
+                                );
+                                if play.equity.to_le_bytes() != recounted_equity.to_le_bytes() {
+                                    issues += 1;
+                                    println!(
+                                        "{} should have equity {} instead of {}!",
+                                        play.play.fmt(board_snapshot),
+                                        recounted_equity,
+                                        play.equity
+                                    );
+                                }
                             }
                         }
                     }

@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{game_state, movegen};
+use super::{error, game_config, game_state, movegen};
 
 pub struct PlayScorer {
     rack_tally: Vec<u8>,
@@ -13,16 +13,209 @@ impl PlayScorer {
         }
     }
 
-    pub fn play_is_valid(
+    // Does not validate rack, may crash if invalid tile.
+    fn set_rack_tally(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        game_state: &game_state::GameState,
+    ) {
+        self.rack_tally.clear();
+        self.rack_tally
+            .resize(game_config.alphabet().len() as usize, 0);
+        game_state
+            .current_player()
+            .rack
+            .iter()
+            .for_each(|&tile| self.rack_tally[tile as usize] += 1);
+    }
+
+    // Ok(None) if valid and canonical.
+    // Ok(Some(canonical_play)) if valid but not canonical.
+    // Err(reason) if invalid.
+    pub fn validate_play(
         &mut self,
         board_snapshot: &movegen::BoardSnapshot,
+        game_state: &game_state::GameState,
         play: &movegen::Play,
-    ) -> bool {
-        // TODO
-        // also maybe check if it forms any invalid word
-        let _ = board_snapshot;
-        let _ = play;
-        true
+    ) -> error::Returns<Option<movegen::Play>> {
+        let game_config = board_snapshot.game_config;
+
+        let ret = match play {
+            movegen::Play::Exchange { tiles } => {
+                if tiles.is_empty() {
+                    return Ok(None);
+                } else if game_state.bag.0.len() < game_config.rack_size() as usize {
+                    return_error!("not enough tiles to allow exchanges".into());
+                }
+
+                let alphabet = game_config.alphabet();
+                let alphabet_len_without_blank = alphabet.len() - 1;
+                if !tiles.iter().all(|&tile| tile <= alphabet_len_without_blank) {
+                    return_error!("exchanged tile not in alphabet".into());
+                }
+
+                self.set_rack_tally(game_config, game_state);
+                let can_consummate_tiles = tiles.iter().all(|&tile| {
+                    if self.rack_tally[tile as usize] > 0 {
+                        self.rack_tally[tile as usize] -= 1;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if !can_consummate_tiles {
+                    return_error!("cannot exchange a tile not on rack".into());
+                }
+
+                if tiles
+                    .iter()
+                    .zip(&tiles[1..])
+                    .all(|(&tile0, &tile1)| tile0 <= tile1)
+                {
+                    Ok(None)
+                } else {
+                    let mut sorted_tiles = tiles.to_vec();
+                    sorted_tiles.sort_unstable();
+                    Ok(Some(movegen::Play::Exchange {
+                        tiles: sorted_tiles[..].into(),
+                    }))
+                }
+            }
+            movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => {
+                let word_len = word.len();
+                if word_len < 2 {
+                    return_error!("word is too short".into());
+                }
+
+                let (row, col) = if *down { (*lane, *idx) } else { (*idx, *lane) };
+                let board_layout = game_config.board_layout();
+                let dim = board_layout.dim();
+                if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
+                    return_error!("invalid coordinates".into());
+                }
+
+                let strider = dim.lane(*down, *lane);
+                let end_idx_exclusive = *idx as usize + word_len;
+                if end_idx_exclusive > strider.len() as usize {
+                    return_error!("word extends out of board".into());
+                }
+
+                if (*idx > 0 && board_snapshot.board_tiles[strider.at(idx - 1)] != 0)
+                    || (end_idx_exclusive < strider.len() as usize
+                        && board_snapshot.board_tiles[strider.at(end_idx_exclusive as i8)] != 0)
+                {
+                    return_error!("word is not whole word".into());
+                }
+
+                let mut num_played = 0;
+                let mut attaches_to_existing_tile = false;
+                let mut transpose_idx = None;
+                let alphabet = game_config.alphabet();
+                let alphabet_len_without_blank = alphabet.len() - 1;
+                self.set_rack_tally(game_config, game_state);
+                for (i, &tile) in (*idx..).zip(word.iter()) {
+                    let board_tile = board_snapshot.board_tiles[strider.at(i)];
+                    if tile != 0 {
+                        if board_tile != 0 {
+                            return_error!("cannot place a tile onto an occupied square".into());
+                        }
+                        if tile & 0x7f > alphabet_len_without_blank || tile == 0x80 {
+                            return_error!("placed tile not in alphabet".into());
+                        }
+                        let placed_tile = tile & !((tile as i8) >> 7) as u8;
+                        if self.rack_tally[placed_tile as usize] > 0 {
+                            self.rack_tally[placed_tile as usize] -= 1;
+                        } else {
+                            return_error!("cannot place a tile not on rack".into());
+                        }
+                        let may_transpose = *down && num_played == 0;
+                        num_played += 1;
+                        if !attaches_to_existing_tile || may_transpose {
+                            let perpendicular_strider = dim.lane(!*down, i);
+                            if (*lane > 0
+                                && board_snapshot.board_tiles[perpendicular_strider.at(*lane - 1)]
+                                    != 0)
+                                || (*lane + 1 < perpendicular_strider.len()
+                                    && board_snapshot.board_tiles
+                                        [perpendicular_strider.at(*lane + 1)]
+                                        != 0)
+                            {
+                                if may_transpose {
+                                    transpose_idx = Some(i);
+                                }
+                                attaches_to_existing_tile = true;
+                            }
+                        }
+                    } else {
+                        if board_tile == 0 {
+                            return_error!("cannot place nothing onto an empty square".into());
+                        }
+                        attaches_to_existing_tile = true;
+                    }
+                }
+                if num_played == 0 {
+                    return_error!("word does not place a new tile".into());
+                }
+
+                if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
+                    if !if *down {
+                        *lane == board_layout.star_col() && {
+                            let star_idx = board_layout.star_row();
+                            *idx <= star_idx && star_idx < end_idx_exclusive as i8
+                        }
+                    } else {
+                        *lane == board_layout.star_row() && {
+                            let star_idx = board_layout.star_col();
+                            *idx <= star_idx && star_idx < end_idx_exclusive as i8
+                        }
+                    } {
+                        return_error!("word does not cover starting square".into());
+                    }
+                } else if !attaches_to_existing_tile {
+                    return_error!("word is detached from existing tiles".into());
+                }
+
+                if num_played == 1 {
+                    if let Some(i) = transpose_idx {
+                        // force single-tile plays to be in preferred direction
+                        let perpendicular_strider = dim.lane(!*down, i);
+                        let mut j = *lane;
+                        while j > 0
+                            && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
+                        {
+                            j -= 1;
+                        }
+                        let perpendicular_strider_len = perpendicular_strider.len();
+                        let mut k = *lane + 1;
+                        while k < perpendicular_strider_len
+                            && board_snapshot.board_tiles[perpendicular_strider.at(k)] != 0
+                        {
+                            k += 1;
+                        }
+                        let mut transposed_word = vec![0u8; (k - j) as usize];
+                        transposed_word[(*lane - j) as usize] = word[(i - *idx) as usize];
+                        return Ok(Some(movegen::Play::Place {
+                            down: !*down,
+                            lane: i,
+                            idx: j,
+                            word: transposed_word[..].into(),
+                            score: *score,
+                        }));
+                    }
+                }
+
+                Ok(None)
+            }
+        };
+        // no-op, just to silence unused warning
+        if ret.is_ok() {}
+        ret
     }
 
     // Unused &mut self for future-proofing.
@@ -140,14 +333,7 @@ impl PlayScorer {
         let game_config = board_snapshot.game_config;
         let klv = board_snapshot.klv;
 
-        self.rack_tally.clear();
-        self.rack_tally
-            .resize(game_config.alphabet().len() as usize, 0);
-        game_state
-            .current_player()
-            .rack
-            .iter()
-            .for_each(|&tile| self.rack_tally[tile as usize] += 1);
+        self.set_rack_tally(game_config, game_state);
         match play {
             movegen::Play::Exchange { tiles } => {
                 tiles
