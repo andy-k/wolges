@@ -2,7 +2,7 @@
 
 use rand::prelude::*;
 use wolges::{
-    display, error, game_config, game_state, klv, kwg, move_filter, move_picker, movegen,
+    display, error, game_config, game_state, kibitzer, klv, kwg, move_filter, move_picker, movegen,
 };
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -20,131 +20,6 @@ struct Question {
     board_tiles: Vec<Vec<i8>>,
     #[serde(rename = "count")]
     max_gen: usize,
-}
-
-// note: only this representation uses -1i8 for blank-as-A (in "board" input
-// and "word" response for "action":"play"). everywhere else, use 0x81u8.
-
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-#[serde(tag = "action")]
-enum JsonPlay {
-    #[serde(rename = "exchange")]
-    Exchange { tiles: Box<[u8]> },
-    #[serde(rename = "play")]
-    Play {
-        down: bool,
-        lane: i8,
-        idx: i8,
-        word: Box<[i8]>,
-        score: i16,
-    },
-}
-
-impl From<&movegen::Play> for JsonPlay {
-    #[inline(always)]
-    fn from(play: &movegen::Play) -> Self {
-        match &play {
-            movegen::Play::Exchange { tiles } => {
-                // tiles: array of numbers. 0 for blank, 1 for A.
-                Self::Exchange {
-                    tiles: tiles[..].into(),
-                }
-            }
-            movegen::Play::Place {
-                down,
-                lane,
-                idx,
-                word,
-                score,
-            } => {
-                // turn 0x81u8, 0x82u8 into -1i8, -2i8
-                let word_played = word
-                    .iter()
-                    .map(|&x| {
-                        if x & 0x80 != 0 {
-                            -((x & !0x80) as i8)
-                        } else {
-                            x as i8
-                        }
-                    })
-                    .collect::<Vec<i8>>();
-                // across plays: down=false, lane=row, idx=col (0-based).
-                // down plays: down=true, lane=col, idx=row (0-based).
-                // word: 0 for play-through, 1 for A, -1 for blank-as-A.
-                Self::Play {
-                    down: *down,
-                    lane: *lane,
-                    idx: *idx,
-                    word: word_played.into(),
-                    score: *score,
-                }
-            }
-        }
-    }
-}
-
-impl From<&JsonPlay> for movegen::Play {
-    #[inline(always)]
-    fn from(play: &JsonPlay) -> Self {
-        match &play {
-            JsonPlay::Exchange { tiles } => {
-                // tiles: array of numbers. 0 for blank, 1 for A.
-                Self::Exchange {
-                    tiles: tiles[..].into(),
-                }
-            }
-            JsonPlay::Play {
-                down,
-                lane,
-                idx,
-                word,
-                score,
-            } => {
-                // turn -1i8, -2i8 into 0x81u8, 0x82u8
-                let word_played = word
-                    .iter()
-                    .map(|&x| if x < 0 { 0x81 + !x as u8 } else { x as u8 })
-                    .collect::<Vec<u8>>();
-                // across plays: down=false, lane=row, idx=col (0-based).
-                // down plays: down=true, lane=col, idx=row (0-based).
-                // word: 0 for play-through, 1 for A, -1 for blank-as-A.
-                Self::Place {
-                    down: *down,
-                    lane: *lane,
-                    idx: *idx,
-                    word: word_played[..].into(),
-                    score: *score,
-                }
-            }
-        }
-    }
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-struct JsonPlayWithEquity {
-    equity: f32,
-    #[serde(flatten)]
-    play: JsonPlay,
-}
-
-impl From<&movegen::ValuedMove> for JsonPlayWithEquity {
-    #[inline(always)]
-    fn from(play: &movegen::ValuedMove) -> Self {
-        Self {
-            equity: play.equity,
-            play: (&play.play).into(),
-        }
-    }
-}
-
-impl From<&JsonPlayWithEquity> for movegen::ValuedMove {
-    #[inline(always)]
-    fn from(play: &JsonPlayWithEquity) -> Self {
-        Self {
-            equity: play.equity,
-            play: (&play.play).into(),
-        }
-    }
 }
 
 pub fn main() -> error::Returns<()> {
@@ -235,134 +110,64 @@ pub fn main() -> error::Returns<()> {
     game_state.players[0].score = 16;
     game_state.players[1].score = 44;
 
-    let alphabet = game_config.alphabet();
-    let alphabet_len_without_blank = alphabet.len() - 1;
+    let mut kibitzer = kibitzer::Kibitzer::new();
+    kibitzer.prepare(&game_config, &question.rack, &question.board_tiles)?;
 
-    // note: this allocates
-    let mut available_tally = (0..alphabet.len())
-        .map(|tile| alphabet.freq(tile))
-        .collect::<Box<_>>();
-
-    for &tile in &question.rack {
-        if tile > alphabet_len_without_blank {
-            wolges::return_error!(format!(
-                "rack has invalid tile {}, alphabet size is {}",
-                tile, alphabet_len_without_blank
-            ));
-        }
-        if available_tally[tile as usize] > 0 {
-            available_tally[tile as usize] -= 1;
-        } else {
-            wolges::return_error!(format!(
-                "too many tile {} (bag contains only {})",
-                tile,
-                alphabet.freq(tile),
-            ));
-        }
-        game_state.players[0].rack.push(tile);
-    }
-
-    let expected_dim = game_config.board_layout().dim();
-    if question.board_tiles.len() != expected_dim.rows as usize {
-        wolges::return_error!(format!(
-            "board: need {} rows, found {} rows",
-            expected_dim.rows,
-            question.board_tiles.len()
-        ));
-    }
-    for (row_num, row) in (0..).zip(question.board_tiles.iter()) {
-        if row.len() != expected_dim.cols as usize {
-            wolges::return_error!(format!(
-                "board row {} (0-based): need {} cols, found {} cols",
-                row_num,
-                expected_dim.cols,
-                row.len()
-            ));
-        }
-    }
-    let mut board_tiles =
-        Vec::with_capacity((expected_dim.rows as usize) * (expected_dim.cols as usize));
-    for (row_num, row) in (0..).zip(question.board_tiles.iter()) {
-        for (col_num, &signed_tile) in (0..).zip(row) {
-            if signed_tile == 0 {
-                board_tiles.push(0);
-            } else if signed_tile as u8 <= alphabet_len_without_blank {
-                let tile = signed_tile as u8;
-                board_tiles.push(tile);
-                if available_tally[tile as usize] > 0 {
-                    available_tally[tile as usize] -= 1;
-                } else {
-                    wolges::return_error!(format!(
-                        "too many tile {} (bag contains only {})",
-                        tile,
-                        alphabet.freq(tile),
-                    ));
-                }
-            } else if (!signed_tile as u8) < alphabet_len_without_blank {
-                // turn -1i8, -2i8 into 0x81u8, 0x82u8
-                board_tiles.push(0x81 + !signed_tile as u8);
-                // verify usage of blank tile
-                if available_tally[0] > 0 {
-                    available_tally[0] -= 1;
-                } else {
-                    wolges::return_error!(format!(
-                        "too many tile {} (bag contains only {})",
-                        0,
-                        alphabet.freq(0),
-                    ));
-                }
-            } else {
-                wolges::return_error!(format!(
-                    "board row {} col {} (0-based): invalid tile {}, alphabet size is {}",
-                    row_num, col_num, signed_tile, alphabet_len_without_blank
-                ));
-            }
-        }
-    }
-
-    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-
-    let board_snapshot = &movegen::BoardSnapshot {
-        board_tiles: &board_tiles,
-        game_config: &game_config,
-        kwg: &kwg,
-        klv: &klv,
-    };
-    display::print_board(&alphabet, &game_config.board_layout(), &board_tiles);
+    display::print_board(
+        &game_config.alphabet(),
+        &game_config.board_layout(),
+        &kibitzer.board_tiles,
+    );
 
     let mut move_filter = move_filter::GenMoves::Unfiltered;
     let mut move_picker =
         move_picker::MovePicker::Simmer(move_picker::Simmer::new(&game_config, &kwg, &klv));
-    game_state.board_tiles.copy_from_slice(&board_tiles);
+    game_state
+        .board_tiles
+        .copy_from_slice(&kibitzer.board_tiles);
 
     // put the bag and shuffle it
     game_state.bag.0.clear();
     game_state
         .bag
         .0
-        .reserve(available_tally.iter().map(|&x| x as usize).sum());
+        .reserve(kibitzer.available_tally.iter().map(|&x| x as usize).sum());
     game_state.bag.0.extend(
         (0u8..)
-            .zip(available_tally.iter())
+            .zip(kibitzer.available_tally.iter())
             .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize)),
     );
     game_state.bag.shuffle(&mut rng);
 
-    move_picker.pick_a_move(
-        &mut move_filter,
-        &mut move_generator,
-        &board_snapshot,
-        &game_state,
-        &game_state.current_player().rack,
-    );
-    let plays = &move_generator.plays;
-    println!("found {} moves", plays.len());
-    for play in plays.iter() {
-        println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let board_snapshot = &movegen::BoardSnapshot {
+        board_tiles: &kibitzer.board_tiles,
+        game_config: &game_config,
+        kwg: &kwg,
+        klv: &klv,
+    };
+
+    if true {
+        for &tile in &question.rack {
+            game_state.players[0].rack.push(tile);
+        }
+        move_picker.pick_a_move(
+            &mut move_filter,
+            &mut move_generator,
+            &board_snapshot,
+            &game_state,
+            &game_state.current_player().rack,
+        );
+        let plays = &move_generator.plays;
+        println!("found {} moves", plays.len());
+        for play in plays.iter() {
+            println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+        }
     }
 
     move_generator.gen_moves_unfiltered(board_snapshot, &question.rack, question.max_gen);
     let plays = &move_generator.plays;
+
     println!("found {} moves", plays.len());
     for play in plays.iter() {
         println!("{} {}", play.equity, play.play.fmt(board_snapshot));
@@ -371,7 +176,7 @@ pub fn main() -> error::Returns<()> {
     let result = plays
         .iter()
         .map(|x| x.into())
-        .collect::<Vec<JsonPlayWithEquity>>();
+        .collect::<Vec<kibitzer::JsonPlayWithEquity>>();
     let ret = serde_json::to_value(result)?;
     println!("{}", ret);
     println!("{}", serde_json::to_string_pretty(&ret)?);
