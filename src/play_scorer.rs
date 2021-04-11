@@ -1,15 +1,17 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{error, game_config, game_state, movegen};
+use super::{error, game_config, game_state, move_filter, movegen};
 
 pub struct PlayScorer {
     rack_tally: Vec<u8>,
+    word_iter: move_filter::LimitedVocabChecker,
 }
 
 impl PlayScorer {
     pub fn new() -> Self {
         Self {
             rack_tally: Vec::new(),
+            word_iter: move_filter::LimitedVocabChecker::new(),
         }
     }
 
@@ -216,6 +218,49 @@ impl PlayScorer {
         // no-op, just to silence unused warning
         if ret.is_ok() {}
         ret
+    }
+
+    pub fn words_all<Callback: FnMut(&[u8]) -> bool>(
+        &mut self,
+        board_snapshot: &movegen::BoardSnapshot,
+        play: &movegen::Play,
+        cb: Callback,
+    ) -> bool {
+        match &play {
+            movegen::Play::Exchange { .. } => true,
+            movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                ..
+            } => self.word_iter.words_placed_are_ok(
+                board_snapshot,
+                *down,
+                *lane,
+                *idx,
+                &word[..],
+                cb,
+            ),
+        }
+    }
+
+    #[inline(always)]
+    pub fn words_are_valid(
+        &mut self,
+        board_snapshot: &movegen::BoardSnapshot,
+        play: &movegen::Play,
+    ) -> bool {
+        self.words_all(board_snapshot, play, |word: &[u8]| {
+            let mut p = 0;
+            for &tile in word {
+                p = board_snapshot.kwg.seek(p, tile);
+                if p <= 0 {
+                    return false;
+                }
+            }
+            true
+        })
     }
 
     // Unused &mut self for future-proofing.

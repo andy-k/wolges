@@ -86,15 +86,15 @@ pub fn main() -> error::Returns<()> {
                             issues += 1;
                             println!("{} is not valid, {}!", play.play.fmt(board_snapshot), err);
                         }
-                        Ok(Some(canonical_play)) => {
-                            issues += 1;
-                            println!(
-                                "{} is valid, but reformats into {}!",
-                                play.play.fmt(board_snapshot),
-                                canonical_play.fmt(board_snapshot)
-                            );
-                        }
-                        Ok(None) => {
+                        Ok(adjusted_play) => {
+                            if let Some(canonical_play) = adjusted_play {
+                                issues += 1;
+                                println!(
+                                    "{} is valid, but reformats into {}!",
+                                    play.play.fmt(board_snapshot),
+                                    canonical_play.fmt(board_snapshot)
+                                );
+                            }
                             let movegen_score = match &play.play {
                                 movegen::Play::Exchange { .. } => 0,
                                 movegen::Play::Place { score, .. } => *score,
@@ -133,6 +133,10 @@ pub fn main() -> error::Returns<()> {
                                         play.equity
                                     );
                                 }
+                            }
+                            if !ps.words_are_valid(board_snapshot, &play.play) {
+                                issues += 1;
+                                println!("{} forms invalid words!", play.play.fmt(board_snapshot),);
                             }
                         }
                     }

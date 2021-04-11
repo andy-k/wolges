@@ -4,19 +4,19 @@ use super::{game_config, kwg, movegen, prob};
 use rand::prelude::*;
 
 #[derive(Clone)]
-struct LimitedVocabChecker {
+pub struct LimitedVocabChecker {
     word_check_buf: Vec<u8>,
 }
 
 impl LimitedVocabChecker {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             word_check_buf: Vec::new(),
         }
     }
 
     #[inline(always)]
-    fn words_placed_are_ok<WordIsOk: FnMut(&[u8]) -> bool>(
+    pub fn words_placed_are_ok<WordIsOk: FnMut(&[u8]) -> bool>(
         &mut self,
         board_snapshot: &movegen::BoardSnapshot,
         down: bool,
@@ -76,6 +76,12 @@ impl LimitedVocabChecker {
             }
         }
         true
+    }
+}
+
+impl Default for LimitedVocabChecker {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
