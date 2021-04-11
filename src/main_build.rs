@@ -2,87 +2,47 @@
 
 use wolges::{alphabet, bites, build, error, kwg, lexport, prob};
 
-struct AlphabetReader<'a> {
-    supported_tiles: Box<[(u8, &'a str)]>,
-}
-
-// This is slow, but supports multi-codepoint tiles with greedy matching.
-// For example, a CH/LL/RR tile will parse correctly.
-impl<'a> AlphabetReader<'a> {
-    // Usually min_index=1. Use min_index=0 to allow blanks.
-    fn new(alphabet: &alphabet::Alphabet<'a>, min_index: u8) -> Self {
-        // non-blank tiles by first byte (asc), length (desc), and tile (asc).
-        let mut supported_tiles = (min_index..alphabet.len())
-            .map(|tile| (tile, alphabet.from_rack(tile).unwrap()))
-            .collect::<Box<_>>();
-        supported_tiles.sort_unstable_by(|(a_tile, a_label), (b_tile, b_label)| {
-            a_label.as_bytes()[0]
-                .cmp(&b_label.as_bytes()[0])
-                .then_with(|| {
-                    b_label
-                        .len()
-                        .cmp(&a_label.len())
-                        .then_with(|| a_tile.cmp(b_tile))
-                })
-        });
-        Self { supported_tiles }
-    }
-
-    fn read_machine_words(&self, giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
-        let mut machine_words = Vec::<bites::Bites>::new();
-        let mut v = Vec::new();
-        for s in giant_string.lines() {
-            if s.is_empty() {
-                continue;
-            }
-            let sb = s.as_bytes();
-            v.clear();
-            let mut ix = 0;
-            while ix < sb.len() {
-                let seek = sb[ix];
-                let first_possible_index = self
-                    .supported_tiles
-                    .binary_search_by(|(_, probe_label)| {
-                        probe_label.as_bytes()[0]
-                            .cmp(&seek)
-                            .then(std::cmp::Ordering::Greater)
-                    })
-                    .unwrap_err();
-                let mut found = false;
-                for (tile, label) in
-                    &self.supported_tiles[first_possible_index..self.supported_tiles.len()]
-                {
-                    if label.as_bytes()[0] != seek {
-                        // tiles with the same first byte are clustered together
-                        break;
-                    }
-                    if ix + label.len() <= sb.len() && sb[ix..ix + label.len()] == *label.as_bytes()
-                    {
-                        found = true;
-                        ix += label.len();
-                        v.push(*tile);
-                        break;
-                    }
-                }
-                if !found {
-                    wolges::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
-                }
-            }
-            machine_words.push(v[..].into());
+fn read_machine_words(
+    alphabet_reader: &alphabet::AlphabetReader,
+    giant_string: &str,
+) -> error::Returns<Box<[bites::Bites]>> {
+    let mut machine_words = Vec::<bites::Bites>::new();
+    let mut v = Vec::new();
+    for s in giant_string.lines() {
+        if s.is_empty() {
+            continue;
         }
-        machine_words.sort_unstable();
-        machine_words.dedup();
-        Ok(machine_words.into_boxed_slice())
+        let sb = s.as_bytes();
+        v.clear();
+        let mut ix = 0;
+        while ix < sb.len() {
+            if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                v.push(tile);
+                ix = end_ix;
+            } else {
+                wolges::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
+            }
+        }
+        machine_words.push(v[..].into());
     }
+    machine_words.sort_unstable();
+    machine_words.dedup();
+    Ok(machine_words.into_boxed_slice())
 }
 
 // This is rarely used, so it allocates a single-use AlphabetReader.
 fn read_polish_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
-    AlphabetReader::new(&alphabet::make_polish_alphabet(), 1).read_machine_words(giant_string)
+    read_machine_words(
+        &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
+        giant_string,
+    )
 }
 
 // This is a much faster replacement of
-// AlphabetReader::new(&alphabet::make_english_alphabet(), 0).read_machine_words(giant_string)
+// read_machine_words(
+//     &alphabet::AlphabetReader::new_for_racks(&alphabet::make_english_alphabet()),
+//     giant_string,
+// )
 // and requires a clean, pre-sorted input.
 fn read_english_machine_words_or_leaves(
     blank: char,

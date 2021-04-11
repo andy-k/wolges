@@ -398,3 +398,83 @@ pub fn make_spanish_alphabet<'a>() -> Alphabet<'a> {
         ..Default::default()
     })
 }
+
+pub struct AlphabetReader<'a> {
+    supported_tiles: Box<[(u8, &'a str)]>,
+}
+
+// This is slow, but supports multi-codepoint tiles with greedy matching.
+// For example, a CH/LL/RR tile will parse correctly.
+impl<'a> AlphabetReader<'a> {
+    pub fn new_for_tiles(mut supported_tiles: Box<[(u8, &'a str)]>) -> Self {
+        // sort supported tiles by first byte (asc), length (desc), and tile (asc).
+        supported_tiles.sort_unstable_by(|(a_tile, a_label), (b_tile, b_label)| {
+            a_label.as_bytes()[0]
+                .cmp(&b_label.as_bytes()[0])
+                .then_with(|| {
+                    b_label
+                        .len()
+                        .cmp(&a_label.len())
+                        .then_with(|| a_tile.cmp(b_tile))
+                })
+        });
+        Self { supported_tiles }
+    }
+
+    // Recognizes [A-Z].
+    pub fn new_for_words(alphabet: &Alphabet<'a>) -> Self {
+        let supported_tiles = (1..alphabet.len())
+            .map(|tile| (tile, alphabet.from_rack(tile).unwrap()))
+            .collect::<Box<_>>();
+        Self::new_for_tiles(supported_tiles)
+    }
+
+    // Recognizes [?A-Z].
+    pub fn new_for_racks(alphabet: &Alphabet<'a>) -> Self {
+        let supported_tiles = (0..alphabet.len())
+            .map(|tile| (tile, alphabet.from_rack(tile).unwrap()))
+            .collect::<Box<_>>();
+        Self::new_for_tiles(supported_tiles)
+    }
+
+    // Recognizes [A-Za-z]. Play-through needs to be dealt with separately.
+    pub fn new_for_plays(alphabet: &Alphabet<'a>) -> Self {
+        let mut supported_tiles = Vec::with_capacity((alphabet.len() - 1) as usize * 2);
+        for base_tile in 1..alphabet.len() {
+            for &tile in &[base_tile, base_tile | 0x80] {
+                supported_tiles.push((tile, alphabet.from_board(tile).unwrap()));
+            }
+        }
+        let supported_tiles = supported_tiles.into_boxed_slice();
+        Self::new_for_tiles(supported_tiles)
+    }
+
+    // Given sb (str.as_bytes()) and ix, decode the next tile starting at sb[ix].
+    // Returns Ok((tile, updated_index)) if it is a valid tile.
+    // Returns None if it is not a valid tile.
+    // Panics if ix > sb.len().
+    #[inline(always)]
+    pub fn next_tile(&self, sb: &[u8], ix: usize) -> Option<(u8, usize)> {
+        let seek = sb[ix];
+        let first_possible_index = self
+            .supported_tiles
+            .binary_search_by(|(_, probe_label)| {
+                probe_label.as_bytes()[0]
+                    .cmp(&seek)
+                    .then(std::cmp::Ordering::Greater) // ensure returning earliest index
+            })
+            .unwrap_err();
+        for (tile, label) in &self.supported_tiles[first_possible_index..self.supported_tiles.len()]
+        {
+            if label.as_bytes()[0] != seek {
+                // tiles with the same first byte are clustered together
+                break;
+            }
+            let end_ix = ix + label.len();
+            if end_ix <= sb.len() && sb[ix..end_ix] == *label.as_bytes() {
+                return Some((*tile, end_ix));
+            }
+        }
+        None
+    }
+}
