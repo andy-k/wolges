@@ -16,18 +16,11 @@ impl PlayScorer {
     }
 
     // Does not validate rack, may crash if invalid tile.
-    fn set_rack_tally(
-        &mut self,
-        game_config: &game_config::GameConfig,
-        game_state: &game_state::GameState,
-    ) {
+    fn set_rack_tally(&mut self, game_config: &game_config::GameConfig, rack: &[u8]) {
         self.rack_tally.clear();
         self.rack_tally
             .resize(game_config.alphabet().len() as usize, 0);
-        game_state
-            .current_player()
-            .rack
-            .iter()
+        rack.iter()
             .for_each(|&tile| self.rack_tally[tile as usize] += 1);
     }
 
@@ -56,7 +49,7 @@ impl PlayScorer {
                     return_error!("exchanged tile not in alphabet".into());
                 }
 
-                self.set_rack_tally(game_config, game_state);
+                self.set_rack_tally(game_config, &game_state.current_player().rack);
                 let can_consummate_tiles = tiles.iter().all(|&tile| {
                     if self.rack_tally[tile as usize] > 0 {
                         self.rack_tally[tile as usize] -= 1;
@@ -120,7 +113,7 @@ impl PlayScorer {
                 let mut transpose_idx = None;
                 let alphabet = game_config.alphabet();
                 let alphabet_len_without_blank = alphabet.len() - 1;
-                self.set_rack_tally(game_config, game_state);
+                self.set_rack_tally(game_config, &game_state.current_player().rack);
                 for (i, &tile) in (*idx..).zip(word.iter()) {
                     let board_tile = board_snapshot.board_tiles[strider.at(i)];
                     if tile != 0 {
@@ -376,9 +369,8 @@ impl PlayScorer {
         recounted_score: i16,
     ) -> f32 {
         let game_config = board_snapshot.game_config;
-        let klv = board_snapshot.klv;
 
-        self.set_rack_tally(game_config, game_state);
+        self.set_rack_tally(game_config, &game_state.current_player().rack);
         match play {
             movegen::Play::Exchange { tiles } => {
                 tiles
@@ -395,7 +387,7 @@ impl PlayScorer {
                 });
             }
         };
-        let leave_value = klv.leave_value_from_tally(&self.rack_tally);
+        let leave_value = board_snapshot.klv.leave_value_from_tally(&self.rack_tally);
 
         let mut recounted_equity = recounted_score as f32;
         if game_state.bag.0.is_empty() {
