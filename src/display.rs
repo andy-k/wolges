@@ -36,6 +36,45 @@ pub fn board_label<'a>(
         .unwrap_or_else(|| empty_label(board_layout, row, col))
 }
 
+pub struct ColumnStr(usize);
+
+impl std::fmt::Display for ColumnStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 >= 26 {
+            // usize::MAX is about 26**14 so recursion may be ok.
+            write!(f, "{}", Self(self.0 / 26 - 1))?;
+        }
+        write!(f, "{}", ((self.0 % 26) as u8 + 0x41) as char)?;
+        Ok(())
+    }
+}
+
+// Negative numbers not handled.
+pub fn column(col: i8) -> ColumnStr {
+    ColumnStr(col as usize)
+}
+
+// Parses ColumnStr strings (passed as str.as_bytes()).
+pub fn str_to_column_usize(sb: &[u8]) -> Option<usize> {
+    if sb.is_empty() {
+        return None;
+    }
+    let c = sb[0];
+    if (0x41..=0x5a).contains(&c) {
+        let mut v = c as usize - 0x41;
+        for &c in sb[1..].iter() {
+            if (0x41..=0x5a).contains(&c) {
+                v = v.checked_mul(26)?.checked_add(c as usize - (0x41 - 26))?;
+            } else {
+                return None;
+            }
+        }
+        Some(v)
+    } else {
+        None
+    }
+}
+
 pub fn print_board(
     alphabet: &alphabet::Alphabet<'_>,
     board_layout: &board_layout::BoardLayout,
@@ -43,7 +82,7 @@ pub fn print_board(
 ) {
     print!("  ");
     for c in 0..board_layout.dim().cols {
-        print!(" {}", ((c as u8) + 0x61) as char);
+        print!(" {}", column(c));
     }
     println!();
     print!("  +");
@@ -68,7 +107,7 @@ pub fn print_board(
     println!("-+");
     print!("  ");
     for c in 0..board_layout.dim().cols {
-        print!(" {}", ((c as u8) + 0x61) as char);
+        print!(" {}", column(c));
     }
     println!();
 }

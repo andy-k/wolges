@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{alphabet, bites, game_config, klv, kwg, matrix};
+use super::{alphabet, bites, display, game_config, klv, kwg, matrix};
 
 #[derive(Clone)]
 struct CrossSet {
@@ -1663,9 +1663,9 @@ impl std::fmt::Display for WriteablePlay<'_> {
                 let dim = self.board_snapshot.game_config.board_layout().dim();
                 let alphabet = self.board_snapshot.game_config.alphabet();
                 if *down {
-                    write!(f, "{}{} ", (*lane as u8 + 0x41) as char, idx + 1)?;
+                    write!(f, "{}{} ", display::column(*lane), idx + 1)?;
                 } else {
-                    write!(f, "{}{} ", lane + 1, (*idx as u8 + 0x41) as char)?;
+                    write!(f, "{}{} ", lane + 1, display::column(*idx))?;
                 }
                 let strider = dim.lane(*down, *lane);
                 let mut inside = false;
