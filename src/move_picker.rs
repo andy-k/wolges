@@ -98,7 +98,7 @@ impl MovePicker<'_> {
         filtered_movegen: &mut move_filter::GenMoves<'_>,
         mut move_generator: &mut movegen::KurniaMoveGenerator,
         board_snapshot: &movegen::BoardSnapshot<'_>,
-        game_state: &game_state::GameState<'_>,
+        game_state: &game_state::GameState,
         rack: &[u8],
     ) {
         match self {
@@ -199,7 +199,7 @@ impl MovePicker<'_> {
         filtered_movegen: &mut move_filter::GenMoves<'_>,
         move_generator: &mut movegen::KurniaMoveGenerator,
         board_snapshot: &movegen::BoardSnapshot<'_>,
-        game_state: &game_state::GameState<'_>,
+        game_state: &game_state::GameState,
         rack: &[u8],
     ) {
         self.pick_a_move_async(

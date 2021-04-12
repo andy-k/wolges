@@ -31,11 +31,12 @@ thread_local! {
 
 pub struct Simmer<'a> {
     // new() sets these on construction
+    game_config: &'a game_config::GameConfig<'a>,
     kwg: &'a kwg::Kwg,
     klv: &'a klv::Klv,
 
     // prepare() sets/resets these
-    initial_game_state: game_state::GameState<'a>,
+    initial_game_state: game_state::GameState,
     pub initial_score_spread: i16,
     num_sim_plies: usize,
     num_tiles_that_matter: usize,
@@ -44,7 +45,7 @@ pub struct Simmer<'a> {
     possible_to_play_out: bool,
 
     // simulate() simulates a single iteration and sets these
-    game_state: game_state::GameState<'a>,
+    game_state: game_state::GameState,
     last_seen_leave_values: Box<[f32]>,
     final_scores: Box<[i16]>,
 
@@ -55,7 +56,7 @@ pub struct Simmer<'a> {
 
 impl<'a> Simmer<'a> {
     pub fn new(
-        game_config: &'a game_config::GameConfig,
+        game_config: &'a game_config::GameConfig<'a>,
         kwg: &'a kwg::Kwg,
         klv: &'a klv::Klv,
     ) -> Self {
@@ -63,6 +64,7 @@ impl<'a> Simmer<'a> {
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             initial_game_state: game_state::GameState::new(game_config),
             game_state: game_state::GameState::new(game_config),
+            game_config,
             kwg,
             klv,
             last_seen_leave_values: vec![0.0f32; game_config.num_players() as usize]
@@ -78,9 +80,8 @@ impl<'a> Simmer<'a> {
 
     #[inline(always)]
     pub fn prepare(&mut self, game_state: &game_state::GameState, num_sim_plies: usize) {
-        self.initial_game_state
-            .clone_transient_stuffs_from(&game_state);
-        self.game_state.clone_transient_stuffs_from(&game_state);
+        self.initial_game_state.clone_from(&game_state);
+        self.game_state.clone_from(&game_state);
         self.initial_score_spread = game_state.current_player().score
             - (0..)
                 .zip(game_state.players.iter())
@@ -89,7 +90,7 @@ impl<'a> Simmer<'a> {
                 .max()
                 .unwrap_or(0);
         self.num_sim_plies = num_sim_plies;
-        self.num_tiles_that_matter = num_sim_plies * game_state.game_config.rack_size() as usize;
+        self.num_tiles_that_matter = num_sim_plies * self.game_config.rack_size() as usize;
     }
 
     #[inline(always)]
@@ -139,7 +140,7 @@ impl<'a> Simmer<'a> {
                 self.move_generator.gen_moves_unfiltered(
                     &movegen::BoardSnapshot {
                         board_tiles: &self.game_state.board_tiles,
-                        game_config: &self.game_state.game_config,
+                        game_config: &self.game_config,
                         kwg: &self.kwg,
                         klv: &self.klv,
                     },
@@ -157,10 +158,13 @@ impl<'a> Simmer<'a> {
                 self.klv.leave_value_from_tally(&self.rack_tally);
             RNG.with(|rng| {
                 self.game_state
-                    .play(&mut *rng.borrow_mut(), &next_play)
+                    .play(&self.game_config, &mut *rng.borrow_mut(), &next_play)
                     .unwrap();
             });
-            match self.game_state.check_game_ended(&mut self.final_scores) {
+            match self
+                .game_state
+                .check_game_ended(&self.game_config, &mut self.final_scores)
+            {
                 game_state::CheckGameEnded::NotEnded => {}
                 _ => {
                     // game has ended, move leave values to actual score

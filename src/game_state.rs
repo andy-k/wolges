@@ -19,7 +19,7 @@ pub struct GamePlayer {
     pub rack: Vec<u8>,
 }
 
-impl<'a> Clone for GamePlayer {
+impl Clone for GamePlayer {
     #[inline(always)]
     fn clone(&self) -> Self {
         Self {
@@ -35,8 +35,7 @@ impl<'a> Clone for GamePlayer {
     }
 }
 
-pub struct GameState<'a> {
-    pub game_config: &'a game_config::GameConfig<'a>,
+pub struct GameState {
     pub players: Box<[GamePlayer]>,
     pub board_tiles: Box<[u8]>,
     pub bag: bag::Bag,
@@ -44,11 +43,10 @@ pub struct GameState<'a> {
     pub zero_turns: u16,
 }
 
-impl<'a> Clone for GameState<'a> {
+impl Clone for GameState {
     #[inline(always)]
     fn clone(&self) -> Self {
         Self {
-            game_config: self.game_config,
             players: self.players.clone(),
             board_tiles: self.board_tiles.clone(),
             bag: self.bag.clone(),
@@ -59,7 +57,6 @@ impl<'a> Clone for GameState<'a> {
 
     #[inline(always)]
     fn clone_from(&mut self, source: &Self) {
-        self.game_config.clone_from(&source.game_config);
         self.players.clone_from(&source.players);
         self.board_tiles.clone_from(&source.board_tiles);
         self.bag.clone_from(&source.bag);
@@ -68,14 +65,14 @@ impl<'a> Clone for GameState<'a> {
     }
 }
 
-impl<'a> GameState<'a> {
-    pub fn new(game_config: &'a game_config::GameConfig) -> Self {
+impl GameState {
+    // The other methods must be called with the same game_config.
+    pub fn new(game_config: &game_config::GameConfig) -> Self {
         let board_layout = game_config.board_layout();
         let dim = board_layout.dim();
         let rack_size = game_config.rack_size() as usize;
         let alphabet = game_config.alphabet();
         Self {
-            game_config,
             players: (0..game_config.num_players())
                 .map(|_| GamePlayer {
                     score: 0,
@@ -87,15 +84,6 @@ impl<'a> GameState<'a> {
             turn: 0,
             zero_turns: 0,
         }
-    }
-
-    pub fn clone_transient_stuffs_from(&mut self, source: &GameState) {
-        // does not clone game_config
-        self.players.clone_from(&source.players);
-        self.board_tiles.clone_from(&source.board_tiles);
-        self.bag.clone_from(&source.bag);
-        self.turn.clone_from(&source.turn);
-        self.zero_turns.clone_from(&source.zero_turns);
     }
 
     pub fn reset(&mut self) {
@@ -112,12 +100,16 @@ impl<'a> GameState<'a> {
         self.zero_turns = 0;
     }
 
-    pub fn reset_and_draw_tiles(&mut self, mut rng: &mut dyn RngCore) {
+    pub fn reset_and_draw_tiles(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        mut rng: &mut dyn RngCore,
+    ) {
         self.reset();
         self.bag.shuffle(&mut rng);
         for player in self.players.iter_mut() {
             self.bag
-                .replenish(&mut player.rack, self.game_config.rack_size() as usize);
+                .replenish(&mut player.rack, game_config.rack_size() as usize);
         }
     }
 
@@ -125,15 +117,18 @@ impl<'a> GameState<'a> {
         &self.players[self.turn as usize]
     }
 
-    pub fn play(&mut self, mut rng: &mut dyn RngCore, play: &movegen::Play) -> error::Returns<()> {
+    pub fn play(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        mut rng: &mut dyn RngCore,
+        play: &movegen::Play,
+    ) -> error::Returns<()> {
         let current_player = &mut self.players[self.turn as usize];
         match play {
             movegen::Play::Exchange { tiles } => {
                 use_tiles(&mut current_player.rack, tiles.iter().copied())?;
-                self.bag.replenish(
-                    &mut current_player.rack,
-                    self.game_config.rack_size() as usize,
-                );
+                self.bag
+                    .replenish(&mut current_player.rack, game_config.rack_size() as usize);
                 self.bag.put_back(&mut rng, &tiles);
                 self.zero_turns += 1;
             }
@@ -144,7 +139,7 @@ impl<'a> GameState<'a> {
                 word,
                 score,
             } => {
-                let strider = self.game_config.board_layout().dim().lane(*down, *lane);
+                let strider = game_config.board_layout().dim().lane(*down, *lane);
 
                 // place the tiles
                 for (i, &tile) in (*idx..).zip(word.iter()) {
@@ -164,10 +159,8 @@ impl<'a> GameState<'a> {
                         }
                     }),
                 )?;
-                self.bag.replenish(
-                    &mut current_player.rack,
-                    self.game_config.rack_size() as usize,
-                );
+                self.bag
+                    .replenish(&mut current_player.rack, game_config.rack_size() as usize);
                 self.zero_turns = 0;
             }
         }
@@ -180,30 +173,32 @@ impl<'a> GameState<'a> {
         self.turn -= num_players & -((self.turn >= num_players) as i8) as u8;
     }
 
-    pub fn check_game_ended(&self, final_scores: &mut [i16]) -> CheckGameEnded {
+    pub fn check_game_ended(
+        &self,
+        game_config: &game_config::GameConfig,
+        final_scores: &mut [i16],
+    ) -> CheckGameEnded {
         if self.current_player().rack.is_empty() {
             for (i, player) in self.players.iter().enumerate() {
                 final_scores[i] = player.score;
             }
             if self.players.len() == 2 {
-                final_scores[self.turn as usize] += 2 * self
-                    .game_config
+                final_scores[self.turn as usize] += 2 * game_config
                     .alphabet()
                     .rack_score(&self.players[(1 - self.turn) as usize].rack);
             } else {
                 let mut earned = 0;
                 for (i, player) in self.players.iter().enumerate() {
-                    let this_rack = self.game_config.alphabet().rack_score(&player.rack);
+                    let this_rack = game_config.alphabet().rack_score(&player.rack);
                     final_scores[i] -= this_rack;
                     earned += this_rack;
                 }
                 final_scores[self.turn as usize] += earned;
             }
             CheckGameEnded::PlayedOut
-        } else if self.zero_turns >= self.game_config.num_players() as u16 * 3 {
+        } else if self.zero_turns >= game_config.num_players() as u16 * 3 {
             for (i, player) in self.players.iter().enumerate() {
-                final_scores[i] =
-                    player.score - self.game_config.alphabet().rack_score(&player.rack);
+                final_scores[i] = player.score - game_config.alphabet().rack_score(&player.rack);
             }
             CheckGameEnded::ZeroScores
         } else {

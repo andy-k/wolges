@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{alphabet, board_layout, game_state, game_timers};
+use super::{alphabet, board_layout, game_config, game_state, game_timers};
 
 #[inline(always)]
 pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -> &'static str {
@@ -125,21 +125,19 @@ fn print_ms(mut ms: i64) {
 }
 
 pub fn print_game_state(
+    game_config: &game_config::GameConfig,
     game_state: &game_state::GameState,
     optional_game_timers: Option<&game_timers::GameTimers>,
 ) {
     print_board(
-        &game_state.game_config.alphabet(),
-        &game_state.game_config.board_layout(),
+        &game_config.alphabet(),
+        &game_config.board_layout(),
         &game_state.board_tiles,
     );
     println!(
         "Pool {}: {}",
         game_state.bag.0.len(),
-        game_state
-            .game_config
-            .alphabet()
-            .fmt_rack(&game_state.bag.0)
+        game_config.alphabet().fmt_rack(&game_state.bag.0)
     );
     let now = std::time::Instant::now();
     for (i, player) in game_state.players.iter().enumerate() {
@@ -147,13 +145,13 @@ pub fn print_game_state(
             "Player {}: {} {}",
             i + 1,
             player.score,
-            game_state.game_config.alphabet().fmt_rack(&player.rack)
+            game_config.alphabet().fmt_rack(&player.rack)
         );
         if let Some(game_timers) = optional_game_timers {
             let clock_ms = game_timers.get_timer_as_at(now, i);
             print!(" ");
             print_ms(clock_ms);
-            let adjustment = game_state.game_config.time_adjustment(clock_ms);
+            let adjustment = game_config.time_adjustment(clock_ms);
             if adjustment != 0 {
                 print!(" ({})", adjustment);
             }
