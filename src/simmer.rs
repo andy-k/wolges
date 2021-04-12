@@ -61,20 +61,24 @@ impl<'a> Simmer<'a> {
         klv: &'a klv::Klv,
     ) -> Self {
         Self {
-            move_generator: movegen::KurniaMoveGenerator::new(game_config),
-            initial_game_state: game_state::GameState::new(game_config),
-            game_state: game_state::GameState::new(game_config),
             game_config,
             kwg,
             klv,
+
+            initial_game_state: game_state::GameState::new(game_config),
+            initial_score_spread: 0,
+            num_sim_plies: 0,
+            num_tiles_that_matter: 0,
+
+            possible_to_play_out: false,
+
+            game_state: game_state::GameState::new(game_config),
             last_seen_leave_values: vec![0.0f32; game_config.num_players() as usize]
                 .into_boxed_slice(),
             final_scores: vec![0; game_config.num_players() as usize].into_boxed_slice(),
+
+            move_generator: movegen::KurniaMoveGenerator::new(game_config),
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
-            initial_score_spread: 0,
-            possible_to_play_out: false,
-            num_sim_plies: 0,
-            num_tiles_that_matter: 0,
         }
     }
 
