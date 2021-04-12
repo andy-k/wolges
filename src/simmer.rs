@@ -29,12 +29,7 @@ thread_local! {
         std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_entropy()));
 }
 
-pub struct Simmer<'a> {
-    // new() sets these on construction
-    game_config: &'a game_config::GameConfig<'a>,
-    kwg: &'a kwg::Kwg,
-    klv: &'a klv::Klv,
-
+pub struct Simmer {
     // prepare() sets/resets these
     initial_game_state: game_state::GameState,
     pub initial_score_spread: i16,
@@ -54,17 +49,10 @@ pub struct Simmer<'a> {
     rack_tally: Box<[u8]>,
 }
 
-impl<'a> Simmer<'a> {
-    pub fn new(
-        game_config: &'a game_config::GameConfig<'a>,
-        kwg: &'a kwg::Kwg,
-        klv: &'a klv::Klv,
-    ) -> Self {
+impl Simmer {
+    // The other methods must be called with the same game_config.
+    pub fn new(game_config: &game_config::GameConfig) -> Self {
         Self {
-            game_config,
-            kwg,
-            klv,
-
             initial_game_state: game_state::GameState::new(game_config),
             initial_score_spread: 0,
             num_sim_plies: 0,
@@ -83,7 +71,12 @@ impl<'a> Simmer<'a> {
     }
 
     #[inline(always)]
-    pub fn prepare(&mut self, game_state: &game_state::GameState, num_sim_plies: usize) {
+    pub fn prepare(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        game_state: &game_state::GameState,
+        num_sim_plies: usize,
+    ) {
         self.initial_game_state.clone_from(&game_state);
         self.game_state.clone_from(&game_state);
         self.initial_score_spread = game_state.current_player().score
@@ -94,7 +87,7 @@ impl<'a> Simmer<'a> {
                 .max()
                 .unwrap_or(0);
         self.num_sim_plies = num_sim_plies;
-        self.num_tiles_that_matter = num_sim_plies * self.game_config.rack_size() as usize;
+        self.num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
     }
 
     #[inline(always)]
@@ -128,7 +121,13 @@ impl<'a> Simmer<'a> {
 
     // true iff played out
     #[inline(always)]
-    pub fn simulate(&mut self, candidate_play: &movegen::Play) -> bool {
+    pub fn simulate(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        kwg: &kwg::Kwg,
+        klv: &klv::Klv,
+        candidate_play: &movegen::Play,
+    ) -> bool {
         self.game_state.clone_from(&self.initial_game_state);
         // reset leave values from previous iteration
         self.last_seen_leave_values
@@ -144,9 +143,9 @@ impl<'a> Simmer<'a> {
                 self.move_generator.gen_moves_unfiltered(
                     &movegen::BoardSnapshot {
                         board_tiles: &self.game_state.board_tiles,
-                        game_config: &self.game_config,
-                        kwg: &self.kwg,
-                        klv: &self.klv,
+                        game_config: &game_config,
+                        kwg: &kwg,
+                        klv: &klv,
                     },
                     &self.game_state.current_player().rack,
                     1,
@@ -159,15 +158,15 @@ impl<'a> Simmer<'a> {
                 &next_play,
             );
             self.last_seen_leave_values[self.game_state.turn as usize] =
-                self.klv.leave_value_from_tally(&self.rack_tally);
+                klv.leave_value_from_tally(&self.rack_tally);
             RNG.with(|rng| {
                 self.game_state
-                    .play(&self.game_config, &mut *rng.borrow_mut(), &next_play)
+                    .play(&game_config, &mut *rng.borrow_mut(), &next_play)
                     .unwrap();
             });
             match self
                 .game_state
-                .check_game_ended(&self.game_config, &mut self.final_scores)
+                .check_game_ended(&game_config, &mut self.final_scores)
             {
                 game_state::CheckGameEnded::NotEnded => {}
                 _ => {

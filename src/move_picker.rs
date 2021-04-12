@@ -8,8 +8,11 @@ struct Candidate {
 }
 
 pub struct Simmer<'a> {
+    game_config: &'a game_config::GameConfig<'a>,
+    kwg: &'a kwg::Kwg,
+    klv: &'a klv::Klv,
     candidates: Vec<Candidate>,
-    simmer: simmer::Simmer<'a>,
+    simmer: simmer::Simmer,
 }
 
 impl<'a> Simmer<'a> {
@@ -19,8 +22,11 @@ impl<'a> Simmer<'a> {
         klv: &'a klv::Klv,
     ) -> Self {
         Self {
+            game_config,
+            kwg,
+            klv,
             candidates: Vec::new(),
-            simmer: simmer::Simmer::new(game_config, kwg, klv),
+            simmer: simmer::Simmer::new(game_config),
         }
     }
 
@@ -112,7 +118,7 @@ impl MovePicker<'_> {
                     println!("3 secs have passed");
                 });
                 filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 100);
-                simmer.simmer.prepare(&game_state, 2);
+                simmer.simmer.prepare(simmer.game_config, &game_state, 2);
                 let mut candidates = simmer.take_candidates(move_generator.plays.len());
                 let num_sim_iters = 1000;
                 let mut tick_periods = Periods(0);
@@ -134,9 +140,12 @@ impl MovePicker<'_> {
                     }
                     simmer.simmer.prepare_iteration();
                     for candidate in candidates.iter_mut() {
-                        let game_ended = simmer
-                            .simmer
-                            .simulate(&move_generator.plays[candidate.play_index].play);
+                        let game_ended = simmer.simmer.simulate(
+                            simmer.game_config,
+                            simmer.kwg,
+                            simmer.klv,
+                            &move_generator.plays[candidate.play_index].play,
+                        );
                         let final_spread = simmer.simmer.final_equity_spread();
                         let win_prob = simmer.simmer.compute_win_prob(game_ended, final_spread);
                         let sim_spread = final_spread - simmer.simmer.initial_score_spread as f32;
