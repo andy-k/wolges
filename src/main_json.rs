@@ -105,7 +105,6 @@ pub fn main() -> error::Returns<()> {
 
     let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
     let mut game_state = game_state::GameState::new(&game_config);
-    game_state.reset();
     // temp hardcode
     game_state.players[0].score = 16;
     game_state.players[1].score = 44;
