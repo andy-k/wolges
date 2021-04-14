@@ -47,7 +47,9 @@ impl Bag {
                 return;
             }
             1 => {
-                self.0.insert(rng.gen_range(0..self.0.len() + 1), tiles[0]);
+                self.0.insert(rng.gen_range(0..=self.0.len()), unsafe {
+                    *tiles.get_unchecked(0)
+                });
                 return;
             }
             _ => {}
@@ -55,13 +57,23 @@ impl Bag {
         let mut num_old_tiles = self.0.len();
         let new_len = num_new_tiles + num_old_tiles;
         self.0.reserve(num_new_tiles + new_len); // cap = old+(new+old)+new
-        self.0.resize(new_len + num_old_tiles, 0); // [old,0,0]
+        unsafe {
+            self.0.set_len(new_len + num_old_tiles);
+        } // [old,?,?]
+        let num_same_prefix = rng.gen_range(0..num_old_tiles);
         let mut p_old_tiles = new_len; // after old+new
-        self.0.copy_within(0..num_old_tiles, p_old_tiles); // [old,0,old]
+        self.0
+            .copy_within(num_same_prefix..num_old_tiles, p_old_tiles); // [old,?,ld?]
+        num_old_tiles -= num_same_prefix;
         let mut p_new_tiles = self.0.len(); // after old+new+old
-        self.0.extend_from_slice(tiles); // [old,0,old,new]
-        self.0[p_new_tiles..].shuffle(&mut rng);
-        for wp in 0..new_len {
+        self.0.extend_from_slice(tiles); // [old,?,ld?,new]
+        unsafe { self.0.get_unchecked_mut(p_new_tiles..) }.shuffle(&mut rng);
+        num_new_tiles -= 1;
+        unsafe {
+            *self.0.get_unchecked_mut(num_same_prefix) =
+                *self.0.get_unchecked(p_new_tiles + num_new_tiles);
+        }
+        for wp in num_same_prefix + 1..new_len {
             if if num_new_tiles == 0 {
                 true
             } else if num_old_tiles == 0 {
@@ -69,16 +81,22 @@ impl Bag {
             } else {
                 rng.gen_range(0..num_old_tiles + num_new_tiles) < num_old_tiles
             } {
-                self.0[wp] = self.0[p_old_tiles];
+                unsafe {
+                    *self.0.get_unchecked_mut(wp) = *self.0.get_unchecked(p_old_tiles);
+                }
                 p_old_tiles += 1;
                 num_old_tiles -= 1;
             } else {
-                self.0[wp] = self.0[p_new_tiles];
+                unsafe {
+                    *self.0.get_unchecked_mut(wp) = *self.0.get_unchecked(p_new_tiles);
+                }
                 p_new_tiles += 1;
                 num_new_tiles -= 1;
             }
         }
-        self.0.truncate(new_len);
+        unsafe {
+            self.0.set_len(new_len);
+        }
     }
 }
 
