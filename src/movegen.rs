@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{alphabet, bites, display, game_config, klv, kwg, matrix};
+use super::{alphabet, bites, build, display, game_config, klv, kwg, matrix};
 
 #[derive(Clone)]
 struct CrossSet {
@@ -60,7 +60,7 @@ struct WorkingBuffer {
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     descending_scores: Vec<i8>, // rack.len()
     exchange_buffer: Vec<u8>, // rack.len()
-    square_multipliers_by_aggregated_word_multipliers_buffer: std::collections::HashMap<i16, usize>,
+    square_multipliers_by_aggregated_word_multipliers_buffer: build::MyHashMap<i16, usize>,
     precomputed_square_multiplier_buffer: Vec<i16>,
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
     best_leave_values: Vec<f32>, // rack.len() + 1
@@ -244,8 +244,7 @@ impl WorkingBuffer {
             rack_bits: 0,
             descending_scores: Vec::new(),
             exchange_buffer: Vec::new(),
-            square_multipliers_by_aggregated_word_multipliers_buffer:
-                std::collections::HashMap::new(),
+            square_multipliers_by_aggregated_word_multipliers_buffer: build::MyHashMap::default(),
             precomputed_square_multiplier_buffer: Vec::new(),
             indexes_to_descending_square_multiplier_buffer: Vec::new(),
             best_leave_values: Vec::new(),
@@ -747,8 +746,7 @@ struct GenPlacePlacementsParams<'a> {
     perpendicular_scores_strip: &'a [i16],
     rack_bits: u64,
     descending_scores: &'a [i8],
-    square_multipliers_by_aggregated_word_multipliers_buffer:
-        &'a mut std::collections::HashMap<i16, usize>,
+    square_multipliers_by_aggregated_word_multipliers_buffer: &'a mut build::MyHashMap<i16, usize>,
     precomputed_square_multiplier_buffer: &'a mut Vec<i16>,
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
     best_leave_values: &'a [f32],
