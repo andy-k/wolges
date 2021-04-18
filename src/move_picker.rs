@@ -117,7 +117,7 @@ impl MovePicker<'_> {
                     tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
                     println!("3 secs have passed");
                 });
-                filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 16);
+                filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 100);
                 simmer.simmer.prepare(simmer.game_config, &game_state, 2);
                 let mut candidates = simmer.take_candidates(move_generator.plays.len());
                 let num_sim_iters = 1000;
@@ -152,9 +152,6 @@ impl MovePicker<'_> {
                         candidate.stats.update(
                             sim_spread as f64 + win_prob * simmer.simmer.win_prob_weightage(),
                         );
-                    }
-                    if true {
-                        continue;
                     }
                     if sim_iter % 16 == 0
                         && prune_periods.update(elapsed_time_ms / prune_interval_ms)
