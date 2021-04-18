@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{alphabet, build, kwg};
+use super::{alphabet, fash, kwg};
 
 pub enum MacondoFormat {
     Dawg,
@@ -56,7 +56,7 @@ pub fn to_macondo<'a>(
         tile_mapping: &'a [u8],
         node_indexes: &'a mut [u32],
         nodes: &'a mut Vec<u32>,
-        letter_sets: &'a mut build::MyHashMap<u64, u32>,
+        letter_sets: &'a mut fash::MyHashMap<u64, u32>,
     }
     let mut env = Env {
         kwg,

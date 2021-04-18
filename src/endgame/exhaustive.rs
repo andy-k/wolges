@@ -2,7 +2,7 @@
 
 // note: this module is very slow and may need a lot of space
 
-use super::{build, game_config, klv, kwg, movegen};
+use super::{fash, game_config, klv, kwg, movegen};
 
 // move one tile at a time from rack
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -55,8 +55,8 @@ struct WorkBuffer {
     vec_placed_tile: Vec<PlacedTile>,
     ply_buffer: Vec<PlyBuffer>,
     states: Vec<State>,
-    state_finder: build::MyHashMap<State, usize>,
-    state_eval: build::MyHashMap<usize, StateEval>,
+    state_finder: fash::MyHashMap<State, usize>,
+    state_eval: fash::MyHashMap<usize, StateEval>,
 }
 
 impl WorkBuffer {

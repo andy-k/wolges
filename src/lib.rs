@@ -10,6 +10,7 @@ pub mod board_layout;
 pub mod build;
 pub mod display;
 pub mod endgame;
+pub mod fash;
 pub mod game_config;
 pub mod game_state;
 pub mod game_timers;

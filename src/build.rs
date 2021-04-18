@@ -1,29 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{bites, error};
-
-pub struct MyHasher(u64);
-
-impl std::hash::Hasher for MyHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.0 = (std::num::Wrapping(self.0) * std::num::Wrapping(3467)).0 ^ (!b as u64);
-        }
-    }
-}
-
-impl Default for MyHasher {
-    fn default() -> MyHasher {
-        MyHasher(0)
-    }
-}
-
-pub type MyHasherDefault = std::hash::BuildHasherDefault<MyHasher>;
-pub type MyHashMap<K, V> = std::collections::HashMap<K, V, MyHasherDefault>;
-pub type MyHashSet<T> = std::collections::HashSet<T, MyHasherDefault>;
+use super::{bites, error, fash};
 
 // Unconfirmed entries.
 // Memory wastage notes:
@@ -74,7 +51,7 @@ struct State {
 
 struct StateMaker<'a> {
     states: &'a mut Vec<State>,
-    states_finder: &'a mut MyHashMap<State, u32>,
+    states_finder: &'a mut fash::MyHashMap<State, u32>,
 }
 
 impl StateMaker<'_> {
@@ -153,7 +130,7 @@ impl StateMaker<'_> {
 }
 
 fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
-    let mut machine_drowword_set = MyHashSet::default();
+    let mut machine_drowword_set = fash::MyHashSet::default();
     let mut reverse_buffer = Vec::new();
     for this_word in machine_words {
         // CARE = ERAC, RAC@, AC@, C@
@@ -329,7 +306,7 @@ pub fn build(
         next_index: 0,
     }];
 
-    let mut states_finder = MyHashMap::default();
+    let mut states_finder = fash::MyHashMap::default();
     states_finder.insert(states[0].clone(), 0);
 
     let mut state_maker = StateMaker {

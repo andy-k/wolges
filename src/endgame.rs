@@ -3,7 +3,7 @@
 // note: this module is very slow and may need a lot of space
 // and it still has many bugs
 
-use super::{build, display, game_config, klv, kwg, move_picker, movegen};
+use super::{display, fash, game_config, klv, kwg, move_picker, movegen};
 
 // move one tile at a time from rack
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -79,13 +79,13 @@ struct WorkBuffer {
     vec_placed_tile: Vec<PlacedTile>,
     ply_buffer: Vec<PlyBuffer>,
     movegen: movegen::KurniaMoveGenerator,
-    blocked: Box<[[i16; 4]]>,                   // r*c, 4 directions
-    vec_blocked: Vec<i16>,                      // up to 5*7
-    states: Vec<State>,                         // [0] = dummy initial state, excludes play outs
-    state_finder: build::MyHashMap<State, u32>, // maps all states except 0
-    state_eval: build::MyHashMap<u32, StateEval>,
+    blocked: Box<[[i16; 4]]>,                  // r*c, 4 directions
+    vec_blocked: Vec<i16>,                     // up to 5*7
+    states: Vec<State>,                        // [0] = dummy initial state, excludes play outs
+    state_finder: fash::MyHashMap<State, u32>, // maps all states except 0
+    state_eval: fash::MyHashMap<u32, StateEval>,
     plays: Vec<movegen::Play>, // global u32->Play mapping. [0] = pass, [1..] = place
-    play_finder: build::MyHashMap<movegen::Play, u32>, // maps all plays except pass
+    play_finder: fash::MyHashMap<movegen::Play, u32>, // maps all plays except pass
     child_plays: Vec<ChildPlay>, // subslices of StateEval, often re-sorted; excludes pass
 }
 
@@ -106,7 +106,7 @@ impl WorkBuffer {
             state_finder: Default::default(),
             state_eval: Default::default(),
             plays: Vec::new(),
-            play_finder: build::MyHashMap::default(),
+            play_finder: fash::MyHashMap::default(),
             child_plays: Vec::new(),
         }
     }
