@@ -229,13 +229,6 @@ pub fn main() -> error::Returns<()> {
         } else {
             return Err("invalid argument".into());
         }
-        std::fs::write(
-            "csw19.kwg",
-            build::build(
-                build::BuildFormat::Gaddawg,
-                &read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?,
-            )?,
-        )?;
         println!("time taken: {:?}", t0.elapsed());
         Ok(())
     }
