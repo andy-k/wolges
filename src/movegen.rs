@@ -345,7 +345,7 @@ impl WorkingBuffer {
             0
         };
 
-        // eg if my rack is ZY??YVA it'd be [10,4,4,4,1,1,0].
+        // eg if my rack is ZY??YVA it'd be [10,4,4,4,1,0,0].
         self.num_tiles_on_rack = 0;
         self.rack_bits = 0u64;
         for (tile, &count) in (0u8..).zip(self.rack_tally.iter()) {
