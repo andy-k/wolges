@@ -7,9 +7,18 @@ use wolges::{
 };
 
 pub fn main() -> error::Returns<()> {
-    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
+    let jumbled = true;
+    let kwg = if jumbled {
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kad")?)
+    } else {
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?)
+    };
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
-    let game_config = &game_config::make_common_english_game_config();
+    let game_config = &if jumbled {
+        game_config::make_jumbled_english_game_config()
+    } else {
+        game_config::make_common_english_game_config()
+    };
     //let _ = game_config;
     //let game_config = &game_config::make_hong_kong_english_game_config();
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
@@ -69,8 +78,24 @@ pub fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
+            if false {
+                move_generator.gen_moves_unfiltered(
+                    &board_snapshot,
+                    &game_state.current_player().rack,
+                    usize::MAX,
+                );
+                let plays = &mut move_generator.plays;
+                println!("{} moves found...", plays.len());
+                for play in plays.iter() {
+                    println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+                }
+            }
+
             // stress-test scoring algorithm
-            if true {
+            if match &board_snapshot.game_config.game_rules() {
+                game_config::GameRules::Classic => true,
+                game_config::GameRules::Jumbled => false,
+            } {
                 move_generator.gen_moves_unfiltered(
                     &board_snapshot,
                     &game_state.current_player().rack,

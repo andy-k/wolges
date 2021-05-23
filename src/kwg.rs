@@ -224,4 +224,72 @@ impl Kwg {
         }
         !0
     }
+
+    fn completes_alpha_cross_set(&self, mut p: i32, letters_tally: &[u8], next_letter: u8) -> bool {
+        for letter in next_letter..letters_tally.len() as u8 {
+            for _ in 0..letters_tally[letter as usize] {
+                p = self.seek(p, letter);
+                if p <= 0 {
+                    return false;
+                }
+            }
+        }
+        self[p].accepts()
+    }
+
+    #[inline(always)]
+    pub fn accepts_alpha(&self, letters_tally: &[u8]) -> bool {
+        self.completes_alpha_cross_set(0, letters_tally, 1)
+    }
+
+    pub fn compute_alpha_cross_set(&self, letters_tally: &[u8]) -> u64 {
+        let mut answer = 1; // always set bit 0 here
+        let mut p = self[0].arc_index() as i32;
+        if p <= 0 {
+            return answer;
+        }
+        let letters_tally_len = letters_tally.len() as u8;
+        for letter in 1..letters_tally_len {
+            // 0 should be unused
+            for _ in 0..letters_tally[letter as usize] {
+                loop {
+                    let node = self[p];
+                    let tile = node.tile();
+                    match tile.cmp(&letter) {
+                        std::cmp::Ordering::Greater => {
+                            return answer;
+                        }
+                        std::cmp::Ordering::Less => {
+                            if self.completes_alpha_cross_set(p, letters_tally, letter) {
+                                answer |= 1 << tile;
+                            }
+                            if node.is_end() {
+                                return answer;
+                            }
+                            p += 1;
+                        }
+                        std::cmp::Ordering::Equal => {
+                            let next_p = node.arc_index();
+                            if next_p <= 0 {
+                                return answer;
+                            }
+                            p = next_p;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        loop {
+            let node = self[p];
+            if self.completes_alpha_cross_set(p, letters_tally, letters_tally_len) {
+                answer |= 1 << node.tile();
+            }
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+        answer
+    }
 }

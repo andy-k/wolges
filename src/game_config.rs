@@ -2,7 +2,13 @@
 
 use super::{alphabet, board_layout};
 
+pub enum GameRules {
+    Classic,
+    Jumbled,
+}
+
 pub struct StaticGameConfig<'a> {
+    game_rules: GameRules,
     alphabet: alphabet::Alphabet<'a>,
     board_layout: board_layout::BoardLayout,
     rack_size: i8,
@@ -62,10 +68,29 @@ impl<'a> GameConfig<'a> {
             }
         }
     }
+
+    #[inline(always)]
+    pub fn game_rules(&self) -> &GameRules {
+        match self {
+            GameConfig::Static(x) => &x.game_rules,
+        }
+    }
 }
 
 pub fn make_common_english_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_english_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_english_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_english_alphabet(),
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
@@ -76,6 +101,7 @@ pub fn make_common_english_game_config<'a>() -> GameConfig<'a> {
 #[allow(dead_code)]
 pub fn make_hong_kong_english_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
         alphabet: alphabet::make_hong_kong_english_alphabet(),
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 9,
@@ -86,6 +112,7 @@ pub fn make_hong_kong_english_game_config<'a>() -> GameConfig<'a> {
 #[allow(dead_code)]
 pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
         alphabet: alphabet::make_super_english_alphabet(),
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
@@ -96,6 +123,7 @@ pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
 #[allow(dead_code)]
 pub fn make_polish_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
         alphabet: alphabet::make_polish_alphabet(),
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,

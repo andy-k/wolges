@@ -168,6 +168,14 @@ pub fn main() -> error::Returns<()> {
                     &read_english_machine_words(&std::fs::read_to_string(&args[2])?)?,
                 )?,
             )?;
+        } else if args[1] == "english-kwg-alpha" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::AlphaDawg,
+                    &read_english_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
         } else if args[1] == "english-macondo" {
             let english_alphabet = alphabet::make_english_alphabet();
             let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
@@ -202,6 +210,14 @@ pub fn main() -> error::Returns<()> {
                 &args[3],
                 build::build(
                     build::BuildFormat::DawgOnly,
+                    &read_polish_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "polish-kwg-alpha" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::AlphaDawg,
                     &read_polish_machine_words(&std::fs::read_to_string(&args[2])?)?,
                 )?,
             )?;
@@ -249,6 +265,20 @@ fn old_main() -> error::Returns<()> {
             )?,
         )?;
         println!("{:?} for reading+building+writing csw19 kwg", t0.elapsed());
+    }
+    {
+        let t0 = std::time::Instant::now();
+        std::fs::write(
+            "csw19.kad",
+            build::build(
+                build::BuildFormat::AlphaDawg,
+                &read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?,
+            )?,
+        )?;
+        println!(
+            "{:?} for reading+building+writing csw19 alpha dawg",
+            t0.elapsed()
+        );
     }
     std::fs::write(
         "ecwl.kwg",
