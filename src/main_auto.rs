@@ -161,7 +161,7 @@ pub fn main() -> error::Returns<()> {
                             }
                             if !ps.words_are_valid(board_snapshot, &play.play) {
                                 issues += 1;
-                                println!("{} forms invalid words!", play.play.fmt(board_snapshot),);
+                                println!("{} forms invalid words!", play.play.fmt(board_snapshot));
                             }
                         }
                     }

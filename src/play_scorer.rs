@@ -252,7 +252,7 @@ impl PlayScorer {
                     return false;
                 }
             }
-            true
+            board_snapshot.kwg[p].accepts()
         })
     }
 
