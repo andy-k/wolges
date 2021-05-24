@@ -239,7 +239,7 @@ impl PlayScorer {
     }
 
     #[inline(always)]
-    pub fn words_are_valid(
+    pub fn classic_words_are_valid(
         &mut self,
         board_snapshot: &movegen::BoardSnapshot,
         play: &movegen::Play,
@@ -254,6 +254,43 @@ impl PlayScorer {
             }
             board_snapshot.kwg[p].accepts()
         })
+    }
+
+    #[inline(always)]
+    pub fn jumbled_words_are_valid(
+        &mut self,
+        board_snapshot: &movegen::BoardSnapshot,
+        play: &movegen::Play,
+    ) -> bool {
+        self.words_all(board_snapshot, play, |word: &[u8]| {
+            // doing this the slow way, with no additional space
+            let mut p = 0;
+            let mut current_min_tile = word.iter().min();
+            while let Some(&current_tile) = current_min_tile {
+                for &tile in word {
+                    if tile == current_tile {
+                        p = board_snapshot.kwg.seek(p, tile);
+                        if p <= 0 {
+                            return false;
+                        }
+                    }
+                }
+                current_min_tile = word.iter().filter(|&&tile| tile > current_tile).min();
+            }
+            board_snapshot.kwg[p].accepts()
+        })
+    }
+
+    #[inline(always)]
+    pub fn words_are_valid(
+        &mut self,
+        board_snapshot: &movegen::BoardSnapshot,
+        play: &movegen::Play,
+    ) -> bool {
+        match board_snapshot.game_config.game_rules() {
+            game_config::GameRules::Classic => self.classic_words_are_valid(board_snapshot, play),
+            game_config::GameRules::Jumbled => self.jumbled_words_are_valid(board_snapshot, play),
+        }
     }
 
     // Unused &mut self for future-proofing.

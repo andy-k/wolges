@@ -94,7 +94,7 @@ pub fn main() -> error::Returns<()> {
             // stress-test scoring algorithm
             if match &board_snapshot.game_config.game_rules() {
                 game_config::GameRules::Classic => true,
-                game_config::GameRules::Jumbled => false,
+                game_config::GameRules::Jumbled => true,
             } {
                 move_generator.gen_moves_unfiltered(
                     &board_snapshot,
