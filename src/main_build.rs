@@ -252,62 +252,62 @@ pub fn main() -> error::Returns<()> {
 
 fn old_main() -> error::Returns<()> {
     std::fs::write(
-        "leaves.klv",
-        build_english_leaves(Box::new(std::fs::File::open("leaves.csv")?))?,
+        "lexbin/leaves.klv",
+        build_english_leaves(Box::new(std::fs::File::open("lexsrc/leaves.csv")?))?,
     )?;
     {
         let t0 = std::time::Instant::now();
         std::fs::write(
-            "csw19.kwg",
+            "lexbin/CSW19.kwg",
             build::build(
                 build::BuildFormat::Gaddawg,
-                &read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?,
+                &read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW19.txt")?)?,
             )?,
         )?;
-        println!("{:?} for reading+building+writing csw19 kwg", t0.elapsed());
+        println!("{:?} for reading+building+writing CSW19 kwg", t0.elapsed());
     }
     {
         let t0 = std::time::Instant::now();
         std::fs::write(
-            "csw19.kad",
+            "lexbin/CSW19.kad",
             build::build(
                 build::BuildFormat::AlphaDawg,
-                &read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?,
+                &read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW19.txt")?)?,
             )?,
         )?;
         println!(
-            "{:?} for reading+building+writing csw19 alpha dawg",
+            "{:?} for reading+building+writing CSW19 alpha dawg",
             t0.elapsed()
         );
     }
     std::fs::write(
-        "ecwl.kwg",
+        "lexbin/ECWL.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words(&std::fs::read_to_string("ecwl.txt")?)?,
+            &read_english_machine_words(&std::fs::read_to_string("lexsrc/ECWL.txt")?)?,
         )?,
     )?;
     std::fs::write(
-        "nwl18.kwg",
+        "lexbin/NWL18.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words(&std::fs::read_to_string("nwl18.txt")?)?,
+            &read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL18.txt")?)?,
         )?,
     )?;
     std::fs::write(
-        "nwl20.kwg",
+        "lexbin/NWL20.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?,
+            &read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL20.txt")?)?,
         )?,
     )?;
     if true {
         let t0 = std::time::Instant::now();
         std::fs::write(
-            "osps42-dawg.kwg",
+            "lexbin/OSPS42-dawg.kwg",
             build::build(
                 build::BuildFormat::DawgOnly,
-                &read_polish_machine_words(&std::fs::read_to_string("osps42.txt")?)?,
+                &read_polish_machine_words(&std::fs::read_to_string("lexsrc/OSPS42.txt")?)?,
             )?,
         )?;
         println!(
@@ -318,10 +318,10 @@ fn old_main() -> error::Returns<()> {
     if true {
         let t0 = std::time::Instant::now();
         std::fs::write(
-            "osps42.kwg",
+            "lexbin/OSPS42.kwg",
             build::build(
                 build::BuildFormat::Gaddawg,
-                &read_polish_machine_words(&std::fs::read_to_string("osps42.txt")?)?,
+                &read_polish_machine_words(&std::fs::read_to_string("lexsrc/OSPS42.txt")?)?,
             )?,
         )?;
         println!(
@@ -330,10 +330,10 @@ fn old_main() -> error::Returns<()> {
         );
     }
     std::fs::write(
-        "twl14.kwg",
+        "lexbin/TWL14.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words(&std::fs::read_to_string("twl14.txt")?)?,
+            &read_english_machine_words(&std::fs::read_to_string("lexsrc/TWL14.txt")?)?,
         )?,
     )?;
 
@@ -343,11 +343,11 @@ fn old_main() -> error::Returns<()> {
         let t0 = std::time::Instant::now();
         {
             let t0 = std::time::Instant::now();
-            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
-            println!("{:?} for rereading csw19.kwg", t0.elapsed());
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
+            println!("{:?} for rereading CSW19.kwg", t0.elapsed());
             let t0 = std::time::Instant::now();
             std::fs::write(
-                "CSW19.dawg",
+                "lexbin/CSW19.dawg",
                 lexport::to_macondo(
                     &kwg,
                     &english_alphabet,
@@ -355,10 +355,10 @@ fn old_main() -> error::Returns<()> {
                     lexport::MacondoFormat::Dawg,
                 ),
             )?;
-            println!("{:?} for exporting csw19 dawg", t0.elapsed());
+            println!("{:?} for exporting CSW19 dawg", t0.elapsed());
             let t0 = std::time::Instant::now();
             std::fs::write(
-                "CSW19.gaddag",
+                "lexbin/CSW19.gaddag",
                 lexport::to_macondo(
                     &kwg,
                     &english_alphabet,
@@ -366,12 +366,12 @@ fn old_main() -> error::Returns<()> {
                     lexport::MacondoFormat::Gaddag,
                 ),
             )?;
-            println!("{:?} for exporting csw19 gaddag", t0.elapsed());
+            println!("{:?} for exporting CSW19 gaddag", t0.elapsed());
         }
         {
-            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl18.kwg")?);
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);
             std::fs::write(
-                "NWL18.dawg",
+                "lexbin/NWL18.dawg",
                 lexport::to_macondo(
                     &kwg,
                     &english_alphabet,
@@ -380,7 +380,7 @@ fn old_main() -> error::Returns<()> {
                 ),
             )?;
             std::fs::write(
-                "NWL18.gaddag",
+                "lexbin/NWL18.gaddag",
                 lexport::to_macondo(
                     &kwg,
                     &english_alphabet,
@@ -390,9 +390,9 @@ fn old_main() -> error::Returns<()> {
             )?;
         }
         {
-            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl20.kwg")?);
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL20.kwg")?);
             std::fs::write(
-                "NWL20.dawg",
+                "lexbin/NWL20.dawg",
                 lexport::to_macondo(
                     &kwg,
                     &english_alphabet,
@@ -401,7 +401,7 @@ fn old_main() -> error::Returns<()> {
                 ),
             )?;
             std::fs::write(
-                "NWL20.gaddag",
+                "lexbin/NWL20.gaddag",
                 lexport::to_macondo(
                     &kwg,
                     &english_alphabet,
@@ -411,9 +411,9 @@ fn old_main() -> error::Returns<()> {
             )?;
         }
         {
-            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("ecwl.kwg")?);
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
             std::fs::write(
-                "ECWL.dawg",
+                "lexbin/ECWL.dawg",
                 lexport::to_macondo(
                     &kwg,
                     &english_alphabet,
@@ -422,7 +422,7 @@ fn old_main() -> error::Returns<()> {
                 ),
             )?;
             std::fs::write(
-                "ECWL.gaddag",
+                "lexbin/ECWL.gaddag",
                 lexport::to_macondo(
                     &kwg,
                     &english_alphabet,
@@ -434,11 +434,11 @@ fn old_main() -> error::Returns<()> {
         println!("{:?} for exporting many files", t0.elapsed());
         if true {
             let t0 = std::time::Instant::now();
-            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("osps42.kwg")?);
-            println!("{:?} for rereading osps42.kwg", t0.elapsed());
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
+            println!("{:?} for rereading OSPS42.kwg", t0.elapsed());
             let t0 = std::time::Instant::now();
             std::fs::write(
-                "OSPS42.dawg",
+                "lexbin/OSPS42.dawg",
                 lexport::to_macondo(
                     &kwg,
                     &polish_alphabet,
@@ -446,10 +446,10 @@ fn old_main() -> error::Returns<()> {
                     lexport::MacondoFormat::Dawg,
                 ),
             )?;
-            println!("{:?} for exporting osps42 dawg", t0.elapsed());
+            println!("{:?} for exporting OSPS42 dawg", t0.elapsed());
             let t0 = std::time::Instant::now();
             std::fs::write(
-                "OSPS42.gaddag",
+                "lexbin/OSPS42.gaddag",
                 lexport::to_macondo(
                     &kwg,
                     &polish_alphabet,
@@ -457,17 +457,17 @@ fn old_main() -> error::Returns<()> {
                     lexport::MacondoFormat::Gaddag,
                 ),
             )?;
-            println!("{:?} for exporting osps42 gaddag", t0.elapsed());
+            println!("{:?} for exporting OSPS42 gaddag", t0.elapsed());
         }
     }
 
     if true {
         // this reads the files again, but this code is temporary
-        let v_csw19 = read_english_machine_words(&std::fs::read_to_string("csw19.txt")?)?;
-        let v_ecwl = read_english_machine_words(&std::fs::read_to_string("ecwl.txt")?)?;
-        let v_nwl18 = read_english_machine_words(&std::fs::read_to_string("nwl18.txt")?)?;
-        let v_nwl20 = read_english_machine_words(&std::fs::read_to_string("nwl20.txt")?)?;
-        let v_twl14 = read_english_machine_words(&std::fs::read_to_string("twl14.txt")?)?;
+        let v_csw19 = read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW19.txt")?)?;
+        let v_ecwl = read_english_machine_words(&std::fs::read_to_string("lexsrc/ECWL.txt")?)?;
+        let v_nwl18 = read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL18.txt")?)?;
+        let v_nwl20 = read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL20.txt")?)?;
+        let v_twl14 = read_english_machine_words(&std::fs::read_to_string("lexsrc/TWL14.txt")?)?;
         let mut v = Vec::<bites::Bites>::new();
         v.extend_from_slice(&v_csw19);
         v.extend_from_slice(&v_ecwl);
@@ -510,12 +510,15 @@ fn old_main() -> error::Returns<()> {
                 p_twl14 -= 1;
             }
         }
-        std::fs::write("allgdw.kwg", build::build(build::BuildFormat::Gaddawg, &v)?)?;
-        std::fs::write("all-csw19.kwi", v_csw19_bits)?;
-        std::fs::write("all-ecwl.kwi", v_ecwl_bits)?;
-        std::fs::write("all-nwl18.kwi", v_nwl18_bits)?;
-        std::fs::write("all-nwl20.kwi", v_nwl20_bits)?;
-        std::fs::write("all-twl14.kwi", v_twl14_bits)?;
+        std::fs::write(
+            "lexbin/allgdw.kwg",
+            build::build(build::BuildFormat::Gaddawg, &v)?,
+        )?;
+        std::fs::write("lexbin/all-CSW19.kwi", v_csw19_bits)?;
+        std::fs::write("lexbin/all-ECWL.kwi", v_ecwl_bits)?;
+        std::fs::write("lexbin/all-NWL18.kwi", v_nwl18_bits)?;
+        std::fs::write("lexbin/all-NWL20.kwi", v_nwl20_bits)?;
+        std::fs::write("lexbin/all-TWL14.kwi", v_twl14_bits)?;
 
         let english_alphabet = alphabet::make_english_alphabet();
         let mut word_prob = prob::WordProbability::new(&english_alphabet);
@@ -570,21 +573,21 @@ fn old_main() -> error::Returns<()> {
             v_probability_indexes[w..w + 4].copy_from_slice(&val.to_le_bytes());
             w += 4;
         }
-        std::fs::write("all-probidx.kwp", v_probability_indexes)?;
+        std::fs::write("lexbin/all-probidx.kwp", v_probability_indexes)?;
     }
 
     if true {
         // proof-of-concept
-        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("allgdw.kwg")?);
+        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/allgdw.kwg")?);
         let word_counts = kwg.count_dawg_words_alloc();
         // because dawg do not need gaddag nodes
         println!("only counting {} nodes", word_counts.len());
-        let v_csw19_bits = std::fs::read("all-csw19.kwi")?;
-        let v_ecwl_bits = std::fs::read("all-ecwl.kwi")?;
-        let v_nwl18_bits = std::fs::read("all-nwl18.kwi")?;
-        let v_nwl20_bits = std::fs::read("all-nwl20.kwi")?;
-        let v_twl14_bits = std::fs::read("all-twl14.kwi")?;
-        let v_probability_indexes = std::fs::read("all-probidx.kwp")?;
+        let v_csw19_bits = std::fs::read("lexbin/all-CSW19.kwi")?;
+        let v_ecwl_bits = std::fs::read("lexbin/all-ECWL.kwi")?;
+        let v_nwl18_bits = std::fs::read("lexbin/all-NWL18.kwi")?;
+        let v_nwl20_bits = std::fs::read("lexbin/all-NWL20.kwi")?;
+        let v_twl14_bits = std::fs::read("lexbin/all-TWL14.kwi")?;
+        let v_probability_indexes = std::fs::read("lexbin/all-probidx.kwp")?;
         let mut out_vec = Vec::new();
         let dawg_root = kwg[0].arc_index();
         let english_alphabet = alphabet::make_english_alphabet();
@@ -599,19 +602,19 @@ fn old_main() -> error::Returns<()> {
             let byte_index = j as usize / 8;
             let bit = 1 << (j as usize % 8);
             if v_csw19_bits[byte_index] & bit != 0 {
-                print!(" csw19");
+                print!(" CSW19");
             }
             if v_ecwl_bits[byte_index] & bit != 0 {
-                print!(" ecwl");
+                print!(" ECWL");
             }
             if v_nwl18_bits[byte_index] & bit != 0 {
-                print!(" nwl18");
+                print!(" NWL18");
             }
             if v_nwl20_bits[byte_index] & bit != 0 {
-                print!(" nwl20");
+                print!(" NWL20");
             }
             if v_twl14_bits[byte_index] & bit != 0 {
-                print!(" twl14");
+                print!(" TWL14");
             }
             print!(" wp={}", word_prob.count_ways(&out_vec));
             print!(
@@ -628,14 +631,14 @@ fn old_main() -> error::Returns<()> {
     }
 
     std::fs::write(
-        "volost.kwg",
+        "lexbin/volost.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
             &read_english_machine_words("VOLOST\nVOLOSTS")?,
         )?,
     )?;
     std::fs::write(
-        "empty.kwg",
+        "lexbin/empty.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
             &read_english_machine_words("")?,

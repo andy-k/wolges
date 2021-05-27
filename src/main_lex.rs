@@ -44,11 +44,11 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
 
 pub fn main() -> error::Returns<()> {
     if false {
-        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("osps42.kwg")?);
+        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
         print_dawg(&alphabet::make_polish_alphabet(), &kwg);
         return Ok(());
     }
-    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
+    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
     let game_config = &game_config::make_common_english_game_config();
 
     print_dawg(game_config.alphabet(), &kwg);

@@ -128,23 +128,23 @@ pub fn main() -> error::Returns<()> {
     // of course this should be cached
     match question.lexicon.as_str() {
         "CSW19" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?);
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
             game_config = game_config::make_common_english_game_config();
         }
         "NWL18" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl18.kwg")?);
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);
             game_config = game_config::make_common_english_game_config();
         }
         "NWL20" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("nwl20.kwg")?);
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL20.kwg")?);
             game_config = game_config::make_common_english_game_config();
         }
         "ECWL" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("ecwl.kwg")?);
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
             game_config = game_config::make_common_english_game_config();
         }
         "OSPS42" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("osps42.kwg")?);
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
             game_config = game_config::make_polish_game_config();
         }
         _ => {

@@ -9,11 +9,11 @@ use wolges::{
 pub fn main() -> error::Returns<()> {
     let jumbled = true;
     let kwg = if jumbled {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kad")?)
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kad")?)
     } else {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("csw19.kwg")?)
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?)
     };
-    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("leaves.klv")?);
+    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/leaves.klv")?);
     let game_config = &if jumbled {
         game_config::make_jumbled_english_game_config()
     } else {
