@@ -83,6 +83,7 @@ pub fn main() -> error::Returns<()> {
                     &board_snapshot,
                     &game_state.current_player().rack,
                     usize::MAX,
+                    false,
                 );
                 let plays = &mut move_generator.plays;
                 println!("{} moves found...", plays.len());
@@ -100,6 +101,7 @@ pub fn main() -> error::Returns<()> {
                     &board_snapshot,
                     &game_state.current_player().rack,
                     usize::MAX,
+                    true,
                 );
                 let plays = &mut move_generator.plays;
                 println!("{} moves found...", plays.len());

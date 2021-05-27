@@ -149,6 +149,7 @@ impl Simmer {
                     },
                     &self.game_state.current_player().rack,
                     1,
+                    false,
                 );
                 &self.move_generator.plays[0].play
             });

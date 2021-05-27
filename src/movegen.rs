@@ -2130,6 +2130,7 @@ impl KurniaMoveGenerator {
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a>,
         rack: &'a [u8],
+        always_include_pass: bool,
     ) {
         self.plays.clear();
 
@@ -2168,7 +2169,14 @@ impl KurniaMoveGenerator {
             found_place_move,
             |_best_possible_equity: f32| true,
         );
-        kurnia_gen_nonplace_moves(board_snapshot, &mut working_buffer, found_exchange_move);
+        kurnia_gen_nonplace_moves_except_pass(
+            board_snapshot,
+            &mut working_buffer,
+            found_exchange_move,
+        );
+        if always_include_pass || vec_moves.borrow().is_empty() {
+            found_exchange_move(&working_buffer.rack_tally, &working_buffer.exchange_buffer);
+        }
 
         self.plays = vec_moves.into_inner();
     }
@@ -2182,6 +2190,7 @@ impl KurniaMoveGenerator {
         board_snapshot: &'a BoardSnapshot<'a>,
         rack: &'a [u8],
         max_gen: usize,
+        always_include_pass: bool,
         mut place_move_predicate: PlaceMovePredicate,
         adjust_leave_value: AdjustLeaveValue,
     ) {
@@ -2297,7 +2306,14 @@ impl KurniaMoveGenerator {
             found_place_move,
             can_accept,
         );
-        kurnia_gen_nonplace_moves(board_snapshot, &mut working_buffer, found_exchange_move);
+        kurnia_gen_nonplace_moves_except_pass(
+            board_snapshot,
+            &mut working_buffer,
+            found_exchange_move,
+        );
+        if always_include_pass || found_moves.borrow().is_empty() {
+            found_exchange_move(&working_buffer.rack_tally, &working_buffer.exchange_buffer);
+        }
 
         self.plays = found_moves.into_inner().into_vec();
         self.plays.sort_unstable();
@@ -2309,21 +2325,23 @@ impl KurniaMoveGenerator {
         board_snapshot: &'a BoardSnapshot<'a>,
         rack: &'a [u8],
         max_gen: usize,
+        always_include_pass: bool,
     ) {
         self.gen_moves_filtered(
             board_snapshot,
             rack,
             max_gen,
+            always_include_pass,
             |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i16, _rack_tally: &[u8]| true,
             |leave_value: f32| leave_value,
         );
     }
 }
 
-fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
+fn kurnia_gen_nonplace_moves_except_pass<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
     board_snapshot: &'a BoardSnapshot<'a>,
     working_buffer: &mut WorkingBuffer,
-    mut found_exchange_move: FoundExchangeMove,
+    found_exchange_move: FoundExchangeMove,
 ) {
     working_buffer.exchange_buffer.clear(); // should be no-op
     struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], &[u8])> {
@@ -2340,7 +2358,9 @@ fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
             idx += 1;
         }
         if idx as usize >= rack_tally_len {
-            (env.found_exchange_move)(&env.rack_tally, &env.exchange_buffer);
+            if !env.exchange_buffer.is_empty() {
+                (env.found_exchange_move)(&env.rack_tally, &env.exchange_buffer);
+            }
             return;
         }
         let original_count = env.rack_tally[idx as usize];
@@ -2365,8 +2385,6 @@ fn kurnia_gen_nonplace_moves<'a, FoundExchangeMove: FnMut(&[u8], &[u8])>(
             },
             0,
         );
-    } else {
-        found_exchange_move(&working_buffer.rack_tally, &working_buffer.exchange_buffer);
     }
 }
 

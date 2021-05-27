@@ -190,7 +190,7 @@ impl GenMoves<'_> {
     ) {
         match self {
             Self::Unfiltered => {
-                move_generator.gen_moves_unfiltered(board_snapshot, rack, max_gen);
+                move_generator.gen_moves_unfiltered(board_snapshot, rack, max_gen, false);
             }
             Self::Tilt { tilt, bot_level: _ } => {
                 let leave_scale = tilt.leave_scale;
@@ -200,6 +200,7 @@ impl GenMoves<'_> {
                     board_snapshot,
                     rack,
                     max_gen,
+                    false,
                     |down: bool,
                      lane: i8,
                      idx: i8,

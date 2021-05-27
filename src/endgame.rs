@@ -493,6 +493,7 @@ impl<'a> EndgameSolver<'a> {
                 self.work_buffer.movegen.gen_all_raw_moves_unsorted(
                     &board_snapshot,
                     &current_ply_buffer.racks[which_player],
+                    true,
                 );
                 self.work_buffer.dur_movegen += t1.elapsed();
                 for candidate in &self.work_buffer.movegen.plays {

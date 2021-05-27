@@ -164,7 +164,7 @@ pub fn main() -> error::Returns<()> {
         }
     }
 
-    move_generator.gen_moves_unfiltered(board_snapshot, &question.rack, question.max_gen);
+    move_generator.gen_moves_unfiltered(board_snapshot, &question.rack, question.max_gen, false);
     let plays = &move_generator.plays;
 
     println!("found {} moves", plays.len());

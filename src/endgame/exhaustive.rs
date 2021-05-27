@@ -307,6 +307,7 @@ impl<'a> EndgameSolver<'a> {
                 current_ply_buffer.movegen.gen_all_raw_moves_unsorted(
                     &board_snapshot,
                     &current_ply_buffer.racks[which_player],
+                    true,
                 );
                 for candidate in &current_ply_buffer.movegen.plays {
                     if let movegen::Play::Place {
