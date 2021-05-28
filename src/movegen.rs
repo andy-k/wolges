@@ -2162,13 +2162,14 @@ impl KurniaMoveGenerator {
             });
         };
 
-        kurnia_gen_place_moves(
+        kurnia_gen_place_moves_iter(
             true,
             board_snapshot,
             &mut working_buffer,
             found_place_move,
             |_best_possible_equity: f32| true,
-        );
+        )
+        .for_each(|_| ());
         kurnia_gen_nonplace_moves_except_pass(
             board_snapshot,
             &mut working_buffer,
@@ -2299,13 +2300,14 @@ impl KurniaMoveGenerator {
                 && borrowed.peek().unwrap().equity >= best_possible_equity);
         };
 
-        kurnia_gen_place_moves(
+        kurnia_gen_place_moves_iter(
             false,
             board_snapshot,
             &mut working_buffer,
             found_place_move,
             can_accept,
-        );
+        )
+        .for_each(|_| ());
         kurnia_gen_nonplace_moves_except_pass(
             board_snapshot,
             &mut working_buffer,
@@ -2388,17 +2390,17 @@ fn kurnia_gen_nonplace_moves_except_pass<'a, FoundExchangeMove: FnMut(&[u8], &[u
     }
 }
 
-fn kurnia_gen_place_moves<
+fn kurnia_gen_place_moves_iter<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[u8]),
-    CanAccept: Fn(f32) -> bool,
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i16, &[u8]),
+    CanAccept: 'a + Fn(f32) -> bool,
 >(
     want_raw: bool,
     board_snapshot: &'a BoardSnapshot<'a>,
-    working_buffer: &mut WorkingBuffer,
+    working_buffer: &'a mut WorkingBuffer,
     mut found_place_move: FoundPlaceMove,
     can_accept: CanAccept,
-) {
+) -> impl 'a + Iterator {
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
@@ -2542,23 +2544,31 @@ fn kurnia_gen_place_moves<
         );
     }
     if !want_raw {
+        // this will be iterated in reverse order, so sort by best_possible_equity increasing.
         found_placements.sort_unstable_by(|a, b| {
-            b.best_possible_equity
-                .partial_cmp(&a.best_possible_equity)
+            a.best_possible_equity
+                .partial_cmp(&b.best_possible_equity)
                 .unwrap()
         });
     }
-    for placement in &found_placements {
-        if !can_accept(placement.best_possible_equity) {
-            break;
-        }
-        gen_place_moves_at(
-            &board_snapshot,
-            working_buffer,
-            &placement,
-            max_rack_size,
-            &mut found_place_move,
-        );
-    }
     working_buffer.found_placements = found_placements;
+    std::iter::from_fn(move || match working_buffer.found_placements.pop() {
+        Some(placement) => {
+            if can_accept(placement.best_possible_equity) {
+                gen_place_moves_at(
+                    &board_snapshot,
+                    working_buffer,
+                    &placement,
+                    max_rack_size,
+                    &mut found_place_move,
+                );
+                Some(())
+            } else {
+                // fuse the iterator
+                working_buffer.found_placements.clear();
+                None
+            }
+        }
+        None => None,
+    })
 }
