@@ -2182,6 +2182,149 @@ impl KurniaMoveGenerator {
         self.plays = vec_moves.into_inner();
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn async_gen_moves_filtered<
+        'a,
+        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i16, &[u8]) -> bool,
+        AdjustLeaveValue: Fn(f32) -> f32,
+        BreatheFuture: std::future::Future,
+    >(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a>,
+        rack: &'a [u8],
+        max_gen: usize,
+        always_include_pass: bool,
+        mut place_move_predicate: PlaceMovePredicate,
+        adjust_leave_value: AdjustLeaveValue,
+        mut breathe: impl FnMut() -> BreatheFuture,
+    ) {
+        self.plays.clear();
+        if max_gen == 0 {
+            return;
+        }
+
+        let alphabet = board_snapshot.game_config.alphabet();
+        let board_layout = board_snapshot.game_config.board_layout();
+
+        let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::from(
+            std::mem::take(&mut self.plays),
+        ));
+
+        #[inline(always)]
+        fn push_move<F: FnMut() -> Play>(
+            found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
+            max_gen: usize,
+            equity: f32,
+            mut construct_play: F,
+        ) {
+            let mut borrowed = found_moves.borrow_mut();
+            if borrowed.len() >= max_gen {
+                if borrowed.peek().unwrap().equity >= equity {
+                    return;
+                }
+                borrowed.pop();
+            }
+            borrowed.push(ValuedMove {
+                equity,
+                play: construct_play(),
+            });
+        }
+
+        let mut working_buffer = &mut self.working_buffer;
+        working_buffer.init(board_snapshot, rack);
+        let num_tiles_on_board = working_buffer.num_tiles_on_board;
+        let num_tiles_in_bag = working_buffer.num_tiles_in_bag;
+        let play_out_bonus = working_buffer.play_out_bonus;
+
+        let leave_value_from_tally = |rack_tally: &[u8]| {
+            if num_tiles_in_bag <= 0 {
+                let played_out = rack_tally.iter().all(|&num| num == 0);
+                (if played_out {
+                    play_out_bonus
+                } else {
+                    -10 - 2
+                        * (0u8..)
+                            .zip(rack_tally)
+                            .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
+                            .sum::<i16>()
+                }) as f32
+            } else {
+                // note: adjust_leave_value(f) must return between 0.0 and f
+                adjust_leave_value(board_snapshot.klv.leave_value_from_tally(rack_tally))
+            }
+        };
+
+        let found_place_move =
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+                if place_move_predicate(down, lane, idx, word, score, rack_tally) {
+                    let leave_value = leave_value_from_tally(rack_tally);
+                    let other_adjustments = if num_tiles_on_board == 0 {
+                        (idx..)
+                            .zip(word)
+                            .filter(|(i, &tile)| {
+                                tile != 0
+                                    && alphabet.is_vowel(tile)
+                                    && if down {
+                                        board_layout.danger_star_down(*i)
+                                    } else {
+                                        board_layout.danger_star_across(*i)
+                                    }
+                            })
+                            .count() as f32
+                            * -0.7
+                    } else {
+                        0.0
+                    };
+                    let equity = score as f32 + leave_value + other_adjustments;
+                    push_move(&found_moves, max_gen, equity, || Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word: word.into(),
+                        score,
+                    });
+                }
+            };
+
+        let found_exchange_move = |rack_tally: &[u8], exchanged_tiles: &[u8]| {
+            push_move(
+                &found_moves,
+                max_gen,
+                leave_value_from_tally(rack_tally),
+                || Play::Exchange {
+                    tiles: exchanged_tiles.into(),
+                },
+            );
+        };
+
+        let can_accept = |best_possible_equity: f32| {
+            let borrowed = found_moves.borrow();
+            return !(borrowed.len() >= max_gen
+                && borrowed.peek().unwrap().equity >= best_possible_equity);
+        };
+
+        for _ in kurnia_gen_place_moves_iter(
+            false,
+            board_snapshot,
+            &mut working_buffer,
+            found_place_move,
+            can_accept,
+        ) {
+            breathe().await;
+        }
+        kurnia_gen_nonplace_moves_except_pass(
+            board_snapshot,
+            &mut working_buffer,
+            found_exchange_move,
+        );
+        if always_include_pass || found_moves.borrow().is_empty() {
+            found_exchange_move(&working_buffer.rack_tally, &working_buffer.exchange_buffer);
+        }
+
+        self.plays = found_moves.into_inner().into_vec();
+        self.plays.sort_unstable();
+    }
+
     pub fn gen_moves_filtered<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i16, &[u8]) -> bool,
