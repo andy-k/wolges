@@ -149,7 +149,8 @@ fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> 
     machine_drowwords
 }
 
-fn gen_machine_dorws(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
+// AlphaDawg is DawgOnly on make_alphagrams(machine_words).
+pub fn make_alphagrams(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
     let mut machine_dorws_set = fash::MyHashSet::default();
     let mut rearrange_buffer = Vec::new();
     for this_word in machine_words {
@@ -253,7 +254,7 @@ impl StatesDefragger<'_> {
             0,
         );
         match build_format {
-            BuildFormat::DawgOnly | BuildFormat::AlphaDawg => (),
+            BuildFormat::DawgOnly => (),
             BuildFormat::Gaddawg => {
                 self.write_node(
                     &mut ret[4..],
@@ -307,7 +308,6 @@ fn gen_prev_indexes(states: &[State]) -> Vec<u32> {
 pub enum BuildFormat {
     DawgOnly,
     Gaddawg,
-    AlphaDawg,
 }
 
 pub fn build(
@@ -333,12 +333,9 @@ pub fn build(
         BuildFormat::DawgOnly | BuildFormat::Gaddawg => {
             state_maker.make_dawg(machine_words, 0, false)
         }
-        BuildFormat::AlphaDawg => {
-            state_maker.make_dawg(&gen_machine_dorws(machine_words), 0, false)
-        }
     };
     let gaddag_start_state = match build_format {
-        BuildFormat::DawgOnly | BuildFormat::AlphaDawg => 0,
+        BuildFormat::DawgOnly => 0,
         BuildFormat::Gaddawg => state_maker.make_dawg(
             &gen_machine_drowwords(machine_words),
             dawg_start_state,
@@ -351,14 +348,14 @@ pub fn build(
         prev_indexes: &gen_prev_indexes(&states),
         destination: &mut vec![0u32; states.len()],
         num_written: match build_format {
-            BuildFormat::DawgOnly | BuildFormat::AlphaDawg => 1,
+            BuildFormat::DawgOnly => 1,
             BuildFormat::Gaddawg => 2,
         },
     };
     states_defragger.destination[0] = !0; // useful for empty lexicon
     states_defragger.defrag(dawg_start_state);
     match build_format {
-        BuildFormat::DawgOnly | BuildFormat::AlphaDawg => (),
+        BuildFormat::DawgOnly => (),
         BuildFormat::Gaddawg => {
             states_defragger.defrag(gaddag_start_state);
         }

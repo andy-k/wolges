@@ -172,8 +172,10 @@ pub fn main() -> error::Returns<()> {
             std::fs::write(
                 &args[3],
                 build::build(
-                    build::BuildFormat::AlphaDawg,
-                    &read_english_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                    build::BuildFormat::DawgOnly,
+                    &build::make_alphagrams(&read_english_machine_words(
+                        &std::fs::read_to_string(&args[2])?,
+                    )?),
                 )?,
             )?;
         } else if args[1] == "english-macondo" {
@@ -217,8 +219,10 @@ pub fn main() -> error::Returns<()> {
             std::fs::write(
                 &args[3],
                 build::build(
-                    build::BuildFormat::AlphaDawg,
-                    &read_polish_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                    build::BuildFormat::DawgOnly,
+                    &build::make_alphagrams(&read_polish_machine_words(&std::fs::read_to_string(
+                        &args[2],
+                    )?)?),
                 )?,
             )?;
         } else if args[1] == "polish-macondo" {
@@ -271,8 +275,10 @@ fn old_main() -> error::Returns<()> {
         std::fs::write(
             "lexbin/CSW19.kad",
             build::build(
-                build::BuildFormat::AlphaDawg,
-                &read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW19.txt")?)?,
+                build::BuildFormat::DawgOnly,
+                &build::make_alphagrams(&read_english_machine_words(&std::fs::read_to_string(
+                    "lexsrc/CSW19.txt",
+                )?)?),
             )?,
         )?;
         println!(
