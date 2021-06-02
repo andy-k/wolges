@@ -469,7 +469,7 @@ impl WorkingBuffer {
     }
 }
 
-// kwg must be Gaddag for Classic, AlphaDawg for Jumbled.
+// kwg must be Gaddawg for Classic, AlphaDawg for Jumbled.
 pub struct BoardSnapshot<'a> {
     pub board_tiles: &'a [u8],
     pub game_config: &'a game_config::GameConfig<'a>,
