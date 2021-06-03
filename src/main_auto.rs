@@ -79,12 +79,12 @@ pub fn main() -> error::Returns<()> {
             };
 
             if false {
-                move_generator.gen_moves_unfiltered(
-                    &board_snapshot,
-                    &game_state.current_player().rack,
-                    usize::MAX,
-                    false,
-                );
+                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                    board_snapshot,
+                    rack: &game_state.current_player().rack,
+                    max_gen: usize::MAX,
+                    always_include_pass: false,
+                });
                 let plays = &mut move_generator.plays;
                 println!("{} moves found...", plays.len());
                 for play in plays.iter() {
@@ -97,12 +97,12 @@ pub fn main() -> error::Returns<()> {
                 game_config::GameRules::Classic => true,
                 game_config::GameRules::Jumbled => true,
             } {
-                move_generator.gen_moves_unfiltered(
-                    &board_snapshot,
-                    &game_state.current_player().rack,
-                    usize::MAX,
-                    true,
-                );
+                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                    board_snapshot,
+                    rack: &game_state.current_player().rack,
+                    max_gen: usize::MAX,
+                    always_include_pass: true,
+                });
                 let plays = &mut move_generator.plays;
                 println!("{} moves found...", plays.len());
                 let mut issues = 0;

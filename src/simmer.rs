@@ -140,17 +140,18 @@ impl Simmer {
             next_play.clone_from(if ply == 0 {
                 &candidate_play
             } else {
-                self.move_generator.gen_moves_unfiltered(
-                    &movegen::BoardSnapshot {
-                        board_tiles: &self.game_state.board_tiles,
-                        game_config: &game_config,
-                        kwg: &kwg,
-                        klv: &klv,
-                    },
-                    &self.game_state.current_player().rack,
-                    1,
-                    false,
-                );
+                self.move_generator
+                    .gen_moves_unfiltered(&movegen::GenMovesParams {
+                        board_snapshot: &movegen::BoardSnapshot {
+                            board_tiles: &self.game_state.board_tiles,
+                            game_config: &game_config,
+                            kwg: &kwg,
+                            klv: &klv,
+                        },
+                        rack: &self.game_state.current_player().rack,
+                        max_gen: 1,
+                        always_include_pass: false,
+                    });
                 &self.move_generator.plays[0].play
             });
             set_rack_tally_from_leave(

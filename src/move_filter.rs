@@ -190,17 +190,24 @@ impl GenMoves<'_> {
     ) {
         match self {
             Self::Unfiltered => {
-                move_generator.gen_moves_unfiltered(board_snapshot, rack, max_gen, false);
+                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                    board_snapshot,
+                    rack,
+                    max_gen,
+                    always_include_pass: false,
+                });
             }
             Self::Tilt { tilt, bot_level: _ } => {
                 let leave_scale = tilt.leave_scale;
                 let mut limited_vocab_checker =
                     std::mem::replace(&mut tilt.limited_vocab_checker, LimitedVocabChecker::new());
                 move_generator.gen_moves_filtered(
-                    board_snapshot,
-                    rack,
-                    max_gen,
-                    false,
+                    &movegen::GenMovesParams {
+                        board_snapshot,
+                        rack,
+                        max_gen,
+                        always_include_pass: false,
+                    },
                     |down: bool,
                      lane: i8,
                      idx: i8,
