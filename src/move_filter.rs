@@ -217,6 +217,7 @@ impl GenMoves<'_> {
                         )
                     },
                     |leave_value: f32| leave_scale * leave_value,
+                    |_equity: f32, _play: &movegen::Play| true,
                 );
                 tilt.limited_vocab_checker = limited_vocab_checker;
             }

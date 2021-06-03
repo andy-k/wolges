@@ -2332,10 +2332,12 @@ impl KurniaMoveGenerator {
         self.plays.sort_unstable();
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn gen_moves_filtered<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i16, &[u8]) -> bool,
         AdjustLeaveValue: Fn(f32) -> f32,
+        EquityPredicate: FnMut(f32, &Play) -> bool,
     >(
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a>,
@@ -2344,6 +2346,7 @@ impl KurniaMoveGenerator {
         always_include_pass: bool,
         mut place_move_predicate: PlaceMovePredicate,
         adjust_leave_value: AdjustLeaveValue,
+        equity_predicate: EquityPredicate,
     ) {
         self.plays.clear();
         if max_gen == 0 {
@@ -2356,25 +2359,27 @@ impl KurniaMoveGenerator {
         let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::from(
             std::mem::take(&mut self.plays),
         ));
+        let equity_pred = std::cell::RefCell::new(equity_predicate);
 
         #[inline(always)]
-        fn push_move<F: FnMut() -> Play>(
+        fn push_move<F: FnMut() -> Play, EquityPredicate: FnMut(f32, &Play) -> bool>(
             found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
+            equity_pred: &std::cell::RefCell<EquityPredicate>,
             max_gen: usize,
             equity: f32,
             mut construct_play: F,
         ) {
             let mut borrowed = found_moves.borrow_mut();
-            if borrowed.len() >= max_gen {
-                if borrowed.peek().unwrap().equity >= equity {
-                    return;
-                }
-                borrowed.pop();
+            if borrowed.len() >= max_gen && borrowed.peek().unwrap().equity >= equity {
+                return;
             }
-            borrowed.push(ValuedMove {
-                equity,
-                play: construct_play(),
-            });
+            let play = construct_play();
+            if equity_pred.borrow_mut()(equity, &play) {
+                if borrowed.len() >= max_gen {
+                    borrowed.pop();
+                }
+                borrowed.push(ValuedMove { equity, play });
+            }
         }
 
         let mut working_buffer = &mut self.working_buffer;
@@ -2423,12 +2428,14 @@ impl KurniaMoveGenerator {
                         0.0
                     };
                     let equity = score as f32 + leave_value + other_adjustments;
-                    push_move(&found_moves, max_gen, equity, || Play::Place {
-                        down,
-                        lane,
-                        idx,
-                        word: word.into(),
-                        score,
+                    push_move(&found_moves, &equity_pred, max_gen, equity, || {
+                        Play::Place {
+                            down,
+                            lane,
+                            idx,
+                            word: word.into(),
+                            score,
+                        }
                     });
                 }
             };
@@ -2436,6 +2443,7 @@ impl KurniaMoveGenerator {
         let found_exchange_move = |rack_tally: &[u8], exchanged_tiles: &[u8]| {
             push_move(
                 &found_moves,
+                &equity_pred,
                 max_gen,
                 leave_value_from_tally(rack_tally),
                 || Play::Exchange {
@@ -2486,6 +2494,7 @@ impl KurniaMoveGenerator {
             always_include_pass,
             |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i16, _rack_tally: &[u8]| true,
             |leave_value: f32| leave_value,
+            |_equity: f32, _play: &Play| true,
         );
     }
 }
