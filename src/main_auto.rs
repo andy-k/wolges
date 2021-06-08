@@ -97,12 +97,28 @@ pub fn main() -> error::Returns<()> {
                 game_config::GameRules::Classic => true,
                 game_config::GameRules::Jumbled => true,
             } {
-                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                    board_snapshot,
-                    rack: &game_state.current_player().rack,
-                    max_gen: usize::MAX,
-                    always_include_pass: true,
-                });
+                let leave_scale = if let move_filter::GenMoves::Tilt { tilt, .. } = filtered_movegen
+                {
+                    tilt.leave_scale
+                } else {
+                    1.0
+                };
+                move_generator.gen_moves_filtered(
+                    &movegen::GenMovesParams {
+                        board_snapshot,
+                        rack: &game_state.current_player().rack,
+                        max_gen: usize::MAX,
+                        always_include_pass: true,
+                    },
+                    |_down: bool,
+                     _lane: i8,
+                     _idx: i8,
+                     _word: &[u8],
+                     _score: i16,
+                     _rack_tally: &[u8]| true,
+                    |leave_value: f32| leave_scale * leave_value,
+                    |_equity: f32, _play: &movegen::Play| true,
+                );
                 let plays = &mut move_generator.plays;
                 println!("{} moves found...", plays.len());
                 let mut issues = 0;
@@ -136,14 +152,6 @@ pub fn main() -> error::Returns<()> {
                                     movegen_score
                                 );
                             } else {
-                                let leave_scale =
-                                    if let move_filter::GenMoves::Tilt { tilt, .. } =
-                                        filtered_movegen
-                                    {
-                                        tilt.leave_scale
-                                    } else {
-                                        1.0
-                                    };
                                 let recounted_equity = ps.compute_equity(
                                     board_snapshot,
                                     &game_state,
