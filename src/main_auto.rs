@@ -28,7 +28,7 @@ pub fn main() -> error::Returns<()> {
         bot_level: 1,
     };
     let mut filtered_movegen_1 = move_filter::GenMoves::Unfiltered;
-    if true {
+    if false {
         filtered_movegen_0 = move_filter::GenMoves::Unfiltered;
     }
 
