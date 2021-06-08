@@ -159,7 +159,10 @@ pub fn main() -> error::Returns<()> {
                                     leave_scale,
                                     recounted_score,
                                 );
-                                if play.equity.to_le_bytes() != recounted_equity.to_le_bytes() {
+                                // If leave_scale is negative these may be 0.0 and -0.0.
+                                if play.equity.to_le_bytes() != recounted_equity.to_le_bytes()
+                                    && !(play.equity == 0.0 && recounted_equity == 0.0)
+                                {
                                     issues += 1;
                                     println!(
                                         "{} should have equity {} instead of {}!",

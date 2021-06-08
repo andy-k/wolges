@@ -257,7 +257,12 @@ impl WorkingBuffer {
         }
     }
 
-    fn init(&mut self, board_snapshot: &BoardSnapshot<'_>, rack: &[u8]) {
+    fn init<AdjustLeaveValue: Fn(f32) -> f32>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_>,
+        rack: &[u8],
+        adjust_leave_value: &AdjustLeaveValue,
+    ) {
         self.exchange_buffer.clear();
         self.exchange_buffer.reserve(rack.len());
         self.rack_tally.iter_mut().for_each(|m| *m = 0);
@@ -382,14 +387,15 @@ impl WorkingBuffer {
             }
             self.best_leave_values[self.num_tiles_on_rack as usize] = self.play_out_bonus as f32;
         } else {
-            struct Env<'a> {
+            struct Env<'a, AdjustLeaveValue> {
                 klv: &'a klv::Klv,
                 best_leave_values: &'a mut [f32],
                 rack_tally: &'a mut [u8],
+                adjust_leave_value: AdjustLeaveValue,
             }
             #[inline(always)]
-            fn pretend_to_generate_exchanges(
-                mut env: &mut Env<'_>,
+            fn pretend_to_generate_exchanges<AdjustLeaveValue: Fn(f32) -> f32>(
+                mut env: &mut Env<'_, AdjustLeaveValue>,
                 mut num_tiles_exchanged: u16,
                 mut idx: u8,
             ) {
@@ -398,8 +404,8 @@ impl WorkingBuffer {
                     idx += 1;
                 }
                 if idx as usize >= rack_tally_len {
-                    // note: tilt not applied, assume 0.0 <= tilt <= 1.0
-                    let this_leave_value = env.klv.leave_value_from_tally(env.rack_tally);
+                    let this_leave_value =
+                        (env.adjust_leave_value)(env.klv.leave_value_from_tally(env.rack_tally));
                     if this_leave_value > env.best_leave_values[num_tiles_exchanged as usize] {
                         env.best_leave_values[num_tiles_exchanged as usize] = this_leave_value;
                     }
@@ -421,6 +427,7 @@ impl WorkingBuffer {
                     klv: &board_snapshot.klv,
                     best_leave_values: &mut self.best_leave_values,
                     rack_tally: &mut self.rack_tally,
+                    adjust_leave_value,
                 },
                 0,
                 0,
@@ -2144,7 +2151,7 @@ impl KurniaMoveGenerator {
         let vec_moves = std::cell::RefCell::new(std::mem::take(&mut self.plays));
 
         let mut working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, rack);
+        working_buffer.init(board_snapshot, rack, &|leave_value: f32| leave_value);
 
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, _rack_tally: &[u8]| {
@@ -2238,7 +2245,7 @@ impl KurniaMoveGenerator {
         }
 
         let mut working_buffer = &mut self.working_buffer;
-        working_buffer.init(params.board_snapshot, params.rack);
+        working_buffer.init(params.board_snapshot, params.rack, &adjust_leave_value);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
         let num_tiles_in_bag = working_buffer.num_tiles_in_bag;
         let play_out_bonus = working_buffer.play_out_bonus;
@@ -2382,7 +2389,7 @@ impl KurniaMoveGenerator {
         }
 
         let mut working_buffer = &mut self.working_buffer;
-        working_buffer.init(params.board_snapshot, params.rack);
+        working_buffer.init(params.board_snapshot, params.rack, &adjust_leave_value);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
         let num_tiles_in_bag = working_buffer.num_tiles_in_bag;
         let play_out_bonus = working_buffer.play_out_bonus;
