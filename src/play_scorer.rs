@@ -424,7 +424,6 @@ impl PlayScorer {
                 });
             }
         };
-        let leave_value = board_snapshot.klv.leave_value_from_tally(&self.rack_tally);
 
         let mut recounted_equity = recounted_score as f32;
         if game_state.bag.0.is_empty() {
@@ -452,6 +451,7 @@ impl PlayScorer {
                 recounted_equity += unplayed_tiles_bonus as f32;
             }
         } else {
+            let leave_value = board_snapshot.klv.leave_value_from_tally(&self.rack_tally);
             recounted_equity += leave_scale * leave_value;
             if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
                 match play {
