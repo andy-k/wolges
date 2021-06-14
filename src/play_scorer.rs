@@ -239,12 +239,11 @@ impl PlayScorer {
     }
 
     #[inline(always)]
-    pub fn classic_words_are_valid(
+    fn classic_words_checker<'a>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot,
-        play: &movegen::Play,
-    ) -> bool {
-        self.words_all(board_snapshot, play, |word: &[u8]| {
+        board_snapshot: &'a movegen::BoardSnapshot,
+    ) -> impl FnMut(&[u8]) -> bool + 'a {
+        move |word: &[u8]| {
             let mut p = 0;
             for &tile in word {
                 p = board_snapshot.kwg.seek(p, tile);
@@ -253,16 +252,15 @@ impl PlayScorer {
                 }
             }
             board_snapshot.kwg[p].accepts()
-        })
+        }
     }
 
     #[inline(always)]
-    pub fn jumbled_words_are_valid(
+    fn jumbled_words_checker<'a>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot,
-        play: &movegen::Play,
-    ) -> bool {
-        self.words_all(board_snapshot, play, |word: &[u8]| {
+        board_snapshot: &'a movegen::BoardSnapshot,
+    ) -> impl FnMut(&[u8]) -> bool + 'a {
+        move |word: &[u8]| {
             // doing this the slow way, with no additional space
             let mut p = 0;
             let mut current_min_tile = word.iter().min();
@@ -278,7 +276,7 @@ impl PlayScorer {
                 current_min_tile = word.iter().filter(|&&tile| tile > current_tile).min();
             }
             board_snapshot.kwg[p].accepts()
-        })
+        }
     }
 
     #[inline(always)]
@@ -288,8 +286,14 @@ impl PlayScorer {
         play: &movegen::Play,
     ) -> bool {
         match board_snapshot.game_config.game_rules() {
-            game_config::GameRules::Classic => self.classic_words_are_valid(board_snapshot, play),
-            game_config::GameRules::Jumbled => self.jumbled_words_are_valid(board_snapshot, play),
+            game_config::GameRules::Classic => {
+                let checker = self.classic_words_checker(board_snapshot);
+                self.words_all(board_snapshot, play, checker)
+            }
+            game_config::GameRules::Jumbled => {
+                let checker = self.jumbled_words_checker(board_snapshot);
+                self.words_all(board_snapshot, play, checker)
+            }
         }
     }
 
