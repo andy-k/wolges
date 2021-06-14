@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use super::{bites, error, game_config, game_state, move_filter, movegen};
+use super::{error, game_config, game_state, move_filter, movegen};
 
 pub struct PlayScorer {
     rack_tally: Vec<u8>,
@@ -301,11 +301,11 @@ impl PlayScorer {
     fn collect_invalid_words<'a>(
         &mut self,
         mut checker: impl FnMut(&[u8]) -> bool + 'a,
-        out: &'a mut Vec<bites::Bites>,
+        mut save_invalid_word: impl FnMut(&[u8]) + 'a,
     ) -> impl FnMut(&[u8]) -> bool + 'a {
         move |word: &[u8]| {
             if !checker(word) {
-                out.push(word.into());
+                save_invalid_word(word);
             }
             true // always continue iterating
         }
@@ -316,17 +316,17 @@ impl PlayScorer {
         &mut self,
         board_snapshot: &movegen::BoardSnapshot,
         play: &movegen::Play,
-        invalid_words: &mut Vec<bites::Bites>,
+        save_invalid_word: impl FnMut(&[u8]),
     ) {
         match board_snapshot.game_config.game_rules() {
             game_config::GameRules::Classic => {
                 let checker = self.classic_words_checker(board_snapshot);
-                let checker = self.collect_invalid_words(checker, invalid_words);
+                let checker = self.collect_invalid_words(checker, save_invalid_word);
                 self.words_all(board_snapshot, play, checker)
             }
             game_config::GameRules::Jumbled => {
                 let checker = self.jumbled_words_checker(board_snapshot);
-                let checker = self.collect_invalid_words(checker, invalid_words);
+                let checker = self.collect_invalid_words(checker, save_invalid_word);
                 self.words_all(board_snapshot, play, checker)
             }
         };
