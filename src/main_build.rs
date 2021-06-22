@@ -31,9 +31,33 @@ fn read_machine_words(
 }
 
 // This is rarely used, so it allocates a single-use AlphabetReader.
+fn read_german_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
+    read_machine_words(
+        &alphabet::AlphabetReader::new_for_words(&alphabet::make_german_alphabet()),
+        giant_string,
+    )
+}
+
+// This is rarely used, so it allocates a single-use AlphabetReader.
+fn read_norwegian_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
+    read_machine_words(
+        &alphabet::AlphabetReader::new_for_words(&alphabet::make_norwegian_alphabet()),
+        giant_string,
+    )
+}
+
+// This is rarely used, so it allocates a single-use AlphabetReader.
 fn read_polish_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
     read_machine_words(
         &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
+        giant_string,
+    )
+}
+
+// This is rarely used, so it allocates a single-use AlphabetReader.
+fn read_spanish_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
+    read_machine_words(
+        &alphabet::AlphabetReader::new_for_words(&alphabet::make_spanish_alphabet()),
         giant_string,
     )
 }
@@ -199,6 +223,100 @@ pub fn main() -> error::Returns<()> {
                     lexport::MacondoFormat::Gaddag,
                 ),
             )?;
+        } else if args[1] == "german-kwg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::Gaddawg,
+                    &read_german_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "german-kwg-dawg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::DawgOnly,
+                    &read_german_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "german-kwg-alpha" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::DawgOnly,
+                    &build::make_alphagrams(&read_german_machine_words(&std::fs::read_to_string(
+                        &args[2],
+                    )?)?),
+                )?,
+            )?;
+        } else if args[1] == "german-macondo" {
+            let german_alphabet = alphabet::make_german_alphabet();
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
+            std::fs::write(
+                &args[4],
+                lexport::to_macondo(
+                    &kwg,
+                    &german_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            std::fs::write(
+                &args[5],
+                lexport::to_macondo(
+                    &kwg,
+                    &german_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
+        } else if args[1] == "norwegian-kwg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::Gaddawg,
+                    &read_norwegian_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "norwegian-kwg-dawg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::DawgOnly,
+                    &read_norwegian_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "norwegian-kwg-alpha" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::DawgOnly,
+                    &build::make_alphagrams(&read_norwegian_machine_words(
+                        &std::fs::read_to_string(&args[2])?,
+                    )?),
+                )?,
+            )?;
+        } else if args[1] == "norwegian-macondo" {
+            let norwegian_alphabet = alphabet::make_norwegian_alphabet();
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
+            std::fs::write(
+                &args[4],
+                lexport::to_macondo(
+                    &kwg,
+                    &norwegian_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            std::fs::write(
+                &args[5],
+                lexport::to_macondo(
+                    &kwg,
+                    &norwegian_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
         } else if args[1] == "polish-kwg" {
             std::fs::write(
                 &args[3],
@@ -242,6 +360,53 @@ pub fn main() -> error::Returns<()> {
                 lexport::to_macondo(
                     &kwg,
                     &polish_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
+        } else if args[1] == "spanish-kwg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::Gaddawg,
+                    &read_spanish_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "spanish-kwg-dawg" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::DawgOnly,
+                    &read_spanish_machine_words(&std::fs::read_to_string(&args[2])?)?,
+                )?,
+            )?;
+        } else if args[1] == "spanish-kwg-alpha" {
+            std::fs::write(
+                &args[3],
+                build::build(
+                    build::BuildFormat::DawgOnly,
+                    &build::make_alphagrams(&read_spanish_machine_words(
+                        &std::fs::read_to_string(&args[2])?,
+                    )?),
+                )?,
+            )?;
+        } else if args[1] == "spanish-macondo" {
+            let spanish_alphabet = alphabet::make_spanish_alphabet();
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
+            std::fs::write(
+                &args[4],
+                lexport::to_macondo(
+                    &kwg,
+                    &spanish_alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            std::fs::write(
+                &args[5],
+                lexport::to_macondo(
+                    &kwg,
+                    &spanish_alphabet,
                     &args[3],
                     lexport::MacondoFormat::Gaddag,
                 ),
