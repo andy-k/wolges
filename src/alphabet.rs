@@ -275,12 +275,13 @@ pub fn make_german_alphabet<'a>() -> Alphabet<'a> {
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Norwegian
 // https://en.wikipedia.org/wiki/Norwegian_orthography
+// https://webcache.googleusercontent.com/search?q=cache:z-CdwfSoN-IJ:unicode.org/mail-arch/unicode-ml/y2002-m01/0297.html
+// also this ordering matches system locale files
 pub fn make_norwegian_alphabet<'a>() -> Alphabet<'a> {
     Alphabet::new_static(StaticAlphabet {
         tiles: &[
             tile!("?", "?", 2, 0, 0),
             tile!("A", "a", 7, 1, 1),
-            tile!("Ä", "ä", 0, 0, 1),
             tile!("B", "b", 3, 4, 0),
             tile!("C", "c", 1, 10, 0),
             tile!("D", "d", 5, 1, 0),
@@ -295,21 +296,22 @@ pub fn make_norwegian_alphabet<'a>() -> Alphabet<'a> {
             tile!("M", "m", 3, 2, 0),
             tile!("N", "n", 6, 1, 0),
             tile!("O", "o", 4, 2, 1),
-            tile!("Ö", "ö", 0, 0, 1),
             tile!("P", "p", 2, 4, 0),
             tile!("Q", "q", 0, 0, 0),
             tile!("R", "r", 6, 1, 0),
             tile!("S", "s", 6, 1, 0),
             tile!("T", "t", 6, 1, 0),
             tile!("U", "u", 3, 4, 1),
-            tile!("Ü", "ü", 0, 0, 1),
             tile!("V", "v", 3, 4, 0),
             tile!("W", "w", 1, 8, 0),
             tile!("X", "x", 0, 0, 0),
             tile!("Y", "y", 1, 6, 1),
+            tile!("Ü", "ü", 0, 0, 1),
             tile!("Z", "z", 0, 0, 0),
             tile!("Æ", "æ", 1, 6, 1),
+            tile!("Ä", "ä", 0, 0, 1),
             tile!("Ø", "ø", 2, 5, 1),
+            tile!("Ö", "ö", 0, 0, 1),
             tile!("Å", "å", 2, 4, 1),
         ],
         ..Default::default()
