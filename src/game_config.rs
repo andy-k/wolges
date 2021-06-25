@@ -121,10 +121,87 @@ pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
+pub fn make_german_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_german_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_german_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_german_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_norwegian_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_norwegian_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_norwegian_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_norwegian_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
 pub fn make_polish_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_polish_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_polish_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_polish_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_spanish_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_spanish_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_spanish_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_spanish_alphabet(),
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
