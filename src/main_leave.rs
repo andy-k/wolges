@@ -2,7 +2,10 @@
 
 use rand::prelude::*;
 use std::fmt::Write;
-use wolges::{display, error, game_config, game_state, klv, kwg, move_picker, movegen};
+use std::str::FromStr;
+use wolges::{
+    alphabet, bites, display, error, fash, game_config, game_state, klv, kwg, move_picker, movegen,
+};
 
 thread_local! {
     static RNG: std::cell::RefCell<Box<dyn RngCore>> =
@@ -32,6 +35,19 @@ impl<T: serde::Serialize> serde::Serialize for SerializeArc<T> {
 }
 
 pub fn main() -> error::Returns<()> {
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.len() <= 1 {
+        Err("need argument".into())
+    } else if args[1] == "gen-no" || args[1] == "gen-de" {
+        step1()
+    } else if args[1] == "sum-no" || args[1] == "sum-de" {
+        step2()
+    } else {
+        Err("invalid argument".into())
+    }
+}
+
+fn step1() -> error::Returns<()> {
     let args = std::env::args().collect::<Vec<_>>();
     let game_config;
     let kwg;
@@ -347,6 +363,284 @@ pub fn main() -> error::Returns<()> {
         if let Err(e) = thread.join() {
             println!("{:?}", e);
         }
+    }
+
+    Ok(())
+}
+
+// handles the equivalent of '?', A-Z
+fn parse_rack(
+    alphabet_reader: &alphabet::AlphabetReader,
+    s: &str,
+    v: &mut Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    v.clear();
+    if !s.is_empty() {
+        v.reserve(s.len());
+        let sb = s.as_bytes();
+        let mut ix = 0;
+        while ix < sb.len() {
+            if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                v.push(tile);
+                ix = end_ix;
+            } else {
+                wolges::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn step2() -> error::Returns<()> {
+    struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
+        found_exchange_move: FoundExchangeMove,
+        rack_tally: &'a mut [u8],
+        min_len: i8,
+        max_len: i8,
+        exchange_buffer: &'a mut Vec<u8>,
+    }
+    fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
+        env: &mut ExchangeEnv<FoundExchangeMove>,
+        mut idx: u8,
+    ) {
+        let rack_tally_len = env.rack_tally.len();
+        while (idx as usize) < rack_tally_len && env.rack_tally[idx as usize] == 0 {
+            idx += 1;
+        }
+        if idx as usize >= rack_tally_len {
+            if env.exchange_buffer.len() >= env.min_len as usize {
+                (env.found_exchange_move)(&env.exchange_buffer);
+            }
+            return;
+        }
+        let original_count = env.rack_tally[idx as usize];
+        let vec_len = env.exchange_buffer.len();
+        loop {
+            generate_exchanges(env, idx + 1);
+            if env.exchange_buffer.len() >= env.max_len as usize
+                || env.rack_tally[idx as usize] == 0
+            {
+                break;
+            }
+            env.rack_tally[idx as usize] -= 1;
+            env.exchange_buffer.push(idx);
+        }
+        env.rack_tally[idx as usize] = original_count;
+        env.exchange_buffer.truncate(vec_len);
+    }
+
+    let args = std::env::args().collect::<Vec<_>>();
+    let game_config;
+    if args.len() <= 1 {
+        return Err("need argument".into());
+    } else if args[1] == "sum-no" {
+        game_config = std::sync::Arc::new(game_config::make_norwegian_game_config());
+    } else if args[1] == "sum-de" {
+        game_config = std::sync::Arc::new(game_config::make_german_game_config());
+    } else {
+        return Err("invalid argument".into());
+    }
+    let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
+    let mut exchange_buffer = Vec::with_capacity(game_config.rack_size() as usize);
+    let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
+    let f = std::fs::File::open(&args[2])?;
+    let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
+    let mut rack_bytes = Vec::new();
+    struct Cumulate {
+        equity: f64,
+        count: usize,
+    }
+    let mut global_cumulate = Cumulate {
+        equity: 0.0,
+        count: 0,
+    };
+    let mut full_rack_map = fash::MyHashMap::<bites::Bites, _>::default();
+    // playerID,gameID,turn,rack,play,score,totalscore,tilesplayed,leave,equity,tilesremaining,oppscore
+    // 0       ,1     ,2   ,3   ,4   ,5    ,6         ,7          ,8    ,9     ,10            ,11
+    let t0 = std::time::Instant::now();
+    let mut tick_periods = move_picker::Periods(0);
+    for result in csv_reader.records() {
+        let record = result?;
+        if let Err(e) = (|| -> error::Returns<()> {
+            if i16::from_str(&record[10])? >= 1 {
+                let equity = f32::from_str(&record[9])? as f64;
+                //let score = i16::from_str(&record[5])? as i64;
+                parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
+                rack_bytes.sort_unstable();
+                global_cumulate = Cumulate {
+                    equity: global_cumulate.equity + equity,
+                    count: global_cumulate.count + 1,
+                };
+                full_rack_map
+                    .entry(rack_bytes[..].into())
+                    .and_modify(|v: &mut Cumulate| {
+                        *v = Cumulate {
+                            equity: v.equity + equity,
+                            count: v.count + 1,
+                        }
+                    })
+                    .or_insert(Cumulate { equity, count: 1 });
+                let elapsed_time_ms = t0.elapsed().as_millis() as u64;
+                if tick_periods.update(elapsed_time_ms / 1000) {
+                    println!(
+                        "After {} seconds, have read {} rows",
+                        tick_periods.0, global_cumulate.count
+                    );
+                }
+            }
+            Ok(())
+        })() {
+            println!("parsing {:?}: {:?}", record, e);
+        }
+    }
+    drop(csv_reader);
+    println!(
+        "{} records, {} unique racks",
+        global_cumulate.count,
+        full_rack_map.len()
+    );
+    let mut subrack_map = fash::MyHashMap::<bites::Bites, _>::default();
+    for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
+        rack_tally.iter_mut().for_each(|m| *m = 0);
+        k.iter().for_each(|&tile| rack_tally[tile as usize] += 1);
+        generate_exchanges(
+            &mut ExchangeEnv {
+                found_exchange_move: |subrack_bytes: &[u8]| {
+                    subrack_map
+                        .entry(subrack_bytes[..].into())
+                        .and_modify(|v: &mut Cumulate| {
+                            *v = Cumulate {
+                                equity: v.equity + fv.equity,
+                                count: v.count + fv.count,
+                            }
+                        })
+                        .or_insert(Cumulate {
+                            equity: fv.equity,
+                            count: fv.count,
+                        });
+                },
+                rack_tally: &mut rack_tally,
+                min_len: 1,
+                max_len: game_config.rack_size() - 1,
+                exchange_buffer: &mut exchange_buffer,
+            },
+            0,
+        );
+        let elapsed_time_ms = t0.elapsed().as_millis() as u64;
+        if tick_periods.update(elapsed_time_ms / 1000) {
+            println!(
+                "After {} seconds, have processed {} racks into {} unique subracks",
+                tick_periods.0,
+                idx + 1,
+                subrack_map.len(),
+            );
+        }
+    }
+    println!("{} unique subracks", subrack_map.len());
+
+    let mean_equity = global_cumulate.equity / global_cumulate.count as f64;
+    let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
+    let mut alphabet_freqs = (0..game_config.alphabet().len())
+        .map(|tile| game_config.alphabet().freq(tile))
+        .collect::<Box<_>>();
+    let mut build_buffer = Vec::with_capacity(game_config.rack_size() as usize);
+    generate_exchanges(
+        &mut ExchangeEnv {
+            found_exchange_move: |rack_bytes: &[u8]| {
+                let k = rack_bytes.into();
+                let new_v = if let Some(v) = subrack_map.get(&k) {
+                    v.equity / (v.count as f64) - mean_equity
+                } else {
+                    f64::NAN
+                };
+                ev_map.insert(k, new_v);
+            },
+            rack_tally: &mut alphabet_freqs,
+            min_len: 1,
+            max_len: game_config.rack_size() - 1,
+            exchange_buffer: &mut build_buffer,
+        },
+        0,
+    );
+
+    for len_to_complete in 2..game_config.rack_size() {
+        generate_exchanges(
+            &mut ExchangeEnv {
+                found_exchange_move: |rack_bytes: &[u8]| {
+                    let k: bites::Bites = rack_bytes.into();
+                    if ev_map.get(&k).unwrap_or(&f64::NAN).is_nan() {
+                        rack_tally.iter_mut().for_each(|m| *m = 0);
+                        rack_bytes
+                            .iter()
+                            .for_each(|&tile| rack_tally[tile as usize] += 1);
+                        let mut vn = 0.0f64;
+                        let mut vd = 0i64;
+                        let mut vmax = 0.0f64;
+                        let mut vpos = 0i64;
+                        let mut vmin = 0.0f64;
+                        let mut vneg = 0i64;
+                        generate_exchanges(
+                            &mut ExchangeEnv {
+                                found_exchange_move: |subrack_bytes: &[u8]| {
+                                    let v =
+                                        *ev_map.get(&subrack_bytes[..].into()).unwrap_or(&f64::NAN);
+                                    if !v.is_nan() {
+                                        vn += v;
+                                        vd += 1;
+                                        if v > 0.0 {
+                                            if v > vmax {
+                                                vmax = v;
+                                            }
+                                            vpos += 1;
+                                        } else if v < 0.0 {
+                                            if v < vmin {
+                                                vmin = v;
+                                            }
+                                            vneg += 1;
+                                        }
+                                    }
+                                },
+                                rack_tally: &mut rack_tally,
+                                min_len: len_to_complete - 1,
+                                max_len: len_to_complete - 1,
+                                exchange_buffer: &mut exchange_buffer,
+                            },
+                            0,
+                        );
+                        if vd > 0 {
+                            ev_map.insert(
+                                k,
+                                match vpos.cmp(&vneg) {
+                                    std::cmp::Ordering::Greater => vmax,
+                                    std::cmp::Ordering::Equal => vn / vd as f64,
+                                    std::cmp::Ordering::Less => vmin,
+                                },
+                            );
+                        } else {
+                            println!("not enough samples to derive {:?}", k);
+                        }
+                    }
+                },
+                rack_tally: &mut alphabet_freqs,
+                min_len: len_to_complete,
+                max_len: len_to_complete,
+                exchange_buffer: &mut build_buffer,
+            },
+            0,
+        );
+    }
+
+    let mut kv = ev_map.into_iter().collect::<Vec<_>>();
+    kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)));
+
+    let mut cur_rack_ser = String::new();
+    let mut csv_out = csv::Writer::from_path(&args[3])?;
+    for (k, v) in kv.iter() {
+        cur_rack_ser.clear();
+        for &tile in k.iter() {
+            cur_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
+        }
+        csv_out.serialize((cur_rack_ser.clone(), v))?;
     }
 
     Ok(())
