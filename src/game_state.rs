@@ -3,7 +3,7 @@
 use super::{bag, error, game_config, movegen};
 use rand::prelude::*;
 
-fn use_tiles<II: IntoIterator<Item = u8>>(
+pub fn use_tiles<II: IntoIterator<Item = u8>>(
     rack: &mut Vec<u8>,
     tiles_iter: II,
 ) -> error::Returns<()> {

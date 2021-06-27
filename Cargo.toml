@@ -13,6 +13,7 @@ opt-level = 3
 
 [dependencies]
 csv = "1.1.6"
+num_cpus = "1.13.0"
 rand = "0.8.4"
 rand_chacha = "0.3.1"
 rustyline = "8.2.0"
@@ -37,6 +38,10 @@ path = "src/main_endgame.rs"
 [[bin]]
 name = "json"
 path = "src/main_json.rs"
+
+[[bin]]
+name = "leave"
+path = "src/main_leave.rs"
 
 [[bin]]
 name = "lex"

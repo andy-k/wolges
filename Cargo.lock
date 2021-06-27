@@ -596,6 +596,7 @@ name = "wolges"
 version = "0.1.0"
 dependencies = [
  "csv",
+ "num_cpus",
  "rand",
  "rand_chacha",
  "rustyline",
