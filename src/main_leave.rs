@@ -124,7 +124,7 @@ fn generate_autoplay_logs(
             .collect::<Box<_>>(),
     );
     let num_threads = num_cpus::get();
-    let num_games = 10_000_000;
+    let num_games = 1_000_000;
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut threads = vec![];
     let (tx, rx) = std::sync::mpsc::channel();
