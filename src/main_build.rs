@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use wolges::{alphabet, bites, build, error, kwg, lexport, prob};
+use wolges::{alphabet, bites, build, error, fash, kwg, lexport, prob};
 
 fn read_machine_words(
     alphabet_reader: &alphabet::AlphabetReader,
@@ -104,11 +104,48 @@ fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::
 use std::convert::TryInto;
 use std::str::FromStr;
 
+fn iter_dawg<'a, F: FnMut(&str)>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg, f: F) {
+    struct Env<'a, F: FnMut(&str)> {
+        a: &'a alphabet::Alphabet<'a>,
+        g: &'a kwg::Kwg,
+        s: &'a mut String,
+        f: F,
+    }
+    fn iter<F: FnMut(&str)>(env: &mut Env<F>, mut p: i32) {
+        let l = env.s.len();
+        loop {
+            let t = env.g[p].tile();
+            env.s.push_str(env.a.from_rack(t).unwrap());
+            if env.g[p].accepts() {
+                (env.f)(env.s);
+            }
+            if env.g[p].arc_index() != 0 {
+                iter(env, env.g[p].arc_index());
+            }
+            env.s.truncate(l);
+            if env.g[p].is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+    iter(
+        &mut Env {
+            a: &a,
+            g: &g,
+            s: &mut String::new(),
+            f,
+        },
+        g[0].arc_index(),
+    );
+}
+
 fn build_leaves<Readable: std::io::Read>(
     f: Readable,
     alph: alphabet::Alphabet,
 ) -> error::Returns<Vec<u8>> {
-    let mut leave_values = Vec::new();
+    let mut leaves_map = fash::MyHashMap::default();
+    let mut leave_words = String::new();
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
     for result in csv_reader.records() {
         let record = result?;
@@ -127,23 +164,23 @@ fn build_leaves<Readable: std::io::Read>(
             int_leave as f32 - rounded_leave,
             (int_leave as f32 - rounded_leave).abs(),
         );
-        leave_values.push((String::from(&record[0]), int_leave));
+        leave_words.push_str(&record[0]);
+        leave_words.push('\n');
+        leaves_map.insert(String::from(&record[0]), int_leave);
     }
-    leave_values.sort_unstable_by(|(s1, _), (s2, _)| s1.cmp(s2));
     let leaves_kwg = build::build(
         build::BuildFormat::DawgOnly,
         &read_machine_words(
             &alphabet::AlphabetReader::new_for_racks(&alph),
-            &leave_values.iter().fold(
-                String::with_capacity(leave_values.iter().fold(0, |acc, (s, _)| acc + s.len() + 1)),
-                |mut acc, (s, _)| {
-                    acc.push_str(s);
-                    acc.push('\n');
-                    acc
-                },
-            ),
+            &leave_words,
         )?,
     )?;
+    drop(leave_words);
+    let mut leave_values = Vec::with_capacity(leaves_map.len());
+    iter_dawg(&alph, &kwg::Kwg::from_bytes_alloc(&leaves_kwg), |s| {
+        leave_values.push(leaves_map[s])
+    });
+    drop(leaves_map);
     let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 2];
     let mut w = 0;
     bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
@@ -152,7 +189,7 @@ fn build_leaves<Readable: std::io::Read>(
     w += leaves_kwg.len();
     bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
     w += 4;
-    for (_, v) in leave_values {
+    for v in leave_values {
         bin[w..w + 2].copy_from_slice(&v.to_le_bytes());
         w += 2;
     }
