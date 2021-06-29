@@ -111,10 +111,11 @@ impl<'a> Tilt<'a> {
         length_importances: &'a [f32],
     ) -> Self {
         let mut word_prob = prob::WordProbability::new(&game_config.alphabet());
-        let max_prob_by_len = word_prob.get_max_probs_by_len(&kwg);
+        let mut max_prob_by_len = Vec::new();
+        word_prob.get_max_probs_by_len(&kwg, &mut max_prob_by_len);
         Self {
             word_prob: Box::new(word_prob),
-            max_prob_by_len,
+            max_prob_by_len: max_prob_by_len.into_boxed_slice(),
             length_importances,
             tilt_factor: 0.0,
             leave_scale: 1.0,
