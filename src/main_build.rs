@@ -221,16 +221,33 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
 pub fn main() -> error::Returns<()> {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() <= 1 {
-        old_main()
+        println!(
+            "args:
+  auto
+    just to test
+  english-klv leaves.csv leaves.klv
+    generate klv file
+  english-kwg CSW19.txt CSW19.kwg
+    generate kwg file containing gaddawg
+  english-macondo CSW19.kwg CSW19 CSW19.dawg CSW19.gaddag
+    read kwg file, with lexicon name save macondo dawg/gaddag
+  english-kwg-alpha CSW19.txt CSW19.kad
+    generate kad file containing alpha dawg
+  english-kwg-dawg CSW19.txt outfile.dwg
+    generate dawg-only file
+  (english can also be german, norwegian, polish, spanish)"
+        );
+        Ok(())
+    } else if args[1] == "auto" {
+        old_main()?;
+        Ok(())
     } else {
         let t0 = std::time::Instant::now();
-        if None
-            .or_else(|| do_lang(&args, "english", alphabet::make_english_alphabet))
-            .or_else(|| do_lang(&args, "german", alphabet::make_german_alphabet))
-            .or_else(|| do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet))
-            .or_else(|| do_lang(&args, "polish", alphabet::make_polish_alphabet))
-            .or_else(|| do_lang(&args, "spanish", alphabet::make_spanish_alphabet))
-            .is_some()
+        if do_lang(&args, "english", alphabet::make_english_alphabet).is_some()
+            || do_lang(&args, "german", alphabet::make_german_alphabet).is_some()
+            || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet).is_some()
+            || do_lang(&args, "polish", alphabet::make_polish_alphabet).is_some()
+            || do_lang(&args, "spanish", alphabet::make_spanish_alphabet).is_some()
         {
         } else {
             return Err("invalid argument".into());

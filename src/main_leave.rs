@@ -34,39 +34,90 @@ impl<T: serde::Serialize> serde::Serialize for SerializeArc<T> {
     }
 }
 
-pub fn main() -> error::Returns<()> {
-    let args = std::env::args().collect::<Vec<_>>();
-    if args.len() <= 1 {
-        Err("need argument".into())
-    } else if args[1] == "gen-no" || args[1] == "gen-de" {
-        step1()
-    } else if args[1] == "sum-no" || args[1] == "sum-de" {
-        step2()
+fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
+    args: &[String],
+    language_name: &str,
+    make_game_config: GameConfigMaker,
+) -> Option<error::Returns<()>> {
+    let args1 = &args[1];
+    if let Some(args1_suffix) = args1.strip_prefix(language_name) {
+        match args1_suffix {
+            "-autoplay" => Some((|| {
+                let args3 = if args.len() > 3 { &args[3] } else { "-" };
+                let args4 = if args.len() > 4 { &args[4] } else { "-" };
+                let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
+                let arc_klv0 = if args3 == "-" {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                } else {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(&args3)?))
+                };
+                let arc_klv1 = if args3 == args4 {
+                    std::sync::Arc::clone(&arc_klv0)
+                } else if args4 == "-" {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                } else {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(&args4)?))
+                };
+                generate_autoplay_logs(make_game_config(), kwg, arc_klv0, arc_klv1)?;
+                Ok(())
+            })()),
+            "-generate" => Some((|| {
+                generate_leaves(
+                    make_game_config(),
+                    std::fs::File::open(&args[2])?,
+                    csv::Writer::from_path(&args[3])?,
+                )
+            })()),
+            _ => None,
+        }
     } else {
-        Err("invalid argument".into())
+        None
     }
 }
 
-fn step1() -> error::Returns<()> {
+pub fn main() -> error::Returns<()> {
     let args = std::env::args().collect::<Vec<_>>();
-    let game_config;
-    let kwg;
     if args.len() <= 1 {
-        return Err("need argument".into());
-    } else if args[1] == "gen-no" {
-        game_config = std::sync::Arc::new(game_config::make_norwegian_game_config());
-        kwg = std::sync::Arc::new(kwg::Kwg::from_bytes_alloc(&std::fs::read(
-            "lexbin/NSF20.kwg",
-        )?));
-    } else if args[1] == "gen-de" {
-        game_config = std::sync::Arc::new(game_config::make_german_game_config());
-        kwg = std::sync::Arc::new(kwg::Kwg::from_bytes_alloc(&std::fs::read(
-            "lexbin/RD28.kwg",
-        )?));
+        println!(
+            "args:
+  english-autoplay NWL18.kwg leave0.klv leave1.klv
+    autoplay many games, logs to a pair of csv.
+    (changing number of games or output filenames needs recompile.)
+    if leave is \"-\" or omitted, uses no leave.
+  english-generate logfile leaves.csv
+    summarize logfile into leaves.csv
+  (english can also be german, norwegian, polish, spanish)"
+        );
+        Ok(())
     } else {
-        return Err("invalid argument".into());
+        let t0 = std::time::Instant::now();
+        if do_lang(
+            &args,
+            "english",
+            game_config::make_common_english_game_config,
+        )
+        .is_some()
+            || do_lang(&args, "german", game_config::make_german_game_config).is_some()
+            || do_lang(&args, "norwegian", game_config::make_norwegian_game_config).is_some()
+            || do_lang(&args, "polish", game_config::make_polish_game_config).is_some()
+            || do_lang(&args, "spanish", game_config::make_spanish_game_config).is_some()
+        {
+        } else {
+            return Err("invalid argument".into());
+        }
+        println!("time taken: {:?}", t0.elapsed());
+        Ok(())
     }
-    let klv = std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES));
+}
+
+fn generate_autoplay_logs(
+    game_config: game_config::GameConfig<'static>,
+    kwg: kwg::Kwg,
+    arc_klv0: std::sync::Arc<klv::Klv>,
+    arc_klv1: std::sync::Arc<klv::Klv>,
+) -> error::Returns<()> {
+    let game_config = std::sync::Arc::new(game_config);
+    let kwg = std::sync::Arc::new(kwg);
     let player_aliases = std::sync::Arc::new(
         (1..=game_config.num_players())
             .map(|x| std::sync::Arc::new(format!("p{}", x)))
@@ -81,7 +132,8 @@ fn step1() -> error::Returns<()> {
         let tx = tx.clone();
         let game_config = std::sync::Arc::clone(&game_config);
         let kwg = std::sync::Arc::clone(&kwg);
-        let klv = std::sync::Arc::clone(&klv);
+        let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
+        let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
         let player_aliases = std::sync::Arc::clone(&player_aliases);
         let num_processed_games = std::sync::Arc::clone(&num_processed_games);
         threads.push(std::thread::spawn(move || {
@@ -122,7 +174,11 @@ fn step1() -> error::Returns<()> {
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
                             kwg: &kwg,
-                            klv: &klv,
+                            klv: if game_state.turn == 0 {
+                                &arc_klv0
+                            } else {
+                                &arc_klv1
+                            },
                         };
                         game_state.players[game_state.turn as usize]
                             .rack
@@ -391,7 +447,11 @@ fn parse_rack(
     Ok(())
 }
 
-fn step2() -> error::Returns<()> {
+fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
+    game_config: game_config::GameConfig,
+    f: Readable,
+    mut csv_out: csv::Writer<W>,
+) -> error::Returns<()> {
     struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
         found_exchange_move: FoundExchangeMove,
         rack_tally: &'a mut [u8],
@@ -429,21 +489,10 @@ fn step2() -> error::Returns<()> {
         env.exchange_buffer.truncate(vec_len);
     }
 
-    let args = std::env::args().collect::<Vec<_>>();
-    let game_config;
-    if args.len() <= 1 {
-        return Err("need argument".into());
-    } else if args[1] == "sum-no" {
-        game_config = std::sync::Arc::new(game_config::make_norwegian_game_config());
-    } else if args[1] == "sum-de" {
-        game_config = std::sync::Arc::new(game_config::make_german_game_config());
-    } else {
-        return Err("invalid argument".into());
-    }
+    let game_config = std::sync::Arc::new(game_config);
     let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
     let mut exchange_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
-    let f = std::fs::File::open(&args[2])?;
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
     let mut rack_bytes = Vec::new();
     struct Cumulate {
@@ -634,7 +683,6 @@ fn step2() -> error::Returns<()> {
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)));
 
     let mut cur_rack_ser = String::new();
-    let mut csv_out = csv::Writer::from_path(&args[3])?;
     for (k, v) in kv.iter() {
         cur_rack_ser.clear();
         for &tile in k.iter() {
