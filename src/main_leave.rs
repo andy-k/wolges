@@ -38,11 +38,10 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
     args: &[String],
     language_name: &str,
     make_game_config: GameConfigMaker,
-) -> Option<error::Returns<()>> {
-    let args1 = &args[1];
-    if let Some(args1_suffix) = args1.strip_prefix(language_name) {
-        match args1_suffix {
-            "-autoplay" => Some((|| {
+) -> error::Returns<bool> {
+    match args[1].strip_prefix(language_name) {
+        Some(args1_suffix) => match args1_suffix {
+            "-autoplay" => {
                 let args3 = if args.len() > 3 { &args[3] } else { "-" };
                 let args4 = if args.len() > 4 { &args[4] } else { "-" };
                 let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
@@ -59,19 +58,19 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
                     std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(&args4)?))
                 };
                 generate_autoplay_logs(make_game_config(), kwg, arc_klv0, arc_klv1)?;
-                Ok(())
-            })()),
-            "-generate" => Some((|| {
+                Ok(true)
+            }
+            "-generate" => {
                 generate_leaves(
                     make_game_config(),
                     std::fs::File::open(&args[2])?,
                     csv::Writer::from_path(&args[3])?,
-                )
-            })()),
-            _ => None,
-        }
-    } else {
-        None
+                )?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+        None => Ok(false),
     }
 }
 
@@ -95,12 +94,10 @@ pub fn main() -> error::Returns<()> {
             &args,
             "english",
             game_config::make_common_english_game_config,
-        )
-        .is_some()
-            || do_lang(&args, "german", game_config::make_german_game_config).is_some()
-            || do_lang(&args, "norwegian", game_config::make_norwegian_game_config).is_some()
-            || do_lang(&args, "polish", game_config::make_polish_game_config).is_some()
-            || do_lang(&args, "spanish", game_config::make_spanish_game_config).is_some()
+        )? || do_lang(&args, "german", game_config::make_german_game_config)?
+            || do_lang(&args, "norwegian", game_config::make_norwegian_game_config)?
+            || do_lang(&args, "polish", game_config::make_polish_game_config)?
+            || do_lang(&args, "spanish", game_config::make_spanish_game_config)?
         {
         } else {
             return Err("invalid argument".into());

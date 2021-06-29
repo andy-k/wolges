@@ -164,18 +164,18 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
     args: &[String],
     language_name: &str,
     make_alphabet: AlphabetMaker,
-) -> Option<error::Returns<()>> {
-    let args1 = &args[1];
-    if let Some(args1_suffix) = args1.strip_prefix(language_name) {
-        match args1_suffix {
-            "-klv" => Some((|| {
-                Ok(std::fs::write(
+) -> error::Returns<bool> {
+    match args[1].strip_prefix(language_name) {
+        Some(args1_suffix) => match args1_suffix {
+            "-klv" => {
+                std::fs::write(
                     &args[3],
                     build_leaves(std::fs::File::open(&args[2])?, make_alphabet())?,
-                )?)
-            })()),
-            "-kwg" => Some((|| {
-                Ok(std::fs::write(
+                )?;
+                Ok(true)
+            }
+            "-kwg" => {
+                std::fs::write(
                     &args[3],
                     build::build(
                         build::BuildFormat::Gaddawg,
@@ -184,10 +184,11 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                             &std::fs::read_to_string(&args[2])?,
                         )?,
                     )?,
-                )?)
-            })()),
-            "-kwg-dawg" => Some((|| {
-                Ok(std::fs::write(
+                )?;
+                Ok(true)
+            }
+            "-kwg-dawg" => {
+                std::fs::write(
                     &args[3],
                     build::build(
                         build::BuildFormat::DawgOnly,
@@ -196,10 +197,11 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                             &std::fs::read_to_string(&args[2])?,
                         )?,
                     )?,
-                )?)
-            })()),
-            "-kwg-alpha" => Some((|| {
-                Ok(std::fs::write(
+                )?;
+                Ok(true)
+            }
+            "-kwg-alpha" => {
+                std::fs::write(
                     &args[3],
                     build::build(
                         build::BuildFormat::DawgOnly,
@@ -208,9 +210,10 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                             &std::fs::read_to_string(&args[2])?,
                         )?),
                     )?,
-                )?)
-            })()),
-            "-macondo" => Some((|| {
+                )?;
+                Ok(true)
+            }
+            "-macondo" => {
                 let alphabet = make_alphabet();
                 let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
                 std::fs::write(
@@ -221,12 +224,11 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                     &args[5],
                     lexport::to_macondo(&kwg, &alphabet, &args[3], lexport::MacondoFormat::Gaddag),
                 )?;
-                Ok(())
-            })()),
-            _ => None,
-        }
-    } else {
-        None
+                Ok(true)
+            }
+            _ => Ok(false),
+        },
+        None => Ok(false),
     }
 }
 
@@ -255,11 +257,11 @@ pub fn main() -> error::Returns<()> {
         Ok(())
     } else {
         let t0 = std::time::Instant::now();
-        if do_lang(&args, "english", alphabet::make_english_alphabet).is_some()
-            || do_lang(&args, "german", alphabet::make_german_alphabet).is_some()
-            || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet).is_some()
-            || do_lang(&args, "polish", alphabet::make_polish_alphabet).is_some()
-            || do_lang(&args, "spanish", alphabet::make_spanish_alphabet).is_some()
+        if do_lang(&args, "english", alphabet::make_english_alphabet)?
+            || do_lang(&args, "german", alphabet::make_german_alphabet)?
+            || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet)?
+            || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
+            || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
         {
         } else {
             return Err("invalid argument".into());
