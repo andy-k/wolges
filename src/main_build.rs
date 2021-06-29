@@ -114,7 +114,19 @@ fn build_leaves<Readable: std::io::Read>(
         let record = result?;
         let rounded_leave = (f32::from_str(&record[1])? * 256.0).round();
         let int_leave = rounded_leave as i16;
-        assert!((int_leave as f32 - rounded_leave).abs() == 0.0);
+        assert!(
+            (int_leave as f32 - rounded_leave).abs() == 0.0,
+            "for {}: {} (f32) {} (*256) {} (round) {} (int) {} (float) {} (-) {} (abs) {}",
+            &record[0],
+            &record[1],
+            f32::from_str(&record[1])?,
+            f32::from_str(&record[1])? * 256.0,
+            rounded_leave,
+            int_leave,
+            int_leave as f32,
+            int_leave as f32 - rounded_leave,
+            (int_leave as f32 - rounded_leave).abs(),
+        );
         leave_values.push((String::from(&record[0]), int_leave));
     }
     leave_values.sort_unstable_by(|(s1, _), (s2, _)| s1.cmp(s2));
