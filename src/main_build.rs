@@ -89,10 +89,12 @@ fn read_english_machine_words_or_leaves(
     Ok(machine_words.into_boxed_slice())
 }
 
+/*
 #[inline(always)]
 fn read_english_leaves_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
     read_english_machine_words_or_leaves('?', giant_string)
 }
+*/
 
 #[inline(always)]
 fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
@@ -102,9 +104,11 @@ fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::
 use std::convert::TryInto;
 use std::str::FromStr;
 
-fn build_english_leaves(f: Box<dyn std::io::Read>) -> error::Returns<Vec<u8>> {
+fn build_leaves<Readable: std::io::Read>(
+    f: Readable,
+    alph: alphabet::Alphabet,
+) -> error::Returns<Vec<u8>> {
     let mut leave_values = Vec::new();
-    // extern crate csv;
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
     for result in csv_reader.records() {
         let record = result?;
@@ -116,14 +120,17 @@ fn build_english_leaves(f: Box<dyn std::io::Read>) -> error::Returns<Vec<u8>> {
     leave_values.sort_unstable_by(|(s1, _), (s2, _)| s1.cmp(s2));
     let leaves_kwg = build::build(
         build::BuildFormat::DawgOnly,
-        &read_english_leaves_machine_words(&leave_values.iter().fold(
-            String::new(),
-            |mut acc, (s, _)| {
-                acc.push_str(s);
-                acc.push('\n');
-                acc
-            },
-        ))?,
+        &read_machine_words(
+            &alphabet::AlphabetReader::new_for_racks(&alph),
+            &leave_values.iter().fold(
+                String::with_capacity(leave_values.iter().fold(0, |acc, (s, _)| acc + s.len() + 1)),
+                |mut acc, (s, _)| {
+                    acc.push_str(s);
+                    acc.push('\n');
+                    acc
+                },
+            ),
+        )?,
     )?;
     let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 2];
     let mut w = 0;
@@ -149,6 +156,12 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
     let args1 = &args[1];
     if let Some(args1_suffix) = args1.strip_prefix(language_name) {
         match args1_suffix {
+            "-klv" => Some((|| {
+                Ok(std::fs::write(
+                    &args[3],
+                    build_leaves(std::fs::File::open(&args[2])?, make_alphabet())?,
+                )?)
+            })()),
             "-kwg" => Some((|| {
                 Ok(std::fs::write(
                     &args[3],
@@ -211,12 +224,7 @@ pub fn main() -> error::Returns<()> {
         old_main()
     } else {
         let t0 = std::time::Instant::now();
-        if args[1] == "english-klv" {
-            std::fs::write(
-                &args[3],
-                build_english_leaves(Box::new(std::fs::File::open(&args[2])?))?,
-            )?;
-        } else if None
+        if None
             .or_else(|| do_lang(&args, "english", alphabet::make_english_alphabet))
             .or_else(|| do_lang(&args, "german", alphabet::make_german_alphabet))
             .or_else(|| do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet))
@@ -235,7 +243,10 @@ pub fn main() -> error::Returns<()> {
 fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/leaves.klv",
-        build_english_leaves(Box::new(std::fs::File::open("lexsrc/leaves.csv")?))?,
+        build_leaves(
+            Box::new(std::fs::File::open("lexsrc/leaves.csv")?),
+            alphabet::make_english_alphabet(),
+        )?,
     )?;
     {
         let t0 = std::time::Instant::now();
