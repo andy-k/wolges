@@ -675,7 +675,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
     }
 
     let mut kv = ev_map.into_iter().collect::<Vec<_>>();
-    kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)));
+    kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
 
     let mut cur_rack_ser = String::new();
     for (k, v) in kv.iter() {
