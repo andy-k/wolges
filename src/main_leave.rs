@@ -85,7 +85,7 @@ pub fn main() -> error::Returns<()> {
     if leave is \"-\" or omitted, uses no leave.
   english-generate logfile leaves.csv
     summarize logfile into leaves.csv
-  (english can also be german, norwegian, polish, spanish)"
+  (english can also be french, german, norwegian, polish, spanish)"
         );
         Ok(())
     } else {
@@ -94,7 +94,8 @@ pub fn main() -> error::Returns<()> {
             &args,
             "english",
             game_config::make_common_english_game_config,
-        )? || do_lang(&args, "german", game_config::make_german_game_config)?
+        )? || do_lang(&args, "french", game_config::make_french_game_config)?
+            || do_lang(&args, "german", game_config::make_german_game_config)?
             || do_lang(&args, "norwegian", game_config::make_norwegian_game_config)?
             || do_lang(&args, "polish", game_config::make_polish_game_config)?
             || do_lang(&args, "spanish", game_config::make_spanish_game_config)?

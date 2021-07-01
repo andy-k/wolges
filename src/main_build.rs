@@ -286,7 +286,7 @@ pub fn main() -> error::Returns<()> {
     generate kad file containing alpha dawg
   english-kwg-dawg CSW19.txt outfile.dwg
     generate dawg-only file
-  (english can also be german, norwegian, polish, spanish)"
+  (english can also be french, german, norwegian, polish, spanish)"
         );
         Ok(())
     } else if args[1] == "auto" {
@@ -295,6 +295,7 @@ pub fn main() -> error::Returns<()> {
     } else {
         let t0 = std::time::Instant::now();
         if do_lang(&args, "english", alphabet::make_english_alphabet)?
+            || do_lang(&args, "french", alphabet::make_french_alphabet)?
             || do_lang(&args, "german", alphabet::make_german_alphabet)?
             || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet)?
             || do_lang(&args, "polish", alphabet::make_polish_alphabet)?

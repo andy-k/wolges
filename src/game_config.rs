@@ -121,6 +121,28 @@ pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
+pub fn make_french_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_french_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_french_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Jumbled,
+        alphabet: alphabet::make_french_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
 pub fn make_german_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,

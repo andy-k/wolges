@@ -162,6 +162,43 @@ pub fn make_english_alphabet<'a>() -> Alphabet<'a> {
     })
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#French
+// https://en.wikipedia.org/wiki/French_orthography
+pub fn make_french_alphabet<'a>() -> Alphabet<'a> {
+    Alphabet::new_static(StaticAlphabet {
+        tiles: &[
+            tile!("?", "?", 2, 0, 0),
+            tile!("A", "a", 9, 1, 1),
+            tile!("B", "b", 2, 3, 0),
+            tile!("C", "c", 2, 3, 0),
+            tile!("D", "d", 3, 2, 0),
+            tile!("E", "e", 15, 1, 1),
+            tile!("F", "f", 2, 4, 0),
+            tile!("G", "g", 2, 2, 0),
+            tile!("H", "h", 2, 4, 0),
+            tile!("I", "i", 8, 1, 1),
+            tile!("J", "j", 1, 8, 0),
+            tile!("K", "k", 1, 10, 0),
+            tile!("L", "l", 5, 1, 0),
+            tile!("M", "m", 3, 2, 0),
+            tile!("N", "n", 6, 1, 0),
+            tile!("O", "o", 6, 1, 1),
+            tile!("P", "p", 2, 3, 0),
+            tile!("Q", "q", 1, 8, 0),
+            tile!("R", "r", 6, 1, 0),
+            tile!("S", "s", 6, 1, 0),
+            tile!("T", "t", 6, 1, 0),
+            tile!("U", "u", 6, 1, 1),
+            tile!("V", "v", 2, 4, 0),
+            tile!("W", "w", 1, 10, 0),
+            tile!("X", "x", 1, 10, 0),
+            tile!("Y", "y", 1, 10, 1),
+            tile!("Z", "z", 1, 10, 0),
+        ],
+        ..Default::default()
+    })
+}
+
 // http://hkcrosswordclub.com/?cat=14
 pub fn make_hong_kong_english_alphabet<'a>() -> Alphabet<'a> {
     Alphabet::new_static(StaticAlphabet {
