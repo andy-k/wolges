@@ -589,7 +589,6 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
     let mut alphabet_freqs = (0..game_config.alphabet().len())
         .map(|tile| game_config.alphabet().freq(tile))
         .collect::<Box<_>>();
-    let mut build_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     generate_exchanges(
         &mut ExchangeEnv {
             found_exchange_move: |rack_bytes: &[u8]| {
@@ -604,57 +603,57 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
             rack_tally: &mut alphabet_freqs,
             min_len: 1,
             max_len: game_config.rack_size() - 1,
-            exchange_buffer: &mut build_buffer,
+            exchange_buffer: &mut exchange_buffer,
         },
         0,
     );
 
+    let mut subrack_bytes = Vec::with_capacity(game_config.rack_size() as usize - 1);
     for len_to_complete in 2..game_config.rack_size() {
+        let len_minus_one = len_to_complete as usize - 1;
         generate_exchanges(
             &mut ExchangeEnv {
                 found_exchange_move: |rack_bytes: &[u8]| {
-                    let k: bites::Bites = rack_bytes.into();
                     if ev_map.get(rack_bytes).unwrap_or(&f64::NAN).is_nan() {
-                        rack_tally.iter_mut().for_each(|m| *m = 0);
-                        rack_bytes
-                            .iter()
-                            .for_each(|&tile| rack_tally[tile as usize] += 1);
                         let mut vn = 0.0f64;
                         let mut vd = 0i64;
                         let mut vmax = 0.0f64;
                         let mut vpos = 0i64;
                         let mut vmin = 0.0f64;
                         let mut vneg = 0i64;
-                        generate_exchanges(
-                            &mut ExchangeEnv {
-                                found_exchange_move: |subrack_bytes: &[u8]| {
-                                    let v = *ev_map.get(subrack_bytes).unwrap_or(&f64::NAN);
-                                    if !v.is_nan() {
-                                        vn += v;
-                                        vd += 1;
-                                        if v > 0.0 {
-                                            if v > vmax {
-                                                vmax = v;
-                                            }
-                                            vpos += 1;
-                                        } else if v < 0.0 {
-                                            if v < vmin {
-                                                vmin = v;
-                                            }
-                                            vneg += 1;
-                                        }
+                        let mut process_subrack = |subrack_bytes: &[u8]| {
+                            let v = *ev_map.get(subrack_bytes).unwrap_or(&f64::NAN);
+                            if !v.is_nan() {
+                                vn += v;
+                                vd += 1;
+                                if v > 0.0 {
+                                    if v > vmax {
+                                        vmax = v;
                                     }
-                                },
-                                rack_tally: &mut rack_tally,
-                                min_len: len_to_complete - 1,
-                                max_len: len_to_complete - 1,
-                                exchange_buffer: &mut exchange_buffer,
-                            },
-                            0,
-                        );
+                                    vpos += 1;
+                                } else if v < 0.0 {
+                                    if v < vmin {
+                                        vmin = v;
+                                    }
+                                    vneg += 1;
+                                }
+                            }
+                        };
+                        subrack_bytes.clear();
+                        subrack_bytes.extend_from_slice(&rack_bytes);
+                        process_subrack(&subrack_bytes[..len_minus_one]);
+                        for which_tile in (0..len_minus_one).rev() {
+                            let c1 = subrack_bytes[which_tile];
+                            let c2 = subrack_bytes[len_minus_one];
+                            if c1 != c2 {
+                                subrack_bytes[which_tile] = c2;
+                                subrack_bytes[len_minus_one] = c1;
+                                process_subrack(&subrack_bytes[..len_minus_one]);
+                            }
+                        }
                         if vd > 0 {
                             ev_map.insert(
-                                k,
+                                rack_bytes.into(),
                                 match vpos.cmp(&vneg) {
                                     std::cmp::Ordering::Greater => vmax,
                                     std::cmp::Ordering::Equal => vn / vd as f64,
@@ -662,14 +661,14 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
                                 },
                             );
                         } else {
-                            println!("not enough samples to derive {:?}", k);
+                            println!("not enough samples to derive {:?}", rack_bytes);
                         }
                     }
                 },
                 rack_tally: &mut alphabet_freqs,
                 min_len: len_to_complete,
                 max_len: len_to_complete,
-                exchange_buffer: &mut build_buffer,
+                exchange_buffer: &mut exchange_buffer,
             },
             0,
         );
