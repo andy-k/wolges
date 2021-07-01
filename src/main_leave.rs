@@ -497,15 +497,12 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
         equity: f64,
         count: usize,
     }
-    let mut global_cumulate = Cumulate {
-        equity: 0.0,
-        count: 0,
-    };
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, _>::default();
     // playerID,gameID,turn,rack,play,score,totalscore,tilesplayed,leave,equity,tilesremaining,oppscore
     // 0       ,1     ,2   ,3   ,4   ,5    ,6         ,7          ,8    ,9     ,10            ,11
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
+    let mut row_count = 0usize;
     for result in csv_reader.records() {
         let record = result?;
         if let Err(e) = (|| -> error::Returns<()> {
@@ -514,10 +511,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
                 //let score = i16::from_str(&record[5])? as i64;
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
                 rack_bytes.sort_unstable();
-                global_cumulate = Cumulate {
-                    equity: global_cumulate.equity + equity,
-                    count: global_cumulate.count + 1,
-                };
+                row_count += 1;
                 full_rack_map
                     .entry(rack_bytes[..].into())
                     .and_modify(|v: &mut Cumulate| {
@@ -531,7 +525,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
                 if tick_periods.update(elapsed_time_ms / 1000) {
                     println!(
                         "After {} seconds, have read {} rows",
-                        tick_periods.0, global_cumulate.count
+                        tick_periods.0, row_count
                     );
                 }
             }
@@ -541,6 +535,10 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
         }
     }
     drop(csv_reader);
+    let global_cumulate = Cumulate {
+        equity: full_rack_map.values().fold(0.0, |a, x| a + x.equity),
+        count: row_count,
+    };
     println!(
         "{} records, {} unique racks",
         global_cumulate.count,
