@@ -497,7 +497,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
         equity: f64,
         count: usize,
     }
-    let mut full_rack_map = fash::MyHashMap::<bites::Bites, _>::default();
+    let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     // playerID,gameID,turn,rack,play,score,totalscore,tilesplayed,leave,equity,tilesremaining,oppscore
     // 0       ,1     ,2   ,3   ,4   ,5    ,6         ,7          ,8    ,9     ,10            ,11
     let t0 = std::time::Instant::now();
@@ -512,15 +512,14 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
                 rack_bytes.sort_unstable();
                 row_count += 1;
-                full_rack_map
-                    .entry(rack_bytes[..].into())
-                    .and_modify(|v: &mut Cumulate| {
-                        *v = Cumulate {
-                            equity: v.equity + equity,
-                            count: v.count + 1,
-                        }
-                    })
-                    .or_insert(Cumulate { equity, count: 1 });
+                if let Some(v) = full_rack_map.get_mut(&rack_bytes[..]) {
+                    *v = Cumulate {
+                        equity: v.equity + equity,
+                        count: v.count + 1,
+                    }
+                } else {
+                    full_rack_map.insert(rack_bytes[..].into(), Cumulate { equity, count: 1 });
+                }
                 let elapsed_time_ms = t0.elapsed().as_millis() as u64;
                 if tick_periods.update(elapsed_time_ms / 1000) {
                     println!(
@@ -544,25 +543,27 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
         global_cumulate.count,
         full_rack_map.len()
     );
-    let mut subrack_map = fash::MyHashMap::<bites::Bites, _>::default();
+    let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
         rack_tally.iter_mut().for_each(|m| *m = 0);
         k.iter().for_each(|&tile| rack_tally[tile as usize] += 1);
         generate_exchanges(
             &mut ExchangeEnv {
                 found_exchange_move: |subrack_bytes: &[u8]| {
-                    subrack_map
-                        .entry(subrack_bytes[..].into())
-                        .and_modify(|v: &mut Cumulate| {
-                            *v = Cumulate {
-                                equity: v.equity + fv.equity,
-                                count: v.count + fv.count,
-                            }
-                        })
-                        .or_insert(Cumulate {
-                            equity: fv.equity,
-                            count: fv.count,
-                        });
+                    if let Some(v) = subrack_map.get_mut(subrack_bytes) {
+                        *v = Cumulate {
+                            equity: v.equity + fv.equity,
+                            count: v.count + fv.count,
+                        }
+                    } else {
+                        subrack_map.insert(
+                            subrack_bytes.into(),
+                            Cumulate {
+                                equity: fv.equity,
+                                count: fv.count,
+                            },
+                        );
+                    }
                 },
                 rack_tally: &mut rack_tally,
                 min_len: 1,
@@ -613,7 +614,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
             &mut ExchangeEnv {
                 found_exchange_move: |rack_bytes: &[u8]| {
                     let k: bites::Bites = rack_bytes.into();
-                    if ev_map.get(&k).unwrap_or(&f64::NAN).is_nan() {
+                    if ev_map.get(rack_bytes).unwrap_or(&f64::NAN).is_nan() {
                         rack_tally.iter_mut().for_each(|m| *m = 0);
                         rack_bytes
                             .iter()
@@ -627,8 +628,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
                         generate_exchanges(
                             &mut ExchangeEnv {
                                 found_exchange_move: |subrack_bytes: &[u8]| {
-                                    let v =
-                                        *ev_map.get(&subrack_bytes[..].into()).unwrap_or(&f64::NAN);
+                                    let v = *ev_map.get(subrack_bytes).unwrap_or(&f64::NAN);
                                     if !v.is_nan() {
                                         vn += v;
                                         vd += 1;

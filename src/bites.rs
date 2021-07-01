@@ -65,6 +65,13 @@ impl AsRef<[u8]> for Bites {
     }
 }
 
+impl std::borrow::Borrow<[u8]> for Bites {
+    #[inline(always)]
+    fn borrow(&self) -> &[u8] {
+        &self
+    }
+}
+
 impl Clone for Bites {
     #[inline(always)]
     fn clone(&self) -> Self {
