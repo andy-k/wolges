@@ -515,7 +515,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
     let mut row_count = 0usize;
-    for result in csv_reader.records() {
+    for (record_num, result) in csv_reader.records().enumerate() {
         let record = result?;
         if let Err(e) = (|| -> error::Returns<()> {
             if i16::from_str(&record[10])? >= 1 {
@@ -542,7 +542,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
             }
             Ok(())
         })() {
-            println!("parsing {:?}: {:?}", record, e);
+            println!("parsing {}: {:?}: {:?}", record_num + 1, record, e);
         }
     }
     drop(csv_reader);
@@ -555,6 +555,63 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
         global_cumulate.count,
         full_rack_map.len()
     );
+
+    let epoch_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let run_identifier = std::sync::Arc::new(format!("log-{:08x}", epoch_secs));
+    println!("logging to {}", run_identifier);
+    let bak_file = format!("bak-{}", run_identifier);
+    {
+        let mut csv_bak = csv::Writer::from_path(&bak_file)?;
+        let mut cur_rack_ser = String::new();
+        csv_bak.serialize(("", global_cumulate.equity, global_cumulate.count))?;
+        let mut kv = full_rack_map.iter().collect::<Vec<_>>();
+        kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
+        for (k, fv) in kv.iter() {
+            cur_rack_ser.clear();
+            for &tile in k.iter() {
+                cur_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
+            }
+            csv_bak.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+        }
+    }
+    {
+        let mut csv_bak = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_path(&bak_file)?;
+        let mut recs = csv_bak.records();
+        let rec1 = recs.next().unwrap()?;
+        assert_eq!(&rec1[0], "");
+        let mut err_e = (global_cumulate.equity - f64::from_str(&rec1[1])?).abs();
+        let mut err_c = (global_cumulate.count as isize - isize::from_str(&rec1[2])?).abs();
+        let mut new_e = 0.0;
+        let mut new_c = 0;
+        let mut cnt = 0;
+        for recq in recs {
+            let rec = recq?;
+            cnt += 1;
+            parse_rack(&rack_reader, &rec[0], &mut rack_bytes)?;
+            let exi = full_rack_map.get(&rack_bytes[..]).unwrap();
+            let this_e = f64::from_str(&rec[1])?;
+            err_e += (exi.equity - this_e).abs();
+            new_e += this_e;
+            let this_c = isize::from_str(&rec[2])?;
+            err_c += (exi.count as isize - this_c).abs();
+            new_c += this_c;
+        }
+        println!(
+            "err: {} {} / {} / {} {}",
+            err_e,
+            err_c,
+            cnt,
+            (global_cumulate.equity - new_e).abs(),
+            (global_cumulate.count as isize - new_c).abs()
+        );
+        assert_eq!(cnt, full_rack_map.len());
+    }
+
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
         rack_tally.iter_mut().for_each(|m| *m = 0);
