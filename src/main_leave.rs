@@ -130,7 +130,7 @@ fn generate_autoplay_logs(
     );
     let num_threads = num_cpus::get();
     let num_games = 1_000_000;
-    let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut threads = vec![];
 
     let epoch_secs = std::time::SystemTime::now()
@@ -172,8 +172,8 @@ fn generate_autoplay_logs(
             .collect::<Box<_>>(),
         "first",
     ))?;
-    let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let t0 = std::time::Instant::now();
     let tick_periods = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
 
@@ -471,7 +471,7 @@ fn parse_rack(
 
 struct Cumulate {
     equity: f64,
-    count: usize,
+    count: u64,
 }
 
 fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
@@ -487,7 +487,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     // 0       ,1     ,2   ,3   ,4   ,5    ,6         ,7          ,8    ,9     ,10            ,11
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
-    let mut row_count = 0usize;
+    let mut row_count = 0u64;
     for (record_num, result) in csv_reader.records().enumerate() {
         let record = result?;
         if let Err(e) = (|| -> error::Returns<()> {
@@ -598,7 +598,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
         return Err("invalid input file".into());
     }
     total_equity = f64::from_str(&record[1])?;
-    row_count = usize::from_str(&record[2])?;
+    row_count = u64::from_str(&record[2])?;
     for result in results {
         let record = result?;
         parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
@@ -606,7 +606,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
             rack_bytes[..].into(),
             Cumulate {
                 equity: f64::from_str(&record[1])?,
-                count: usize::from_str(&record[2])?,
+                count: u64::from_str(&record[2])?,
             },
         );
     }
@@ -753,6 +753,13 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
             cur_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
         }
         csv_out.serialize((&cur_rack_ser, v))?;
+        /*
+        if let Some(orig_v) = subrack_map.get(k) {
+            csv_out.serialize((&cur_rack_ser, v, orig_v.equity, orig_v.count))?;
+        } else {
+            csv_out.serialize((&cur_rack_ser, v, f64::NAN, 0))?;
+        };
+        */
     }
 
     Ok(())
