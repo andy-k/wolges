@@ -113,7 +113,7 @@ fn generate_autoplay_logs(
     let kwg = std::sync::Arc::new(kwg);
     let player_aliases = std::sync::Arc::new(
         (1..=game_config.num_players())
-            .map(|x| std::sync::Arc::new(format!("p{}", x)))
+            .map(|x| format!("p{}", x))
             .collect::<Box<_>>(),
     );
     let num_threads = num_cpus::get();
@@ -188,6 +188,7 @@ fn generate_autoplay_logs(
                 let mut aft_rack = Vec::with_capacity(game_config.rack_size() as usize);
                 let mut aft_rack_ser = String::new();
                 let mut play_fmt = String::new();
+                let mut equity_fmt = String::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
                 let mut num_bingos = vec![0; game_config.num_players() as usize];
                 let mut num_moves;
@@ -205,7 +206,6 @@ fn generate_autoplay_logs(
                     for _ in 0..GAME_ID_LEN {
                         game_id.push(*BASE57.choose(&mut rng).unwrap() as char);
                     }
-                    let game_id = std::sync::Arc::new(game_id.clone());
                     let went_first = rng.gen_range(0..game_config.num_players());
                     game_state.reset_and_draw_tiles(&game_config, &mut rng);
                     game_state.turn = went_first;
@@ -335,6 +335,9 @@ fn generate_autoplay_logs(
                         let old_turn = game_state.turn;
                         game_state.next_turn();
 
+                        equity_fmt.clear();
+                        write!(equity_fmt,"{:.3}", play.equity).unwrap();
+
                         match game_state.check_game_ended(&game_config, &mut final_scores) {
                             game_state::CheckGameEnded::PlayedOut
                             | game_state::CheckGameEnded::ZeroScores => {
@@ -342,18 +345,16 @@ fn generate_autoplay_logs(
                                     .lock()
                                     .unwrap()
                                     .serialize((
-                                        SerializeArc(std::sync::Arc::clone(
-                                            &player_aliases[old_turn as usize],
-                                        )),
-                                        SerializeArc(std::sync::Arc::clone(&game_id)),
+                                        &player_aliases[old_turn as usize],
+                                        &game_id,
                                         num_moves,
-                                        cur_rack_ser.clone(),
-                                        play_fmt.clone(),
+                                        &cur_rack_ser,
+                                        &play_fmt,
                                         play_score,
                                         final_scores[old_turn as usize],
                                         tiles_played,
-                                        aft_rack_ser.clone(),
-                                        format!("{:.3}", play.equity),
+                                        &aft_rack_ser,
+                                        &equity_fmt,
                                         old_bag_len,
                                         game_state.players[game_state.turn as usize].score,
                                     ))
@@ -364,12 +365,10 @@ fn generate_autoplay_logs(
                                     .lock()
                                     .unwrap()
                                     .serialize((
-                                        SerializeArc(std::sync::Arc::clone(&game_id)),
-                                        final_scores.clone(),
-                                        num_bingos.clone(),
-                                        SerializeArc(std::sync::Arc::clone(
-                                            &player_aliases[went_first as usize],
-                                        )),
+                                        &game_id,
+                                        &final_scores,
+                                        &num_bingos,
+                                        &player_aliases[went_first as usize],
                                     ))
                                     .unwrap();
                                 let completed_games = completed_games
@@ -396,18 +395,16 @@ fn generate_autoplay_logs(
                             .lock()
                             .unwrap()
                             .serialize((
-                                SerializeArc(std::sync::Arc::clone(
-                                    &player_aliases[old_turn as usize],
-                                )),
-                                SerializeArc(std::sync::Arc::clone(&game_id)),
+                                &player_aliases[old_turn as usize],
+                                &game_id,
                                 num_moves,
-                                cur_rack_ser.clone(),
-                                play_fmt.clone(),
+                                &cur_rack_ser,
+                                &play_fmt,
                                 play_score,
                                 game_state.players[old_turn as usize].score,
                                 tiles_played,
-                                aft_rack_ser.clone(),
-                                format!("{:.3}", play.equity),
+                                &aft_rack_ser,
+                                &equity_fmt,
                                 old_bag_len,
                                 game_state.players[game_state.turn as usize].score,
                             ))
@@ -698,7 +695,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
         for &tile in k.iter() {
             cur_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
         }
-        csv_out.serialize((cur_rack_ser.clone(), v))?;
+        csv_out.serialize((&cur_rack_ser, v))?;
     }
 
     Ok(())
