@@ -55,10 +55,20 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
                 generate_autoplay_logs(make_game_config(), kwg, arc_klv0, arc_klv1)?;
                 Ok(true)
             }
+            "-summarize" => {
+                generate_summary(
+                    make_game_config(),
+                    std::fs::File::open(&args[2])?,
+                    csv::Writer::from_path(&args[3])?,
+                )?;
+                Ok(true)
+            }
             "-generate" => {
                 generate_leaves(
                     make_game_config(),
-                    std::fs::File::open(&args[2])?,
+                    csv::ReaderBuilder::new()
+                        .has_headers(false)
+                        .from_path(&args[2])?,
                     csv::Writer::from_path(&args[3])?,
                 )?;
                 Ok(true)
@@ -78,8 +88,10 @@ pub fn main() -> error::Returns<()> {
     autoplay many games, logs to a pair of csv.
     (changing number of games or output filenames needs recompile.)
     if leave is \"-\" or omitted, uses no leave.
-  english-generate logfile leaves.csv
-    summarize logfile into leaves.csv
+  english-summarize logfile summary.csv
+    summarize logfile into summary.csv
+  english-generate summary.csv leaves.csv
+    generate leaves
   (english can also be french, german, norwegian, polish, spanish)"
         );
         Ok(())
@@ -457,58 +469,19 @@ fn parse_rack(
     Ok(())
 }
 
-fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
+struct Cumulate {
+    equity: f64,
+    count: usize,
+}
+
+fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     game_config: game_config::GameConfig,
     f: Readable,
     mut csv_out: csv::Writer<W>,
 ) -> error::Returns<()> {
-    struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
-        found_exchange_move: FoundExchangeMove,
-        rack_tally: &'a mut [u8],
-        min_len: i8,
-        max_len: i8,
-        exchange_buffer: &'a mut Vec<u8>,
-    }
-    fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
-        env: &mut ExchangeEnv<FoundExchangeMove>,
-        mut idx: u8,
-    ) {
-        let rack_tally_len = env.rack_tally.len();
-        while (idx as usize) < rack_tally_len && env.rack_tally[idx as usize] == 0 {
-            idx += 1;
-        }
-        if idx as usize >= rack_tally_len {
-            if env.exchange_buffer.len() >= env.min_len as usize {
-                (env.found_exchange_move)(&env.exchange_buffer);
-            }
-            return;
-        }
-        let original_count = env.rack_tally[idx as usize];
-        let vec_len = env.exchange_buffer.len();
-        loop {
-            generate_exchanges(env, idx + 1);
-            if env.exchange_buffer.len() >= env.max_len as usize
-                || env.rack_tally[idx as usize] == 0
-            {
-                break;
-            }
-            env.rack_tally[idx as usize] -= 1;
-            env.exchange_buffer.push(idx);
-        }
-        env.rack_tally[idx as usize] = original_count;
-        env.exchange_buffer.truncate(vec_len);
-    }
-
-    let game_config = std::sync::Arc::new(game_config);
-    let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
-    let mut exchange_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
     let mut rack_bytes = Vec::new();
-    struct Cumulate {
-        equity: f64,
-        count: usize,
-    }
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     // playerID,gameID,turn,rack,play,score,totalscore,tilesplayed,leave,equity,tilesremaining,oppscore
     // 0       ,1     ,2   ,3   ,4   ,5    ,6         ,7          ,8    ,9     ,10            ,11
@@ -546,71 +519,98 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
         }
     }
     drop(csv_reader);
-    let global_cumulate = Cumulate {
-        equity: full_rack_map.values().fold(0.0, |a, x| a + x.equity),
-        count: row_count,
-    };
+    let total_equity = full_rack_map.values().fold(0.0, |a, x| a + x.equity);
     println!(
         "{} records, {} unique racks",
-        global_cumulate.count,
+        row_count,
         full_rack_map.len()
     );
 
-    let epoch_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let run_identifier = std::sync::Arc::new(format!("log-{:08x}", epoch_secs));
-    println!("logging to {}", run_identifier);
-    let bak_file = format!("bak-{}", run_identifier);
-    {
-        let mut csv_bak = csv::Writer::from_path(&bak_file)?;
-        let mut cur_rack_ser = String::new();
-        csv_bak.serialize(("", global_cumulate.equity, global_cumulate.count))?;
-        let mut kv = full_rack_map.iter().collect::<Vec<_>>();
-        kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
-        for (k, fv) in kv.iter() {
-            cur_rack_ser.clear();
-            for &tile in k.iter() {
-                cur_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
-            }
-            csv_bak.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+    let mut kv = full_rack_map.into_iter().collect::<Vec<_>>();
+    kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
+
+    let mut cur_rack_ser = String::new();
+    csv_out.serialize(("", total_equity, row_count))?;
+    for (k, fv) in kv.iter() {
+        cur_rack_ser.clear();
+        for &tile in k.iter() {
+            cur_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
         }
+        csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
     }
-    {
-        let mut csv_bak = csv::ReaderBuilder::new()
-            .has_headers(false)
-            .from_path(&bak_file)?;
-        let mut recs = csv_bak.records();
-        let rec1 = recs.next().unwrap()?;
-        assert_eq!(&rec1[0], "");
-        let mut err_e = (global_cumulate.equity - f64::from_str(&rec1[1])?).abs();
-        let mut err_c = (global_cumulate.count as isize - isize::from_str(&rec1[2])?).abs();
-        let mut new_e = 0.0;
-        let mut new_c = 0;
-        let mut cnt = 0;
-        for recq in recs {
-            let rec = recq?;
-            cnt += 1;
-            parse_rack(&rack_reader, &rec[0], &mut rack_bytes)?;
-            let exi = full_rack_map.get(&rack_bytes[..]).unwrap();
-            let this_e = f64::from_str(&rec[1])?;
-            err_e += (exi.equity - this_e).abs();
-            new_e += this_e;
-            let this_c = isize::from_str(&rec[2])?;
-            err_c += (exi.count as isize - this_c).abs();
-            new_c += this_c;
+
+    Ok(())
+}
+
+struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
+    found_exchange_move: FoundExchangeMove,
+    rack_tally: &'a mut [u8],
+    min_len: i8,
+    max_len: i8,
+    exchange_buffer: &'a mut Vec<u8>,
+}
+
+fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
+    env: &mut ExchangeEnv<FoundExchangeMove>,
+    mut idx: u8,
+) {
+    let rack_tally_len = env.rack_tally.len();
+    while (idx as usize) < rack_tally_len && env.rack_tally[idx as usize] == 0 {
+        idx += 1;
+    }
+    if idx as usize >= rack_tally_len {
+        if env.exchange_buffer.len() >= env.min_len as usize {
+            (env.found_exchange_move)(&env.exchange_buffer);
         }
-        println!(
-            "err: {} {} / {} / {} {}",
-            err_e,
-            err_c,
-            cnt,
-            (global_cumulate.equity - new_e).abs(),
-            (global_cumulate.count as isize - new_c).abs()
+        return;
+    }
+    let original_count = env.rack_tally[idx as usize];
+    let vec_len = env.exchange_buffer.len();
+    loop {
+        generate_exchanges(env, idx + 1);
+        if env.exchange_buffer.len() >= env.max_len as usize || env.rack_tally[idx as usize] == 0 {
+            break;
+        }
+        env.rack_tally[idx as usize] -= 1;
+        env.exchange_buffer.push(idx);
+    }
+    env.rack_tally[idx as usize] = original_count;
+    env.exchange_buffer.truncate(vec_len);
+}
+
+fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
+    game_config: game_config::GameConfig,
+    mut csv_in: csv::Reader<Readable>,
+    mut csv_out: csv::Writer<W>,
+) -> error::Returns<()> {
+    let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
+    let mut exchange_buffer = Vec::with_capacity(game_config.rack_size() as usize);
+    let mut rack_bytes = Vec::new();
+    let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
+    let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    let total_equity;
+    let row_count;
+    let t0 = std::time::Instant::now();
+    let mut tick_periods = move_picker::Periods(0);
+    let mut results = csv_in.records();
+    let record = results.next().unwrap()?;
+    if !record[0].is_empty() {
+        return Err("invalid input file".into());
+    }
+    total_equity = f64::from_str(&record[1])?;
+    row_count = usize::from_str(&record[2])?;
+    for result in results {
+        let record = result?;
+        parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
+        full_rack_map.insert(
+            rack_bytes[..].into(),
+            Cumulate {
+                equity: f64::from_str(&record[1])?,
+                count: usize::from_str(&record[2])?,
+            },
         );
-        assert_eq!(cnt, full_rack_map.len());
     }
+    drop(csv_in);
 
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
@@ -653,7 +653,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
     }
     println!("{} unique subracks", subrack_map.len());
 
-    let mean_equity = global_cumulate.equity / global_cumulate.count as f64;
+    let mean_equity = total_equity / row_count as f64;
     let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
     let mut alphabet_freqs = (0..game_config.alphabet().len())
         .map(|tile| game_config.alphabet().freq(tile))
