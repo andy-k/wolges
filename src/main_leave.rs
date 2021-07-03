@@ -21,11 +21,6 @@ abcdefghijkmnopqrstuvwxyz\
 
 const GAME_ID_LEN: usize = 8;
 
-enum CSVRow<T1, T2> {
-    Log(T1),
-    Game(T2),
-}
-
 struct SerializeArc<T>(std::sync::Arc<T>);
 
 impl<T: serde::Serialize> serde::Serialize for SerializeArc<T> {
@@ -125,15 +120,64 @@ fn generate_autoplay_logs(
     let num_games = 1_000_000;
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut threads = vec![];
-    let (tx, rx) = std::sync::mpsc::channel();
+
+    let epoch_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let run_identifier = std::sync::Arc::new(format!("log-{:08x}", epoch_secs));
+    println!("logging to {}", run_identifier);
+    let csv_log = std::sync::Arc::new(std::sync::Mutex::new(csv::Writer::from_path(
+        run_identifier.to_string(),
+    )?));
+    let csv_game = std::sync::Arc::new(std::sync::Mutex::new(csv::Writer::from_path(format!(
+        "games-{}",
+        run_identifier
+    ))?));
+    csv_log.lock().unwrap().serialize((
+        "playerID",
+        "gameID",
+        "turn",
+        "rack",
+        "play",
+        "score",
+        "totalscore",
+        "tilesplayed",
+        "leave",
+        "equity",
+        "tilesremaining",
+        "oppscore",
+    ))?;
+    csv_game.lock().unwrap().serialize((
+        "gameID",
+        player_aliases
+            .iter()
+            .map(|x| format!("{}_score", x))
+            .collect::<Box<_>>(),
+        player_aliases
+            .iter()
+            .map(|x| format!("{}_bingos", x))
+            .collect::<Box<_>>(),
+        "first",
+    ))?;
+    let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let t0 = std::time::Instant::now();
+    let tick_periods = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
+
     for _ in 0..num_threads {
-        let tx = tx.clone();
         let game_config = std::sync::Arc::clone(&game_config);
         let kwg = std::sync::Arc::clone(&kwg);
         let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
         let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
         let player_aliases = std::sync::Arc::clone(&player_aliases);
         let num_processed_games = std::sync::Arc::clone(&num_processed_games);
+        let csv_log = std::sync::Arc::clone(&csv_log);
+        let csv_game = std::sync::Arc::clone(&csv_game);
+        let tick_periods = std::sync::Arc::clone(&tick_periods);
+        let run_identifier = std::sync::Arc::clone(&run_identifier);
+        let completed_games = std::sync::Arc::clone(&completed_games);
+        let completed_moves = std::sync::Arc::clone(&completed_moves);
         threads.push(std::thread::spawn(move || {
             RNG.with(|rng| {
                 let mut rng = &mut *rng.borrow_mut();
@@ -148,7 +192,7 @@ fn generate_autoplay_logs(
                 let mut num_bingos = vec![0; game_config.num_players() as usize];
                 let mut num_moves;
                 loop {
-                    if num_processed_games.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    if num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                         >= num_games
                     {
                         num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -294,130 +338,101 @@ fn generate_autoplay_logs(
                         match game_state.check_game_ended(&game_config, &mut final_scores) {
                             game_state::CheckGameEnded::PlayedOut
                             | game_state::CheckGameEnded::ZeroScores => {
-                                tx.send(CSVRow::Log((
-                                    SerializeArc(std::sync::Arc::clone(
-                                        &player_aliases[old_turn as usize],
-                                    )),
-                                    SerializeArc(std::sync::Arc::clone(&game_id)),
-                                    num_moves,
-                                    cur_rack_ser.clone(),
-                                    play_fmt.clone(),
-                                    play_score,
-                                    final_scores[old_turn as usize],
-                                    tiles_played,
-                                    aft_rack_ser.clone(),
-                                    format!("{:.3}", play.equity),
-                                    old_bag_len,
-                                    game_state.players[game_state.turn as usize].score,
-                                )))
-                                .unwrap();
-                                tx.send(CSVRow::Game((
-                                    SerializeArc(std::sync::Arc::clone(&game_id)),
-                                    final_scores.clone(),
-                                    num_bingos.clone(),
-                                    SerializeArc(std::sync::Arc::clone(
-                                        &player_aliases[went_first as usize],
-                                    )),
-                                )))
-                                .unwrap();
+                                csv_log
+                                    .lock()
+                                    .unwrap()
+                                    .serialize((
+                                        SerializeArc(std::sync::Arc::clone(
+                                            &player_aliases[old_turn as usize],
+                                        )),
+                                        SerializeArc(std::sync::Arc::clone(&game_id)),
+                                        num_moves,
+                                        cur_rack_ser.clone(),
+                                        play_fmt.clone(),
+                                        play_score,
+                                        final_scores[old_turn as usize],
+                                        tiles_played,
+                                        aft_rack_ser.clone(),
+                                        format!("{:.3}", play.equity),
+                                        old_bag_len,
+                                        game_state.players[game_state.turn as usize].score,
+                                    ))
+                                    .unwrap();
+                                let completed_moves = completed_moves
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                csv_game
+                                    .lock()
+                                    .unwrap()
+                                    .serialize((
+                                        SerializeArc(std::sync::Arc::clone(&game_id)),
+                                        final_scores.clone(),
+                                        num_bingos.clone(),
+                                        SerializeArc(std::sync::Arc::clone(
+                                            &player_aliases[went_first as usize],
+                                        )),
+                                    ))
+                                    .unwrap();
+                                let completed_games = completed_games
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let elapsed_time_ms = t0.elapsed().as_millis() as u64;
+                                {
+                                    let mut tick_periods = tick_periods.lock().unwrap();
+                                    if tick_periods.update(elapsed_time_ms / 1000) {
+                                        println!(
+                                            "After {} seconds, have logged {} games ({} moves) into {}",
+                                            tick_periods.0,
+                                            completed_games,
+                                            completed_moves,
+                                            run_identifier
+                                        );
+                                    }
+                                }
                                 break;
                             }
                             game_state::CheckGameEnded::NotEnded => {}
                         }
 
-                        tx.send(CSVRow::Log((
-                            SerializeArc(std::sync::Arc::clone(&player_aliases[old_turn as usize])),
-                            SerializeArc(std::sync::Arc::clone(&game_id)),
-                            num_moves,
-                            cur_rack_ser.clone(),
-                            play_fmt.clone(),
-                            play_score,
-                            game_state.players[old_turn as usize].score,
-                            tiles_played,
-                            aft_rack_ser.clone(),
-                            format!("{:.3}", play.equity),
-                            old_bag_len,
-                            game_state.players[game_state.turn as usize].score,
-                        )))
-                        .unwrap();
+                        csv_log
+                            .lock()
+                            .unwrap()
+                            .serialize((
+                                SerializeArc(std::sync::Arc::clone(
+                                    &player_aliases[old_turn as usize],
+                                )),
+                                SerializeArc(std::sync::Arc::clone(&game_id)),
+                                num_moves,
+                                cur_rack_ser.clone(),
+                                play_fmt.clone(),
+                                play_score,
+                                game_state.players[old_turn as usize].score,
+                                tiles_played,
+                                aft_rack_ser.clone(),
+                                format!("{:.3}", play.equity),
+                                old_bag_len,
+                                game_state.players[game_state.turn as usize].score,
+                            ))
+                            .unwrap();
+                        completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             })
         }));
     }
-    drop(tx);
-
-    let epoch_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let run_identifier = format!("log-{:08x}", epoch_secs);
-    println!("logging to {}", run_identifier);
-    let mut csv_log = csv::Writer::from_path(run_identifier.to_string())?;
-    let mut csv_game = csv::Writer::from_path(format!("games-{}", run_identifier))?;
-    csv_log.serialize((
-        "playerID",
-        "gameID",
-        "turn",
-        "rack",
-        "play",
-        "score",
-        "totalscore",
-        "tilesplayed",
-        "leave",
-        "equity",
-        "tilesremaining",
-        "oppscore",
-    ))?;
-    csv_game.serialize((
-        "gameID",
-        player_aliases
-            .iter()
-            .map(|x| format!("{}_score", x))
-            .collect::<Box<_>>(),
-        player_aliases
-            .iter()
-            .map(|x| format!("{}_bingos", x))
-            .collect::<Box<_>>(),
-        "first",
-    ))?;
-    let mut completed_games = 0u64;
-    let mut completed_moves = 0u64;
-    let t0 = std::time::Instant::now();
-    let mut tick_periods = move_picker::Periods(0);
-    for row in rx.iter() {
-        match row {
-            CSVRow::Log(r) => {
-                csv_log.serialize(r)?;
-                completed_moves += 1;
-            }
-            CSVRow::Game(r) => {
-                csv_game.serialize(r)?;
-                completed_games += 1;
-                let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-                if tick_periods.update(elapsed_time_ms / 1000) {
-                    println!(
-                        "After {} seconds, have logged {} games ({} moves) into {}",
-                        tick_periods.0, completed_games, completed_moves, run_identifier
-                    );
-                }
-            }
-        }
-    }
-    let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-    println!(
-        "After {} seconds, have logged {} games ({} moves) into {}",
-        elapsed_time_ms / 1000,
-        completed_games,
-        completed_moves,
-        run_identifier
-    );
 
     for thread in threads {
         if let Err(e) = thread.join() {
             println!("{:?}", e);
         }
     }
+
+    let elapsed_time_ms = t0.elapsed().as_millis() as u64;
+    println!(
+        "After {} seconds, have logged {} games ({} moves) into {}",
+        elapsed_time_ms / 1000,
+        completed_games.load(std::sync::atomic::Ordering::Relaxed),
+        completed_moves.load(std::sync::atomic::Ordering::Relaxed),
+        run_identifier
+    );
 
     Ok(())
 }
