@@ -434,10 +434,9 @@ fn generate_autoplay_logs(
         }
     }
 
-    let elapsed_time_ms = t0.elapsed().as_millis() as u64;
     println!(
         "After {} seconds, have logged {} games ({} moves) into {}",
-        elapsed_time_ms / 1000,
+        t0.elapsed().as_millis() as u64 / 1000,
         completed_games.load(std::sync::atomic::Ordering::Relaxed),
         completed_moves.load(std::sync::atomic::Ordering::Relaxed),
         run_identifier
@@ -578,6 +577,39 @@ fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
     env.exchange_buffer.truncate(vec_len);
 }
 
+fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
+    freqs: &[u8],
+    idx: u8,
+    insed: bool,
+    deled: bool,
+    v: &mut Vec<u8>,
+    found_neighbor: &mut FoundNeighbor,
+) {
+    if idx as usize >= freqs.len() {
+        if insed == deled {
+            found_neighbor(&v);
+        }
+    } else {
+        let ol = v.len();
+        let freq = freqs[idx as usize];
+        if freq > 0 {
+            for _ in 1..freq {
+                v.push(idx);
+            }
+            if idx != 0 && !deled {
+                generate_neighbors(freqs, idx + 1, insed, true, v, found_neighbor);
+            }
+            v.push(idx);
+        }
+        generate_neighbors(freqs, idx + 1, insed, deled, v, found_neighbor);
+        if idx != 0 && !insed {
+            v.push(idx);
+            generate_neighbors(freqs, idx + 1, true, deled, v, found_neighbor);
+        }
+        v.truncate(ol);
+    }
+}
+
 fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
@@ -653,21 +685,62 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
     }
     println!("{} unique subracks", subrack_map.len());
 
+    let total_count = subrack_map.values().fold(0, |a, x| a + x.count);
+    let threshold_count = (total_count as f64).cbrt().ceil() as u64; // inaccurate after 2^53
     let mean_equity = total_equity / row_count as f64;
     let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
     let mut alphabet_freqs = (0..game_config.alphabet().len())
         .map(|tile| game_config.alphabet().freq(tile))
         .collect::<Box<_>>();
+    let mut neighbor_buffer = Vec::with_capacity(game_config.rack_size() as usize);
+    let mut num_smoothed = 0u64;
     generate_exchanges(
         &mut ExchangeEnv {
             found_exchange_move: |rack_bytes: &[u8]| {
-                let k = rack_bytes.into();
-                let new_v = if let Some(v) = subrack_map.get(&k) {
-                    v.equity / (v.count as f64) - mean_equity
+                let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
+                    if v.count >= threshold_count {
+                        v.equity / v.count as f64 - mean_equity
+                    } else {
+                        f64::NAN
+                    }
                 } else {
                     f64::NAN
                 };
-                ev_map.insert(k, new_v);
+                if new_v.is_nan() {
+                    rack_tally.iter_mut().for_each(|m| *m = 0);
+                    rack_bytes
+                        .iter()
+                        .for_each(|&tile| rack_tally[tile as usize] += 1);
+                    let mut equity = 0.0f64;
+                    let mut count = 0u64;
+                    generate_neighbors(
+                        &rack_tally,
+                        0,
+                        false,
+                        false,
+                        &mut neighbor_buffer,
+                        &mut |neighbor_bytes: &[u8]| {
+                            if let Some(v) = subrack_map.get(neighbor_bytes) {
+                                equity += v.equity;
+                                count += v.count;
+                            }
+                        },
+                    );
+                    if count > 0 {
+                        new_v = equity / count as f64 - mean_equity;
+                        num_smoothed += 1;
+                    }
+                }
+                ev_map.insert(rack_bytes.into(), new_v);
+                let elapsed_time_ms = t0.elapsed().as_millis() as u64;
+                if tick_periods.update(elapsed_time_ms / 1000) {
+                    println!(
+                        "After {} seconds, have processed {} subracks and smoothed {}",
+                        tick_periods.0,
+                        ev_map.len(),
+                        num_smoothed,
+                    );
+                }
             },
             rack_tally: &mut alphabet_freqs,
             min_len: 1,
@@ -676,6 +749,13 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
         },
         0,
     );
+    println!(
+        "After {} seconds, have processed {} subracks and smoothed {}",
+        t0.elapsed().as_millis() as u64 / 1000,
+        ev_map.len(),
+        num_smoothed,
+    );
+    let mut num_filled_in = 0u64;
 
     let mut subrack_bytes = Vec::with_capacity(game_config.rack_size() as usize - 1);
     for len_to_complete in 2..game_config.rack_size() {
@@ -729,6 +809,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
                                     std::cmp::Ordering::Less => vmin,
                                 },
                             );
+                            num_filled_in += 1;
                         } else {
                             println!("not enough samples to derive {:?}", rack_bytes);
                         }
@@ -742,6 +823,13 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
             0,
         );
     }
+    println!(
+        "After {} seconds, have processed {} subracks, smoothed {}, filled in {}",
+        t0.elapsed().as_millis() as u64 / 1000,
+        ev_map.len(),
+        num_smoothed,
+        num_filled_in,
+    );
 
     let mut kv = ev_map.into_iter().collect::<Vec<_>>();
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
