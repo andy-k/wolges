@@ -60,7 +60,7 @@ impl Bag {
         unsafe {
             self.0.set_len(new_len + num_old_tiles);
         } // [old,?,?]
-        let num_same_prefix = rng.gen_range(0..num_old_tiles);
+        let num_same_prefix = rng.gen_range(0..=num_old_tiles);
         let mut p_old_tiles = new_len; // after old+new
         self.0
             .copy_within(num_same_prefix..num_old_tiles, p_old_tiles); // [old,?,ld?]
