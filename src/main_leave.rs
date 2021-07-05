@@ -406,7 +406,8 @@ fn generate_autoplay_logs(
                                 let mut batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
                                 let mut batched_csv_game_buf =
                                     batched_csv_game.into_inner().unwrap();
-                                {
+                                let elapsed_time_secs = t0.elapsed().as_secs() as u64;
+                                let tick_changed = {
                                     let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                                     mutex_guard
                                         .csv_log_writer
@@ -416,16 +417,16 @@ fn generate_autoplay_logs(
                                         .csv_game_writer
                                         .write_all(&batched_csv_game_buf)
                                         .unwrap();
-                                    let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-                                    if mutex_guard.tick_periods.update(elapsed_time_ms / 1000) {
-                                        println!(
-                                            "After {} seconds, have logged {} games ({} moves) into {}",
-                                            mutex_guard.tick_periods.0,
-                                            completed_games,
-                                            completed_moves,
-                                            run_identifier
-                                        );
-                                    }
+                                    mutex_guard.tick_periods.update(elapsed_time_secs)
+                                };
+                                if tick_changed {
+                                    println!(
+                                        "After {} seconds, have logged {} games ({} moves) into {}",
+                                        elapsed_time_secs,
+                                        completed_games,
+                                        completed_moves,
+                                        run_identifier
+                                    );
                                 }
                                 batched_csv_log_buf.clear();
                                 batched_csv_log = csv::Writer::from_writer(batched_csv_log_buf);
@@ -468,7 +469,7 @@ fn generate_autoplay_logs(
 
     println!(
         "After {} seconds, have logged {} games ({} moves) into {}",
-        t0.elapsed().as_millis() as u64 / 1000,
+        t0.elapsed().as_secs() as u64,
         completed_games.load(std::sync::atomic::Ordering::Relaxed),
         completed_moves.load(std::sync::atomic::Ordering::Relaxed),
         run_identifier
@@ -536,11 +537,11 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 } else {
                     full_rack_map.insert(rack_bytes[..].into(), Cumulate { equity, count: 1 });
                 }
-                let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-                if tick_periods.update(elapsed_time_ms / 1000) {
+                let elapsed_time_secs = t0.elapsed().as_secs() as u64;
+                if tick_periods.update(elapsed_time_secs) {
                     println!(
                         "After {} seconds, have read {} rows",
-                        tick_periods.0, row_count
+                        elapsed_time_secs, row_count
                     );
                 }
             }
@@ -705,11 +706,11 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
             },
             0,
         );
-        let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-        if tick_periods.update(elapsed_time_ms / 1000) {
+        let elapsed_time_secs = t0.elapsed().as_secs() as u64;
+        if tick_periods.update(elapsed_time_secs) {
             println!(
                 "After {} seconds, have processed {} racks into {} unique subracks",
-                tick_periods.0,
+                elapsed_time_secs,
                 idx + 1,
                 subrack_map.len(),
             );
@@ -772,11 +773,11 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
                     }
                 }
                 ev_map.insert(rack_bytes.into(), new_v);
-                let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-                if tick_periods.update(elapsed_time_ms / 1000) {
+                let elapsed_time_secs = t0.elapsed().as_secs() as u64;
+                if tick_periods.update(elapsed_time_secs) {
                     println!(
                         "After {} seconds, have processed {} subracks and smoothed {}",
-                        tick_periods.0,
+                        elapsed_time_secs,
                         ev_map.len(),
                         num_smoothed,
                     );
@@ -791,7 +792,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     );
     println!(
         "After {} seconds, have processed {} subracks and smoothed {}",
-        t0.elapsed().as_millis() as u64 / 1000,
+        t0.elapsed().as_secs() as u64,
         ev_map.len(),
         num_smoothed,
     );
@@ -865,7 +866,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     }
     println!(
         "After {} seconds, have processed {} subracks, smoothed {}, filled in {}",
-        t0.elapsed().as_millis() as u64 / 1000,
+        t0.elapsed().as_secs() as u64,
         ev_map.len(),
         num_smoothed,
         num_filled_in,
