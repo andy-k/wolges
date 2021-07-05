@@ -167,12 +167,9 @@ fn generate_autoplay_logs(
         "tilesremaining",
         "oppscore",
     ))?;
-    let csv_log_writer = std::sync::Arc::new(std::sync::Mutex::new(csv_log.into_inner()?));
-    let csv_game = std::sync::Arc::new(std::sync::Mutex::new(csv::Writer::from_path(format!(
-        "games-{}",
-        run_identifier
-    ))?));
-    csv_game.lock().unwrap().serialize((
+    let csv_log_writer = csv_log.into_inner()?;
+    let mut csv_game = csv::Writer::from_path(format!("games-{}", run_identifier))?;
+    csv_game.serialize((
         "gameID",
         player_aliases
             .iter()
@@ -187,7 +184,17 @@ fn generate_autoplay_logs(
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let t0 = std::time::Instant::now();
-    let tick_periods = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
+    let tick_periods = move_picker::Periods(0);
+    struct MutexedStuffs<W: std::io::Write> {
+        csv_game: csv::Writer<W>,
+        csv_log_writer: std::fs::File,
+        tick_periods: move_picker::Periods,
+    }
+    let mutexed_stuffs = std::sync::Arc::new(std::sync::Mutex::new(MutexedStuffs {
+        csv_game,
+        csv_log_writer,
+        tick_periods,
+    }));
 
     for _ in 0..num_threads {
         let game_config = std::sync::Arc::clone(&game_config);
@@ -196,12 +203,10 @@ fn generate_autoplay_logs(
         let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
         let player_aliases = std::sync::Arc::clone(&player_aliases);
         let num_processed_games = std::sync::Arc::clone(&num_processed_games);
-        let csv_log_writer = std::sync::Arc::clone(&csv_log_writer);
-        let csv_game = std::sync::Arc::clone(&csv_game);
-        let tick_periods = std::sync::Arc::clone(&tick_periods);
         let run_identifier = std::sync::Arc::clone(&run_identifier);
         let completed_games = std::sync::Arc::clone(&completed_games);
         let completed_moves = std::sync::Arc::clone(&completed_moves);
+        let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
         threads.push(std::thread::spawn(move || {
             RNG.with(|rng| {
                 let mut rng = &mut *rng.borrow_mut();
@@ -368,6 +373,10 @@ fn generate_autoplay_logs(
                         match game_state.check_game_ended(&game_config, &mut final_scores) {
                             game_state::CheckGameEnded::PlayedOut
                             | game_state::CheckGameEnded::ZeroScores => {
+                                let completed_moves = completed_moves
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let completed_games = completed_games
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 game_csv_log
                                     .serialize((
                                         &player_aliases[old_turn as usize],
@@ -385,18 +394,15 @@ fn generate_autoplay_logs(
                                     ))
                                     .unwrap();
                                 let mut game_csv_log_buf = game_csv_log.into_inner().unwrap();
-                                csv_log_writer
-                                    .lock()
-                                    .unwrap()
+                                let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                mutex_guard
+                                    .csv_log_writer
                                     .write_all(&game_csv_log_buf)
                                     .unwrap();
                                 game_csv_log_buf.clear();
                                 game_csv_log = csv::Writer::from_writer(game_csv_log_buf);
-                                let completed_moves = completed_moves
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                csv_game
-                                    .lock()
-                                    .unwrap()
+                                mutex_guard
+                                    .csv_game
                                     .serialize((
                                         &game_id,
                                         &final_scores,
@@ -404,20 +410,15 @@ fn generate_autoplay_logs(
                                         &player_aliases[went_first as usize],
                                     ))
                                     .unwrap();
-                                let completed_games = completed_games
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-                                {
-                                    let mut tick_periods = tick_periods.lock().unwrap();
-                                    if tick_periods.update(elapsed_time_ms / 1000) {
-                                        println!(
-                                            "After {} seconds, have logged {} games ({} moves) into {}",
-                                            tick_periods.0,
-                                            completed_games,
-                                            completed_moves,
-                                            run_identifier
-                                        );
-                                    }
+                                if mutex_guard.tick_periods.update(elapsed_time_ms / 1000) {
+                                    println!(
+                                        "After {} seconds, have logged {} games ({} moves) into {}",
+                                        mutex_guard.tick_periods.0,
+                                        completed_games,
+                                        completed_moves,
+                                        run_identifier
+                                    );
                                 }
                                 break;
                             }
