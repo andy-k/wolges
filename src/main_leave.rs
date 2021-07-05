@@ -346,6 +346,8 @@ fn generate_autoplay_logs(
 
                         let old_turn = game_state.turn;
                         game_state.next_turn();
+                        let new_turn = game_state.turn;
+                        game_state.turn = old_turn;
 
                         equity_fmt.clear();
                         write!(equity_fmt,"{:.3}", play.equity).unwrap();
@@ -368,7 +370,7 @@ fn generate_autoplay_logs(
                                         &aft_rack_ser,
                                         &equity_fmt,
                                         old_bag_len,
-                                        game_state.players[game_state.turn as usize].score,
+                                        final_scores[new_turn as usize],
                                     ))
                                     .unwrap();
                                 let completed_moves = completed_moves
@@ -418,10 +420,11 @@ fn generate_autoplay_logs(
                                 &aft_rack_ser,
                                 &equity_fmt,
                                 old_bag_len,
-                                game_state.players[game_state.turn as usize].score,
+                                game_state.players[new_turn as usize].score,
                             ))
                             .unwrap();
                         completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        game_state.turn = new_turn;
                     }
                 }
             })
