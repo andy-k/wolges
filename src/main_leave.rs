@@ -181,17 +181,18 @@ fn generate_autoplay_logs(
             .collect::<Box<_>>(),
         "first",
     ))?;
+    let csv_game_writer = csv_game.into_inner()?;
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let t0 = std::time::Instant::now();
     let tick_periods = move_picker::Periods(0);
-    struct MutexedStuffs<W: std::io::Write> {
-        csv_game: csv::Writer<W>,
+    struct MutexedStuffs {
+        csv_game_writer: std::fs::File,
         csv_log_writer: std::fs::File,
         tick_periods: move_picker::Periods,
     }
     let mutexed_stuffs = std::sync::Arc::new(std::sync::Mutex::new(MutexedStuffs {
-        csv_game,
+        csv_game_writer,
         csv_log_writer,
         tick_periods,
     }));
@@ -221,7 +222,8 @@ fn generate_autoplay_logs(
                 let mut final_scores = vec![0; game_config.num_players() as usize];
                 let mut num_bingos = vec![0; game_config.num_players() as usize];
                 let mut num_moves;
-                let mut game_csv_log = csv::Writer::from_writer(Vec::new());
+                let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
+                let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
                 loop {
                     if num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                         >= num_games
@@ -377,7 +379,7 @@ fn generate_autoplay_logs(
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 let completed_games = completed_games
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                game_csv_log
+                                batched_csv_log
                                     .serialize((
                                         &player_aliases[old_turn as usize],
                                         &game_id,
@@ -393,16 +395,7 @@ fn generate_autoplay_logs(
                                         final_scores[new_turn as usize],
                                     ))
                                     .unwrap();
-                                let mut game_csv_log_buf = game_csv_log.into_inner().unwrap();
-                                let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                                mutex_guard
-                                    .csv_log_writer
-                                    .write_all(&game_csv_log_buf)
-                                    .unwrap();
-                                game_csv_log_buf.clear();
-                                game_csv_log = csv::Writer::from_writer(game_csv_log_buf);
-                                mutex_guard
-                                    .csv_game
+                                batched_csv_game
                                     .serialize((
                                         &game_id,
                                         &final_scores,
@@ -410,22 +403,40 @@ fn generate_autoplay_logs(
                                         &player_aliases[went_first as usize],
                                     ))
                                     .unwrap();
-                                let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-                                if mutex_guard.tick_periods.update(elapsed_time_ms / 1000) {
-                                    println!(
-                                        "After {} seconds, have logged {} games ({} moves) into {}",
-                                        mutex_guard.tick_periods.0,
-                                        completed_games,
-                                        completed_moves,
-                                        run_identifier
-                                    );
+                                let mut batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
+                                let mut batched_csv_game_buf =
+                                    batched_csv_game.into_inner().unwrap();
+                                {
+                                    let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                    mutex_guard
+                                        .csv_log_writer
+                                        .write_all(&batched_csv_log_buf)
+                                        .unwrap();
+                                    mutex_guard
+                                        .csv_game_writer
+                                        .write_all(&batched_csv_game_buf)
+                                        .unwrap();
+                                    let elapsed_time_ms = t0.elapsed().as_millis() as u64;
+                                    if mutex_guard.tick_periods.update(elapsed_time_ms / 1000) {
+                                        println!(
+                                            "After {} seconds, have logged {} games ({} moves) into {}",
+                                            mutex_guard.tick_periods.0,
+                                            completed_games,
+                                            completed_moves,
+                                            run_identifier
+                                        );
+                                    }
                                 }
+                                batched_csv_log_buf.clear();
+                                batched_csv_log = csv::Writer::from_writer(batched_csv_log_buf);
+                                batched_csv_game_buf.clear();
+                                batched_csv_game = csv::Writer::from_writer(batched_csv_game_buf);
                                 break;
                             }
                             game_state::CheckGameEnded::NotEnded => {}
                         }
 
-                        game_csv_log
+                        batched_csv_log
                             .serialize((
                                 &player_aliases[old_turn as usize],
                                 &game_id,
