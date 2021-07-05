@@ -2,6 +2,7 @@
 
 use rand::prelude::*;
 use std::fmt::Write;
+use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
     alphabet, bites, display, error, fash, game_config, game_state, klv, kwg, move_picker, movegen,
@@ -139,14 +140,8 @@ fn generate_autoplay_logs(
         .as_secs();
     let run_identifier = std::sync::Arc::new(format!("log-{:08x}", epoch_secs));
     println!("logging to {}", run_identifier);
-    let csv_log = std::sync::Arc::new(std::sync::Mutex::new(csv::Writer::from_path(
-        run_identifier.to_string(),
-    )?));
-    let csv_game = std::sync::Arc::new(std::sync::Mutex::new(csv::Writer::from_path(format!(
-        "games-{}",
-        run_identifier
-    ))?));
-    csv_log.lock().unwrap().serialize((
+    let mut csv_log = csv::Writer::from_path(run_identifier.to_string())?;
+    csv_log.serialize((
         "playerID",
         "gameID",
         "turn",
@@ -160,6 +155,11 @@ fn generate_autoplay_logs(
         "tilesremaining",
         "oppscore",
     ))?;
+    let csv_log_writer = std::sync::Arc::new(std::sync::Mutex::new(csv_log.into_inner()?));
+    let csv_game = std::sync::Arc::new(std::sync::Mutex::new(csv::Writer::from_path(format!(
+        "games-{}",
+        run_identifier
+    ))?));
     csv_game.lock().unwrap().serialize((
         "gameID",
         player_aliases
@@ -184,7 +184,7 @@ fn generate_autoplay_logs(
         let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
         let player_aliases = std::sync::Arc::clone(&player_aliases);
         let num_processed_games = std::sync::Arc::clone(&num_processed_games);
-        let csv_log = std::sync::Arc::clone(&csv_log);
+        let csv_log_writer = std::sync::Arc::clone(&csv_log_writer);
         let csv_game = std::sync::Arc::clone(&csv_game);
         let tick_periods = std::sync::Arc::clone(&tick_periods);
         let run_identifier = std::sync::Arc::clone(&run_identifier);
@@ -204,6 +204,7 @@ fn generate_autoplay_logs(
                 let mut final_scores = vec![0; game_config.num_players() as usize];
                 let mut num_bingos = vec![0; game_config.num_players() as usize];
                 let mut num_moves;
+                let mut game_csv_log = csv::Writer::from_writer(Vec::new());
                 loop {
                     if num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                         >= num_games
@@ -350,14 +351,12 @@ fn generate_autoplay_logs(
                         game_state.turn = old_turn;
 
                         equity_fmt.clear();
-                        write!(equity_fmt,"{:.3}", play.equity).unwrap();
+                        write!(equity_fmt, "{:.3}", play.equity).unwrap();
 
                         match game_state.check_game_ended(&game_config, &mut final_scores) {
                             game_state::CheckGameEnded::PlayedOut
                             | game_state::CheckGameEnded::ZeroScores => {
-                                csv_log
-                                    .lock()
-                                    .unwrap()
+                                game_csv_log
                                     .serialize((
                                         &player_aliases[old_turn as usize],
                                         &game_id,
@@ -373,6 +372,14 @@ fn generate_autoplay_logs(
                                         final_scores[new_turn as usize],
                                     ))
                                     .unwrap();
+                                let mut game_csv_log_buf = game_csv_log.into_inner().unwrap();
+                                csv_log_writer
+                                    .lock()
+                                    .unwrap()
+                                    .write_all(&game_csv_log_buf)
+                                    .unwrap();
+                                game_csv_log_buf.clear();
+                                game_csv_log = csv::Writer::from_writer(game_csv_log_buf);
                                 let completed_moves = completed_moves
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 csv_game
@@ -405,9 +412,7 @@ fn generate_autoplay_logs(
                             game_state::CheckGameEnded::NotEnded => {}
                         }
 
-                        csv_log
-                            .lock()
-                            .unwrap()
+                        game_csv_log
                             .serialize((
                                 &player_aliases[old_turn as usize],
                                 &game_id,
