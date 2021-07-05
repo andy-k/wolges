@@ -183,6 +183,7 @@ fn generate_autoplay_logs(
     ))?;
     let csv_game_writer = csv_game.into_inner()?;
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let t0 = std::time::Instant::now();
     let tick_periods = move_picker::Periods(0);
@@ -206,6 +207,7 @@ fn generate_autoplay_logs(
         let num_processed_games = std::sync::Arc::clone(&num_processed_games);
         let run_identifier = std::sync::Arc::clone(&run_identifier);
         let completed_games = std::sync::Arc::clone(&completed_games);
+        let logged_games = std::sync::Arc::clone(&logged_games);
         let completed_moves = std::sync::Arc::clone(&completed_moves);
         let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
         threads.push(std::thread::spawn(move || {
@@ -222,6 +224,7 @@ fn generate_autoplay_logs(
                 let mut final_scores = vec![0; game_config.num_players() as usize];
                 let mut num_bingos = vec![0; game_config.num_players() as usize];
                 let mut num_moves;
+                let mut num_batched_games_here = 0;
                 let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
                 let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
                 loop {
@@ -377,8 +380,7 @@ fn generate_autoplay_logs(
                             | game_state::CheckGameEnded::ZeroScores => {
                                 let completed_moves = completed_moves
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                let completed_games = completed_games
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 batched_csv_log
                                     .serialize((
                                         &player_aliases[old_turn as usize],
@@ -403,35 +405,45 @@ fn generate_autoplay_logs(
                                         &player_aliases[went_first as usize],
                                     ))
                                     .unwrap();
-                                let mut batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
-                                let mut batched_csv_game_buf =
-                                    batched_csv_game.into_inner().unwrap();
-                                let elapsed_time_secs = t0.elapsed().as_secs() as u64;
-                                let tick_changed = {
-                                    let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                                    mutex_guard
-                                        .csv_log_writer
-                                        .write_all(&batched_csv_log_buf)
-                                        .unwrap();
-                                    mutex_guard
-                                        .csv_game_writer
-                                        .write_all(&batched_csv_game_buf)
-                                        .unwrap();
-                                    mutex_guard.tick_periods.update(elapsed_time_secs)
-                                };
-                                if tick_changed {
-                                    println!(
+                                num_batched_games_here += 1;
+                                if num_batched_games_here >= 100 {
+                                    let logged_games = logged_games.fetch_add(
+                                        num_batched_games_here,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    ) + num_batched_games_here;
+                                    num_batched_games_here = 0;
+                                    let mut batched_csv_log_buf =
+                                        batched_csv_log.into_inner().unwrap();
+                                    let mut batched_csv_game_buf =
+                                        batched_csv_game.into_inner().unwrap();
+                                    let elapsed_time_secs = t0.elapsed().as_secs() as u64;
+                                    let tick_changed = {
+                                        let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                        mutex_guard
+                                            .csv_log_writer
+                                            .write_all(&batched_csv_log_buf)
+                                            .unwrap();
+                                        mutex_guard
+                                            .csv_game_writer
+                                            .write_all(&batched_csv_game_buf)
+                                            .unwrap();
+                                        mutex_guard.tick_periods.update(elapsed_time_secs)
+                                    };
+                                    if tick_changed {
+                                        println!(
                                         "After {} seconds, have logged {} games ({} moves) into {}",
                                         elapsed_time_secs,
-                                        completed_games,
+                                        logged_games,
                                         completed_moves,
                                         run_identifier
                                     );
+                                    }
+                                    batched_csv_log_buf.clear();
+                                    batched_csv_log = csv::Writer::from_writer(batched_csv_log_buf);
+                                    batched_csv_game_buf.clear();
+                                    batched_csv_game =
+                                        csv::Writer::from_writer(batched_csv_game_buf);
                                 }
-                                batched_csv_log_buf.clear();
-                                batched_csv_log = csv::Writer::from_writer(batched_csv_log_buf);
-                                batched_csv_game_buf.clear();
-                                batched_csv_game = csv::Writer::from_writer(batched_csv_game_buf);
                                 break;
                             }
                             game_state::CheckGameEnded::NotEnded => {}
@@ -457,6 +469,18 @@ fn generate_autoplay_logs(
                         game_state.turn = new_turn;
                     }
                 }
+
+                let batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
+                let batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
+                let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                mutex_guard
+                    .csv_log_writer
+                    .write_all(&batched_csv_log_buf)
+                    .unwrap();
+                mutex_guard
+                    .csv_game_writer
+                    .write_all(&batched_csv_game_buf)
+                    .unwrap();
             })
         }));
     }
