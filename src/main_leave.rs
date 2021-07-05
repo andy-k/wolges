@@ -64,8 +64,18 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
                 )?;
                 Ok(true)
             }
+            "-generate-no-smooth" => {
+                generate_leaves::<_, _, false>(
+                    make_game_config(),
+                    csv::ReaderBuilder::new()
+                        .has_headers(false)
+                        .from_path(&args[2])?,
+                    csv::Writer::from_path(&args[3])?,
+                )?;
+                Ok(true)
+            }
             "-generate" => {
-                generate_leaves(
+                generate_leaves::<_, _, true>(
                     make_game_config(),
                     csv::ReaderBuilder::new()
                         .has_headers(false)
@@ -91,8 +101,10 @@ pub fn main() -> error::Returns<()> {
     if leave is \"-\" or omitted, uses no leave.
   english-summarize logfile summary.csv
     summarize logfile into summary.csv
+  english-generate-no-smooth summary.csv leaves.csv
+    generate leaves (no smoothing)
   english-generate summary.csv leaves.csv
-    generate leaves
+    generate leaves (with smoothing)
   (english can also be french, german, norwegian, polish, spanish)"
         );
         Ok(())
@@ -618,7 +630,7 @@ fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
     }
 }
 
-fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
+fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHING: bool>(
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
@@ -693,20 +705,28 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
     }
     println!("{} unique subracks", subrack_map.len());
 
-    let total_count = subrack_map.values().fold(0, |a, x| a + x.count);
-    let threshold_count = (total_count as f64).cbrt().ceil() as u64; // inaccurate after 2^53
+    let threshold_count = if DO_SMOOTHING {
+        let total_count = subrack_map.values().fold(0, |a, x| a + x.count);
+        (total_count as f64).cbrt().ceil() as u64 // inaccurate after 2^53
+    } else {
+        0
+    };
     let mean_equity = total_equity / row_count as f64;
     let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
     let mut alphabet_freqs = (0..game_config.alphabet().len())
         .map(|tile| game_config.alphabet().freq(tile))
         .collect::<Box<_>>();
-    let mut neighbor_buffer = Vec::with_capacity(game_config.rack_size() as usize);
+    let mut neighbor_buffer = if DO_SMOOTHING {
+        Vec::with_capacity(game_config.rack_size() as usize)
+    } else {
+        Vec::new()
+    };
     let mut num_smoothed = 0u64;
     generate_exchanges(
         &mut ExchangeEnv {
             found_exchange_move: |rack_bytes: &[u8]| {
                 let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
-                    if v.count >= threshold_count {
+                    if !DO_SMOOTHING || v.count >= threshold_count {
                         v.equity / v.count as f64 - mean_equity
                     } else {
                         f64::NAN
@@ -714,7 +734,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write>(
                 } else {
                     f64::NAN
                 };
-                if new_v.is_nan() {
+                if DO_SMOOTHING && new_v.is_nan() {
                     rack_tally.iter_mut().for_each(|m| *m = 0);
                     rack_bytes
                         .iter()
