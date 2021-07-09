@@ -29,6 +29,9 @@ thread_local! {
         std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_entropy()));
 }
 
+// Simmer can only be reused for the same game_config and kwg.
+// (Refer to note at KurniaMoveGenerator.)
+// This is not enforced.
 pub struct Simmer {
     // prepare() sets/resets these
     initial_game_state: game_state::GameState,

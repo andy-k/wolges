@@ -71,7 +71,10 @@ struct ChildPlay {
     valuation: f32,     // refined over time
 }
 
-// reusable allocations
+// WorkBuffer contains reusable allocations.
+// WorkBuffer can only be reused for the same game_config and kwg.
+// (Refer to note at KurniaMoveGenerator.)
+// This is not enforced.
 struct WorkBuffer {
     t0: std::time::Instant, // for timing only
     tick_periods: move_picker::Periods,
@@ -144,7 +147,10 @@ pub struct FoundPlay<'a> {
     pub play: &'a movegen::Play,
 }
 
-// main two-player endgame solver
+// EndgameSolver is the main two-player endgame solver.
+// EndgameSolver can only be reused for the same game_config and kwg.
+// (Refer to note at WorkBuffer.)
+// This is not enforced.
 pub struct EndgameSolver<'a> {
     game_config: &'a game_config::GameConfig<'a>,
     kwg: &'a kwg::Kwg,

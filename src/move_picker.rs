@@ -7,6 +7,9 @@ struct Candidate {
     stats: stats::Stats,
 }
 
+// Simmer can only be reused for the same game_config and kwg.
+// (Refer to note at simmer::Simmer.)
+// This is not enforced.
 pub struct Simmer<'a> {
     game_config: &'a game_config::GameConfig<'a>,
     kwg: &'a kwg::Kwg,

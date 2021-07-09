@@ -33,6 +33,9 @@ struct PossiblePlacement {
     best_possible_equity: f32,
 }
 
+// WorkingBuffer can only be reused for the same game_config and kwg.
+// (The kwg is partially cached in cached_cross_set.)
+// This is not enforced.
 struct WorkingBuffer {
     rack_tally: Box<[u8]>,                                      // 27 for ?A-Z
     word_buffer_for_across_plays: Box<[u8]>,                    // r*c
@@ -2109,6 +2112,9 @@ pub struct GenMovesParams<'a> {
     pub always_include_pass: bool,
 }
 
+// KurniaMoveGenerator can only be reused for the same game_config and kwg.
+// (Refer to note at WorkingBuffer.)
+// This is not enforced.
 pub struct KurniaMoveGenerator {
     working_buffer: WorkingBuffer,
     pub plays: Vec<ValuedMove>,
