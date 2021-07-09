@@ -439,31 +439,50 @@ pub fn make_spanish_alphabet<'a>() -> Alphabet<'a> {
 }
 
 pub struct AlphabetReader<'a> {
-    supported_tiles: Box<[(u8, &'a str)]>,
+    supported_tiles: Box<[(u8, &'a [u8])]>,
+    by_first_byte: [Option<(Option<u8>, usize, usize)>; 256],
 }
 
 // This is slow, but supports multi-codepoint tiles with greedy matching.
 // For example, a CH/LL/RR tile will parse correctly.
 impl<'a> AlphabetReader<'a> {
-    pub fn new_for_tiles(mut supported_tiles: Box<[(u8, &'a str)]>) -> Self {
+    pub fn new_for_tiles(mut supported_tiles: Box<[(u8, &'a [u8])]>) -> Self {
         // sort supported tiles by first byte (asc), length (desc), and tile (asc).
         supported_tiles.sort_unstable_by(|(a_tile, a_label), (b_tile, b_label)| {
-            a_label.as_bytes()[0]
-                .cmp(&b_label.as_bytes()[0])
-                .then_with(|| {
-                    b_label
-                        .len()
-                        .cmp(&a_label.len())
-                        .then_with(|| a_tile.cmp(b_tile))
-                })
+            a_label[0].cmp(&b_label[0]).then_with(|| {
+                b_label
+                    .len()
+                    .cmp(&a_label.len())
+                    .then_with(|| a_tile.cmp(b_tile))
+            })
         });
-        Self { supported_tiles }
+        let mut h = [None; 256];
+        let mut i = supported_tiles.len();
+        while i > 0 {
+            i -= 1;
+            let (tile, label) = supported_tiles[i];
+            let label0 = label[0];
+            let mut j = i;
+            while j > 0 && supported_tiles[j - 1].1[0] == label0 {
+                j -= 1;
+            }
+            h[label0 as usize] = Some(if label.len() > 1 {
+                (None, j, i + 1)
+            } else {
+                (Some(tile), j, i)
+            });
+            i = j;
+        }
+        Self {
+            supported_tiles,
+            by_first_byte: h,
+        }
     }
 
     // Recognizes [A-Z].
     pub fn new_for_words(alphabet: &Alphabet<'a>) -> Self {
         let supported_tiles = (1..alphabet.len())
-            .map(|tile| (tile, alphabet.from_rack(tile).unwrap()))
+            .map(|tile| (tile, alphabet.from_rack(tile).unwrap().as_bytes()))
             .collect::<Box<_>>();
         Self::new_for_tiles(supported_tiles)
     }
@@ -471,7 +490,7 @@ impl<'a> AlphabetReader<'a> {
     // Recognizes [?A-Z].
     pub fn new_for_racks(alphabet: &Alphabet<'a>) -> Self {
         let supported_tiles = (0..alphabet.len())
-            .map(|tile| (tile, alphabet.from_rack(tile).unwrap()))
+            .map(|tile| (tile, alphabet.from_rack(tile).unwrap().as_bytes()))
             .collect::<Box<_>>();
         Self::new_for_tiles(supported_tiles)
     }
@@ -481,7 +500,7 @@ impl<'a> AlphabetReader<'a> {
         let mut supported_tiles = Vec::with_capacity((alphabet.len() - 1) as usize * 2);
         for base_tile in 1..alphabet.len() {
             for &tile in &[base_tile, base_tile | 0x80] {
-                supported_tiles.push((tile, alphabet.from_board(tile).unwrap()));
+                supported_tiles.push((tile, alphabet.from_board(tile).unwrap().as_bytes()));
             }
         }
         let supported_tiles = supported_tiles.into_boxed_slice();
@@ -491,28 +510,27 @@ impl<'a> AlphabetReader<'a> {
     // Given sb (str.as_bytes()) and ix, decode the next tile starting at sb[ix].
     // Returns Ok((tile, updated_index)) if it is a valid tile.
     // Returns None if it is not a valid tile.
-    // Panics if ix > sb.len().
+    // Undefined behavior if ix >= sb.len().
     #[inline(always)]
     pub fn next_tile(&self, sb: &[u8], ix: usize) -> Option<(u8, usize)> {
-        let seek = sb[ix];
-        let first_possible_index = self
-            .supported_tiles
-            .binary_search_by(|(_, probe_label)| {
-                probe_label.as_bytes()[0]
-                    .cmp(&seek)
-                    .then(std::cmp::Ordering::Greater) // ensure returning earliest index
-            })
-            .unwrap_err();
-        for (tile, label) in &self.supported_tiles[first_possible_index..self.supported_tiles.len()]
-        {
-            if label.as_bytes()[0] != seek {
-                // tiles with the same first byte are clustered together
-                break;
+        // Safe because we have all 256.
+        if let Some((if_single, range_lo, range_hi)) = unsafe {
+            self.by_first_byte
+                .get_unchecked(*sb.get_unchecked(ix as usize) as usize)
+        } {
+            if range_hi > range_lo {
+                // Safe after accessing sb[ix].
+                let sb_remainder = unsafe { sb.get_unchecked(ix + 1..) };
+                // Safe because of how by_first_byte was constructed.
+                for (tile, label) in
+                    unsafe { self.supported_tiles.get_unchecked(*range_lo..*range_hi) }
+                {
+                    if sb_remainder.starts_with(unsafe { label.get_unchecked(1..) }) {
+                        return Some((*tile, ix + label.len()));
+                    }
+                }
             }
-            let end_ix = ix + label.len();
-            if end_ix <= sb.len() && sb[ix..end_ix] == *label.as_bytes() {
-                return Some((*tile, end_ix));
-            }
+            return if_single.map(|tile| (tile, ix + 1));
         }
         None
     }
