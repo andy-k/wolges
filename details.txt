@@ -24,8 +24,9 @@ rustup-init
 (cd src for convenience)
 (put some word list .txt files and leaves.csv files in current directory)
 cargo run --release --bin buildlex -- english-klv leaves.csv leaves.klv
-cargo run --release --bin buildlex -- english-kwg csw19.txt csw19.kwg
-cargo run --release --bin buildlex -- english-macondo csw19.kwg CSW19 CSW19.dawg CSW19.gaddag
+cargo run --release --bin buildlex -- english-kwg CSW19.txt CSW19.kwg
+cargo run --release --bin buildlex -- english-macondo CSW19.kwg CSW19 CSW19.dawg CSW19.gaddag
+cargo run --release --bin buildlex -- english-kad CSW19.txt CSW19.kad
 
 
 RUNNING
@@ -200,6 +201,9 @@ reduces cache miss when traversing the DAWG part and reduces the size required
 for word counts, as word counts are typically only useful for the DAWG part.
 However, GADDAG-only nodes with implicit next_index to a node used for DAWG
 will necessarily be placed in the DAWG part.
+
+The Kurnia Alpha Dawg format is a standard DawgOnly KWG of alphagrams, and is
+used for jumbled games.
 
 
 BUILDING KURNIA WORD GRAPH
@@ -522,6 +526,19 @@ then the nth best move is popped out and the new move is inserted into the
 heap. The library does not implement heappushpop or heapreplace, but the
 observed speed is good enough. At the end, the heap's backing vector is
 recovered and sorted in-place.
+
+PLAYING JUMBLED GAMES
+
+It's the same thing as classic. The cross set is based on Kurnia Alpha Dawg.
+Moves are still generated after shadow-playing, but the actual tile placements
+are not constrained by a GADDAG. Instead, each full word is rechecked against
+Kurnia Alpha Dawg.
+
+The implementation is suboptimal. For example, the cross set generation checks
+the Kurnia Alpha Dawg twice to fill in both case 1 and 2 with the same value.
+
+    . . . . . . E L O L H . . . .
+              1           2
 
 
 POSSIBLE FUTURE WORK
