@@ -1203,14 +1203,16 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 }
             }
         }
-        while leftmost > 0 && params.board_strip[leftmost as usize - 1] != 0 {
+        loop {
             leftmost -= 1;
+            if leftmost <= 1 {
+                // not enough room for 2-tile words
+                return;
+            }
+            if params.board_strip[leftmost as usize] == 0 {
+                break;
+            }
         }
-        if leftmost <= 2 {
-            // not enough room for 2-tile words
-            break;
-        }
-        leftmost -= 1; // prevent touching leftmost tile
     }
 }
 
