@@ -22,7 +22,7 @@ struct Question {
 // note: only this representation uses -1i8 for blank-as-A (in "board" input
 // and "word" response for "action":"play"). everywhere else, use 0x81u8.
 
-pub fn main() -> error::Returns<()> {
+fn main() -> error::Returns<()> {
     let data = [
         r#"
       {

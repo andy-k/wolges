@@ -3,7 +3,7 @@
 use wolges::error;
 mod rlhelper;
 
-pub fn main() -> error::Returns<()> {
+fn main() -> error::Returns<()> {
     let mut rl = rlhelper::new_rl_editor();
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     loop {

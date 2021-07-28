@@ -22,7 +22,7 @@ struct Question {
     max_gen: usize,
 }
 
-pub fn main() -> error::Returns<()> {
+fn main() -> error::Returns<()> {
     let data = r#"
       {
         "lexicon": "CSW19",

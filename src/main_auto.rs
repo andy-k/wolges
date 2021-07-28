@@ -6,7 +6,7 @@ use wolges::{
     movegen, play_scorer,
 };
 
-pub fn main() -> error::Returns<()> {
+fn main() -> error::Returns<()> {
     let jumbled = true;
     let kwg = if jumbled {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kad")?)

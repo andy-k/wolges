@@ -269,7 +269,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
     }
 }
 
-pub fn main() -> error::Returns<()> {
+fn main() -> error::Returns<()> {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() <= 1 {
         println!(
