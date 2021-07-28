@@ -104,7 +104,9 @@ alignment benefits) but stores small byte slices (up to 15 bytes) inline,
 regaining cache locality and reserving heap usage only for longer slices.
 
 board_layout encodes the board dimension and the premiums layout. Most squares
-are face-value squares. This also decides where the star is.
+are face-value squares. This also decides where the star is. A punctured square
+(on which no tile may be played) can be represented by setting both word
+multiplier and tile multiplier to zero.
 
 game_config combines things like alphabet and board_layout.
 
@@ -329,7 +331,8 @@ represent the fact that there is a tile before or after this empty square. Bits
 1 to 63 will represent if tile 01 to tile 3f fits to make a valid word. Storing
 this in a 64-bit variable limits the alphabet size to 63. Note that a cross set
 bits of 0 means no restrictions, while a cross set bits of 1 (bit 0 set) means
-nothing works because there is a perpendicular restriction.
+nothing works because there is a perpendicular restriction or because it is a
+punctured square.
 
 Computing the cross sets efficiently entails traversing the lane in reverse
 order (right-to-left or bottom-to-top), as this corresponds with the GADDAG
@@ -351,7 +354,8 @@ Since KWG does not store letter sets, generating letter sets is not fast. This
 is not an issue as cross sets rarely change in consecutive turns. Playing a
 7-tile move affects only 9 lanes out of 30, so these bit sets are typically
 cached based on the GADDAG pointer at either end (using something like -2 for
-the side with no tiles).
+the side with no tiles). This also means the same move generator instance
+should not be reused with different KWGs.
 
 When case 2 happens, the longer prefix is chosen to be completed, to minimize
 the non-determinism penalty.
