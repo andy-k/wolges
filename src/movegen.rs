@@ -1160,9 +1160,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         }
     }
 
-    let mut rightmost = strider_len as i8; // processed up to here
-    let mut leftmost = rightmost;
+    let mut leftmost = strider_len as i8; // processed up to here
     loop {
+        let mut rightmost = leftmost;
         while leftmost > 0 && params.board_strip[leftmost as usize - 1] == 0 {
             leftmost -= 1;
         }
@@ -1206,10 +1206,11 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         while leftmost > 0 && params.board_strip[leftmost as usize - 1] != 0 {
             leftmost -= 1;
         }
-        if leftmost <= 1 {
+        if leftmost <= 2 {
+            // not enough room for 2-tile words
             break;
         }
-        rightmost = leftmost - 1; // prevent touching leftmost tile
+        leftmost -= 1; // prevent touching leftmost tile
     }
 }
 
