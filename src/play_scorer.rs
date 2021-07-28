@@ -114,11 +114,17 @@ impl PlayScorer {
                 let alphabet = game_config.alphabet();
                 let alphabet_len_without_blank = alphabet.len() - 1;
                 self.set_rack_tally(game_config, &game_state.current_player().rack);
+                let premiums = board_layout.premiums();
                 for (i, &tile) in (*idx..).zip(word.iter()) {
-                    let board_tile = board_snapshot.board_tiles[strider.at(i)];
+                    let strider_at_i = strider.at(i);
+                    let board_tile = board_snapshot.board_tiles[strider_at_i];
                     if tile != 0 {
                         if board_tile != 0 {
                             return_error!("cannot place a tile onto an occupied square".into());
+                        }
+                        let premium = premiums[strider_at_i];
+                        if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
+                            return_error!("cannot place a tile onto a punctured square".into());
                         }
                         if tile & 0x7f > alphabet_len_without_blank || tile == 0x80 {
                             return_error!("placed tile not in alphabet".into());

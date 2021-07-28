@@ -19,6 +19,10 @@ pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -
             1 => " ",
             _ => panic!(),
         },
+        0 => match premium.tile_multiplier {
+            0 => "#",
+            _ => panic!(),
+        },
         _ => panic!(),
     }
 }

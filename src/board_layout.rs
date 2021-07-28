@@ -37,6 +37,12 @@ static FVS: Premium = Premium {
     tile_multiplier: 1,
 };
 
+// This is a punctured square. No tile may be played on it.
+static DEL: Premium = Premium {
+    word_multiplier: 0,
+    tile_multiplier: 0,
+};
+
 #[derive(Default)]
 pub struct StaticBoardLayout {
     premiums: Box<[Premium]>,
@@ -202,6 +208,33 @@ pub fn make_common_board_layout() -> BoardLayout {
             FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS, //
             FVS, DWS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, TLS, FVS, FVS, FVS, DWS, FVS, //
             TWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS, TWS, //
+        ]),
+        dim: matrix::Dim { rows: 15, cols: 15 },
+        star_row: 7,
+        star_col: 7,
+        ..Default::default()
+    })
+}
+
+// Add some punctured squares for fun. This is not an official layout.
+pub fn make_punctured_board_layout() -> BoardLayout {
+    BoardLayout::new_static(StaticBoardLayout {
+        premiums: Box::new([
+            DEL, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS, DEL, //
+            FVS, DWS, FVS, FVS, FVS, TLS, FVS, DEL, FVS, TLS, FVS, FVS, FVS, DWS, FVS, //
+            FVS, FVS, DEL, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DEL, FVS, FVS, //
+            DLS, FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS, DLS, //
+            FVS, FVS, FVS, FVS, DEL, FVS, FVS, FVS, FVS, FVS, DEL, FVS, FVS, FVS, FVS, //
+            FVS, TLS, FVS, FVS, FVS, TLS, FVS, DEL, FVS, TLS, FVS, FVS, FVS, TLS, FVS, //
+            FVS, FVS, DLS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DLS, FVS, FVS, //
+            TWS, DEL, FVS, DLS, FVS, DEL, FVS, DWS, FVS, DEL, FVS, DLS, FVS, DEL, TWS, //
+            FVS, FVS, DLS, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DLS, FVS, FVS, //
+            FVS, TLS, FVS, FVS, FVS, TLS, FVS, DEL, FVS, TLS, FVS, FVS, FVS, TLS, FVS, //
+            FVS, FVS, FVS, FVS, DEL, FVS, FVS, FVS, FVS, FVS, DEL, FVS, FVS, FVS, FVS, //
+            DLS, FVS, FVS, DWS, FVS, FVS, FVS, DLS, FVS, FVS, FVS, DWS, FVS, FVS, DLS, //
+            FVS, FVS, DEL, FVS, FVS, FVS, DLS, FVS, DLS, FVS, FVS, FVS, DEL, FVS, FVS, //
+            FVS, DWS, FVS, FVS, FVS, TLS, FVS, DEL, FVS, TLS, FVS, FVS, FVS, DWS, FVS, //
+            DEL, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS, DEL, //
         ]),
         dim: matrix::Dim { rows: 15, cols: 15 },
         star_row: 7,

@@ -7,7 +7,7 @@ use wolges::{
 };
 
 fn main() -> error::Returns<()> {
-    let jumbled = true;
+    let jumbled = false;
     let kwg = if jumbled {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kad")?)
     } else {
@@ -18,6 +18,12 @@ fn main() -> error::Returns<()> {
         game_config::make_jumbled_english_game_config()
     } else {
         game_config::make_common_english_game_config()
+    };
+    let _ = game_config;
+    let game_config = &if jumbled {
+        game_config::make_jumbled_punctured_english_game_config()
+    } else {
+        game_config::make_punctured_english_game_config()
     };
     //let _ = game_config;
     //let game_config = &game_config::make_hong_kong_english_game_config();

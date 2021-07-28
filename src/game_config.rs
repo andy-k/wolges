@@ -99,6 +99,28 @@ pub fn make_jumbled_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
+pub fn make_punctured_english_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_english_alphabet(),
+        board_layout: board_layout::make_punctured_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_punctured_english_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Jumbled,
+        alphabet: alphabet::make_english_alphabet(),
+        board_layout: board_layout::make_punctured_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+    })
+}
+
+#[allow(dead_code)]
 pub fn make_hong_kong_english_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
