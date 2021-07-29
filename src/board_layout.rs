@@ -74,7 +74,7 @@ impl BoardLayout {
             (0..)
                 .zip(x.premiums[range_start..range_start + x.dim.cols as usize].iter())
                 .for_each(|(col, premium)| {
-                    if premium.tile_multiplier != 1 || premium.word_multiplier != 1 {
+                    if premium.tile_multiplier > 1 || premium.word_multiplier > 1 {
                         danger_star_across[col] = true;
                     }
                 });
@@ -84,7 +84,7 @@ impl BoardLayout {
             (0..)
                 .zip(x.premiums[range_start..range_start + x.dim.cols as usize].iter())
                 .for_each(|(col, premium)| {
-                    if premium.tile_multiplier != 1 || premium.word_multiplier != 1 {
+                    if premium.tile_multiplier > 1 || premium.word_multiplier > 1 {
                         danger_star_across[col] = true;
                     }
                 });
@@ -95,7 +95,7 @@ impl BoardLayout {
             (0..)
                 .zip(transposed_premiums[range_start..range_start + x.dim.rows as usize].iter())
                 .for_each(|(row, premium)| {
-                    if premium.tile_multiplier != 1 || premium.word_multiplier != 1 {
+                    if premium.tile_multiplier > 1 || premium.word_multiplier > 1 {
                         danger_star_down[row] = true;
                     }
                 });
@@ -105,7 +105,7 @@ impl BoardLayout {
             (0..)
                 .zip(transposed_premiums[range_start..range_start + x.dim.rows as usize].iter())
                 .for_each(|(row, premium)| {
-                    if premium.tile_multiplier != 1 || premium.word_multiplier != 1 {
+                    if premium.tile_multiplier > 1 || premium.word_multiplier > 1 {
                         danger_star_down[row] = true;
                     }
                 });
