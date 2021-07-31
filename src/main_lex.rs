@@ -95,6 +95,13 @@ struct EmbeddedWordsFinder {
     wbuf: Vec<u8>,
 }
 
+struct FindEmbeddedWordParams<'a, M: Fn(usize) -> i8, F: FnMut(&[u8], i8)> {
+    board: &'a [u8],
+    kwg: &'a kwg::Kwg,
+    get_multiplier_at: &'a M,
+    record_finding: &'a mut F,
+}
+
 impl EmbeddedWordsFinder {
     fn new(q_tile: Option<u8>, u_tile: Option<u8>) -> Self {
         Self {
@@ -115,70 +122,68 @@ impl EmbeddedWordsFinder {
         self.ubuf.resize(rows * cols, false);
     }
 
-    fn iter_embedded_words<F: FnMut(&[u8])>(
+    fn iter_embedded_words<M: Fn(usize) -> i8, F: FnMut(&[u8], i8)>(
         &mut self,
-        board: &[u8],
-        kwg: &kwg::Kwg,
-        r: usize,
-        c: usize,
+        params: &mut FindEmbeddedWordParams<M, F>,
+        row: usize,
+        col: usize,
         mut p: i32,
-        f: &mut F,
+        mut multiplier: i8,
     ) {
-        if r >= self.rows || c >= self.cols {
+        if row >= self.rows || col >= self.cols {
             return;
         }
-        let idx = r * self.cols + c;
+        let idx = row * self.cols + col;
         if self.ubuf[idx] {
             return;
         }
-        let tile = board[idx];
+        let tile = params.board[idx];
         if tile == 0 {
             return;
         }
-        p = kwg.seek(p, tile);
+        p = params.kwg.seek(p, tile);
         if p <= 0 {
             return;
         }
         let orig_len = self.wbuf.len();
         self.ubuf[idx] = true;
         self.wbuf.push(tile);
-        let node = kwg[p];
+        multiplier *= (params.get_multiplier_at)(idx);
+        let node = params.kwg[p];
         if node.accepts() {
-            f(&self.wbuf);
+            (params.record_finding)(&self.wbuf, multiplier);
         }
         if node.arc_index() as i32 != 0 {
             for dr in -1..=1 {
                 for dc in -1..=1 {
                     self.iter_embedded_words(
-                        board,
-                        kwg,
-                        (r as isize + dr) as usize,
-                        (c as isize + dc) as usize,
+                        params,
+                        (row as isize + dr) as usize,
+                        (col as isize + dc) as usize,
                         p,
-                        f,
+                        multiplier,
                     );
                 }
             }
         }
         if matches!(self.q_tile, Some(q_tile) if q_tile == tile) {
             if let Some(u_tile) = self.u_tile {
-                p = kwg.seek(p, u_tile);
+                p = params.kwg.seek(p, u_tile);
                 if p > 0 {
                     self.wbuf.push(u_tile);
-                    let node = kwg[p];
+                    let node = params.kwg[p];
                     if node.accepts() {
-                        f(&self.wbuf);
+                        (params.record_finding)(&self.wbuf, multiplier);
                     }
                     if node.arc_index() as i32 != 0 {
                         for dr in -1..=1 {
                             for dc in -1..=1 {
                                 self.iter_embedded_words(
-                                    board,
-                                    kwg,
-                                    (r as isize + dr) as usize,
-                                    (c as isize + dc) as usize,
+                                    params,
+                                    (row as isize + dr) as usize,
+                                    (col as isize + dc) as usize,
                                     p,
-                                    f,
+                                    multiplier,
                                 );
                             }
                         }
@@ -190,23 +195,174 @@ impl EmbeddedWordsFinder {
         self.ubuf[idx] = false;
     }
 
-    fn find_embedded_words<F: FnMut(&[u8])>(&mut self, board: &[u8], kwg: &kwg::Kwg, f: &mut F) {
+    fn find_embedded_words<M: Fn(usize) -> i8, F: FnMut(&[u8], i8)>(
+        &mut self,
+        params: &mut FindEmbeddedWordParams<M, F>,
+    ) {
         for r in 0..self.rows {
             for c in 0..self.cols {
-                self.iter_embedded_words(board, kwg, r, c, 0, f);
+                self.iter_embedded_words(params, r, c, 0, 1);
             }
         }
     }
 }
 
-fn test_find_embedded_words(alphabet: &alphabet::Alphabet, kwg: &kwg::Kwg) -> error::Returns<()> {
+fn test_find_embedded_words<'a>(
+    alphabet: &alphabet::Alphabet,
+    kwg: &kwg::Kwg,
+    board_strs: impl IntoIterator<Item = &'a str>,
+    board_muls: Option<&[i8]>,
+) -> error::Returns<()> {
     let mut board = Vec::new();
     let alphabet_reader = alphabet::AlphabetReader::new_for_words(&alphabet);
     let q_tile = alphabet_reader.next_tile(b"Q", 0).map(|x| x.0);
     let u_tile = alphabet_reader.next_tile(b"U", 0).map(|x| x.0);
     let mut ewf = EmbeddedWordsFinder::new(q_tile, u_tile);
-    for board_str in "
-LIASERTAIDKEMAIR
+    for board_str in board_strs {
+        parse_embedded_words_board(&alphabet_reader, &board_str, &mut board)?;
+        let board_len = board.len();
+        let effective_board_muls = match board_muls {
+            Some(muls) if board_len == muls.len() => board_muls,
+            _ => None,
+        };
+        let board_dim = isqrt(board_len);
+        if board_dim * board_dim != board_len {
+            wolges::return_error!(format!(
+                "{} length {} is not a square",
+                board_str, board_len
+            ));
+        }
+        let rows = board_dim;
+        let cols = board_dim;
+        println!("Board:");
+        for r in 0..rows {
+            print!("  ");
+            for c in 0..cols {
+                let tile = board[r * cols + c];
+                print!(
+                    "{}{}",
+                    if tile == 0 {
+                        "#"
+                    } else {
+                        alphabet.from_rack(tile).unwrap()
+                    },
+                    if matches!(q_tile, Some(q_tile) if q_tile == tile) {
+                        'u'
+                    } else {
+                        ' '
+                    }
+                );
+            }
+            println!();
+        }
+        println!();
+        ewf.resize(rows, cols);
+        let mut ans_map = fash::MyHashMap::default();
+        let t0 = std::time::Instant::now();
+        ewf.find_embedded_words(&mut FindEmbeddedWordParams {
+            board: &board,
+            kwg: &kwg,
+            get_multiplier_at: &|idx| match effective_board_muls {
+                Some(v) => v[idx],
+                None => 1,
+            },
+            record_finding: &mut |word, mul| {
+                let v = mul as i32
+                    * match word.len() {
+                        3 => 1,
+                        4 => 2,
+                        5 => 4,
+                        x if x >= 6 => 7 + (x - 6) * 4,
+                        _ => 0,
+                    } as i32;
+                ans_map
+                    .entry(word.into())
+                    .and_modify(|e| {
+                        if *e < v {
+                            *e = v
+                        }
+                    })
+                    .or_insert(v);
+            },
+        });
+        println!("Found {} words in {:?}", ans_map.len(), t0.elapsed());
+        let mut ans: Box<[(bites::Bites, _)]> = ans_map.into_iter().collect();
+        ans.sort_unstable_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        let mut pt = 0;
+        while pt < ans.len() {
+            let cur_len = ans[pt].0.len();
+            let pt2 = pt + ans[pt..].partition_point(|x| x.0.len() == cur_len);
+            println!("{} words of length {}:", pt2 - pt, cur_len);
+            print!(" ");
+            for (word, score) in &ans[pt..pt2] {
+                print!(" ");
+                for &tile in &word[..] {
+                    print!("{}", alphabet.from_rack(tile).unwrap());
+                }
+                print!(" ({})", score);
+            }
+            println!();
+            pt = pt2;
+        }
+        println!();
+    }
+    Ok(())
+}
+
+fn main() -> error::Returns<()> {
+    if false {
+        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
+        print_dawg(&alphabet::make_polish_alphabet(), &kwg);
+        return Ok(());
+    }
+    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
+    if true {
+        let alphabet = alphabet::make_english_alphabet();
+        let nwl18_kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);
+        let twl14_kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/TWL14.kwg")?);
+        let known_boards = [
+            &[
+                1, 1, 1, 1, //
+                1, 1, 1, 1, //
+                1, 1, 1, 1, //
+                1, 1, 1, 1, //
+            ][..],
+            &[
+                0, 0, 2, 1, 0, 0, //
+                0, 1, 1, 1, 1, 0, //
+                1, 1, 1, 1, 1, 1, //
+                1, 1, 1, 1, 1, 1, //
+                0, 1, 1, 1, 1, 0, //
+                0, 0, 1, 2, 0, 0, //
+            ][..],
+            &[
+                3, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 1, 1, //
+                1, 1, 1, 1, 1, 1, //
+                0, 0, 1, 1, 1, 1, //
+                0, 0, 1, 1, 1, 3, //
+            ][..],
+            &[
+                2, 1, 1, 1, 1, 3, //
+                1, 1, 1, 1, 1, 1, //
+                1, 1, 0, 0, 1, 1, //
+                1, 1, 0, 0, 1, 1, //
+                1, 1, 1, 1, 1, 1, //
+                3, 1, 1, 1, 1, 2, //
+            ][..],
+        ];
+        test_find_embedded_words(
+            &alphabet,
+            &nwl18_kwg,
+            ["LIASERTAPGADID##KEMA##IRAIVZQAEFEGSY"],
+            Some(known_boards[3]),
+        )?;
+        test_find_embedded_words(&alphabet, &twl14_kwg, ["LIASERTAIDKEMAIR"], None)?;
+        test_find_embedded_words(
+            &alphabet,
+            &kwg,
+            "
 NQALBRYUDAMEWPAI
 YELWRNOILEDAUMRRSOFOJEOAW
 JAICOHDOOEGATBITETYREBRXALKNQURODNEE
@@ -240,82 +396,11 @@ IU#RO##ZDGAWO#II
 VORU#ITOES#TOTEA
 FEM#ISMEPNJRIEL#OVTYWEOEAWVEHNDSIZKGASIHT#OLOD#RGNCOC##ENL#AAPR#
 TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
-"
-    .split_whitespace()
-    {
-        parse_embedded_words_board(&alphabet_reader, &board_str, &mut board)?;
-        let board_len = board.len();
-        let board_dim = isqrt(board_len);
-        if board_dim * board_dim != board_len {
-            wolges::return_error!(format!(
-                "{} length {} is not a square",
-                board_str, board_len
-            ));
-        }
-        let rows = board_dim;
-        let cols = board_dim;
-        println!("Board:");
-        for r in 0..rows {
-            print!("  ");
-            for c in 0..cols {
-                let tile = board[r * cols + c];
-                print!(
-                    "{}{}",
-                    if tile == 0 {
-                        "#"
-                    } else {
-                        alphabet.from_rack(tile).unwrap()
-                    },
-                    if matches!(q_tile, Some(q_tile) if q_tile == tile) {
-                        'u'
-                    } else {
-                        ' '
-                    }
-                );
-            }
-            println!();
-        }
-        println!();
-        ewf.resize(rows, cols);
-        let mut ans_set = fash::MyHashSet::default();
-        let t0 = std::time::Instant::now();
-        ewf.find_embedded_words(&board, &kwg, &mut |word| {
-            ans_set.insert(word.into());
-        });
-        println!("Found {} words in {:?}", ans_set.len(), t0.elapsed());
-        let mut ans: Box<[bites::Bites]> = ans_set.into_iter().collect();
-        ans.sort_unstable_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(&b)));
-        let mut pt = 0;
-        while pt < ans.len() {
-            let cur_len = ans[pt].len();
-            let pt2 = pt + ans[pt..].partition_point(|x| x.len() == cur_len);
-            println!("{} words of length {}:", pt2 - pt, cur_len);
-            print!(" ");
-            for word in &ans[pt..pt2] {
-                print!(" ");
-                for &tile in &word[..] {
-                    print!("{}", alphabet.from_rack(tile).unwrap());
-                }
-            }
-            println!();
-            pt = pt2;
-        }
-        println!();
-    }
-    Ok(())
-}
-
-fn main() -> error::Returns<()> {
-    if false {
-        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
-        print_dawg(&alphabet::make_polish_alphabet(), &kwg);
+        "
+            .split_whitespace(),
+            None,
+        )?;
         return Ok(());
-    }
-    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
-    if true {
-        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/TWL14.kwg")?);
-        let alphabet = alphabet::make_english_alphabet();
-        return test_find_embedded_words(&alphabet, &kwg);
     }
     let game_config = &game_config::make_common_english_game_config();
 
