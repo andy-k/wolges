@@ -113,8 +113,8 @@ fn main() -> error::Returns<()> {
     kibitzer.prepare(&game_config, &question.rack, &question.board_tiles)?;
 
     display::print_board(
-        &game_config.alphabet(),
-        &game_config.board_layout(),
+        game_config.alphabet(),
+        game_config.board_layout(),
         &kibitzer.board_tiles,
     );
 
@@ -153,7 +153,7 @@ fn main() -> error::Returns<()> {
         move_picker.pick_a_move(
             &mut move_filter,
             &mut move_generator,
-            &board_snapshot,
+            board_snapshot,
             &game_state,
             &game_state.current_player().rack,
         );

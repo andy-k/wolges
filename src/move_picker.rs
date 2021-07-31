@@ -94,7 +94,7 @@ impl MovePicker<'_> {
                     .iter()
                     .enumerate()
                     .map(|(i, candidate)| (i, candidate.stats.ci_max(-z)))
-                    .min_by(|(_, a), (_, b)| a.partial_cmp(&b).unwrap())
+                    .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
                     .unwrap()
                     .0,
             );
@@ -112,7 +112,7 @@ impl MovePicker<'_> {
     ) {
         match self {
             MovePicker::Hasty => {
-                filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 1);
+                filtered_movegen.gen_moves(&mut move_generator, board_snapshot, rack, 1);
             }
             MovePicker::Simmer(simmer) => {
                 let t0 = std::time::Instant::now();
@@ -120,8 +120,8 @@ impl MovePicker<'_> {
                     tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
                     println!("3 secs have passed");
                 });
-                filtered_movegen.gen_moves(&mut move_generator, board_snapshot, &rack, 100);
-                simmer.simmer.prepare(simmer.game_config, &game_state, 2);
+                filtered_movegen.gen_moves(&mut move_generator, board_snapshot, rack, 100);
+                simmer.simmer.prepare(simmer.game_config, game_state, 2);
                 let mut candidates = simmer.take_candidates(move_generator.plays.len());
                 let num_sim_iters = 1000;
                 let mut tick_periods = Periods(0);
@@ -162,7 +162,7 @@ impl MovePicker<'_> {
                         let low_bar = candidates
                             .iter()
                             .map(|candidate| candidate.stats.ci_max(-Z))
-                            .max_by(|a, b| a.partial_cmp(&b).unwrap())
+                            .max_by(|a, b| a.partial_cmp(b).unwrap())
                             .unwrap();
                         candidates.retain(|candidate| candidate.stats.ci_max(Z) >= low_bar);
                         Self::limit_surviving_candidates(

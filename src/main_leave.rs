@@ -264,7 +264,7 @@ fn generate_autoplay_logs(
 
                         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                             board_snapshot,
-                            rack: &cur_rack,
+                            rack: cur_rack,
                             max_gen: 1,
                             always_include_pass: false,
                         });
@@ -616,7 +616,7 @@ fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
     }
     if idx as usize >= rack_tally_len {
         if env.exchange_buffer.len() >= env.min_len as usize {
-            (env.found_exchange_move)(&env.exchange_buffer);
+            (env.found_exchange_move)(env.exchange_buffer);
         }
         return;
     }
@@ -644,7 +644,7 @@ fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
 ) {
     if idx as usize >= freqs.len() {
         if insed == deled {
-            found_neighbor(&v);
+            found_neighbor(v);
         }
     } else {
         let ol = v.len();
@@ -854,7 +854,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
                             }
                         };
                         subrack_bytes.clear();
-                        subrack_bytes.extend_from_slice(&rack_bytes);
+                        subrack_bytes.extend_from_slice(rack_bytes);
                         process_subrack(&subrack_bytes[..len_minus_one]);
                         for which_tile in (0..len_minus_one).rev() {
                             let c1 = subrack_bytes[which_tile];

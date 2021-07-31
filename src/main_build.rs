@@ -131,8 +131,8 @@ fn iter_dawg<'a, F: FnMut(&str)>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg, f: F)
     }
     iter(
         &mut Env {
-            a: &a,
-            g: &g,
+            a,
+            g,
             s: &mut String::new(),
             f,
         },

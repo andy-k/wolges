@@ -889,8 +889,8 @@ impl<'a> EndgameSolver<'a> {
             );
         }
         display::print_board(
-            &self.game_config.alphabet(),
-            &self.game_config.board_layout(),
+            self.game_config.alphabet(),
+            self.game_config.board_layout(),
             &latest_board_tiles,
         );
     }

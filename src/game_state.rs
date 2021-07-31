@@ -80,7 +80,7 @@ impl GameState {
                 })
                 .collect(),
             board_tiles: vec![0u8; (dim.rows as usize) * (dim.cols as usize)].into_boxed_slice(),
-            bag: bag::Bag::new(&alphabet),
+            bag: bag::Bag::new(alphabet),
             turn: 0,
             zero_turns: 0,
         }
@@ -129,7 +129,7 @@ impl GameState {
                 use_tiles(&mut current_player.rack, tiles.iter().copied())?;
                 self.bag
                     .replenish(&mut current_player.rack, game_config.rack_size() as usize);
-                self.bag.put_back(&mut rng, &tiles);
+                self.bag.put_back(&mut rng, tiles);
                 self.zero_turns += 1;
             }
             movegen::Play::Place {

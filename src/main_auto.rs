@@ -30,7 +30,7 @@ fn main() -> error::Returns<()> {
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
     let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {
-        tilt: move_filter::Tilt::new(&game_config, &kwg, move_filter::Tilt::length_importances()),
+        tilt: move_filter::Tilt::new(game_config, &kwg, move_filter::Tilt::length_importances()),
         bot_level: 1,
     };
     let mut filtered_movegen_1 = move_filter::GenMoves::Unfiltered;
@@ -49,14 +49,14 @@ fn main() -> error::Returns<()> {
     let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
     let mut timers = game_timers::GameTimers::new(game_config.num_players());
     loop {
-        game_state.reset_and_draw_tiles(&game_config, &mut rng);
+        game_state.reset_and_draw_tiles(game_config, &mut rng);
         let mut final_scores = vec![0; game_state.players.len()];
         //timers.reset_to(25 * 60 * 1000);
         timers.reset_to(15 * 1000);
 
         loop {
             timers.set_turn(game_state.turn as i8);
-            display::print_game_state(&game_config, &game_state, Some(&timers));
+            display::print_game_state(game_config, &game_state, Some(&timers));
 
             let filtered_movegen = if game_state.turn == 0 {
                 &mut filtered_movegen_0
@@ -191,7 +191,7 @@ fn main() -> error::Returns<()> {
             move_picker.pick_a_move(
                 filtered_movegen,
                 &mut move_generator,
-                &board_snapshot,
+                board_snapshot,
                 &game_state,
                 &game_state.current_player().rack,
             );
@@ -199,9 +199,9 @@ fn main() -> error::Returns<()> {
             let play = &plays[0].play; // assume at least there's always Pass
             println!("Playing: {}", play.fmt(board_snapshot));
 
-            game_state.play(&game_config, &mut rng, play)?;
+            game_state.play(game_config, &mut rng, play)?;
 
-            match game_state.check_game_ended(&game_config, &mut final_scores) {
+            match game_state.check_game_ended(game_config, &mut final_scores) {
                 game_state::CheckGameEnded::PlayedOut => {
                     println!("Player {} went out", game_state.turn + 1);
                     break;
@@ -219,7 +219,7 @@ fn main() -> error::Returns<()> {
         }
         timers.set_turn(-1);
 
-        display::print_game_state(&game_config, &game_state, Some(&timers));
+        display::print_game_state(game_config, &game_state, Some(&timers));
         println!("Final scores: {:?}", final_scores);
         let mut has_time_adjustment = false;
         for (i, &clock_ms) in timers.clocks_ms.iter().enumerate() {

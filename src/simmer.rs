@@ -80,8 +80,8 @@ impl Simmer {
         game_state: &game_state::GameState,
         num_sim_plies: usize,
     ) {
-        self.initial_game_state.clone_from(&game_state);
-        self.game_state.clone_from(&game_state);
+        self.initial_game_state.clone_from(game_state);
+        self.game_state.clone_from(game_state);
         self.initial_score_spread = game_state.current_player().score
             - (0..)
                 .zip(game_state.players.iter())
@@ -141,15 +141,15 @@ impl Simmer {
         };
         for ply in 0..=self.num_sim_plies {
             next_play.clone_from(if ply == 0 {
-                &candidate_play
+                candidate_play
             } else {
                 self.move_generator
                     .gen_moves_unfiltered(&movegen::GenMovesParams {
                         board_snapshot: &movegen::BoardSnapshot {
                             board_tiles: &self.game_state.board_tiles,
-                            game_config: &game_config,
-                            kwg: &kwg,
-                            klv: &klv,
+                            game_config,
+                            kwg,
+                            klv,
                         },
                         rack: &self.game_state.current_player().rack,
                         max_gen: 1,
@@ -166,12 +166,12 @@ impl Simmer {
                 klv.leave_value_from_tally(&self.rack_tally);
             RNG.with(|rng| {
                 self.game_state
-                    .play(&game_config, &mut *rng.borrow_mut(), &next_play)
+                    .play(game_config, &mut *rng.borrow_mut(), &next_play)
                     .unwrap();
             });
             match self
                 .game_state
-                .check_game_ended(&game_config, &mut self.final_scores)
+                .check_game_ended(game_config, &mut self.final_scores)
             {
                 game_state::CheckGameEnded::NotEnded => {}
                 _ => {

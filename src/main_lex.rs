@@ -34,8 +34,8 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
     }
     iter(
         &mut Env {
-            a: &a,
-            g: &g,
+            a,
+            g,
             s: &mut String::new(),
         },
         g[0].arc_index(),
@@ -214,12 +214,12 @@ fn test_find_embedded_words<'a>(
     board_muls: Option<&[i8]>,
 ) -> error::Returns<()> {
     let mut board = Vec::new();
-    let alphabet_reader = alphabet::AlphabetReader::new_for_words(&alphabet);
+    let alphabet_reader = alphabet::AlphabetReader::new_for_words(alphabet);
     let q_tile = alphabet_reader.next_tile(b"Q", 0).map(|x| x.0);
     let u_tile = alphabet_reader.next_tile(b"U", 0).map(|x| x.0);
     let mut ewf = EmbeddedWordsFinder::new(q_tile, u_tile);
     for board_str in board_strs {
-        parse_embedded_words_board(&alphabet_reader, &board_str, &mut board)?;
+        parse_embedded_words_board(&alphabet_reader, board_str, &mut board)?;
         let board_len = board.len();
         let effective_board_muls = match board_muls {
             Some(muls) if board_len == muls.len() => board_muls,
@@ -261,7 +261,7 @@ fn test_find_embedded_words<'a>(
         let t0 = std::time::Instant::now();
         ewf.find_embedded_words(&mut FindEmbeddedWordParams {
             board: &board,
-            kwg: &kwg,
+            kwg,
             get_multiplier_at: &|idx| match effective_board_muls {
                 Some(v) => v[idx],
                 None => 1,

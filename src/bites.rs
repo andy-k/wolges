@@ -68,7 +68,7 @@ impl AsRef<[u8]> for Bites {
 impl std::borrow::Borrow<[u8]> for Bites {
     #[inline(always)]
     fn borrow(&self) -> &[u8] {
-        &self
+        self
     }
 }
 
@@ -88,7 +88,7 @@ impl Clone for Bites {
                     (u64::from_le_bytes(self.0[8..16].try_into().unwrap()) & (!0 >> 1)) as usize,
                 )
             }
-            .clone_from_slice(&source);
+            .clone_from_slice(source);
         } else {
             // Optimal for all other cases since boxed slices cannot be resized.
             *self = source.clone();

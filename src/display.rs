@@ -134,8 +134,8 @@ pub fn print_game_state(
     optional_game_timers: Option<&game_timers::GameTimers>,
 ) {
     print_board(
-        &game_config.alphabet(),
-        &game_config.board_layout(),
+        game_config.alphabet(),
+        game_config.board_layout(),
         &game_state.board_tiles,
     );
     println!(

@@ -58,9 +58,9 @@ impl<'a> Alphabet<'a> {
         if c == 0 || c >= self.len() {
             None
         } else if idx & 0x80 == 0 {
-            Some(&self.get(c).label)
+            Some(self.get(c).label)
         } else {
-            Some(&self.get(c).blank_label)
+            Some(self.get(c).blank_label)
         }
     }
 
@@ -69,7 +69,7 @@ impl<'a> Alphabet<'a> {
         if idx >= self.len() {
             None
         } else {
-            Some(&self.get(idx).label)
+            Some(self.get(idx).label)
         }
     }
 
@@ -90,8 +90,8 @@ impl<'a> Alphabet<'a> {
 
     pub fn fmt_rack(&'a self, rack: &'a [u8]) -> WriteableRack<'a> {
         WriteableRack {
-            alphabet: &self,
-            rack: &rack,
+            alphabet: self,
+            rack,
         }
     }
 

@@ -126,7 +126,7 @@ impl Kwg {
             }
             std::cmp::max(ret, p)
         }
-        let required_size = max_from(&self, &mut vec![0u8; (self.0.len() + 7) / 8], 0) as usize + 1;
+        let required_size = max_from(self, &mut vec![0u8; (self.0.len() + 7) / 8], 0) as usize + 1;
         let mut word_counts = vec![0u32; required_size];
         for p in (0..word_counts.len()).rev() {
             self.count_words_at(&mut word_counts, p as i32);

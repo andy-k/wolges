@@ -427,7 +427,7 @@ impl WorkingBuffer {
             }
             pretend_to_generate_exchanges(
                 &mut Env {
-                    klv: &board_snapshot.klv,
+                    klv: board_snapshot.klv,
                     best_leave_values: &mut self.best_leave_values,
                     rack_tally: &mut self.rack_tally,
                     adjust_leave_value,
@@ -1854,7 +1854,7 @@ fn gen_place_moves_at<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[u8])
     }
     gen_place_moves(
         &mut GenPlaceMovesParams {
-            board_snapshot: &board_snapshot,
+            board_snapshot,
             board_strip: if placement.down {
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end]
             } else {
@@ -1963,7 +1963,7 @@ impl Clone for Play {
                     tiles: source_tiles,
                 } = source
                 {
-                    self_tiles.clone_from(&source_tiles);
+                    self_tiles.clone_from(source_tiles);
                 } else {
                     *self = source.clone();
                 }
@@ -1983,11 +1983,11 @@ impl Clone for Play {
                     score: source_score,
                 } = source
                 {
-                    self_down.clone_from(&source_down);
-                    self_lane.clone_from(&source_lane);
-                    self_idx.clone_from(&source_idx);
-                    self_word.clone_from(&source_word);
-                    self_score.clone_from(&source_score);
+                    self_down.clone_from(source_down);
+                    self_lane.clone_from(source_lane);
+                    self_idx.clone_from(source_idx);
+                    self_word.clone_from(source_word);
+                    self_score.clone_from(source_score);
                 } else {
                     *self = source.clone();
                 }
@@ -2112,7 +2112,7 @@ impl std::fmt::Display for WriteablePlay<'_> {
 impl Play {
     pub fn fmt<'a>(&'a self, board_snapshot: &'a BoardSnapshot) -> WriteablePlay<'a> {
         WriteablePlay {
-            board_snapshot: &board_snapshot,
+            board_snapshot,
             play: self,
         }
     }
@@ -2536,7 +2536,7 @@ fn kurnia_gen_nonplace_moves_except_pass<'a, FoundExchangeMove: FnMut(&[u8], &[u
         }
         if idx as usize >= rack_tally_len {
             if !env.exchange_buffer.is_empty() {
-                (env.found_exchange_move)(&env.rack_tally, &env.exchange_buffer);
+                (env.found_exchange_move)(env.rack_tally, env.exchange_buffer);
             }
             return;
         }
@@ -2586,7 +2586,7 @@ fn kurnia_gen_place_moves_iter<
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
         gen_cross_set(
-            &board_snapshot,
+            board_snapshot,
             &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
             &mut working_buffer.cross_set_for_across_plays,
             dim.down(col),
@@ -2605,7 +2605,7 @@ fn kurnia_gen_place_moves_iter<
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         gen_cross_set(
-            &board_snapshot,
+            board_snapshot,
             &board_snapshot.board_tiles[strip_range_start..strip_range_end],
             &mut working_buffer.cross_set_for_down_plays,
             transposed_dim.down(row),
@@ -2731,7 +2731,7 @@ fn kurnia_gen_place_moves_iter<
         Some(placement) => {
             if can_accept(placement.best_possible_equity) {
                 gen_place_moves_at(
-                    &board_snapshot,
+                    board_snapshot,
                     working_buffer,
                     &placement,
                     max_rack_size,
