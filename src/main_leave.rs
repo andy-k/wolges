@@ -504,7 +504,7 @@ fn generate_autoplay_logs(
 
 // handles the equivalent of '?', A-Z
 fn parse_rack(
-    alphabet_reader: &alphabet::AlphabetReader,
+    alphabet_reader: &alphabet::AlphabetReader<'_>,
     s: &str,
     v: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -531,7 +531,7 @@ struct Cumulate {
 }
 
 fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
-    game_config: game_config::GameConfig,
+    game_config: game_config::GameConfig<'_>,
     f: Readable,
     mut csv_out: csv::Writer<W>,
 ) -> error::Returns<()> {
@@ -607,7 +607,7 @@ struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
 }
 
 fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
-    env: &mut ExchangeEnv<FoundExchangeMove>,
+    env: &mut ExchangeEnv<'_, FoundExchangeMove>,
     mut idx: u8,
 ) {
     let rack_tally_len = env.rack_tally.len();
@@ -668,7 +668,7 @@ fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
 }
 
 fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHING: bool>(
-    game_config: game_config::GameConfig,
+    game_config: game_config::GameConfig<'_>,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
 ) -> error::Returns<()> {

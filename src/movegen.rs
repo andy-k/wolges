@@ -188,7 +188,7 @@ impl Clone for WorkingBuffer {
 }
 
 impl WorkingBuffer {
-    fn new(game_config: &game_config::GameConfig) -> Self {
+    fn new(game_config: &game_config::GameConfig<'_>) -> Self {
         let dim = game_config.board_layout().dim();
         let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
         Self {
@@ -958,7 +958,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     };
 
     fn shadow_record(
-        env: &mut Env,
+        env: &mut Env<'_>,
         idx_left: i8,
         idx_right: i8,
         main_played_through_score: i16,
@@ -994,7 +994,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     fn shadow_play_right(
-        env: &mut Env,
+        env: &mut Env<'_>,
         mut idx: i8,
         mut main_played_through_score: i16,
         perpendicular_additional_score: i16,
@@ -1066,7 +1066,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     fn shadow_play_left(
-        env: &mut Env,
+        env: &mut Env<'_>,
         mut idx: i8,
         mut main_played_through_score: i16,
         perpendicular_additional_score: i16,
@@ -1150,7 +1150,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     #[inline(always)]
     fn gen_moves_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
         want_raw: bool,
-        env: &mut Env,
+        env: &mut Env<'_>,
         single_tile_plays: bool,
         mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
     ) {
@@ -1257,7 +1257,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 
     fn record<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
-        env: &mut Env<CallbackType>,
+        env: &mut Env<'_, CallbackType>,
         idx_left: i8,
         idx_right: i8,
         main_score: i16,
@@ -1280,7 +1280,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 
     fn play_right<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
-        env: &mut Env<CallbackType>,
+        env: &mut Env<'_, CallbackType>,
         mut idx: i8,
         mut p: i32,
         mut main_score: i16,
@@ -1395,7 +1395,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 
     fn play_left<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
-        env: &mut Env<CallbackType>,
+        env: &mut Env<'_, CallbackType>,
         mut idx: i8,
         mut p: i32,
         mut main_score: i16,
@@ -1556,7 +1556,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 
     fn record_if_valid<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
-        env: &mut Env<CallbackType>,
+        env: &mut Env<'_, CallbackType>,
         idx_left: i8,
         idx_right: i8,
         main_score: i16,
@@ -1586,7 +1586,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 
     fn play_right<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
-        env: &mut Env<CallbackType>,
+        env: &mut Env<'_, CallbackType>,
         mut idx: i8,
         mut main_score: i16,
         perpendicular_cumulative_score: i16,
@@ -1691,7 +1691,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 
     fn play_left<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
-        env: &mut Env<CallbackType>,
+        env: &mut Env<'_, CallbackType>,
         mut idx: i8,
         mut main_score: i16,
         perpendicular_cumulative_score: i16,
@@ -2110,7 +2110,7 @@ impl std::fmt::Display for WriteablePlay<'_> {
 }
 
 impl Play {
-    pub fn fmt<'a>(&'a self, board_snapshot: &'a BoardSnapshot) -> WriteablePlay<'a> {
+    pub fn fmt<'a>(&'a self, board_snapshot: &'a BoardSnapshot<'_>) -> WriteablePlay<'a> {
         WriteablePlay {
             board_snapshot,
             play: self,
@@ -2150,7 +2150,7 @@ impl Clone for KurniaMoveGenerator {
 }
 
 impl KurniaMoveGenerator {
-    pub fn new(game_config: &game_config::GameConfig) -> Self {
+    pub fn new(game_config: &game_config::GameConfig<'_>) -> Self {
         Self {
             working_buffer: WorkingBuffer::new(game_config),
             plays: Vec::new(),
@@ -2527,7 +2527,7 @@ fn kurnia_gen_nonplace_moves_except_pass<'a, FoundExchangeMove: FnMut(&[u8], &[u
         exchange_buffer: &'a mut Vec<u8>,
     }
     fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], &[u8])>(
-        env: &mut ExchangeEnv<FoundExchangeMove>,
+        env: &mut ExchangeEnv<'_, FoundExchangeMove>,
         mut idx: u8,
     ) {
         let rack_tally_len = env.rack_tally.len();

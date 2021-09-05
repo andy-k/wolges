@@ -18,7 +18,7 @@ impl LimitedVocabChecker {
     #[inline(always)]
     pub fn words_placed_are_ok<WordIsOk: FnMut(&[u8]) -> bool>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
         down: bool,
         lane: i8,
         idx: i8,

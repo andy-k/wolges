@@ -54,7 +54,7 @@ pub struct Simmer {
 
 impl Simmer {
     // The other methods must be called with the same game_config.
-    pub fn new(game_config: &game_config::GameConfig) -> Self {
+    pub fn new(game_config: &game_config::GameConfig<'_>) -> Self {
         Self {
             initial_game_state: game_state::GameState::new(game_config),
             initial_score_spread: 0,
@@ -76,7 +76,7 @@ impl Simmer {
     #[inline(always)]
     pub fn prepare(
         &mut self,
-        game_config: &game_config::GameConfig,
+        game_config: &game_config::GameConfig<'_>,
         game_state: &game_state::GameState,
         num_sim_plies: usize,
     ) {
@@ -126,7 +126,7 @@ impl Simmer {
     #[inline(always)]
     pub fn simulate(
         &mut self,
-        game_config: &game_config::GameConfig,
+        game_config: &game_config::GameConfig<'_>,
         kwg: &kwg::Kwg,
         klv: &klv::Klv,
         candidate_play: &movegen::Play,

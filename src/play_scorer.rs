@@ -16,7 +16,7 @@ impl PlayScorer {
     }
 
     // Does not validate rack, may crash if invalid tile.
-    fn set_rack_tally(&mut self, game_config: &game_config::GameConfig, rack: &[u8]) {
+    fn set_rack_tally(&mut self, game_config: &game_config::GameConfig<'_>, rack: &[u8]) {
         self.rack_tally.clear();
         self.rack_tally
             .resize(game_config.alphabet().len() as usize, 0);
@@ -29,7 +29,7 @@ impl PlayScorer {
     // Err(reason) if invalid.
     pub fn validate_play(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
         game_state: &game_state::GameState,
         play: &movegen::Play,
     ) -> error::Returns<Option<movegen::Play>> {
@@ -221,7 +221,7 @@ impl PlayScorer {
 
     pub fn words_all<Callback: FnMut(&[u8]) -> bool>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
         play: &movegen::Play,
         cb: Callback,
     ) -> bool {
@@ -247,7 +247,7 @@ impl PlayScorer {
     #[inline(always)]
     fn classic_words_checker<'a>(
         &mut self,
-        board_snapshot: &'a movegen::BoardSnapshot,
+        board_snapshot: &'a movegen::BoardSnapshot<'_>,
     ) -> impl FnMut(&[u8]) -> bool + 'a {
         move |word: &[u8]| {
             let mut p = 0;
@@ -264,7 +264,7 @@ impl PlayScorer {
     #[inline(always)]
     fn jumbled_words_checker<'a>(
         &mut self,
-        board_snapshot: &'a movegen::BoardSnapshot,
+        board_snapshot: &'a movegen::BoardSnapshot<'_>,
     ) -> impl FnMut(&[u8]) -> bool + 'a {
         move |word: &[u8]| {
             // doing this the slow way, with no additional space
@@ -288,7 +288,7 @@ impl PlayScorer {
     #[inline(always)]
     pub fn words_are_valid(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
         play: &movegen::Play,
     ) -> bool {
         match board_snapshot.game_config.game_rules() {
@@ -320,7 +320,7 @@ impl PlayScorer {
     #[inline(always)]
     pub fn find_invalid_words(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
         play: &movegen::Play,
         save_invalid_word: impl FnMut(&[u8]),
     ) {
@@ -342,7 +342,7 @@ impl PlayScorer {
     // Assume play is valid.
     pub fn compute_score(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
         play: &movegen::Play,
     ) -> i16 {
         let game_config = board_snapshot.game_config;
@@ -444,7 +444,7 @@ impl PlayScorer {
     // Assume recounted_score came from compute_score().
     pub fn compute_equity(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot,
+        board_snapshot: &movegen::BoardSnapshot<'_>,
         game_state: &game_state::GameState,
         play: &movegen::Play,
         leave_scale: f32,

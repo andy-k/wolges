@@ -67,7 +67,7 @@ pub fn to_macondo<'a>(
         letter_sets: &mut letter_sets,
     };
 
-    fn iter(env: &mut Env, mut p: i32) -> u32 {
+    fn iter(env: &mut Env<'_>, mut p: i32) -> u32 {
         let mut w = env.node_indexes[p as usize];
         // The first node is at index 0, but the structure is acyclic.
         if w != 0 {

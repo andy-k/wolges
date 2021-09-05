@@ -93,7 +93,7 @@ struct WorkBuffer {
 }
 
 impl WorkBuffer {
-    fn new(game_config: &game_config::GameConfig) -> Self {
+    fn new(game_config: &game_config::GameConfig<'_>) -> Self {
         let dim = game_config.board_layout().dim();
         let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
         Self {

@@ -129,7 +129,7 @@ fn print_ms(mut ms: i64) {
 }
 
 pub fn print_game_state(
-    game_config: &game_config::GameConfig,
+    game_config: &game_config::GameConfig<'_>,
     game_state: &game_state::GameState,
     optional_game_timers: Option<&game_timers::GameTimers>,
 ) {

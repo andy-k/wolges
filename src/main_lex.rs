@@ -8,7 +8,7 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
         g: &'a kwg::Kwg,
         s: &'a mut String,
     }
-    fn iter(env: &mut Env, mut p: i32) {
+    fn iter(env: &mut Env<'_>, mut p: i32) {
         let l = env.s.len();
         loop {
             let t = env.g[p].tile();
@@ -44,7 +44,7 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
 
 // parses '#' as 0
 fn parse_embedded_words_board(
-    alphabet_reader: &alphabet::AlphabetReader,
+    alphabet_reader: &alphabet::AlphabetReader<'_>,
     s: &str,
     v: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -124,7 +124,7 @@ impl EmbeddedWordsFinder {
 
     fn iter_embedded_words<M: Fn(usize) -> i8, F: FnMut(&[u8], i8)>(
         &mut self,
-        params: &mut FindEmbeddedWordParams<M, F>,
+        params: &mut FindEmbeddedWordParams<'_, M, F>,
         row: usize,
         col: usize,
         mut p: i32,
@@ -197,7 +197,7 @@ impl EmbeddedWordsFinder {
 
     fn find_embedded_words<M: Fn(usize) -> i8, F: FnMut(&[u8], i8)>(
         &mut self,
-        params: &mut FindEmbeddedWordParams<M, F>,
+        params: &mut FindEmbeddedWordParams<'_, M, F>,
     ) {
         for r in 0..self.rows {
             for c in 0..self.cols {
@@ -208,7 +208,7 @@ impl EmbeddedWordsFinder {
 }
 
 fn test_find_embedded_words<'a>(
-    alphabet: &alphabet::Alphabet,
+    alphabet: &alphabet::Alphabet<'_>,
     kwg: &kwg::Kwg,
     board_strs: impl IntoIterator<Item = &'a str>,
     board_muls: Option<&[i8]>,

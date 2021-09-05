@@ -29,7 +29,7 @@ impl TransitionStack<'_> {
     }
 
     #[inline(always)]
-    fn pop(&mut self, state_maker: &mut StateMaker) {
+    fn pop(&mut self, state_maker: &mut StateMaker<'_>) {
         let start_of_batch = self.indexes.pop().unwrap();
         let new_arc_index = state_maker.make_state(&self.transitions[start_of_batch..]);
         self.transitions[start_of_batch - 1].arc_index = new_arc_index;

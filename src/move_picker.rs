@@ -20,7 +20,7 @@ pub struct Simmer<'a> {
 
 impl<'a> Simmer<'a> {
     pub fn new(
-        game_config: &'a game_config::GameConfig,
+        game_config: &'a game_config::GameConfig<'_>,
         kwg: &'a kwg::Kwg,
         klv: &'a klv::Klv,
     ) -> Self {

@@ -3,7 +3,7 @@
 use wolges::{alphabet, bites, build, error, fash, kwg, lexport, prob};
 
 fn read_machine_words(
-    alphabet_reader: &alphabet::AlphabetReader,
+    alphabet_reader: &alphabet::AlphabetReader<'_>,
     giant_string: &str,
 ) -> error::Returns<Box<[bites::Bites]>> {
     let mut machine_words = Vec::<bites::Bites>::new();
@@ -111,7 +111,7 @@ fn iter_dawg<'a, F: FnMut(&str)>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg, f: F)
         s: &'a mut String,
         f: F,
     }
-    fn iter<F: FnMut(&str)>(env: &mut Env<F>, mut p: i32) {
+    fn iter<F: FnMut(&str)>(env: &mut Env<'_, F>, mut p: i32) {
         let l = env.s.len();
         loop {
             let t = env.g[p].tile();
@@ -142,7 +142,7 @@ fn iter_dawg<'a, F: FnMut(&str)>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg, f: F)
 
 fn build_leaves<Readable: std::io::Read>(
     f: Readable,
-    alph: alphabet::Alphabet,
+    alph: alphabet::Alphabet<'_>,
 ) -> error::Returns<Vec<u8>> {
     let mut leaves_map = fash::MyHashMap::default();
     let mut leave_words = String::new();

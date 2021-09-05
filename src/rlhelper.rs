@@ -61,7 +61,7 @@ impl rustyline::highlight::Highlighter for MyHelper {
 impl rustyline::validate::Validator for MyHelper {
     fn validate(
         &self,
-        ctx: &mut rustyline::validate::ValidationContext,
+        ctx: &mut rustyline::validate::ValidationContext<'_>,
     ) -> rustyline::Result<rustyline::validate::ValidationResult> {
         self.validator.validate(ctx)
     }

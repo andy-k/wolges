@@ -142,7 +142,7 @@ impl Kibitzer {
 
     pub fn prepare(
         &mut self,
-        game_config: &game_config::GameConfig,
+        game_config: &game_config::GameConfig<'_>,
         rack: &[u8],
         signed_board_tiles: &[Vec<i8>],
     ) -> error::Returns<()> {
