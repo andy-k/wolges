@@ -200,8 +200,7 @@ impl GenMoves<'_> {
             }
             Self::Tilt { tilt, bot_level: _ } => {
                 let leave_scale = tilt.leave_scale;
-                let mut limited_vocab_checker =
-                    std::mem::replace(&mut tilt.limited_vocab_checker, LimitedVocabChecker::new());
+                let mut limited_vocab_checker = std::mem::take(&mut tilt.limited_vocab_checker);
                 move_generator.gen_moves_filtered(
                     &movegen::GenMovesParams {
                         board_snapshot,
