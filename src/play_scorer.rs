@@ -558,6 +558,7 @@ impl PlayScorer {
 }
 
 impl Default for PlayScorer {
+    #[inline(always)]
     fn default() -> Self {
         Self::new()
     }

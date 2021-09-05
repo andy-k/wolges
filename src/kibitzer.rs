@@ -236,6 +236,7 @@ impl Kibitzer {
 }
 
 impl Default for Kibitzer {
+    #[inline(always)]
     fn default() -> Self {
         Self::new()
     }

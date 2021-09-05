@@ -5,9 +5,12 @@
 pub struct MyHasher(u64);
 
 impl std::hash::Hasher for MyHasher {
+    #[inline(always)]
     fn finish(&self) -> u64 {
         self.0
     }
+
+    #[inline(always)]
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.0 = self.0.wrapping_mul(3467) ^ (!b as u64);
@@ -16,6 +19,7 @@ impl std::hash::Hasher for MyHasher {
 }
 
 impl Default for MyHasher {
+    #[inline(always)]
     fn default() -> MyHasher {
         MyHasher(0)
     }

@@ -80,6 +80,7 @@ impl LimitedVocabChecker {
 }
 
 impl Default for LimitedVocabChecker {
+    #[inline(always)]
     fn default() -> Self {
         Self::new()
     }
