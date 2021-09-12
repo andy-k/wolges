@@ -2,6 +2,7 @@
 
 // Fast insecure non-cryptographic hash.
 
+#[derive(Default)]
 pub struct MyHasher(u64);
 
 impl std::hash::Hasher for MyHasher {
@@ -15,13 +16,6 @@ impl std::hash::Hasher for MyHasher {
         for &b in bytes {
             self.0 = self.0.wrapping_mul(3467) ^ (!b as u64);
         }
-    }
-}
-
-impl Default for MyHasher {
-    #[inline(always)]
-    fn default() -> MyHasher {
-        MyHasher(0)
     }
 }
 
