@@ -81,7 +81,7 @@ struct WorkBuffer {
     dur_movegen: std::time::Duration,
     num_movegen: usize,
     vec_placed_tile: Vec<PlacedTile>,
-    ply_buffer: Vec<PlyBuffer>,
+    current_ply_buffer: PlyBuffer, // only using one
     movegen: movegen::KurniaMoveGenerator,
     blocked: Box<[[i16; 4]]>,                  // r*c, 4 directions
     vec_blocked: Vec<i16>,                     // up to 5*7
@@ -103,7 +103,10 @@ impl WorkBuffer {
             dur_movegen: Default::default(),
             num_movegen: 0,
             vec_placed_tile: Vec::new(),
-            ply_buffer: Vec::new(),
+            current_ply_buffer: PlyBuffer {
+                board_tiles: Vec::new(),
+                racks: [Vec::new(), Vec::new()],
+            },
             movegen: movegen::KurniaMoveGenerator::new(game_config),
             blocked: vec![[0; 4]; rows_times_cols].into_boxed_slice(),
             vec_blocked: Vec::new(),
@@ -388,15 +391,7 @@ impl<'a> EndgameSolver<'a> {
                 }
             }
         } else {
-            // clone from base
-            let mut current_ply_buffer =
-                self.work_buffer
-                    .ply_buffer
-                    .pop()
-                    .unwrap_or_else(|| PlyBuffer {
-                        board_tiles: Vec::new(),
-                        racks: [Vec::new(), Vec::new()],
-                    });
+            let current_ply_buffer = &mut self.work_buffer.current_ply_buffer;
             current_ply_buffer.board_tiles.clear();
             current_ply_buffer
                 .board_tiles
