@@ -83,9 +83,7 @@ struct WorkBuffer {
     vec_placed_tile: Vec<PlacedTile>,
     current_ply_buffer: PlyBuffer, // only using one
     movegen: movegen::KurniaMoveGenerator,
-    blocked: Box<[[i16; 4]]>,                  // r*c, 4 directions
-    vec_blocked: Vec<i16>,                     // up to 5*7
-    states: Vec<State>,                        // [0] = dummy initial state, excludes play outs
+    states: Vec<State>, // [0] = dummy initial state, excludes play outs
     state_finder: fash::MyHashMap<State, u32>, // maps all states except 0
     state_eval: fash::MyHashMap<u32, StateEval>,
     plays: Vec<movegen::Play>, // global u32->Play mapping. [0] = pass, [1..] = place
@@ -95,8 +93,6 @@ struct WorkBuffer {
 
 impl WorkBuffer {
     fn new(game_config: &game_config::GameConfig<'_>) -> Self {
-        let dim = game_config.board_layout().dim();
-        let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
         Self {
             t0: std::time::Instant::now(),
             tick_periods: move_picker::Periods(0),
@@ -108,8 +104,6 @@ impl WorkBuffer {
                 racks: [Vec::new(), Vec::new()],
             },
             movegen: movegen::KurniaMoveGenerator::new(game_config),
-            blocked: vec![[0; 4]; rows_times_cols].into_boxed_slice(),
-            vec_blocked: Vec::new(),
             states: Vec::new(),
             state_finder: Default::default(),
             state_eval: Default::default(),
@@ -436,49 +430,6 @@ impl<'a> EndgameSolver<'a> {
             );
             */
 
-            // rework blocked array (left, right, up, down)
-            let dim = self.game_config.board_layout().dim();
-            for row in 0..dim.rows {
-                let strider = dim.across(row);
-                let strider_len = strider.len();
-                let mut last_empty = strider.at(0) as i16;
-                for i in 0..strider_len {
-                    let here = strider.at(i);
-                    self.work_buffer.blocked[here][0] = last_empty;
-                    if current_ply_buffer.board_tiles[here] == 0 {
-                        last_empty = here as i16;
-                    }
-                }
-                last_empty = strider.at(strider_len - 1) as i16;
-                for i in (0..strider_len).rev() {
-                    let here = strider.at(i);
-                    self.work_buffer.blocked[here][1] = last_empty;
-                    if current_ply_buffer.board_tiles[here] == 0 {
-                        last_empty = here as i16;
-                    }
-                }
-            }
-            for col in 0..dim.cols {
-                let strider = dim.down(col);
-                let strider_len = strider.len();
-                let mut last_empty = strider.at(0) as i16;
-                for i in 0..strider_len {
-                    let here = strider.at(i);
-                    self.work_buffer.blocked[here][2] = last_empty;
-                    if current_ply_buffer.board_tiles[here] == 0 {
-                        last_empty = here as i16;
-                    }
-                }
-                last_empty = strider.at(strider_len - 1) as i16;
-                for i in (0..strider_len).rev() {
-                    let here = strider.at(i);
-                    self.work_buffer.blocked[here][3] = last_empty;
-                    if current_ply_buffer.board_tiles[here] == 0 {
-                        last_empty = here as i16;
-                    }
-                }
-            }
-
             // generate moves
             let board_snapshot = movegen::BoardSnapshot {
                 board_tiles: &current_ply_buffer.board_tiles,
@@ -552,19 +503,17 @@ impl<'a> EndgameSolver<'a> {
             // fill in move equities
             let mut px_child_plays = [p0_child_plays, p1_child_plays];
             {
-                let mut vec_blocked = std::mem::take(&mut self.work_buffer.vec_blocked);
                 for which_player in 0..2 {
                     let my_child_plays = std::mem::take(&mut px_child_plays[which_player]);
-                    let oppo_child_plays = std::mem::take(&mut px_child_plays[which_player ^ 1]);
                     for child_play in my_child_plays.iter_mut() {
                         match &self.work_buffer.plays[child_play.play_idx as usize] {
                             movegen::Play::Exchange { .. } => {
                                 unreachable!();
                             }
                             movegen::Play::Place {
-                                down,
-                                lane,
-                                idx,
+                                down: _,
+                                lane: _,
+                                idx: _,
                                 word,
                                 score,
                             } => {
@@ -576,60 +525,13 @@ impl<'a> EndgameSolver<'a> {
                                     child_play.valuation =
                                         (*score + 2 * rack_scores[which_player ^ 1]) as f32;
                                 } else {
-                                    // determine affected squares
-                                    vec_blocked.clear();
-                                    let strider = dim.lane(*down, *lane);
-                                    for (i, &tile) in (*idx..).zip(word.iter()) {
-                                        if tile != 0 {
-                                            let there = strider.at(i);
-                                            vec_blocked.push(there as i16);
-                                            vec_blocked.extend_from_slice(
-                                                &self.work_buffer.blocked[there],
-                                            );
-                                        }
-                                    }
-
-                                    // find the best unblocked oppo move's score
-                                    // (slow if top moves share the same squares)
-                                    let mut best_unblocked_oppo_score = 0;
-                                    for oppo_child_play in oppo_child_plays.iter() {
-                                        match &self.work_buffer.plays
-                                            [oppo_child_play.play_idx as usize]
-                                        {
-                                            movegen::Play::Exchange { .. } => {
-                                                break;
-                                            }
-                                            movegen::Play::Place {
-                                                down,
-                                                lane,
-                                                idx,
-                                                word,
-                                                score,
-                                            } => {
-                                                let strider = dim.lane(*down, *lane);
-                                                let is_blocked =
-                                                    (*idx..).zip(word.iter()).any(|(i, &tile)| {
-                                                        tile != 0
-                                                            && vec_blocked
-                                                                .contains(&(strider.at(i) as i16))
-                                                    });
-                                                if !is_blocked {
-                                                    best_unblocked_oppo_score = *score;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    child_play.valuation =
-                                        (*score - best_unblocked_oppo_score) as f32;
+                                    child_play.valuation = *score as f32;
                                 }
                             }
                         }
                     }
                     px_child_plays[which_player] = my_child_plays;
-                    px_child_plays[which_player ^ 1] = oppo_child_plays;
                 }
-                self.work_buffer.vec_blocked = vec_blocked;
             }
 
             self.work_buffer.state_eval.insert(state_idx, state_eval);
