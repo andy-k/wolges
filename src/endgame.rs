@@ -669,10 +669,11 @@ impl<'a> EndgameSolver<'a> {
             let player_turn_idx = (player_idx as usize + i) % 2;
             let rack = &mut racks[player_turn_idx];
             println!(
-                "{}: p{}: {:<width$} {} {}",
+                "{}: p{}: {}{:width$} {} {}",
                 i,
                 player_turn_idx,
-                format!("{}", self.game_config.alphabet().fmt_rack(rack)),
+                self.game_config.alphabet().fmt_rack(rack),
+                "",
                 ply.equity,
                 ply.play.fmt(&movegen::BoardSnapshot {
                     board_tiles: &latest_board_tiles,
@@ -680,7 +681,7 @@ impl<'a> EndgameSolver<'a> {
                     kwg: self.kwg,
                     klv: &self.klv,
                 }),
-                width = self.game_config.rack_size() as usize,
+                width = self.game_config.rack_size() as usize - rack.len(),
             );
             match &ply.play {
                 movegen::Play::Exchange { .. } => {}
