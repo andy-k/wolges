@@ -662,9 +662,16 @@ impl<'a> EndgameSolver<'a> {
         let mut latest_board_tiles = self.board_tiles.clone(); // this allocates and is not reused
         self.append_solution(0, player_idx, |x| soln.push(x));
         let mut racks = self.racks.clone();
+        let mut leftovers = [f32::NAN, f32::NAN];
         for (i, ply) in soln.iter().enumerate() {
             let player_turn_idx = (player_idx as usize + i) % 2;
             let rack = &mut racks[player_turn_idx];
+            leftovers[player_turn_idx ^ 1] = f32::NAN;
+            leftovers[player_turn_idx] = ply.equity
+                - match ply.play {
+                    movegen::Play::Exchange { .. } => 0.0,
+                    movegen::Play::Place { score, .. } => *score as f32,
+                };
             println!(
                 "{}: p{}: {}{:width$} {} {}",
                 i,
@@ -705,14 +712,24 @@ impl<'a> EndgameSolver<'a> {
                 }
             }
         }
-        for i in soln.len()..std::cmp::max(soln.len() + 1, 2) {
+        for i in soln.len()..soln.len() + 2 {
             let player_turn_idx = (player_idx as usize + i) % 2;
             let rack = &racks[player_turn_idx];
-            println!(
+            let leftover = leftovers[player_turn_idx];
+            print!(
                 "e: p{}: {}",
                 player_turn_idx,
-                self.game_config.alphabet().fmt_rack(rack),
+                self.game_config.alphabet().fmt_rack(rack)
             );
+            if !leftover.is_nan() {
+                print!(
+                    "{:width$} {}",
+                    "",
+                    leftover,
+                    width = self.game_config.rack_size() as usize - rack.len(),
+                );
+            }
+            println!();
         }
         display::print_board(
             self.game_config.alphabet(),
