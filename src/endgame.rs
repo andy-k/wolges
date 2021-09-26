@@ -79,7 +79,6 @@ struct WorkBuffer {
     t0: std::time::Instant, // for timing only
     tick_periods: move_picker::Periods,
     dur_movegen: std::time::Duration,
-    num_movegen: usize,
     vec_placed_tile: Vec<PlacedTile>,
     current_ply_buffer: PlyBuffer, // only using one
     movegen: movegen::KurniaMoveGenerator,
@@ -97,7 +96,6 @@ impl WorkBuffer {
             t0: std::time::Instant::now(),
             tick_periods: move_picker::Periods(0),
             dur_movegen: Default::default(),
-            num_movegen: 0,
             vec_placed_tile: Vec::new(),
             current_ply_buffer: PlyBuffer {
                 board_tiles: Vec::new(),
@@ -442,7 +440,6 @@ impl<'a> EndgameSolver<'a> {
                     true,
                 );
                 self.work_buffer.dur_movegen += t1.elapsed();
-                self.work_buffer.num_movegen += 1;
                 for candidate in &self.work_buffer.movegen.plays {
                     match &candidate.play {
                         movegen::Play::Exchange { .. } => {
@@ -728,10 +725,9 @@ impl<'a> EndgameSolver<'a> {
         let dur0 = self.work_buffer.t0.elapsed();
         let dur1 = self.work_buffer.dur_movegen;
         println!(
-            "after {:?} ({:?} on {} movegen), there are {} states, {} evaluated, {} child_plays, {} plays",
+            "after {:?} ({:?} on movegen), there are {} states, {} evaluated, {} child_plays, {} plays",
             dur0,
             dur1,
-            self.work_buffer.num_movegen,
             self.work_buffer.states.len(),
             self.work_buffer.state_eval.len(),
             self.work_buffer.child_plays.len(),
