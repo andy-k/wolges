@@ -65,6 +65,15 @@ struct PlyBuffer {
     racks: [Vec<u8>; 2],
 }
 
+impl Default for PlyBuffer {
+    fn default() -> Self {
+        Self {
+            board_tiles: Vec::new(),
+            racks: [Vec::new(), Vec::new()],
+        }
+    }
+}
+
 struct ChildPlay {
     new_state_idx: u32, // workbuf.states; 0=play out, !0=missing, same idx = pass
     play_idx: u32,      // workbuf.plays
@@ -97,10 +106,7 @@ impl WorkBuffer {
             tick_periods: move_picker::Periods(0),
             dur_movegen: Default::default(),
             vec_placed_tile: Vec::new(),
-            current_ply_buffer: PlyBuffer {
-                board_tiles: Vec::new(),
-                racks: [Vec::new(), Vec::new()],
-            },
+            current_ply_buffer: Default::default(),
             movegen: movegen::KurniaMoveGenerator::new(game_config),
             states: Vec::new(),
             state_finder: Default::default(),
@@ -656,15 +662,16 @@ impl<'a> EndgameSolver<'a> {
         }
     }
 
-    // allocates a lot of things that are not reused
-    pub fn print_best_line(&self, player_idx: u8) {
-        let mut soln = Vec::new(); // allocates
-        let mut latest_board_tiles = self.board_tiles.clone(); // this allocates and is not reused
-        self.append_solution(0, player_idx, |x| soln.push(x));
-        let mut racks = self.racks.clone();
+    pub fn print_best_line(&mut self, player_idx: u8) {
+        let mut current_ply_buffer = std::mem::take(&mut self.work_buffer.current_ply_buffer);
+        let board_tiles = &mut current_ply_buffer.board_tiles;
+        board_tiles.clone_from(&self.board_tiles);
+        let racks = &mut current_ply_buffer.racks;
+        racks.clone_from(&self.racks);
         let mut leftovers = [f32::NAN, f32::NAN];
-        for (i, ply) in soln.iter().enumerate() {
-            let player_turn_idx = (player_idx as usize + i) % 2;
+        let mut i = 0usize;
+        self.append_solution(0, player_idx, |ply| {
+            let player_turn_idx = (player_idx as usize + i) & 1;
             let rack = &mut racks[player_turn_idx];
             leftovers[player_turn_idx ^ 1] = f32::NAN;
             leftovers[player_turn_idx] = ply.equity
@@ -680,7 +687,7 @@ impl<'a> EndgameSolver<'a> {
                 "",
                 ply.equity,
                 ply.play.fmt(&movegen::BoardSnapshot {
-                    board_tiles: &latest_board_tiles,
+                    board_tiles,
                     game_config: self.game_config,
                     kwg: self.kwg,
                     klv: &self.klv,
@@ -701,7 +708,7 @@ impl<'a> EndgameSolver<'a> {
                     // place the tiles
                     for (i, &tile) in (*idx..).zip(word.iter()) {
                         if tile != 0 {
-                            latest_board_tiles[strider.at(i)] = tile;
+                            board_tiles[strider.at(i)] = tile;
                             let blanked_tile = tile & !((tile as i8) >> 7) as u8;
                             let tombstone_idx =
                                 rack.iter().rposition(|&t| t == blanked_tile).unwrap();
@@ -711,9 +718,10 @@ impl<'a> EndgameSolver<'a> {
                     rack.retain(|&t| t != 0x80);
                 }
             }
-        }
-        for i in soln.len()..soln.len() + 2 {
-            let player_turn_idx = (player_idx as usize + i) % 2;
+            i += 1;
+        });
+        for _ in 0..2 {
+            let player_turn_idx = (player_idx as usize + i) & 1;
             let rack = &racks[player_turn_idx];
             let leftover = leftovers[player_turn_idx];
             print!(
@@ -730,12 +738,14 @@ impl<'a> EndgameSolver<'a> {
                 );
             }
             println!();
+            i += 1;
         }
         display::print_board(
             self.game_config.alphabet(),
             self.game_config.board_layout(),
-            &latest_board_tiles,
+            board_tiles,
         );
+        self.work_buffer.current_ply_buffer = current_ply_buffer;
     }
 
     fn print_progress(&self) {
