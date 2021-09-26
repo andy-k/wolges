@@ -60,18 +60,10 @@ struct StateEval {
 }
 
 // misnomer now. there used to be one per ply, now there's just one.
+#[derive(Default)]
 struct PlyBuffer {
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
-}
-
-impl Default for PlyBuffer {
-    fn default() -> Self {
-        Self {
-            board_tiles: Vec::new(),
-            racks: [Vec::new(), Vec::new()],
-        }
-    }
 }
 
 struct ChildPlay {
