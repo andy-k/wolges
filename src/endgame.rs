@@ -59,7 +59,7 @@ struct StateEval {
     child_play_idxs: [usize; 3],   // workbuf.child_plays[a..b]=p0, [b..c]=p1
 }
 
-// per-ply
+// misnomer now. there used to be one per ply, now there's just one.
 struct PlyBuffer {
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
@@ -158,13 +158,6 @@ pub struct EndgameSolver<'a> {
     racks: [Vec<u8>; 2],
     rack_scores: [i16; 2],
     work_buffer: WorkBuffer,
-}
-
-fn move_score(play: &movegen::Play) -> i16 {
-    match play {
-        movegen::Play::Exchange { .. } => 0,
-        movegen::Play::Place { score, .. } => *score,
-    }
 }
 
 impl<'a> EndgameSolver<'a> {
@@ -349,20 +342,18 @@ impl<'a> EndgameSolver<'a> {
     ) -> f32 {
         // movegen not done for depth == 0, so no state_eval.
         if depth == 0 {
-            return self.both_pass_value(state_idx, player_idx);
-        }
+            // this should static eval from initial player's perspective.
+            // initial_player_idx is not currently a parameter, and
+            // negamax_eval's initial call may not be for player_idx=0.
+            // anyway, if this player_idx is the opponent, negate the value.
 
-        // expand no-pass side first
-        let pass_valuation = if just_passed {
-            self.both_pass_value(state_idx, player_idx)
-        } else {
-            -self.negamax_eval(state_idx, player_idx ^ 1, depth, -beta, -alpha, true)
-        };
+            // for now, no need to worry about this because we return 0.
+            return 0.0;
+        }
 
         // return and/or trim range
         let alpha_orig = alpha;
-        let beta_orig = beta;
-        if let Some(state_eval) = self.work_buffer.state_eval.get(&state_idx) {
+        let state_eval = if let Some(state_eval) = self.work_buffer.state_eval.get(&state_idx) {
             let state_side_eval = &state_eval.best_move[player_idx as usize];
             if state_side_eval.depth >= depth {
                 match state_side_eval.equity_type {
@@ -384,6 +375,7 @@ impl<'a> EndgameSolver<'a> {
                     return state_side_eval.equity;
                 }
             }
+            state_eval
         } else {
             let current_ply_buffer = &mut self.work_buffer.current_ply_buffer;
             current_ply_buffer.board_tiles.clear();
@@ -456,7 +448,7 @@ impl<'a> EndgameSolver<'a> {
                         movegen::Play::Exchange { .. } => {
                             // no need to store pass explicitly
                         }
-                        movegen::Play::Place { .. } => {
+                        movegen::Play::Place { word, score, .. } => {
                             let new_new_play_idx = self.work_buffer.plays.len() as u32;
                             let new_play_idx = *self
                                 .work_buffer
@@ -470,75 +462,38 @@ impl<'a> EndgameSolver<'a> {
                                     panic!("too many plays");
                                 }
                             }
-                            self.work_buffer.child_plays.push(ChildPlay {
-                                new_state_idx: !0, // filled in later
-                                play_idx: new_play_idx,
-                                valuation: 0.0, // filled in later
-                            });
-                        }
-                    }
-                }
-                state_eval.child_play_idxs[which_player as usize + 1] =
-                    self.work_buffer.child_plays.len();
-            }
-
-            // sort both sets of moves by score descending
-            let both_child_play_ranges = &mut self.work_buffer.child_plays
-                [state_eval.child_play_idxs[0]..state_eval.child_play_idxs[2]];
-            let (p0_child_plays, p1_child_plays) = both_child_play_ranges
-                .split_at_mut(state_eval.child_play_idxs[1] - state_eval.child_play_idxs[0]);
-            {
-                let plays = std::mem::take(&mut self.work_buffer.plays);
-                p0_child_plays.sort_unstable_by(|a, b| {
-                    move_score(&plays[b.play_idx as usize])
-                        .cmp(&move_score(&plays[a.play_idx as usize]))
-                });
-                p1_child_plays.sort_unstable_by(|a, b| {
-                    move_score(&plays[b.play_idx as usize])
-                        .cmp(&move_score(&plays[a.play_idx as usize]))
-                });
-                self.work_buffer.plays = plays;
-            }
-
-            // fill in move equities
-            let mut px_child_plays = [p0_child_plays, p1_child_plays];
-            {
-                for which_player in 0..2 {
-                    let my_child_plays = std::mem::take(&mut px_child_plays[which_player]);
-                    for child_play in my_child_plays.iter_mut() {
-                        match &self.work_buffer.plays[child_play.play_idx as usize] {
-                            movegen::Play::Exchange { .. } => {
-                                unreachable!();
-                            }
-                            movegen::Play::Place {
-                                down: _,
-                                lane: _,
-                                idx: _,
-                                word,
-                                score,
-                            } => {
+                            self.work_buffer.child_plays.push(
                                 if word.iter().filter(|&&t| t != 0).count()
                                     == current_ply_buffer.racks[which_player].len()
                                 {
                                     // playing out
-                                    child_play.new_state_idx = 0;
-                                    child_play.valuation =
-                                        (*score + 2 * rack_scores[which_player ^ 1]) as f32;
+                                    ChildPlay {
+                                        new_state_idx: 0,
+                                        play_idx: new_play_idx,
+                                        valuation: (score + 2 * rack_scores[which_player ^ 1])
+                                            as f32,
+                                    }
                                 } else {
-                                    child_play.valuation = *score as f32;
-                                }
-                            }
+                                    ChildPlay {
+                                        new_state_idx: !0, // filled in later
+                                        play_idx: new_play_idx,
+                                        valuation: *score as f32,
+                                    }
+                                },
+                            );
                         }
                     }
-                    px_child_plays[which_player] = my_child_plays;
                 }
+                state_eval.child_play_idxs[which_player + 1] = self.work_buffer.child_plays.len();
             }
 
-            self.work_buffer.state_eval.insert(state_idx, state_eval);
-        }
+            self.work_buffer
+                .state_eval
+                .entry(state_idx)
+                .or_insert(state_eval)
+        };
 
         // sort moves by equity desc
-        let state_eval = self.work_buffer.state_eval.get(&state_idx).unwrap();
         let low_idx = state_eval.child_play_idxs[player_idx as usize];
         let high_idx = state_eval.child_play_idxs[player_idx as usize + 1];
         self.work_buffer.child_plays[low_idx..high_idx]
@@ -570,13 +525,21 @@ impl<'a> EndgameSolver<'a> {
                                         self.work_buffer.child_plays[child_play_idx].play_idx,
                                     );
                             }
+                            // the math goes like this:
+                            // child negamax returns v.
+                            // this parent negamax wants (score - v),
+                            // where alpha <= (score - v) <= beta.
+                            // so (score - beta) <= v <= (score - alpha).
+                            // since child_alpha <= v <= child_beta,
+                            // we set child_alpha = (score - beta)
+                            // and child_beta = (score - alpha).
                             score
                                 - self.negamax_eval(
                                     self.work_buffer.child_plays[child_play_idx].new_state_idx,
                                     player_idx ^ 1,
                                     depth - 1,
-                                    -beta,
-                                    -alpha,
+                                    score - beta,
+                                    score - alpha,
                                     false,
                                 )
                         };
@@ -587,14 +550,21 @@ impl<'a> EndgameSolver<'a> {
                         best_idx = child_play_idx;
                         if child_valuation > alpha {
                             alpha = child_valuation;
-                            if alpha >= beta {
-                                break;
-                            }
+                        }
+                        if child_valuation >= beta {
+                            break;
                         }
                     }
                 }
             };
         }
+
+        // expand no-pass side first
+        let pass_valuation = if just_passed {
+            self.both_pass_value(state_idx, player_idx)
+        } else {
+            -self.negamax_eval(state_idx, player_idx ^ 1, depth - 1, -beta, -alpha, true)
+        };
 
         // fill in best_place_move
         let mut state_eval = self.work_buffer.state_eval.get_mut(&state_idx).unwrap();
@@ -605,7 +575,7 @@ impl<'a> EndgameSolver<'a> {
                 play_idx: 0,
                 new_state_idx: state_idx,
                 equity_type: StateSideEvalEquityType::Exact,
-                depth,
+                depth: i8::MIN, // cannot cache pass_valuation
             };
         } else {
             let best_play = &self.work_buffer.child_plays[best_idx];
@@ -631,54 +601,12 @@ impl<'a> EndgameSolver<'a> {
                 play_idx: 0,
                 new_state_idx: state_idx,
                 equity_type: StateSideEvalEquityType::Exact,
-                depth,
+                depth: i8::MIN, // cannot cache pass_valuation
             };
             best_valuation = pass_valuation;
         } else {
             state_eval.best_move[player_idx as usize] =
                 state_eval.best_place_move[player_idx as usize].clone();
-        }
-
-        if !just_passed {
-            // the initial player has just_passed=false.
-            // to the initial player, the following have been evaluated:
-            // - A = the opponent's best_place_move,
-            // - B = the opponent's best_move,
-            // - C = the player's best_place_move,
-            // - D = the player's best_move.
-            // let's assume A and C are correct.
-            // let P = opponent's rack minus player's rack.
-            // the goal is to have
-            // - player's best_move = max(C, -max(A, -P)).
-            // - opponent's best_move = max(A, -max(C, P)).
-            // at this point, B = max(A, -P), so it's incorrect.
-            // but D = max(C, -B), so it's correct.
-            // so, set opponent's best_move to E.
-            // let E = max(A, -D).
-            // so E = max(A, -max(C, -max(A, -P))).
-            // if -P >= A, this is trivially correct.
-            // and if A > -P, it becomes max(A, -max(C, -A)),
-            // which is max(A, min(-C, A)), which is A.
-
-            if -best_valuation > state_eval.best_place_move[player_idx as usize ^ 1].equity {
-                // -best_valuation within -beta_orig..-alpha_orig.
-                state_eval.best_move[player_idx as usize ^ 1] = StateSideEval {
-                    equity: -best_valuation,
-                    play_idx: 0,
-                    new_state_idx: state_idx,
-                    equity_type: if beta_orig <= best_valuation {
-                        StateSideEvalEquityType::UpperBound
-                    } else if alpha_orig >= best_valuation {
-                        StateSideEvalEquityType::LowerBound
-                    } else {
-                        StateSideEvalEquityType::Exact
-                    },
-                    depth,
-                };
-            } else {
-                state_eval.best_move[player_idx as usize ^ 1] =
-                    state_eval.best_place_move[player_idx as usize ^ 1].clone();
-            }
         }
 
         // quell impatience
