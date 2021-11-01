@@ -73,7 +73,7 @@ impl Kwg {
         -1 // intentionally return 0 as -1
     }
 
-    fn count_words_at(&self, mut word_counts: &mut [u32], p: i32) -> u32 {
+    fn count_words_at(&self, word_counts: &mut [u32], p: i32) -> u32 {
         if p as usize >= word_counts.len() {
             return 0;
         }
@@ -85,14 +85,14 @@ impl Kwg {
             let node = self[p];
             word_counts[p as usize] = node.accepts() as u32
                 + if node.arc_index() != 0 {
-                    self.count_words_at(&mut word_counts, node.arc_index())
+                    self.count_words_at(word_counts, node.arc_index())
                 } else {
                     0
                 }
                 + if node.is_end() {
                     0
                 } else {
-                    self.count_words_at(&mut word_counts, p + 1)
+                    self.count_words_at(word_counts, p + 1)
                 };
         }
         word_counts[p as usize]

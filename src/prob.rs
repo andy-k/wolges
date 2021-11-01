@@ -114,8 +114,8 @@ impl WordProbability {
     }
 
     #[inline(always)]
-    pub fn get_max_probs_by_len(&mut self, kwg: &kwg::Kwg, mut v: &mut Vec<u64>) {
+    pub fn get_max_probs_by_len(&mut self, kwg: &kwg::Kwg, v: &mut Vec<u64>) {
         v.clear();
-        self.get_max_probs_by_len_iter(kwg, &mut Vec::new(), &mut v, kwg[0].arc_index());
+        self.get_max_probs_by_len_iter(kwg, &mut Vec::new(), v, kwg[0].arc_index());
     }
 }

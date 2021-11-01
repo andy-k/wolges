@@ -398,7 +398,7 @@ impl WorkingBuffer {
             }
             #[inline(always)]
             fn pretend_to_generate_exchanges<AdjustLeaveValue: Fn(f32) -> f32>(
-                mut env: &mut Env<'_, AdjustLeaveValue>,
+                env: &mut Env<'_, AdjustLeaveValue>,
                 mut num_tiles_exchanged: u16,
                 mut idx: u8,
             ) {
@@ -416,7 +416,7 @@ impl WorkingBuffer {
                 }
                 let original_count = env.rack_tally[idx as usize];
                 loop {
-                    pretend_to_generate_exchanges(&mut env, num_tiles_exchanged, idx + 1);
+                    pretend_to_generate_exchanges(env, num_tiles_exchanged, idx + 1);
                     if env.rack_tally[idx as usize] == 0 {
                         break;
                     }
@@ -599,7 +599,7 @@ fn gen_classic_cross_set<'a>(
             let j_end = cross_set_buffer[j as usize].end_range;
             let mut p_right = cross_set_buffer[j as usize].p;
             let mut p_left = kwg.seek(cross_set_buffer[prev_j as usize].p, 0);
-            let mut bits = reuse_cross_set(&mut cached_cross_sets, j - 1, p_left, p_right);
+            let mut bits = reuse_cross_set(cached_cross_sets, j - 1, p_left, p_right);
             if bits == 0 {
                 bits = 1u64;
                 if p_right > 0 && p_left > 0 {
@@ -735,7 +735,7 @@ fn gen_classic_cross_set<'a>(
         }
         // [j] has left, no right.
         let mut p = kwg.seek(cross_set_buffer[prev_j as usize].p, 0);
-        let mut bits = reuse_cross_set(&mut cached_cross_sets, j, p, -2);
+        let mut bits = reuse_cross_set(cached_cross_sets, j, p, -2);
         if bits == 0 {
             bits = 1u64;
             if p > 0 {
@@ -2169,7 +2169,7 @@ impl KurniaMoveGenerator {
 
         let vec_moves = std::cell::RefCell::new(std::mem::take(&mut self.plays));
 
-        let mut working_buffer = &mut self.working_buffer;
+        let working_buffer = &mut self.working_buffer;
         working_buffer.init(board_snapshot, rack, &|leave_value: f32| leave_value);
 
         let found_place_move =
@@ -2198,16 +2198,12 @@ impl KurniaMoveGenerator {
         kurnia_gen_place_moves_iter(
             true,
             board_snapshot,
-            &mut working_buffer,
+            working_buffer,
             found_place_move,
             |_best_possible_equity: f32| true,
         )
         .for_each(|_| ());
-        kurnia_gen_nonplace_moves_except_pass(
-            board_snapshot,
-            &mut working_buffer,
-            found_exchange_move,
-        );
+        kurnia_gen_nonplace_moves_except_pass(board_snapshot, working_buffer, found_exchange_move);
         if always_include_pass || vec_moves.borrow().is_empty() {
             found_exchange_move(&working_buffer.rack_tally, &working_buffer.exchange_buffer);
         }
@@ -2263,7 +2259,7 @@ impl KurniaMoveGenerator {
             }
         }
 
-        let mut working_buffer = &mut self.working_buffer;
+        let working_buffer = &mut self.working_buffer;
         working_buffer.init(params.board_snapshot, params.rack, &adjust_leave_value);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
         let num_tiles_in_bag = working_buffer.num_tiles_in_bag;
@@ -2342,7 +2338,7 @@ impl KurniaMoveGenerator {
         for _ in kurnia_gen_place_moves_iter(
             false,
             params.board_snapshot,
-            &mut working_buffer,
+            working_buffer,
             found_place_move,
             can_accept,
         ) {
@@ -2350,7 +2346,7 @@ impl KurniaMoveGenerator {
         }
         kurnia_gen_nonplace_moves_except_pass(
             params.board_snapshot,
-            &mut working_buffer,
+            working_buffer,
             found_exchange_move,
         );
         if params.always_include_pass || found_moves.borrow().is_empty() {
@@ -2407,7 +2403,7 @@ impl KurniaMoveGenerator {
             }
         }
 
-        let mut working_buffer = &mut self.working_buffer;
+        let working_buffer = &mut self.working_buffer;
         working_buffer.init(params.board_snapshot, params.rack, &adjust_leave_value);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
         let num_tiles_in_bag = working_buffer.num_tiles_in_bag;
@@ -2486,14 +2482,14 @@ impl KurniaMoveGenerator {
         kurnia_gen_place_moves_iter(
             false,
             params.board_snapshot,
-            &mut working_buffer,
+            working_buffer,
             found_place_move,
             can_accept,
         )
         .for_each(|_| ());
         kurnia_gen_nonplace_moves_except_pass(
             params.board_snapshot,
-            &mut working_buffer,
+            working_buffer,
             found_exchange_move,
         );
         if params.always_include_pass || found_moves.borrow().is_empty() {
