@@ -55,13 +55,19 @@ impl Bag {
             _ => {}
         }
         let mut num_old_tiles = self.0.len();
+        let num_same_prefix = rng.gen_range(0..=num_old_tiles);
+        if num_same_prefix == num_old_tiles {
+            // old does not move
+            self.0.extend_from_slice(tiles); // [old,new]
+            unsafe { self.0.get_unchecked_mut(num_old_tiles..) }.shuffle(&mut rng);
+            return;
+        }
         let new_len = num_new_tiles + num_old_tiles;
         self.0.reserve(num_new_tiles + new_len); // cap = old+(new+old)+new
         #[allow(clippy::uninit_vec)]
         unsafe {
             self.0.set_len(new_len + num_old_tiles);
         } // [old,?,?]
-        let num_same_prefix = rng.gen_range(0..=num_old_tiles);
         let mut p_old_tiles = new_len; // after old+new
         self.0
             .copy_within(num_same_prefix..num_old_tiles, p_old_tiles); // [old,?,ld?]
