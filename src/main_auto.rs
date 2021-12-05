@@ -9,9 +9,9 @@ use wolges::{
 fn main() -> error::Returns<()> {
     let jumbled = false;
     let kwg = if jumbled {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kad")?)
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kad")?)
     } else {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?)
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?)
     };
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/leaves.klv")?);
     let game_config = &if jumbled {

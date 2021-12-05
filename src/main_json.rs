@@ -73,6 +73,11 @@ fn main() -> error::Returns<()> {
 
     // of course this should be cached
     match question.lexicon.as_str() {
+        "CSW21" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/leaves.klv")?);
+            game_config = game_config::make_common_english_game_config();
+        }
         "CSW19" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/leaves.klv")?);

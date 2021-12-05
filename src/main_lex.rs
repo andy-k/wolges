@@ -315,7 +315,7 @@ fn main() -> error::Returns<()> {
         print_dawg(&alphabet::make_polish_alphabet(), &kwg);
         return Ok(());
     }
-    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
+    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
     if true {
         let alphabet = alphabet::make_english_alphabet();
         let nwl18_kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);

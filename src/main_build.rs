@@ -278,13 +278,13 @@ fn main() -> error::Returns<()> {
     just to test
   english-klv leaves.csv leaves.klv
     generate klv file
-  english-kwg CSW19.txt CSW19.kwg
+  english-kwg CSW21.txt CSW21.kwg
     generate kwg file containing gaddawg
-  english-macondo CSW19.kwg CSW19 CSW19.dawg CSW19.gaddag
+  english-macondo CSW21.kwg CSW21 CSW21.dawg CSW21.gaddag
     read kwg file, with lexicon name save macondo dawg/gaddag
-  english-kwg-alpha CSW19.txt CSW19.kad
+  english-kwg-alpha CSW21.txt CSW21.kad
     generate kad file containing alpha dawg
-  english-kwg-dawg CSW19.txt outfile.dwg
+  english-kwg-dawg CSW21.txt outfile.dwg
     generate dawg-only file
   (english can also be french, german, norwegian, polish, spanish)"
         );
@@ -317,6 +317,33 @@ fn old_main() -> error::Returns<()> {
             alphabet::make_english_alphabet(),
         )?,
     )?;
+    {
+        let t0 = std::time::Instant::now();
+        std::fs::write(
+            "lexbin/CSW21.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW21.txt")?)?,
+            )?,
+        )?;
+        println!("{:?} for reading+building+writing CSW21 kwg", t0.elapsed());
+    }
+    {
+        let t0 = std::time::Instant::now();
+        std::fs::write(
+            "lexbin/CSW21.kad",
+            build::build(
+                build::BuildFormat::DawgOnly,
+                &build::make_alphagrams(&read_english_machine_words(&std::fs::read_to_string(
+                    "lexsrc/CSW21.txt",
+                )?)?),
+            )?,
+        )?;
+        println!(
+            "{:?} for reading+building+writing CSW21 alpha dawg",
+            t0.elapsed()
+        );
+    }
     {
         let t0 = std::time::Instant::now();
         std::fs::write(
@@ -405,6 +432,33 @@ fn old_main() -> error::Returns<()> {
         let english_alphabet = alphabet::make_english_alphabet();
         let polish_alphabet = alphabet::make_polish_alphabet();
         let t0 = std::time::Instant::now();
+        {
+            let t0 = std::time::Instant::now();
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
+            println!("{:?} for rereading CSW21.kwg", t0.elapsed());
+            let t0 = std::time::Instant::now();
+            std::fs::write(
+                "lexbin/CSW21.dawg",
+                lexport::to_macondo(
+                    &kwg,
+                    &english_alphabet,
+                    "CSW21",
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            println!("{:?} for exporting CSW21 dawg", t0.elapsed());
+            let t0 = std::time::Instant::now();
+            std::fs::write(
+                "lexbin/CSW21.gaddag",
+                lexport::to_macondo(
+                    &kwg,
+                    &english_alphabet,
+                    "CSW21",
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
+            println!("{:?} for exporting CSW21 gaddag", t0.elapsed());
+        }
         {
             let t0 = std::time::Instant::now();
             let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
@@ -527,12 +581,14 @@ fn old_main() -> error::Returns<()> {
 
     if true {
         // this reads the files again, but this code is temporary
+        let v_csw21 = read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW21.txt")?)?;
         let v_csw19 = read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW19.txt")?)?;
         let v_ecwl = read_english_machine_words(&std::fs::read_to_string("lexsrc/ECWL.txt")?)?;
         let v_nwl18 = read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL18.txt")?)?;
         let v_nwl20 = read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL20.txt")?)?;
         let v_twl14 = read_english_machine_words(&std::fs::read_to_string("lexsrc/TWL14.txt")?)?;
         let mut v = Vec::<bites::Bites>::new();
+        v.extend_from_slice(&v_csw21);
         v.extend_from_slice(&v_csw19);
         v.extend_from_slice(&v_ecwl);
         v.extend_from_slice(&v_nwl18);
@@ -542,17 +598,23 @@ fn old_main() -> error::Returns<()> {
         v.dedup();
         let v = v.into_boxed_slice();
         let v_bits_bytes = (v.len() + 7) / 8;
+        let mut v_csw21_bits = vec![0u8; v_bits_bytes];
         let mut v_csw19_bits = vec![0u8; v_bits_bytes];
         let mut v_ecwl_bits = vec![0u8; v_bits_bytes];
         let mut v_nwl18_bits = vec![0u8; v_bits_bytes];
         let mut v_nwl20_bits = vec![0u8; v_bits_bytes];
         let mut v_twl14_bits = vec![0u8; v_bits_bytes];
+        let mut p_csw21 = v_csw21.len();
         let mut p_csw19 = v_csw19.len();
         let mut p_ecwl = v_ecwl.len();
         let mut p_nwl18 = v_nwl18.len();
         let mut p_nwl20 = v_nwl20.len();
         let mut p_twl14 = v_twl14.len();
         for i in (0..v.len()).rev() {
+            if p_csw21 > 0 && v[i] == v_csw21[p_csw21 - 1] {
+                v_csw21_bits[i / 8] |= 1 << (i % 8);
+                p_csw21 -= 1;
+            }
             if p_csw19 > 0 && v[i] == v_csw19[p_csw19 - 1] {
                 v_csw19_bits[i / 8] |= 1 << (i % 8);
                 p_csw19 -= 1;
@@ -578,6 +640,7 @@ fn old_main() -> error::Returns<()> {
             "lexbin/allgdw.kwg",
             build::build(build::BuildFormat::Gaddawg, &v)?,
         )?;
+        std::fs::write("lexbin/all-CSW21.kwi", v_csw21_bits)?;
         std::fs::write("lexbin/all-CSW19.kwi", v_csw19_bits)?;
         std::fs::write("lexbin/all-ECWL.kwi", v_ecwl_bits)?;
         std::fs::write("lexbin/all-NWL18.kwi", v_nwl18_bits)?;
@@ -646,6 +709,7 @@ fn old_main() -> error::Returns<()> {
         let word_counts = kwg.count_dawg_words_alloc();
         // because dawg do not need gaddag nodes
         println!("only counting {} nodes", word_counts.len());
+        let v_csw21_bits = std::fs::read("lexbin/all-CSW21.kwi")?;
         let v_csw19_bits = std::fs::read("lexbin/all-CSW19.kwi")?;
         let v_ecwl_bits = std::fs::read("lexbin/all-ECWL.kwi")?;
         let v_nwl18_bits = std::fs::read("lexbin/all-NWL18.kwi")?;
@@ -665,6 +729,9 @@ fn old_main() -> error::Returns<()> {
             print!("{} {} {:?}", i, j, out_vec);
             let byte_index = j as usize / 8;
             let bit = 1 << (j as usize % 8);
+            if v_csw21_bits[byte_index] & bit != 0 {
+                print!(" CSW21");
+            }
             if v_csw19_bits[byte_index] & bit != 0 {
                 print!(" CSW19");
             }
