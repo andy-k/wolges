@@ -636,6 +636,10 @@ impl<'a> EndgameSolver<'a> {
             if let movegen::Play::Exchange { .. } = play {
                 player_idx ^= 1;
                 ans1 = &ans.best_move[player_idx as usize];
+                if ans1.play_idx == !0 {
+                    // not yet evaluated
+                    break;
+                }
                 let play = &self.work_buffer.plays[ans1.play_idx as usize];
                 out(FoundPlay {
                     equity: ans1.equity,
