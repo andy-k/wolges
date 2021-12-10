@@ -420,6 +420,34 @@ fn old_main() -> error::Returns<()> {
             t0.elapsed()
         );
     }
+    if true {
+        let t0 = std::time::Instant::now();
+        std::fs::write(
+            "lexbin/OSPS44-dawg.kwg",
+            build::build(
+                build::BuildFormat::DawgOnly,
+                &read_polish_machine_words(&std::fs::read_to_string("lexsrc/OSPS44.txt")?)?,
+            )?,
+        )?;
+        println!(
+            "{:?} for reading+building+writing polish dawgonly",
+            t0.elapsed()
+        );
+    }
+    if true {
+        let t0 = std::time::Instant::now();
+        std::fs::write(
+            "lexbin/OSPS44.kwg",
+            build::build(
+                build::BuildFormat::Gaddawg,
+                &read_polish_machine_words(&std::fs::read_to_string("lexsrc/OSPS44.txt")?)?,
+            )?,
+        )?;
+        println!(
+            "{:?} for reading+building+writing polish gaddawg",
+            t0.elapsed()
+        );
+    }
     std::fs::write(
         "lexbin/TWL14.kwg",
         build::build(
@@ -576,6 +604,33 @@ fn old_main() -> error::Returns<()> {
                 ),
             )?;
             println!("{:?} for exporting OSPS42 gaddag", t0.elapsed());
+        }
+        if true {
+            let t0 = std::time::Instant::now();
+            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.kwg")?);
+            println!("{:?} for rereading OSPS44.kwg", t0.elapsed());
+            let t0 = std::time::Instant::now();
+            std::fs::write(
+                "lexbin/OSPS44.dawg",
+                lexport::to_macondo(
+                    &kwg,
+                    &polish_alphabet,
+                    "OSPS44",
+                    lexport::MacondoFormat::Dawg,
+                ),
+            )?;
+            println!("{:?} for exporting OSPS44 dawg", t0.elapsed());
+            let t0 = std::time::Instant::now();
+            std::fs::write(
+                "lexbin/OSPS44.gaddag",
+                lexport::to_macondo(
+                    &kwg,
+                    &polish_alphabet,
+                    "OSPS44",
+                    lexport::MacondoFormat::Gaddag,
+                ),
+            )?;
+            println!("{:?} for exporting OSPS44 gaddag", t0.elapsed());
         }
     }
 

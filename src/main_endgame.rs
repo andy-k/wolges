@@ -295,6 +295,10 @@ fn main() -> error::Returns<()> {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
             game_config = game_config::make_polish_game_config();
         }
+        "OSPS44" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.kwg")?);
+            game_config = game_config::make_polish_game_config();
+        }
         _ => {
             wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
         }

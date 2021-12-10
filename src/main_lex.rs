@@ -311,7 +311,7 @@ fn test_find_embedded_words<'a>(
 
 fn main() -> error::Returns<()> {
     if false {
-        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
+        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.kwg")?);
         print_dawg(&alphabet::make_polish_alphabet(), &kwg);
         return Ok(());
     }
