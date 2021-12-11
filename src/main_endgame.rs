@@ -402,11 +402,7 @@ fn main() -> error::Returns<()> {
 
     let mut egs = endgame::EndgameSolver::new(&game_config, &kwg);
     egs.init(&board_tiles, [&question.rack, &oppo_rack]);
-    for player_idx in 0..2 {
-        println!();
-        println!("for player {}:", player_idx);
-        egs.evaluate(player_idx);
-    }
+    egs.evaluate(0);
 
     Ok(())
 }
