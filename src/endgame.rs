@@ -307,7 +307,7 @@ impl<'a> EndgameSolver<'a> {
 
     pub fn evaluate(&mut self, player_idx: u8) {
         for max_depth in 1.. {
-            let old_num_states = self.work_buffer.states.len();
+            let old_num_state_eval = self.work_buffer.state_eval.len();
             let valuation = self.negamax_eval(
                 0,
                 player_idx,
@@ -320,7 +320,7 @@ impl<'a> EndgameSolver<'a> {
             self.print_progress();
             self.print_best_line(player_idx);
             // check for time limit here
-            if self.work_buffer.states.len() == old_num_states {
+            if self.work_buffer.state_eval.len() == old_num_state_eval {
                 break;
             }
         }
