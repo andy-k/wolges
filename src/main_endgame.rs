@@ -1,6 +1,10 @@
 // Copyright (C) 2020-2021 Andy Kurnia.
 
-use wolges::{endgame, error, game_config, kwg};
+use rand::prelude::*;
+use wolges::{
+    alphabet, display, endgame, error, game_config, game_state, klv, kwg, matrix, movegen,
+    play_scorer,
+};
 
 // this is reusing most of main_json, but main_json is the most current code.
 
@@ -8,9 +12,6 @@ use wolges::{endgame, error, game_config, kwg};
 // rack: array of numbers. 0 for blank, 1 for A.
 // board: 2D array of numbers. 0 for empty, 1 for A, -1 for blank-as-A.
 // lexicon: this implies board size and other rules too.
-// count: maximum number of moves returned.
-// (note: equal moves are not stably sorted;
-//  different counts may tie-break the last move differently.)
 #[derive(serde::Deserialize)]
 struct Question {
     lexicon: String,
@@ -21,6 +22,374 @@ struct Question {
 
 // note: only this representation uses -1i8 for blank-as-A (in "board" input
 // and "word" response for "action":"play"). everywhere else, use 0x81u8.
+
+// /^(?:\d+[A-Z]+|[A-Z]+\d+)$/i
+// does not validate that the coordinate is within bounds
+fn is_coord_token(coord: &str) -> bool {
+    let b = coord.as_bytes();
+    let l1 = b
+        .iter()
+        .position(|c| !c.is_ascii_digit())
+        .unwrap_or(b.len());
+    let b = &b[l1..];
+    let l2 = b
+        .iter()
+        .position(|c| !c.is_ascii_alphabetic())
+        .unwrap_or(b.len());
+    if l2 == 0 {
+        return false;
+    }
+    if l1 != 0 {
+        return l2 == b.len();
+    }
+    let b = &b[l2..];
+    let l3 = b
+        .iter()
+        .position(|c| !c.is_ascii_digit())
+        .unwrap_or(b.len());
+    l3 == b.len()
+}
+
+// TODO remove derive
+#[derive(Debug)]
+struct Coord {
+    down: bool,
+    lane: i8,
+    idx: i8,
+}
+
+fn parse_coord_token(coord: &str, dim: matrix::Dim) -> Option<Coord> {
+    let b = coord.as_bytes();
+    let l1 = b
+        .iter()
+        .position(|c| !c.is_ascii_digit())
+        .unwrap_or(b.len());
+    let dig1 = if l1 != 0 {
+        i8::try_from(usize::from_str(unsafe { std::str::from_utf8_unchecked(&b[..l1]) }).ok()? - 1)
+            .ok()?
+    } else {
+        0
+    };
+    let b = &b[l1..];
+    let l2 = b
+        .iter()
+        .position(|c| !c.is_ascii_alphabetic())
+        .unwrap_or(b.len());
+    if l2 == 0 {
+        return None;
+    }
+    if l1 != 0 && l2 != b.len() {
+        return None;
+    }
+    let alp2 = i8::try_from(display::str_to_column_usize_ignore_case(&b[..l2])?).ok()?;
+    if alp2 >= dim.cols {
+        return None;
+    }
+    if l1 != 0 {
+        if dig1 >= dim.rows {
+            return None;
+        }
+        return Some(Coord {
+            down: false,
+            lane: dig1,
+            idx: alp2,
+        });
+    }
+    let b = &b[l2..];
+    let l3 = b
+        .iter()
+        .position(|c| !c.is_ascii_digit())
+        .unwrap_or(b.len());
+    if l3 != b.len() {
+        return None;
+    }
+    let dig3 = i8::try_from(usize::from_str(unsafe { std::str::from_utf8_unchecked(b) }).ok()? - 1)
+        .ok()?;
+    if dig3 >= dim.rows {
+        return None;
+    }
+    Some(Coord {
+        down: true,
+        lane: alp2,
+        idx: dig3,
+    })
+}
+
+// /^[+-](?:0|[1-9]\d*)$/
+fn is_score_token(coord: &str) -> bool {
+    let b = coord.as_bytes();
+    if !(!b.is_empty() && (b[0] == b'+' || b[0] == b'-')) {
+        return false;
+    }
+    let b = &b[1..];
+    if b.is_empty() {
+        return false;
+    }
+    if b[0] == b'0' {
+        return b.len() == 1;
+    }
+    let l1 = b
+        .iter()
+        .position(|c| !c.is_ascii_digit())
+        .unwrap_or(b.len());
+    l1 == b.len()
+}
+
+// /^-?\d+$/
+fn is_cum_token(coord: &str) -> bool {
+    let b = coord.as_bytes();
+    let b = &b[if !b.is_empty() && b[0] == b'-' { 1 } else { 0 }..];
+    if b.is_empty() {
+        return false;
+    }
+    let l1 = b
+        .iter()
+        .position(|c| !c.is_ascii_digit())
+        .unwrap_or(b.len());
+    l1 == b.len()
+}
+
+use std::str::FromStr;
+
+impl Question {
+    // not-very-strict gcg parser
+    fn from_gcg(
+        game_config: &game_config::GameConfig<'_>,
+        lexicon: &str,
+        gcg: &str,
+        rack: &str,
+    ) -> Result<Question, error::MyError> {
+        let empty_kwg = kwg::Kwg::from_bytes_alloc(kwg::EMPTY_KWG_BYTES);
+        let empty_klv = klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut ps = play_scorer::PlayScorer::new();
+        let alphabet = game_config.alphabet();
+        let plays_alphabet_reader = alphabet::AlphabetReader::new_for_plays(alphabet);
+        let racks_alphabet_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
+        let dim = game_config.board_layout().dim();
+        let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
+        let mut game_state = game_state::GameState::new(game_config);
+        game_state.reset_and_draw_tiles(game_config, &mut rng);
+        let mut game_state_undo = game_state.clone();
+        let mut can_withdraw = false;
+        let mut v = Vec::new(); // temp buffer
+        let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), String> {
+            let s = rack;
+            v.clear();
+            if !s.is_empty() {
+                v.reserve(s.len());
+                let sb = s.as_bytes();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = racks_alphabet_reader.next_tile(sb, ix) {
+                        v.push(tile);
+                        ix = end_ix;
+                    } else {
+                        return Err(format!("invalid tile after {:?} in {:?}", v, s));
+                    }
+                }
+            }
+            Ok(())
+        };
+        for (line_number, line) in (1usize..).zip(gcg.lines()) {
+            if !line.starts_with('>') {
+                continue;
+            }
+            let mut tokens = line.split_whitespace();
+            macro_rules! fmt_error {
+                ($msg: expr) => {
+                    error::new(format!("{} on line {} {:?}", $msg, line_number, line))
+                };
+            }
+            macro_rules! next_token {
+                ($what: tt) => {
+                    tokens
+                        .next()
+                        .ok_or_else(|| fmt_error!(concat!("missing ", $what, " token")))
+                };
+            }
+            let player_token = next_token!("player")?;
+            let mut rack_token = next_token!("rack")?;
+            let mut coord_token = if rack_token.starts_with('(') && rack_token.ends_with(')') {
+                std::mem::take(&mut rack_token)
+            } else {
+                next_token!("coord")?
+            };
+            let word_token = if !is_coord_token(coord_token) {
+                std::mem::take(&mut coord_token)
+            } else {
+                next_token!("word")?
+            };
+            let score_token = next_token!("score")?;
+            if !is_score_token(score_token) {
+                return Err(fmt_error!("invalid score token"));
+            }
+            let cum_token = next_token!("cum")?;
+            if !is_cum_token(cum_token) {
+                return Err(fmt_error!("invalid cum token"));
+            }
+            if tokens.next().is_some() {
+                return Err(fmt_error!("too many tokens"));
+            }
+            let _ = player_token;
+            let _ = cum_token;
+            let mut move_score = i16::from_str(score_token)
+                .map_err(|e| fmt_error!(format!("invalid score token: {}", e)))?;
+            parse_rack(&mut v, rack_token)
+                .map_err(|e| fmt_error!(format!("invalid rack token: {}", e)))?;
+            game_state.set_current_rack(&v);
+            let mut move_to_play = None;
+            if coord_token.is_empty() {
+                #[allow(clippy::if_same_then_else)]
+                if word_token == "-" && move_score == 0 {
+                    // pass
+                    move_to_play = Some(movegen::Play::Exchange {
+                        tiles: [][..].into(),
+                    })
+                } else if word_token == "(challenge)" && move_score >= 0 {
+                    // bonus, unsuccessful challenge
+                    // do nothing, even if there is additional score
+                } else if word_token == "--" && move_score <= 0 {
+                    // withdraw, successful challenge
+                    if !can_withdraw {
+                        return Err(fmt_error!("cannot withdraw"));
+                    }
+                    game_state.clone_from(&game_state_undo);
+                    // make a pass
+                    move_to_play = Some(movegen::Play::Exchange {
+                        tiles: [][..].into(),
+                    });
+                    move_score = 0;
+                } else if word_token.starts_with('-') && word_token.len() >= 2 && move_score == 0 {
+                    // exchange tiles
+                    let exchanged = &word_token[1..];
+                    move_to_play = Some(movegen::Play::Exchange {
+                        tiles: match parse_rack(&mut v, exchanged) {
+                            Ok(()) => v[..].into(),
+                            Err(e) => {
+                                // could be number of tiles
+                                if !match usize::from_str(exchanged) {
+                                    Ok(num) => {
+                                        num >= 1 && num <= game_state.current_player().rack.len()
+                                    }
+                                    Err(_) => false,
+                                } {
+                                    return Err(fmt_error!(format!(
+                                        "invalid exchanged tiles {:?}: {}",
+                                        exchanged, e
+                                    )));
+                                }
+                                [][..].into()
+                            }
+                        },
+                    })
+                } else if word_token == "(time)" && move_score <= 0 {
+                    // time penalty
+                    // do nothing
+                } else if word_token.starts_with('(')
+                    && word_token.ends_with(')')
+                    && word_token.len() >= 3
+                {
+                    // rack adjustments
+                    // do nothing
+                } else {
+                    return Err(fmt_error!("invalid line"));
+                }
+                can_withdraw = false;
+            } else {
+                // this is a place move
+                let coord = parse_coord_token(coord_token, dim)
+                    .ok_or_else(|| fmt_error!("invalid coord token"))?;
+                game_state_undo.clone_from(&game_state);
+                can_withdraw = true;
+                // this parser only supports '.' for skipped tiles
+                let s = word_token;
+                v.clear();
+                if !s.is_empty() {
+                    v.reserve(s.len());
+                    let sb = s.as_bytes();
+                    let mut ix = 0;
+                    while ix < sb.len() {
+                        if let Some((tile, end_ix)) = plays_alphabet_reader.next_tile(sb, ix) {
+                            v.push(tile);
+                            ix = end_ix;
+                        } else if sb[ix] == b'.' {
+                            v.push(0);
+                            ix += 1;
+                        } else {
+                            return Err(fmt_error!(format!(
+                                "invalid tile after {:?} in {:?}",
+                                v, s
+                            )));
+                        }
+                    }
+                }
+                move_to_play = Some(movegen::Play::Place {
+                    down: coord.down,
+                    lane: coord.lane,
+                    idx: coord.idx,
+                    word: v[..].into(),
+                    score: move_score,
+                });
+            }
+            if let Some(play) = move_to_play {
+                let board_snapshot = &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config,
+                    kwg: &empty_kwg,
+                    klv: &empty_klv,
+                };
+                match ps.validate_play(board_snapshot, &game_state, &play) {
+                    Err(err) => {
+                        return Err(fmt_error!(format!(
+                            "invalid play {}: {}",
+                            play.fmt(board_snapshot),
+                            err
+                        )));
+                    }
+                    Ok(_adjusted_play) => {
+                        let recounted_score = ps.compute_score(board_snapshot, &play);
+                        if move_score != recounted_score {
+                            return Err(fmt_error!(format!(
+                                "wrong score for {}: should score {}",
+                                play.fmt(board_snapshot),
+                                recounted_score,
+                            )));
+                        } else {
+                            // ok
+                        }
+                    }
+                }
+                game_state
+                    .play(game_config, &mut rng, &play)
+                    .map_err(|e| fmt_error!(format!("invalid play: {}", e)))?;
+                game_state.next_turn();
+            }
+        }
+        let board_tiles = game_state
+            .board_tiles
+            .chunks_exact(dim.rows as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|&x| {
+                        // turn -1i8, -2i8 into 0x81u8, 0x82u8
+                        if x & 0x80 == 0 {
+                            x as i8
+                        } else {
+                            -0x80i8 - (x as i8)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        parse_rack(&mut v, rack)
+            .map_err(|e| error::new(format!("invalid rack {:?}: {}", rack, e)))?;
+        Ok(Question {
+            lexicon: lexicon.to_string(),
+            rack: v,
+            board_tiles,
+        })
+    }
+}
 
 fn main() -> error::Returns<()> {
     let data = [
@@ -265,6 +634,254 @@ fn main() -> error::Returns<()> {
     "#,
     ][9];
     let question = serde_json::from_str::<Question>(data)?;
+    let _ = question;
+    // https://github.com/domino14/macondo/issues/154
+    let _question = Question::from_gcg(
+        &game_config::make_polish_game_config(),
+        "OSPS44",
+        r"#character-encoding UTF-8
+#player1 1 ptf1559
+#player2 2 smut3k
+>1: AHIJOUY 8F HUJA +20 20
+>1: AHIJOUY --  -20 0
+>2: ĆĘIKPST 8G STĘPIĆ +46 46
+>1: AHIJOUY 7I HOI +24 24
+>2: CFKNWYZ J5 CZ..Y +10 56
+>1: AJMSUWY -  +0 24
+>2: FKLNŃWW -  +0 56
+>1: AJMSUWY -J +0 24
+>2: FKLNŃWW -KWŃW +0 56
+>1: AAMSUWY 9F AU +14 38
+>2: AFLLŁNO 5J .ŁA +12 68
+>1: AAMSWYZ 10E SAMY +18 56
+>2: CEFLLNO 11C CLE +14 82
+>1: AEŁNRWZ 12D AR +13 69
+>2: FLNOOOW L3 FL.N +18 100
+>1: DEŁNTWZ 13E WENT +10 79
+>2: EJNOOOW H13 .EJ +18 118
+>1: ?ADIŁZZ 15A ZDZIAŁa. +89 168
+>2: IKNOOOW I13 ON +12 130
+>1: ABEIMNS 12I SAMBIE +21 189
+>2: IIKOOTW M11 K.I +8 138
+>1: ?EJNŚWW A14 E. +2 191
+>2: AILOOTW C11 .LI +14 152
+>1: ?JNNŚWW 12C ...W +7 198
+>2: AOOOTWŹ -Ź +0 152
+>1: ?AJNNŚW 3L .iŚ +20 218
+>2: AGOOOTW K10 GA.O +14 166
+>1: AIJNNRW 4L .I +4 222
+>2: OORSTWY N12 .WY +10 176
+>1: AJNNRRW 11J J. +8 230
+>2: ADOORST 12C ....O +8 184
+>1: ANNPRRW 9F ..R +10 240
+>2: ADORSTY J14 DY +16 200
+>1: ACNNPRW 13A CN. +8 248
+>2: AOOPRST 10B PO +13 213
+>1: ADNPRWZ H8 ...P +7 255
+>2: AEKORST 2M KET +25 238
+>2: AEKORST --  -25 213
+>1: AĄDNRWZ 15J .ARD +7 262
+>2: AEKORST 2N ET +18 231
+>1: ĄBEGNWZ O1 E. +9 271
+>2: AKKORSŹ C10 ....S. +8 239
+>1: ĄBGNWZZ 13M ..Ą +7 278
+>2: AIKKORŹ M9 RA... +7 246
+>1: BGNŃWZZ 10K .N.Ń +26 304
+>2: IKKMOŹŻ 9M .OK +12 258
+#>1: BGHUWZZ N7 ZG.. +12 316
+#>2: IKMÓŹŻ M1 ŻM.. +13 271
+#>1: BHUWZ -  +0 316
+#>2: IKÓŹ B8 KÓ. +9 280
+#>1: BHUWZ -  +0 316
+#>2: IŹ 8B .IŹ +21 301
+#>2:  (BHUWZ) +22 323
+    ",
+        "BGHUWZZ",
+    )?;
+    let _question = Question::from_gcg(
+        &game_config::make_polish_game_config(),
+        "OSPS44",
+        r"#character-encoding UTF-8
+#player1 1 ptf1559
+#player2 2 smut3k
+>1: AHIJOUY 8F HUJA +20 20
+>1: AHIJOUY --  -20 0
+>2: ĆĘIKPST 8G STĘPIĆ +46 46
+>1: AHIJOUY 7I HOI +24 24
+>2: CFKNWYZ J5 CZ..Y +10 56
+>1: AJMSUWY -  +0 24
+>2: FKLNŃWW -  +0 56
+>1: AJMSUWY -J +0 24
+>2: FKLNŃWW -KWŃW +0 56
+>1: AAMSUWY 9F AU +14 38
+>2: AFLLŁNO 5J .ŁA +12 68
+>1: AAMSWYZ 10E SAMY +18 56
+>2: CEFLLNO 11C CLE +14 82
+>1: AEŁNRWZ 12D AR +13 69
+>2: FLNOOOW L3 FL.N +18 100
+>1: DEŁNTWZ 13E WENT +10 79
+>2: EJNOOOW H13 .EJ +18 118
+>1: ?ADIŁZZ 15A ZDZIAŁa. +89 168
+>2: IKNOOOW I13 ON +12 130
+>1: ABEIMNS 12I SAMBIE +21 189
+>2: IIKOOTW M11 K.I +8 138
+>1: ?EJNŚWW A14 E. +2 191
+>2: AILOOTW C11 .LI +14 152
+>1: ?JNNŚWW 12C ...W +7 198
+>2: AOOOTWŹ -Ź +0 152
+>1: ?AJNNŚW 3L .iŚ +20 218
+>2: AGOOOTW K10 GA.O +14 166
+>1: AIJNNRW 4L .I +4 222
+>2: OORSTWY N12 .WY +10 176
+>1: AJNNRRW 11J J. +8 230
+>2: ADOORST 12C ....O +8 184
+>1: ANNPRRW 9F ..R +10 240
+>2: ADORSTY J14 DY +16 200
+>1: ACNNPRW 13A CN. +8 248
+>2: AOOPRST 10B PO +13 213
+>1: ADNPRWZ H8 ...P +7 255
+>2: AEKORST 2M KET +25 238
+>2: AEKORST --  -25 213
+>1: AĄDNRWZ 15J .ARD +7 262
+>2: AEKORST 2N ET +18 231
+>1: ĄBEGNWZ O1 E. +9 271
+>2: AKKORSŹ C10 ....S. +8 239
+>1: ĄBGNWZZ 13M ..Ą +7 278
+>2: AIKKORŹ M9 RA... +7 246
+>1: BGNŃWZZ 10K .N.Ń +26 304
+>2: IKKMOŹŻ 9M .OK +12 258
+>1: BGHUWZZ N7 ZG.. +12 316
+#>2: IKMÓŹŻ M1 ŻM.. +13 271
+#>1: BHUWZ -  +0 316
+#>2: IKÓŹ B8 KÓ. +9 280
+#>1: BHUWZ -  +0 316
+#>2: IŹ 8B .IŹ +21 301
+#>2:  (BHUWZ) +22 323
+    ",
+        "IKMÓŹŻ",
+    )?;
+    let _question = Question::from_gcg(
+        &game_config::make_polish_game_config(),
+        "OSPS44",
+        r"#character-encoding UTF-8
+#player1 1 ptf1559
+#player2 2 smut3k
+>1: AHIJOUY 8F HUJA +20 20
+>1: AHIJOUY --  -20 0
+>2: ĆĘIKPST 8G STĘPIĆ +46 46
+>1: AHIJOUY 7I HOI +24 24
+>2: CFKNWYZ J5 CZ..Y +10 56
+>1: AJMSUWY -  +0 24
+>2: FKLNŃWW -  +0 56
+>1: AJMSUWY -J +0 24
+>2: FKLNŃWW -KWŃW +0 56
+>1: AAMSUWY 9F AU +14 38
+>2: AFLLŁNO 5J .ŁA +12 68
+>1: AAMSWYZ 10E SAMY +18 56
+>2: CEFLLNO 11C CLE +14 82
+>1: AEŁNRWZ 12D AR +13 69
+>2: FLNOOOW L3 FL.N +18 100
+>1: DEŁNTWZ 13E WENT +10 79
+>2: EJNOOOW H13 .EJ +18 118
+>1: ?ADIŁZZ 15A ZDZIAŁa. +89 168
+>2: IKNOOOW I13 ON +12 130
+>1: ABEIMNS 12I SAMBIE +21 189
+>2: IIKOOTW M11 K.I +8 138
+>1: ?EJNŚWW A14 E. +2 191
+>2: AILOOTW C11 .LI +14 152
+>1: ?JNNŚWW 12C ...W +7 198
+>2: AOOOTWŹ -Ź +0 152
+>1: ?AJNNŚW 3L .iŚ +20 218
+>2: AGOOOTW K10 GA.O +14 166
+>1: AIJNNRW 4L .I +4 222
+>2: OORSTWY N12 .WY +10 176
+>1: AJNNRRW 11J J. +8 230
+>2: ADOORST 12C ....O +8 184
+>1: ANNPRRW 9F ..R +10 240
+>2: ADORSTY J14 DY +16 200
+>1: ACNNPRW 13A CN. +8 248
+>2: AOOPRST 10B PO +13 213
+>1: ADNPRWZ H8 ...P +7 255
+>2: AEKORST 2M KET +25 238
+>2: AEKORST --  -25 213
+>1: AĄDNRWZ 15J .ARD +7 262
+>2: AEKORST 2N ET +18 231
+>1: ĄBEGNWZ O1 E. +9 271
+>2: AKKORSŹ C10 ....S. +8 239
+>1: ĄBGNWZZ 13M ..Ą +7 278
+>2: AIKKORŹ M9 RA... +7 246
+>1: BGNŃWZZ 10K .N.Ń +26 304
+>2: IKKMOŹŻ 9M .OK +12 258
+>1: BGHUWZZ N7 ZG.. +12 316
+>2: IKMÓŹŻ M1 ŻM.. +13 271
+>1: BHUWZ -  +0 316
+>2: IKÓŹ 1L I. +7 280
+#>1: BHUWZ -  +0 316
+#>2: IŹ 8B .IŹ +21 301
+#>2:  (BHUWZ) +22 323
+    ",
+        "BHUWZ",
+    )?;
+    let question = Question::from_gcg(
+        &game_config::make_polish_game_config(),
+        "OSPS44",
+        r"#character-encoding UTF-8
+#player1 1 ptf1559
+#player2 2 smut3k
+>1: AHIJOUY 8F HUJA +20 20
+>1: AHIJOUY --  -20 0
+>2: ĆĘIKPST 8G STĘPIĆ +46 46
+>1: AHIJOUY 7I HOI +24 24
+>2: CFKNWYZ J5 CZ..Y +10 56
+>1: AJMSUWY -  +0 24
+>2: FKLNŃWW -  +0 56
+>1: AJMSUWY -J +0 24
+>2: FKLNŃWW -KWŃW +0 56
+>1: AAMSUWY 9F AU +14 38
+>2: AFLLŁNO 5J .ŁA +12 68
+>1: AAMSWYZ 10E SAMY +18 56
+>2: CEFLLNO 11C CLE +14 82
+>1: AEŁNRWZ 12D AR +13 69
+>2: FLNOOOW L3 FL.N +18 100
+>1: DEŁNTWZ 13E WENT +10 79
+>2: EJNOOOW H13 .EJ +18 118
+>1: ?ADIŁZZ 15A ZDZIAŁa. +89 168
+>2: IKNOOOW I13 ON +12 130
+>1: ABEIMNS 12I SAMBIE +21 189
+>2: IIKOOTW M11 K.I +8 138
+>1: ?EJNŚWW A14 E. +2 191
+>2: AILOOTW C11 .LI +14 152
+>1: ?JNNŚWW 12C ...W +7 198
+>2: AOOOTWŹ -Ź +0 152
+>1: ?AJNNŚW 3L .iŚ +20 218
+>2: AGOOOTW K10 GA.O +14 166
+>1: AIJNNRW 4L .I +4 222
+>2: OORSTWY N12 .WY +10 176
+>1: AJNNRRW 11J J. +8 230
+>2: ADOORST 12C ....O +8 184
+>1: ANNPRRW 9F ..R +10 240
+>2: ADORSTY J14 DY +16 200
+>1: ACNNPRW 13A CN. +8 248
+>2: AOOPRST 10B PO +13 213
+>1: ADNPRWZ H8 ...P +7 255
+>2: AEKORST 2M KET +25 238
+>2: AEKORST --  -25 213
+>1: AĄDNRWZ 15J .ARD +7 262
+>2: AEKORST 2N ET +18 231
+>1: ĄBEGNWZ O1 E. +9 271
+>2: AKKORSŹ C10 ....S. +8 239
+>1: ĄBGNWZZ 13M ..Ą +7 278
+>2: AIKKORŹ M9 RA... +7 246
+>1: BGNŃWZZ 10K .N.Ń +26 304
+>2: IKKMOŹŻ 9M .OK +12 258
+>1: BGHUWZZ N7 ZG.. +12 316
+>2: IKMÓŹŻ M1 ŻM.. +13 271
+>1: BHUWZ -  +0 316
+>2: IKÓŹ 1L I. +7 280
+>1: BHUWZ 7M B.U +10 316
+    ",
+        "KÓŹ",
+    )?;
 
     let kwg;
     let game_config;

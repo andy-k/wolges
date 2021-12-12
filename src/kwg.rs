@@ -27,6 +27,8 @@ impl Node {
 
 pub struct Kwg(pub Box<[Node]>);
 
+pub static EMPTY_KWG_BYTES: &[u8] = b"\x00\x00\x40\x00\x00\x00\x40\x00";
+
 impl std::ops::Index<i32> for Kwg {
     type Output = Node;
 

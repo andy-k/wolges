@@ -113,6 +113,39 @@ impl GameState {
         }
     }
 
+    // an opponent holding a desired tile not found in bag will draw another.
+    // if desired tile is missing, final rack will be shorter.
+    pub fn set_current_rack(&mut self, desired_rack: &[u8]) {
+        self.bag
+            .0
+            .extend_from_slice(&self.players[self.turn as usize].rack);
+        self.players[self.turn as usize].rack.clear();
+        for &tile in desired_rack {
+            match self.bag.0.iter().rposition(|&t| t == tile) {
+                Some(pos) => {
+                    self.bag.0.swap_remove(pos);
+                    self.players[self.turn as usize].rack.push(tile);
+                }
+                None => {
+                    for i in 0..self.players.len() {
+                        if i != self.turn as usize {
+                            match self.players[i].rack.iter().rposition(|&t| t == tile) {
+                                Some(pos) => {
+                                    let len = self.players[i].rack.len();
+                                    self.players[i].rack.swap_remove(pos);
+                                    self.players[self.turn as usize].rack.push(tile);
+                                    self.bag.replenish(&mut self.players[i].rack, len);
+                                    break;
+                                }
+                                None => continue,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn current_player(&self) -> &GamePlayer {
         &self.players[self.turn as usize]
     }
