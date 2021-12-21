@@ -127,8 +127,7 @@ impl MovePicker<'_> {
                 let mut tick_periods = Periods(0);
                 let mut prune_periods = Periods(0);
                 let max_time_for_move_ms = 8000u64;
-                let prune_interval_ms =
-                    std::cmp::max(1, max_time_for_move_ms / candidates.len() as u64);
+                let prune_interval_ms = 1.max(max_time_for_move_ms / candidates.len() as u64);
                 const Z: f64 = 1.96; // 95% confidence interval
                 for sim_iter in 1..=num_sim_iters {
                     tokio::task::yield_now().await;

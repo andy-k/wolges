@@ -92,7 +92,7 @@ impl StateMaker<'_> {
             if machine_word_index > 0 {
                 let prev_word = &sorted_machine_words[machine_word_index - 1];
                 let prev_word_len = transition_stack.indexes.len(); // this can be one less than prev_word.len() for gaddag
-                let min_word_len = std::cmp::min(this_word_len, prev_word_len);
+                let min_word_len = this_word_len.min(prev_word_len);
                 while prefix_len < min_word_len && prev_word[prefix_len] == this_word[prefix_len] {
                     prefix_len += 1;
                 }

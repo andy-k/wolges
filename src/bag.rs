@@ -34,7 +34,7 @@ impl Bag {
     }
 
     pub fn replenish(&mut self, rack: &mut Vec<u8>, rack_size: usize) {
-        for _ in 0..std::cmp::min(rack_size - rack.len(), self.0.len()) {
+        for _ in 0..(rack_size - rack.len()).min(self.0.len()) {
             rack.push(self.pop().unwrap());
         }
     }

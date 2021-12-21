@@ -224,7 +224,7 @@ impl WorkingBuffer {
                     end_range: 0,
                     p: 0,
                 };
-                std::cmp::max(dim.rows, dim.cols) as usize
+                dim.rows.max(dim.cols) as usize
             ]
             .into_boxed_slice(),
             remaining_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]

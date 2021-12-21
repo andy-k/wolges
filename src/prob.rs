@@ -70,7 +70,7 @@ impl WordProbability {
                 for j in (0..=n_blanks).rev() {
                     let baseline = j - n_c_in_word;
                     let mut v = 0;
-                    for k in std::cmp::max(0, baseline)..=std::cmp::min(baseline + n_c_in_bag, j) {
+                    for k in 0.max(baseline)..=(baseline + n_c_in_bag).min(j) {
                         v += self.dp[k as usize] * this_pas[(k - baseline) as usize];
                     }
                     self.dp[j as usize] = v;
@@ -100,7 +100,7 @@ impl WordProbability {
                 while v.len() <= l {
                     v.push(0);
                 }
-                v[l] = std::cmp::max(v[l], self.count_ways(word));
+                v[l] = v[l].max(self.count_ways(word));
             }
             if node.arc_index() != 0 {
                 self.get_max_probs_by_len_iter(kwg, word, v, node.arc_index());

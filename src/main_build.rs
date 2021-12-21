@@ -713,7 +713,7 @@ fn old_main() -> error::Returns<()> {
                 tmp_vec.extend_from_slice(word);
                 tmp_vec.sort_unstable();
                 let alphagram: bites::Bites = tmp_vec[..].into();
-                max_len = std::cmp::max(max_len, v.len());
+                max_len = max_len.max(v.len());
                 (alphagram, word_prob.count_ways(word))
             })
             .collect::<Box<_>>();

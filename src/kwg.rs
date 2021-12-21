@@ -119,14 +119,14 @@ impl Kwg {
                 }
                 vis[p_byte_index] |= p_bit;
                 if nodes[p].arc_index() != 0 {
-                    ret = std::cmp::max(ret, max_from(nodes, vis, nodes[p].arc_index()));
+                    ret = ret.max(max_from(nodes, vis, nodes[p].arc_index()));
                 }
                 if nodes[p].is_end() {
                     break;
                 }
                 p += 1;
             }
-            std::cmp::max(ret, p)
+            ret.max(p)
         }
         let required_size = max_from(self, &mut vec![0u8; (self.0.len() + 7) / 8], 0) as usize + 1;
         let mut word_counts = vec![0u32; required_size];
