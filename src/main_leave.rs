@@ -677,8 +677,6 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     let mut rack_bytes = Vec::new();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-    let total_equity;
-    let row_count;
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
     let mut results = csv_in.records();
@@ -686,8 +684,8 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     if !record[0].is_empty() {
         return Err("invalid input file".into());
     }
-    total_equity = f64::from_str(&record[1])?;
-    row_count = u64::from_str(&record[2])?;
+    let total_equity = f64::from_str(&record[1])?;
+    let row_count = u64::from_str(&record[2])?;
     for result in results {
         let record = result?;
         parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
