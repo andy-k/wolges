@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2021 Andy Kurnia.
+// Copyright (C) 2020-2022 Andy Kurnia.
 
 pub struct Stats {
     count: f64, // should be a non-negative int barring overflows

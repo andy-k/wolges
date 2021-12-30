@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2021 Andy Kurnia.
+// Copyright (C) 2020-2022 Andy Kurnia.
 
 use super::{alphabet, bites, display, fash, game_config, klv, kwg, matrix};
 
