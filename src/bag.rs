@@ -64,6 +64,7 @@ impl Bag {
         }
         let new_len = num_new_tiles + num_old_tiles;
         self.0.reserve(num_new_tiles + new_len); // cap = old+(new+old)+new
+        #[allow(clippy::uninit_vec)]
         unsafe {
             self.0.set_len(new_len + num_old_tiles);
         } // [old,?,?]
