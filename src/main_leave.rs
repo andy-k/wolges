@@ -273,7 +273,7 @@ fn generate_autoplay_logs(
                         let play = &plays[0];
                         cur_rack_ser.clear();
                         for &tile in cur_rack.iter() {
-                            cur_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
+                            cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
                         }
 
                         aft_rack.clone_from(cur_rack);
@@ -299,7 +299,7 @@ fn generate_autoplay_logs(
                         aft_rack.sort_unstable();
                         aft_rack_ser.clear();
                         for &tile in aft_rack.iter() {
-                            aft_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
+                            aft_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
                         }
 
                         play_fmt.clear();
@@ -311,7 +311,7 @@ fn generate_autoplay_logs(
                                     let alphabet = game_config.alphabet();
                                     write!(play_fmt, "(exch ").unwrap();
                                     for &tile in tiles.iter() {
-                                        write!(play_fmt, "{}", alphabet.from_rack(tile).unwrap())
+                                        write!(play_fmt, "{}", alphabet.of_rack(tile).unwrap())
                                             .unwrap();
                                     }
                                     write!(play_fmt, ")").unwrap();
@@ -336,7 +336,7 @@ fn generate_autoplay_logs(
                                     if tile == 0 {
                                         write!(play_fmt, ".").unwrap();
                                     } else {
-                                        write!(play_fmt, "{}", alphabet.from_board(tile).unwrap())
+                                        write!(play_fmt, "{}", alphabet.of_board(tile).unwrap())
                                             .unwrap();
                                     }
                                 }
@@ -590,7 +590,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     for (k, fv) in kv.iter() {
         cur_rack_ser.clear();
         for &tile in k.iter() {
-            cur_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
+            cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
         }
         csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
     }
@@ -901,7 +901,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     for (k, v) in kv.iter() {
         cur_rack_ser.clear();
         for &tile in k.iter() {
-            cur_rack_ser.push_str(game_config.alphabet().from_rack(tile).unwrap());
+            cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
         }
         csv_out.serialize((&cur_rack_ser, v))?;
         /*

@@ -36,7 +36,7 @@ pub fn board_label<'a>(
     col: i8,
 ) -> &'a str {
     alphabet
-        .from_board(board_tiles[board_layout.dim().at_row_col(row, col)])
+        .of_board(board_tiles[board_layout.dim().at_row_col(row, col)])
         .unwrap_or_else(|| empty_label(board_layout, row, col))
 }
 

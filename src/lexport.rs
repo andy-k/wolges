@@ -32,7 +32,7 @@ pub fn to_macondo<'a>(
                 if tile == 0 {
                     "^"
                 } else {
-                    alphabet.from_rack(tile).unwrap()
+                    alphabet.of_rack(tile).unwrap()
                 },
             )
         })
@@ -155,7 +155,7 @@ pub fn to_macondo<'a>(
     for tile in 1..alphabet.len() {
         let z = w + tile_mapping[tile as usize] as usize * 4;
         // This format only supports one codepoint per alphabet.
-        let mut char_iter = alphabet.from_rack(tile).unwrap().chars();
+        let mut char_iter = alphabet.of_rack(tile).unwrap().chars();
         bin[z..z + 4].copy_from_slice(&(char_iter.next().unwrap() as u32).to_be_bytes());
         assert!(char_iter.next().is_none(), "tile has multiple codepoints");
     }

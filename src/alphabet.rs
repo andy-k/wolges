@@ -53,7 +53,7 @@ impl<'a> Alphabet<'a> {
     }
 
     #[inline(always)]
-    pub fn from_board(&self, idx: u8) -> Option<&'a str> {
+    pub fn of_board(&self, idx: u8) -> Option<&'a str> {
         let c = idx & 0x7f;
         if c == 0 || c >= self.len() {
             None
@@ -65,7 +65,7 @@ impl<'a> Alphabet<'a> {
     }
 
     #[inline(always)]
-    pub fn from_rack(&self, idx: u8) -> Option<&'a str> {
+    pub fn of_rack(&self, idx: u8) -> Option<&'a str> {
         if idx >= self.len() {
             None
         } else {
@@ -108,7 +108,7 @@ pub struct WriteableRack<'a> {
 impl std::fmt::Display for WriteableRack<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for &tile in self.rack {
-            write!(f, "{}", self.alphabet.from_rack(tile).unwrap())?;
+            write!(f, "{}", self.alphabet.of_rack(tile).unwrap())?;
         }
         Ok(())
     }
@@ -482,7 +482,7 @@ impl<'a> AlphabetReader<'a> {
     // Recognizes [A-Z].
     pub fn new_for_words(alphabet: &Alphabet<'a>) -> Self {
         let supported_tiles = (1..alphabet.len())
-            .map(|tile| (tile, alphabet.from_rack(tile).unwrap().as_bytes()))
+            .map(|tile| (tile, alphabet.of_rack(tile).unwrap().as_bytes()))
             .collect::<Box<_>>();
         Self::new_for_tiles(supported_tiles)
     }
@@ -490,7 +490,7 @@ impl<'a> AlphabetReader<'a> {
     // Recognizes [?A-Z].
     pub fn new_for_racks(alphabet: &Alphabet<'a>) -> Self {
         let supported_tiles = (0..alphabet.len())
-            .map(|tile| (tile, alphabet.from_rack(tile).unwrap().as_bytes()))
+            .map(|tile| (tile, alphabet.of_rack(tile).unwrap().as_bytes()))
             .collect::<Box<_>>();
         Self::new_for_tiles(supported_tiles)
     }
@@ -500,7 +500,7 @@ impl<'a> AlphabetReader<'a> {
         let mut supported_tiles = Vec::with_capacity((alphabet.len() - 1) as usize * 2);
         for base_tile in 1..alphabet.len() {
             for &tile in &[base_tile, base_tile | 0x80] {
-                supported_tiles.push((tile, alphabet.from_board(tile).unwrap().as_bytes()));
+                supported_tiles.push((tile, alphabet.of_board(tile).unwrap().as_bytes()));
             }
         }
         let supported_tiles = supported_tiles.into_boxed_slice();

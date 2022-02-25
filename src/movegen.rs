@@ -2058,7 +2058,7 @@ impl std::fmt::Display for WriteablePlay<'_> {
                     let alphabet = self.board_snapshot.game_config.alphabet();
                     write!(f, "Exch. ")?;
                     for &tile in tiles.iter() {
-                        write!(f, "{}", alphabet.from_rack(tile).unwrap())?;
+                        write!(f, "{}", alphabet.of_rack(tile).unwrap())?;
                     }
                 }
             }
@@ -2088,7 +2088,7 @@ impl std::fmt::Display for WriteablePlay<'_> {
                             f,
                             "{}",
                             alphabet
-                                .from_board(self.board_snapshot.board_tiles[strider.at(i)])
+                                .of_board(self.board_snapshot.board_tiles[strider.at(i)])
                                 .unwrap(),
                         )?;
                     } else {
@@ -2096,7 +2096,7 @@ impl std::fmt::Display for WriteablePlay<'_> {
                             write!(f, ")")?;
                             inside = false;
                         }
-                        write!(f, "{}", alphabet.from_board(tile).unwrap())?;
+                        write!(f, "{}", alphabet.of_board(tile).unwrap())?;
                     }
                 }
                 if inside {

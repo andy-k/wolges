@@ -115,7 +115,7 @@ fn iter_dawg<'a, F: FnMut(&str)>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg, f: F)
         let l = env.s.len();
         loop {
             let t = env.g[p].tile();
-            env.s.push_str(env.a.from_rack(t).unwrap());
+            env.s.push_str(env.a.of_rack(t).unwrap());
             if env.g[p].accepts() {
                 (env.f)(env.s);
             }

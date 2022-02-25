@@ -15,7 +15,7 @@ fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
             env.s.push_str(if t == 0 {
                 "@"
             } else if t & 0x80 == 0 {
-                env.a.from_board(t).unwrap()
+                env.a.of_board(t).unwrap()
             } else {
                 panic!()
             });
@@ -244,7 +244,7 @@ fn test_find_embedded_words<'a>(
                     if tile == 0 {
                         "#"
                     } else {
-                        alphabet.from_rack(tile).unwrap()
+                        alphabet.of_rack(tile).unwrap()
                     },
                     if matches!(q_tile, Some(q_tile) if q_tile == tile) {
                         'u'
@@ -297,7 +297,7 @@ fn test_find_embedded_words<'a>(
             for (word, score) in &ans[pt..pt2] {
                 print!(" ");
                 for &tile in &word[..] {
-                    print!("{}", alphabet.from_rack(tile).unwrap());
+                    print!("{}", alphabet.of_rack(tile).unwrap());
                 }
                 print!(" ({})", score);
             }
