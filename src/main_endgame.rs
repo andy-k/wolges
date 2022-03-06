@@ -822,7 +822,7 @@ fn main() -> error::Returns<()> {
     ",
         "BHUWZ",
     )?;
-    let question = Question::from_gcg(
+    let _question = Question::from_gcg(
         &game_config::make_polish_game_config(),
         "OSPS44",
         r"#character-encoding UTF-8
@@ -881,6 +881,49 @@ fn main() -> error::Returns<()> {
 >1: BHUWZ 7M B.U +10 316
     ",
         "KÓŹ",
+    )?;
+    // https://woogles.io/game/8hg8XMSK?turn=28
+    let question = Question::from_gcg(
+        &game_config::make_common_english_game_config(),
+        "ECWL",
+        r"#character-encoding UTF-8
+#description Created with Macondo
+#id io.woogles 8hg8XMSK
+#lexicon ECWL
+#note Variant: classic
+#note BoardLayout: CrosswordGame
+#note LetterDistribution: english
+#player1 deldar182 deldar182
+#player2 BobaFett BobaFett
+>deldar182: EFHIIST H8 IF +10 10
+>BobaFett: ADENRRV -RV +0 0
+>deldar182: EEHIOST G8 OI +11 21
+>BobaFett: ACDEFNR 9F D..F +15 15
+>deldar182: EEHPSTU 7F UP +15 36
+>BobaFett: ACEEINR E5 NICE +19 34
+>deldar182: EEEHLST D8 HEELS +33 69
+>BobaFett: ACEERST C2 CREATES +76 110
+>deldar182: EETTUUV 11D .UV +12 81
+>BobaFett: EIKLTWX 4A WE.K +30 140
+>deldar182: EEOTTUY F9 .U.ET +11 92
+>BobaFett: EEILLTX A4 .ILLET +27 167
+>deldar182: EGOTTYZ -GOTYZ +0 92
+>BobaFett: DEGHIOX B9 OX +27 194
+>deldar182: AEEGOPT 10I AGE +13 105
+>BobaFett: BDEGHIO 11I BOD +29 223
+>deldar182: ELOPRTY L11 YO +20 125
+>BobaFett: AAEGHIT C12 AHI +14 237
+>deldar182: ELMPRTT K5 TEMPT.. +24 149
+>BobaFett: AAEGRTW B12 WAG +31 268
+>deldar182: ADLNRSU 13K DUAL +16 165
+>BobaFett: AEOOORT 2C .OO +5 273
+>deldar182: ?MNNORS 1E NORM +20 185
+>BobaFett: AAEORRT 14J AORTA +30 303
+>deldar182: ?EGINNS 15F ENdINGS +90 275
+>BobaFett: DENRRVY 8K .ERVY +42 345
+>deldar182: AABIIJS J4 JAB +30 305
+    ",
+        "DNNQRRZ",
     )?;
 
     let kwg;
