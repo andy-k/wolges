@@ -883,7 +883,7 @@ fn main() -> error::Returns<()> {
         "KÓŹ",
     )?;
     // https://woogles.io/game/8hg8XMSK?turn=28
-    let question = Question::from_gcg(
+    let _question = Question::from_gcg(
         &game_config::make_common_english_game_config(),
         "ECWL",
         r"#character-encoding UTF-8
@@ -924,6 +924,48 @@ fn main() -> error::Returns<()> {
 >deldar182: AABIIJS J4 JAB +30 305
     ",
         "DNNQRRZ",
+    )?;
+    // https://woogles.io/game/YDRLWKJj?turn=23
+    let question = Question::from_gcg(
+        &game_config::make_common_english_game_config(),
+        "CSW21",
+        r"#character-encoding UTF-8
+#description Created with Macondo
+#id io.woogles YDRLWKJj
+#lexicon CSW21
+#note BoardLayout: CrosswordGame
+#note LetterDistribution: english
+#player1 thams Adheesha Dissanayake
+#player2 STEEBot STEEBot
+>thams: CDIKNNY 8H DICKY +38 38
+>STEEBot: GILOQUW K5 GOW. +24 24
+>thams: BEIMNNP L4 PINE. +30 68
+>STEEBot: EFGILQU I7 F.QUE +31 55
+>thams: BLMNRRU 11H B.RM +16 84
+>STEEBot: GGIILNR H11 .LING +27 82
+>thams: AILNRRU 12K UR +8 92
+>STEEBot: GIIPRST M3 GIP +22 104
+>thams: AAILNRS 15D LARI.ANS +60 152
+>STEEBot: EEIRSST 12G E.S +21 125
+>thams: AANSTTZ 14E ZA +28 180
+>STEEBot: AEIORST H1 ASTEROI. +85 210
+>thams: AENSTTX 2A SEXTANT. +84 264
+>STEEBot: DEEINNU 3B NIED +35 245
+>thams: ADEHIOR 1A OH +27 291
+>STEEBot: ?EHNTUV F10 HUT +18 263
+>thams: ADEEIOR 4D DOE +20 311
+>STEEBot: ??AENTV M9 VAuNTEd +77 340
+>thams: AACEILR 10D AC. +8 319
+>STEEBot: EEIJOVY C7 JIVE +35 375
+>thams: ABEILRU B10 BURIAL +46 365
+>STEEBot: AEOOOTY A13 OYE +31 406
+#>thams: DEEMORW 8A WE.D +30 395
+#>STEEBot: AFLOOT N1 FOOT +22 428
+#>thams: EMOR O1 EM +31 426
+#>STEEBot: AL D6 LA. +13 441
+#>STEEBot: (OR) +4 445
+    ",
+        "DEEMORW",
     )?;
 
     let kwg;
