@@ -432,11 +432,24 @@ impl<'a> EndgameSolver<'a> {
             };
             for which_player in 0..2 {
                 let t1 = std::time::Instant::now();
-                self.work_buffer.movegen.gen_all_raw_moves_unsorted(
-                    &board_snapshot,
-                    &current_ply_buffer.racks[which_player],
-                    true,
-                );
+                const DO_HASTY: bool = false;
+                if !DO_HASTY || which_player == 0 {
+                    self.work_buffer.movegen.gen_all_raw_moves_unsorted(
+                        &board_snapshot,
+                        &current_ply_buffer.racks[which_player],
+                        true,
+                    );
+                } else {
+                    // simulate hasty blunders
+                    self.work_buffer
+                        .movegen
+                        .gen_moves_unfiltered(&movegen::GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &current_ply_buffer.racks[which_player],
+                            max_gen: 1,
+                            always_include_pass: false,
+                        });
+                }
                 self.work_buffer.dur_movegen += t1.elapsed();
                 for candidate in &self.work_buffer.movegen.plays {
                     match &candidate.play {
