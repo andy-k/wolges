@@ -926,7 +926,7 @@ fn main() -> error::Returns<()> {
         "DNNQRRZ",
     )?;
     // https://woogles.io/game/YDRLWKJj?turn=23
-    let question = Question::from_gcg(
+    let _question = Question::from_gcg(
         &game_config::make_common_english_game_config(),
         "CSW21",
         r"#character-encoding UTF-8
@@ -967,6 +967,52 @@ fn main() -> error::Returns<()> {
     ",
         "DEEMORW",
     )?;
+    let question = Question::from_gcg(
+        &game_config::make_german_game_config(),
+        "RD28",
+        r"#player1 Thomas Thomas
+#player2 Alex Alex
+#description Saved by Elise version 0.1.8
+#lexicon GERMAN
+>Thomas: DEEINNR H4 DIENERN +66 66
+>Alex: EEHORSZ 7F ZO. +8 8
+>Thomas: FO 10F FO. +15 81
+>Alex: EEEHJRS G6 J. +15 23
+>Thomas: AGLRTÖÜ -LÖÜ +0 81
+>Alex: EEEHRSS I7 EH +15 38
+>Thomas: U F7 .U +4 85
+>Alex: EEMMRSS 11H SEMS +20 58
+>Thomas: CEEHIRS K4 SCHIERE. +74 159
+>Alex: EMMNNRU 4A NUMMERN. +76 134
+>Thomas: ADEEHRT A3 A.DREHTE +77 236
+>Alex: GILOSÖ? 4J Ö.I +20 154
+>Thomas: NNV E3 V.NN +18 254
+>Alex: EGLOST? M2 LOSGEhT +79 233
+>Thomas: ADS N1 DAS +15 269
+>Alex: EHKNRTY 10J H.NRY +48 281
+#note 4-ply winprob simulation (1150), +11.25 / 45.5% [54.18s]
+>Thomas: AKM C2 KA.M +22 291
+>Alex: EEKNTTÄ 8M .ÄT +24 305
+>Thomas: ABST O1 ABTS +37 328
+>Alex: EEEGKNT F10 .EG +7 312
+>Thomas: IX B9 IX +52 380
+>Alex: EEKNTUÜ 11A TENÜ +29 341
+>Thomas: CENT 13C CENT +22 402
+>Alex: EGKRSU? D9 KR.G. +28 369
+>Thomas: FL 7A .LF +11 413
+>Alex: EIILSU? 6J U. +5 374
+>Thomas: UW O6 WU. +5 418
+#>Alex: EIILQS? O10 SEIL +22 396
+#>Alex: EIILQS? -- -22 374
+#>Thomas: ABDEPUU J3 B. +11 429
+#>Alex: EIILQS? N10 .EtI +12 386
+#>Thomas: ADEPUU M13 PUD +22 451
+#>Alex: ILQS 14L L.S +34 420
+#>Thomas: AEU G1 AUE. +5 456
+#>Thomas: (IQ) +22 478
+    ",
+        "EIILQS?",
+    )?;
 
     let kwg;
     let game_config;
@@ -1000,6 +1046,10 @@ fn main() -> error::Returns<()> {
         "OSPS44" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.kwg")?);
             game_config = game_config::make_polish_game_config();
+        }
+        "RD28" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/RD28.kwg")?);
+            game_config = game_config::make_german_game_config();
         }
         _ => {
             wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
