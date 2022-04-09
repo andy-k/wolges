@@ -128,8 +128,6 @@ pub fn to_macondo<'a>(
         .arc_index(),
     );
 
-    drop(env);
-
     let mut bin = vec![
         0u8;
         4 + (1 + lexicon_name.len())
