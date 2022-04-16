@@ -2521,6 +2521,7 @@ fn kurnia_gen_nonplace_moves_except_pass<'a, FoundExchangeMove: FnMut(&[u8], &[u
         found_exchange_move: FoundExchangeMove,
         rack_tally: &'a mut [u8],
         exchange_buffer: &'a mut Vec<u8>,
+        max_vec_len: usize,
     }
     fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], &[u8])>(
         env: &mut ExchangeEnv<'_, FoundExchangeMove>,
@@ -2540,7 +2541,7 @@ fn kurnia_gen_nonplace_moves_except_pass<'a, FoundExchangeMove: FnMut(&[u8], &[u
         let vec_len = env.exchange_buffer.len();
         loop {
             generate_exchanges(env, idx + 1);
-            if env.rack_tally[idx as usize] == 0 {
+            if env.rack_tally[idx as usize] == 0 || env.exchange_buffer.len() >= env.max_vec_len {
                 break;
             }
             env.rack_tally[idx as usize] -= 1;
@@ -2549,12 +2550,13 @@ fn kurnia_gen_nonplace_moves_except_pass<'a, FoundExchangeMove: FnMut(&[u8], &[u
         env.rack_tally[idx as usize] = original_count;
         env.exchange_buffer.truncate(vec_len);
     }
-    if working_buffer.num_tiles_in_bag >= board_snapshot.game_config.rack_size() as i16 {
+    if working_buffer.num_tiles_in_bag >= board_snapshot.game_config.exchange_tile_limit() {
         generate_exchanges(
             &mut ExchangeEnv {
                 found_exchange_move,
                 rack_tally: &mut working_buffer.rack_tally,
                 exchange_buffer: &mut working_buffer.exchange_buffer,
+                max_vec_len: working_buffer.num_tiles_in_bag as usize,
             },
             0,
         );

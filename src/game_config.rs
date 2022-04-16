@@ -13,6 +13,7 @@ pub struct StaticGameConfig<'a> {
     board_layout: board_layout::BoardLayout,
     rack_size: i8,
     num_players: u8,
+    exchange_tile_limit: i16, // >= 1
 }
 
 pub enum GameConfig<'a> {
@@ -45,6 +46,13 @@ impl<'a> GameConfig<'a> {
     pub fn num_players(&self) -> u8 {
         match self {
             GameConfig::Static(x) => x.num_players,
+        }
+    }
+
+    #[inline(always)]
+    pub fn exchange_tile_limit(&self) -> i16 {
+        match self {
+            GameConfig::Static(x) => x.exchange_tile_limit,
         }
     }
 
@@ -84,6 +92,7 @@ pub fn make_common_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -95,6 +104,7 @@ pub fn make_jumbled_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -106,6 +116,7 @@ pub fn make_punctured_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_punctured_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -117,6 +128,7 @@ pub fn make_jumbled_punctured_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_punctured_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -128,6 +140,7 @@ pub fn make_hong_kong_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 9,
         num_players: 2,
+        exchange_tile_limit: 9,
     })
 }
 
@@ -139,6 +152,7 @@ pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -150,6 +164,7 @@ pub fn make_jumbled_super_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -161,6 +176,7 @@ pub fn make_french_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -172,6 +188,7 @@ pub fn make_jumbled_french_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -183,6 +200,7 @@ pub fn make_german_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -194,6 +212,7 @@ pub fn make_jumbled_german_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -205,6 +224,7 @@ pub fn make_norwegian_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -216,6 +236,7 @@ pub fn make_jumbled_norwegian_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -227,6 +248,7 @@ pub fn make_polish_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -238,6 +260,7 @@ pub fn make_jumbled_polish_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 7,
     })
 }
 
@@ -249,6 +272,7 @@ pub fn make_spanish_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 1,
     })
 }
 
@@ -260,5 +284,6 @@ pub fn make_jumbled_spanish_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_common_board_layout(),
         rack_size: 7,
         num_players: 2,
+        exchange_tile_limit: 1,
     })
 }
