@@ -301,8 +301,19 @@ impl Question {
                     .ok_or_else(|| fmt_error!("invalid coord token"))?;
                 game_state_undo.clone_from(&game_state);
                 can_withdraw = true;
-                // this parser only supports '.' for skipped tiles
+
+                let (row, col) = if coord.down {
+                    (coord.idx, coord.lane)
+                } else {
+                    (coord.lane, coord.idx)
+                };
+
+                // for skipped tiles, this parser supports:
+                // - '.' (preferred)
+                // - "X" (tile must exactly match the tile already on board)
+                // - optional '('...')' denoting one or more tiles already on board, each can be '.' or "X"
                 let s = word_token;
+                let mut num_in_paren = -1isize;
                 v.clear();
                 if !s.is_empty() {
                     v.reserve(s.len());
@@ -310,17 +321,69 @@ impl Question {
                     let mut ix = 0;
                     while ix < sb.len() {
                         if let Some((tile, end_ix)) = plays_alphabet_reader.next_tile(sb, ix) {
-                            v.push(tile);
+                            let row = row + ((v.len() as i8) & -(coord.down as i8));
+                            let col = col + ((v.len() as i8) & -(!coord.down as i8));
+                            if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
+                                return Err(fmt_error!(format!(
+                                    "invalid coord (row {} col {}) after {:?} in {:?}",
+                                    row, col, v, s
+                                )));
+                            }
+                            let tile_on_board = game_state.board_tiles[dim.at_row_col(row, col)];
+                            if tile_on_board == 0 {
+                                // empty square, place this tile. must not be in paren.
+                                if num_in_paren >= 0 {
+                                    return Err(fmt_error!(format!(
+                                "invalid tile {} after {:?} in {:?} (no tile found on board at row {} col {})",
+                                tile,v, s,  row,col
+                            )));
+                                }
+                                v.push(tile);
+                            } else if tile_on_board != tile {
+                                return Err(fmt_error!(format!(
+                                "invalid tile {} after {:?} in {:?} (tile {} found on board at row {} col {})",
+                                tile,v, s, tile_on_board,row,col
+                            )));
+                            } else {
+                                // tile matches
+                                v.push(0);
+                                num_in_paren += (num_in_paren >= 0) as isize;
+                            }
                             ix = end_ix;
                         } else if sb[ix] == b'.' {
+                            let row = row + ((v.len() as i8) & -(coord.down as i8));
+                            let col = col + ((v.len() as i8) & -(!coord.down as i8));
+                            if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
+                                return Err(fmt_error!(format!(
+                                    "invalid coord (row {} col {}) after {:?} in {:?}",
+                                    row, col, v, s
+                                )));
+                            }
+                            let tile_on_board = game_state.board_tiles[dim.at_row_col(row, col)];
+                            if tile_on_board == 0 {
+                                return Err(fmt_error!(format!(
+                                "invalid tile 0 after {:?} in {:?} (no tile found on board at row {} col {})",
+                                v, s,  row,col
+                            )));
+                            }
                             v.push(0);
                             ix += 1;
+                            num_in_paren += (num_in_paren >= 0) as isize;
+                        } else if num_in_paren < 0 && sb[ix] == b'(' {
+                            ix += 1;
+                            num_in_paren = 0;
+                        } else if num_in_paren > 0 && sb[ix] == b')' {
+                            ix += 1;
+                            num_in_paren = -1;
                         } else {
                             return Err(fmt_error!(format!(
                                 "invalid tile after {:?} in {:?}",
                                 v, s
                             )));
                         }
+                    }
+                    if num_in_paren >= 0 {
+                        return Err(fmt_error!("unclosed parenthesis in tiles"));
                     }
                 }
                 move_to_play = Some(movegen::Play::Place {
@@ -665,7 +728,7 @@ fn main() -> error::Returns<()> {
 >2: IIKOOTW M11 K.I +8 138
 >1: ?EJNŚWW A14 E. +2 191
 >2: AILOOTW C11 .LI +14 152
->1: ?JNNŚWW 12C ...W +7 198
+>1: ?JNNŚWW 12C (.A.)W +7 198
 >2: AOOOTWŹ -Ź +0 152
 >1: ?AJNNŚW 3L .iŚ +20 218
 >2: AGOOOTW K10 GA.O +14 166
@@ -975,40 +1038,40 @@ fn main() -> error::Returns<()> {
 #description Saved by Elise version 0.1.8
 #lexicon GERMAN
 >Thomas: DEEINNR H4 DIENERN +66 66
->Alex: EEHORSZ 7F ZO. +8 8
->Thomas: FO 10F FO. +15 81
->Alex: EEEHJRS G6 J. +15 23
+>Alex: EEHORSZ 7F ZON +8 8
+>Thomas: FO 10F FON +15 81
+>Alex: EEEHJRS G6 JO +15 23
 >Thomas: AGLRTÖÜ -LÖÜ +0 81
 >Alex: EEEHRSS I7 EH +15 38
->Thomas: U F7 .U +4 85
+>Thomas: U F7 ZU +4 85
 >Alex: EEMMRSS 11H SEMS +20 58
->Thomas: CEEHIRS K4 SCHIERE. +74 159
->Alex: EMMNNRU 4A NUMMERN. +76 134
->Thomas: ADEEHRT A3 A.DREHTE +77 236
->Alex: GILOSÖ? 4J Ö.I +20 154
->Thomas: NNV E3 V.NN +18 254
+>Thomas: CEEHIRS K4 SCHIERES +74 159
+>Alex: EMMNNRU 4A NUMMERND +76 134
+>Thomas: ADEEHRT A3 ANDREHTE +77 236
+>Alex: GILOSÖ? 4J ÖSI +20 154
+>Thomas: NNV E3 VENN +18 254
 >Alex: EGLOST? M2 LOSGEhT +79 233
 >Thomas: ADS N1 DAS +15 269
->Alex: EHKNRTY 10J H.NRY +48 281
+>Alex: EHKNRTY 10J HENRY +48 281
 #note 4-ply winprob simulation (1150), +11.25 / 45.5% [54.18s]
->Thomas: AKM C2 KA.M +22 291
->Alex: EEKNTTÄ 8M .ÄT +24 305
+>Thomas: AKM C2 KAMM +22 291
+>Alex: EEKNTTÄ 8M TÄT +24 305
 >Thomas: ABST O1 ABTS +37 328
->Alex: EEEGKNT F10 .EG +7 312
+>Alex: EEEGKNT F10 FEG +7 312
 >Thomas: IX B9 IX +52 380
 >Alex: EEKNTUÜ 11A TENÜ +29 341
 >Thomas: CENT 13C CENT +22 402
->Alex: EGKRSU? D9 KR.G. +28 369
->Thomas: FL 7A .LF +11 413
->Alex: EIILSU? 6J U. +5 374
->Thomas: UW O6 WU. +5 418
+>Alex: EGKRSU? D9 KRÜGE +28 369
+>Thomas: FL 7A ELF +11 413
+>Alex: EIILSU? 6J UH +5 374
+>Thomas: UW O6 WUT +5 418
 #>Alex: EIILQS? O10 SEIL +22 396
 #>Alex: EIILQS? -- -22 374
-#>Thomas: ABDEPUU J3 B. +11 429
-#>Alex: EIILQS? N10 .EtI +12 386
+#>Thomas: ABDEPUU J3 BÖ +11 429
+#>Alex: EIILQS? N10 YEtI +12 386
 #>Thomas: ADEPUU M13 PUD +22 451
-#>Alex: ILQS 14L L.S +34 420
-#>Thomas: AEU G1 AUE. +5 456
+#>Alex: ILQS 14L LUS +34 420
+#>Thomas: AEU G1 AUEN +5 456
 #>Thomas: (IQ) +22 478
     ",
         "EIILQS?",
