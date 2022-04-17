@@ -448,6 +448,61 @@ impl Question {
             board_tiles,
         })
     }
+
+    fn from_fen(
+        game_config: &game_config::GameConfig<'_>,
+        lexicon: &str,
+        fen_str: &str,
+        rack: &str,
+    ) -> Result<Question, error::MyError> {
+        let alphabet = game_config.alphabet();
+        let racks_alphabet_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
+        let board_layout = game_config.board_layout();
+        let dim = board_layout.dim();
+        let mut v = Vec::new(); // temp buffer
+        let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), String> {
+            let s = rack;
+            v.clear();
+            if !s.is_empty() {
+                v.reserve(s.len());
+                let sb = s.as_bytes();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = racks_alphabet_reader.next_tile(sb, ix) {
+                        v.push(tile);
+                        ix = end_ix;
+                    } else {
+                        return Err(format!("invalid tile after {:?} in {:?}", v, s));
+                    }
+                }
+            }
+            Ok(())
+        };
+        let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
+        let parsed_fen = fen_parser.parse(fen_str)?;
+        let board_tiles = parsed_fen
+            .chunks_exact(dim.rows as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|&x| {
+                        // turn 0x81u8, 0x82u8 into -1i8, -2i8
+                        if x & 0x80 == 0 {
+                            x as i8
+                        } else {
+                            -0x80i8 - (x as i8)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        parse_rack(&mut v, rack)
+            .map_err(|e| error::new(format!("invalid rack {:?}: {}", rack, e)))?;
+        Ok(Question {
+            lexicon: lexicon.to_string(),
+            rack: v,
+            board_tiles,
+        })
+    }
 }
 
 fn main() -> error::Returns<()> {
@@ -1026,7 +1081,7 @@ fn main() -> error::Returns<()> {
     ",
         "DEEMORW",
     )?;
-    let question = Question::from_gcg(
+    let _question = Question::from_gcg(
         &game_config::make_german_game_config(),
         "RD28",
         r"#player1 Thomas Thomas
@@ -1071,6 +1126,12 @@ fn main() -> error::Returns<()> {
 #>Thomas: (IQ) +22 478
     ",
         "EIILQS?",
+    )?;
+    let question = Question::from_fen(
+        &game_config::make_common_english_game_config(),
+        "NWL20",
+        "5BERGS5/4PA3U5/2QAID3R5/3BEE3F2S2/1P1ET2VIATIC2/MA1TAW3c2H2/ES3IS2E2A2/AT1FOLIA4V2/LI1L1EX1E6/1N1O1D2N2Y3/1GNU2C1JETE3/2ER2OHO2N3/2O3GOY6/1INDOW1U7/4DORR7",
+        "IKLMTZ",
     )?;
 
     let kwg;
