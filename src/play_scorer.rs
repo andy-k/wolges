@@ -88,7 +88,7 @@ impl PlayScorer {
                     return_error!("word is too short".into());
                 }
 
-                let (row, col) = if *down { (*lane, *idx) } else { (*idx, *lane) };
+                let (row, col) = if *down { (*idx, *lane) } else { (*lane, *idx) };
                 let board_layout = game_config.board_layout();
                 let dim = board_layout.dim();
                 if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
