@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2022 Andy Kurnia.
 
-use super::{alphabet, board_layout, game_config, game_state, game_timers};
+use super::{alphabet, board_layout, error, game_config, game_state, game_timers};
+use std::str::FromStr;
 
 #[inline(always)]
 pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -> &'static str {
@@ -199,19 +200,97 @@ impl std::fmt::Display for BoardFenner<'_> {
     }
 }
 
-pub fn print_board_fen(
-    alphabet: &alphabet::Alphabet<'_>,
-    board_layout: &board_layout::BoardLayout,
-    board_tiles: &[u8],
-) {
-    print!(
-        "{}",
+impl<'a> BoardFenner<'a> {
+    pub fn new(
+        alphabet: &'a alphabet::Alphabet<'a>,
+        board_layout: &'a board_layout::BoardLayout,
+        board_tiles: &'a [u8],
+    ) -> Self {
         BoardFenner {
             alphabet,
             board_layout,
-            board_tiles
+            board_tiles,
         }
-    );
+    }
+}
+
+pub struct BoardFenParser<'a> {
+    board_layout: &'a board_layout::BoardLayout,
+    buf: Box<[u8]>,
+    plays_alphabet_reader: alphabet::AlphabetReader<'a>,
+}
+
+impl<'a> BoardFenParser<'a> {
+    pub fn new(
+        alphabet: &'a alphabet::Alphabet<'a>,
+        board_layout: &'a board_layout::BoardLayout,
+    ) -> Self {
+        let dim = board_layout.dim();
+        let expected_size = (dim.rows as isize * dim.cols as isize) as usize;
+        let plays_alphabet_reader = alphabet::AlphabetReader::new_for_plays(alphabet);
+        Self {
+            board_layout,
+            buf: vec![0; expected_size].into_boxed_slice(),
+            plays_alphabet_reader,
+        }
+    }
+
+    pub fn parse(&mut self, s: &str) -> Result<&[u8], error::MyError> {
+        let sb = s.as_bytes();
+        let mut ix = 0;
+        macro_rules! fmt_error {
+            ($msg: expr) => {
+                error::new(format!("{} at position {}", $msg, ix))
+            };
+        }
+        let dim = self.board_layout.dim();
+        let mut p = 0usize;
+        let mut r = 0i8;
+        let mut c = 0i8;
+        while ix < sb.len() {
+            if c >= dim.cols {
+                if r < dim.rows - 1 {
+                    if sb[ix] == b'/' {
+                        r += 1;
+                        c = 0;
+                        ix += 1;
+                    } else {
+                        return Err(fmt_error!("expecting slash"));
+                    }
+                } else {
+                    // nothing works
+                    return Err(fmt_error!("trailing chars"));
+                }
+            } else if let Some((tile, end_ix)) = self.plays_alphabet_reader.next_tile(sb, ix) {
+                self.buf[p] = tile;
+                p += 1;
+                c += 1;
+                ix = end_ix;
+            } else if sb[ix] >= b'1' && sb[ix] <= b'9' {
+                // positive numbers only
+                let mut jx = ix + 1;
+                while jx < sb.len() && sb[jx] >= b'0' && sb[jx] <= b'9' {
+                    jx += 1;
+                }
+                let empties = usize::from_str(&s[ix..jx]).map_err(|err| fmt_error!(err))?;
+                if empties > (dim.cols - c) as usize {
+                    return Err(fmt_error!("too many empty spaces"));
+                }
+                for _ in 0..empties {
+                    self.buf[p] = 0;
+                    p += 1;
+                }
+                c += empties as i8;
+                ix = jx;
+            } else {
+                return Err(fmt_error!("invalid char"));
+            }
+        }
+        if r != dim.rows - 1 || c != dim.cols {
+            return Err(fmt_error!("incomplete board"));
+        }
+        Ok(&self.buf)
+    }
 }
 
 struct MsPrinter {

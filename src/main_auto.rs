@@ -33,6 +33,8 @@ fn main() -> error::Returns<()> {
     };
     //let _ = game_config;
     //let game_config = &game_config::make_hong_kong_english_game_config();
+    let mut fen_parser =
+        display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
     let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {
@@ -63,6 +65,25 @@ fn main() -> error::Returns<()> {
         loop {
             timers.set_turn(game_state.turn as i8);
             display::print_game_state(game_config, &game_state, Some(&timers));
+
+            if false {
+                let fen_str = format!(
+                    "{}",
+                    display::BoardFenner::new(
+                        game_config.alphabet(),
+                        game_config.board_layout(),
+                        &game_state.board_tiles,
+                    )
+                );
+                println!("{}", fen_str);
+                let parsed_fen = fen_parser.parse(&fen_str)?;
+                if parsed_fen != &game_state.board_tiles[..] {
+                    println!(
+                        "{} parses into {:?} (expecting {:?})",
+                        fen_str, parsed_fen, game_state.board_tiles
+                    );
+                }
+            }
 
             let filtered_movegen = if game_state.turn == 0 {
                 &mut filtered_movegen_0
