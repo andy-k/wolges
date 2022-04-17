@@ -330,16 +330,16 @@ impl Question {
                                 // empty square, place this tile. must not be in paren.
                                 if num_in_paren >= 0 {
                                     return Err(fmt_error!(format_args!(
-                                "invalid tile {} after {:?} in {:?} (no tile found on board at row {} col {})",
-                                tile,v, s,  row,col
-                            )));
+                                        "invalid tile {} after {:?} in {:?} (no tile found on board at row {} col {})",
+                                        tile, v, s, row, col
+                                    )));
                                 }
                                 v.push(tile);
                             } else if tile_on_board != tile {
                                 return Err(fmt_error!(format_args!(
-                                "invalid tile {} after {:?} in {:?} (tile {} found on board at row {} col {})",
-                                tile,v, s, tile_on_board,row,col
-                            )));
+                                    "invalid tile {} after {:?} in {:?} (tile {} found on board at row {} col {})",
+                                    tile, v, s, tile_on_board, row, col
+                                )));
                             } else {
                                 // tile matches
                                 v.push(0);
@@ -358,9 +358,9 @@ impl Question {
                             let tile_on_board = game_state.board_tiles[dim.at_row_col(row, col)];
                             if tile_on_board == 0 {
                                 return Err(fmt_error!(format_args!(
-                                "invalid tile 0 after {:?} in {:?} (no tile found on board at row {} col {})",
-                                v, s,  row,col
-                            )));
+                                    "invalid tile 0 after {:?} in {:?} (no tile found on board at row {} col {})",
+                                    v, s, row, col
+                                )));
                             }
                             v.push(0);
                             ix += 1;
@@ -1188,7 +1188,7 @@ fn main() -> error::Returns<()> {
         if tile > alphabet_len_without_blank {
             wolges::return_error!(format!(
                 "rack has invalid tile {}, alphabet size is {}",
-                tile, alphabet_len_without_blank
+                tile, alphabet_len_without_blank,
             ));
         }
         if available_tally[tile as usize] > 0 {
@@ -1207,7 +1207,7 @@ fn main() -> error::Returns<()> {
         wolges::return_error!(format!(
             "board: need {} rows, found {} rows",
             expected_dim.rows,
-            question.board_tiles.len()
+            question.board_tiles.len(),
         ));
     }
     for (row_num, row) in (0..).zip(question.board_tiles.iter()) {
@@ -1216,7 +1216,7 @@ fn main() -> error::Returns<()> {
                 "board row {} (0-based): need {} cols, found {} cols",
                 row_num,
                 expected_dim.cols,
-                row.len()
+                row.len(),
             ));
         }
     }
@@ -1254,7 +1254,7 @@ fn main() -> error::Returns<()> {
             } else {
                 wolges::return_error!(format!(
                     "board row {} col {} (0-based): invalid tile {}, alphabet size is {}",
-                    row_num, col_num, signed_tile, alphabet_len_without_blank
+                    row_num, col_num, signed_tile, alphabet_len_without_blank,
                 ));
             }
         }
@@ -1268,7 +1268,7 @@ fn main() -> error::Returns<()> {
     if oppo_rack.len() > game_config.rack_size() as usize {
         wolges::return_error!(format!(
             "not endgame yet as there are {} unseen tiles",
-            oppo_rack.len()
+            oppo_rack.len(),
         ));
     }
 
