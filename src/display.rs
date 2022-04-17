@@ -161,6 +161,59 @@ pub fn print_board(
     );
 }
 
+pub struct BoardFenner<'a> {
+    alphabet: &'a alphabet::Alphabet<'a>,
+    board_layout: &'a board_layout::BoardLayout,
+    board_tiles: &'a [u8],
+}
+
+impl std::fmt::Display for BoardFenner<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut p = 0usize;
+        for r in 0..self.board_layout.dim().rows {
+            if r > 0 {
+                write!(f, "/")?;
+            }
+            let mut empties = 0usize;
+            for _ in 0..self.board_layout.dim().cols {
+                let tile = self.alphabet.of_board(self.board_tiles[p]);
+                p += 1;
+                match tile {
+                    None => {
+                        empties += 1;
+                    }
+                    Some(tile) => {
+                        if empties > 0 {
+                            write!(f, "{}", empties)?;
+                            empties = 0;
+                        }
+                        write!(f, "{}", tile)?;
+                    }
+                }
+            }
+            if empties > 0 {
+                write!(f, "{}", empties)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn print_board_fen(
+    alphabet: &alphabet::Alphabet<'_>,
+    board_layout: &board_layout::BoardLayout,
+    board_tiles: &[u8],
+) {
+    print!(
+        "{}",
+        BoardFenner {
+            alphabet,
+            board_layout,
+            board_tiles
+        }
+    );
+}
+
 struct MsPrinter {
     ms: i64,
 }
@@ -191,8 +244,13 @@ impl std::fmt::Display for GameStatePrinter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{}Pool {}: {}",
+            "{}{}\nPool {}: {}",
             BoardPrinter {
+                alphabet: self.game_config.alphabet(),
+                board_layout: self.game_config.board_layout(),
+                board_tiles: &self.game_state.board_tiles,
+            },
+            BoardFenner {
                 alphabet: self.game_config.alphabet(),
                 board_layout: self.game_config.board_layout(),
                 board_tiles: &self.game_state.board_tiles,
