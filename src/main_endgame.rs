@@ -65,8 +65,7 @@ fn parse_coord_token(coord: &str, dim: matrix::Dim) -> Option<Coord> {
         .position(|c| !c.is_ascii_digit())
         .unwrap_or(b.len());
     let dig1 = if l1 != 0 {
-        i8::try_from(usize::from_str(unsafe { std::str::from_utf8_unchecked(&b[..l1]) }).ok()? - 1)
-            .ok()?
+        i8::try_from(usize::from_str(&coord[..l1]).ok()? - 1).ok()?
     } else {
         0
     };
@@ -103,8 +102,7 @@ fn parse_coord_token(coord: &str, dim: matrix::Dim) -> Option<Coord> {
     if l3 != b.len() {
         return None;
     }
-    let dig3 = i8::try_from(usize::from_str(unsafe { std::str::from_utf8_unchecked(b) }).ok()? - 1)
-        .ok()?;
+    let dig3 = i8::try_from(usize::from_str(&coord[l1 + l2..]).ok()? - 1).ok()?;
     if dig3 >= dim.rows {
         return None;
     }
