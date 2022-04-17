@@ -430,7 +430,7 @@ impl Question {
             .map(|row| {
                 row.iter()
                     .map(|&x| {
-                        // turn -1i8, -2i8 into 0x81u8, 0x82u8
+                        // turn 0x81u8, 0x82u8 into -1i8, -2i8
                         if x & 0x80 == 0 {
                             x as i8
                         } else {
