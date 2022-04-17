@@ -50,8 +50,6 @@ fn is_coord_token(coord: &str) -> bool {
     l3 == b.len()
 }
 
-// TODO remove derive
-#[derive(Debug)]
 struct Coord {
     down: bool,
     lane: i8,
