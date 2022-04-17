@@ -229,9 +229,9 @@ impl Question {
             let _ = player_token;
             let _ = cum_token;
             let mut move_score = i16::from_str(score_token)
-                .map_err(|e| fmt_error!(format!("invalid score token: {}", e)))?;
+                .map_err(|e| fmt_error!(format_args!("invalid score token: {}", e)))?;
             parse_rack(&mut v, rack_token)
-                .map_err(|e| fmt_error!(format!("invalid rack token: {}", e)))?;
+                .map_err(|e| fmt_error!(format_args!("invalid rack token: {}", e)))?;
             game_state.set_current_rack(&v);
             let mut move_to_play = None;
             if coord_token.is_empty() {
@@ -269,7 +269,7 @@ impl Question {
                                     }
                                     Err(_) => false,
                                 } {
-                                    return Err(fmt_error!(format!(
+                                    return Err(fmt_error!(format_args!(
                                         "invalid exchanged tiles {:?}: {}",
                                         exchanged, e
                                     )));
@@ -320,7 +320,7 @@ impl Question {
                             let row = row + ((v.len() as i8) & -(coord.down as i8));
                             let col = col + ((v.len() as i8) & -(!coord.down as i8));
                             if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
-                                return Err(fmt_error!(format!(
+                                return Err(fmt_error!(format_args!(
                                     "invalid coord (row {} col {}) after {:?} in {:?}",
                                     row, col, v, s
                                 )));
@@ -329,14 +329,14 @@ impl Question {
                             if tile_on_board == 0 {
                                 // empty square, place this tile. must not be in paren.
                                 if num_in_paren >= 0 {
-                                    return Err(fmt_error!(format!(
+                                    return Err(fmt_error!(format_args!(
                                 "invalid tile {} after {:?} in {:?} (no tile found on board at row {} col {})",
                                 tile,v, s,  row,col
                             )));
                                 }
                                 v.push(tile);
                             } else if tile_on_board != tile {
-                                return Err(fmt_error!(format!(
+                                return Err(fmt_error!(format_args!(
                                 "invalid tile {} after {:?} in {:?} (tile {} found on board at row {} col {})",
                                 tile,v, s, tile_on_board,row,col
                             )));
@@ -350,14 +350,14 @@ impl Question {
                             let row = row + ((v.len() as i8) & -(coord.down as i8));
                             let col = col + ((v.len() as i8) & -(!coord.down as i8));
                             if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
-                                return Err(fmt_error!(format!(
+                                return Err(fmt_error!(format_args!(
                                     "invalid coord (row {} col {}) after {:?} in {:?}",
                                     row, col, v, s
                                 )));
                             }
                             let tile_on_board = game_state.board_tiles[dim.at_row_col(row, col)];
                             if tile_on_board == 0 {
-                                return Err(fmt_error!(format!(
+                                return Err(fmt_error!(format_args!(
                                 "invalid tile 0 after {:?} in {:?} (no tile found on board at row {} col {})",
                                 v, s,  row,col
                             )));
@@ -372,7 +372,7 @@ impl Question {
                             ix += 1;
                             num_in_paren = -1;
                         } else {
-                            return Err(fmt_error!(format!(
+                            return Err(fmt_error!(format_args!(
                                 "invalid tile after {:?} in {:?}",
                                 v, s
                             )));
@@ -399,7 +399,7 @@ impl Question {
                 };
                 match ps.validate_play(board_snapshot, &game_state, &play) {
                     Err(err) => {
-                        return Err(fmt_error!(format!(
+                        return Err(fmt_error!(format_args!(
                             "invalid play {}: {}",
                             play.fmt(board_snapshot),
                             err
@@ -408,7 +408,7 @@ impl Question {
                     Ok(_adjusted_play) => {
                         let recounted_score = ps.compute_score(board_snapshot, &play);
                         if move_score != recounted_score {
-                            return Err(fmt_error!(format!(
+                            return Err(fmt_error!(format_args!(
                                 "wrong score for {}: should score {}",
                                 play.fmt(board_snapshot),
                                 recounted_score,
@@ -420,7 +420,7 @@ impl Question {
                 }
                 game_state
                     .play(game_config, &mut rng, &play)
-                    .map_err(|e| fmt_error!(format!("invalid play: {}", e)))?;
+                    .map_err(|e| fmt_error!(format_args!("invalid play: {}", e)))?;
                 game_state.next_turn();
             }
         }
