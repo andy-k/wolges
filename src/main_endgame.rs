@@ -1133,6 +1133,13 @@ fn main() -> error::Returns<()> {
         "5BERGS5/4PA3U5/2QAID3R5/3BEE3F2S2/1P1ET2VIATIC2/MA1TAW3c2H2/ES3IS2E2A2/AT1FOLIA4V2/LI1L1EX1E6/1N1O1D2N2Y3/1GNU2C1JETE3/2ER2OHO2N3/2O3GOY6/1INDOW1U7/4DORR7",
         "IKLMTZ",
     )?;
+    let _ = question;
+    let question = Question::from_fen(
+        &game_config::make_common_english_game_config(),
+        "CSW21",
+        "3J1Q1CILIA3/1GLUEISH3LAP1/3S1N5OXO1/3T3E2ZO3/4BROMATEs3/5E1Y2N4/2DUIT1DE6/1DIG1A1EM6/5I2p6/5L2OF2P2/4WO2REV1U2/4AR1KITINGS1/4U3ATT1HEY/4R5A2WE/CONFS1ABOVE2NA",
+        "DEEIN",
+    )?;
 
     let kwg;
     let game_config;
