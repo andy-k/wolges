@@ -4,7 +4,7 @@ use wolges::error;
 mod rlhelper;
 
 fn main() -> error::Returns<()> {
-    let mut rl = rlhelper::new_rl_editor();
+    let mut rl = rlhelper::new_rl_editor()?;
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     loop {
         if let Some((line, source)) = cmd_stack.pop() {

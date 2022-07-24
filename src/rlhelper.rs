@@ -71,8 +71,8 @@ impl rustyline::validate::Validator for MyHelper {
     }
 }
 
-pub fn new_rl_editor() -> rustyline::Editor<MyHelper> {
-    let mut rl = rustyline::Editor::new();
+pub fn new_rl_editor() -> Result<rustyline::Editor<MyHelper>, rustyline::error::ReadlineError> {
+    let mut rl = rustyline::Editor::new()?;
     rl.set_helper(Some(MyHelper {
         completer: rustyline::completion::FilenameCompleter::new(),
         highlighter: rustyline::highlight::MatchingBracketHighlighter::new(),
@@ -80,5 +80,5 @@ pub fn new_rl_editor() -> rustyline::Editor<MyHelper> {
         colored_prompt: ">> ".to_owned(),
         validator: rustyline::validate::MatchingBracketValidator::new(),
     }));
-    rl
+    Ok(rl)
 }
