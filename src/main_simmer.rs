@@ -134,7 +134,7 @@ fn main() -> error::Returns<()> {
     let question = Question::from_fen(
         &game_config::make_common_english_game_config(),
         "NWL20",
-        "C14/O2TOY9/mIRADOR8/F4DAB2PUGH1/I5GOOEY3V/T4XI2MALTHA/14N/6GUM3OWN/7PEW2DOE/9EF1DOR/2KUNA1J1BEVELS/3TURRETS2S2/7A4T2/7N7/7S7",
+        "C14/O2TOY9/mIRADOR8/F4DAB2PUGH1/I5GOOEY3V/T4XI2MALTHA/14N/6GUM3OWN/7PEW2DOE/9EF1DOR/2KUNA1J1BEVELS/3TURRETs2S2/7A4T2/7N7/7S7",
         "EEEIILZ",
     )?;
 
@@ -287,11 +287,11 @@ fn main() -> error::Returns<()> {
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot,
         rack: &game_state.current_player().rack,
-        max_gen: 100,
+        max_gen: 5,
         always_include_pass: false,
     });
     let mut candidates = simmer.take_candidates(move_generator.plays.len());
-    let num_sim_iters = 1000;
+    let num_sim_iters = 20000;
     for sim_iter in 1..=num_sim_iters {
         let should_output = sim_iter % 50 == 0;
         if should_output {
