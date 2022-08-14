@@ -276,7 +276,7 @@ fn main() -> error::Returns<()> {
     // ok, let's sim...
 
     let mut simmer = ObservableSimmer::new(&game_config, &kwg, &klv);
-    simmer.simmer.prepare(&game_config, &game_state, 2);
+    simmer.simmer.prepare(&game_config, &game_state, 30);
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &game_state.board_tiles,
         game_config: simmer.game_config,
@@ -291,7 +291,7 @@ fn main() -> error::Returns<()> {
         always_include_pass: false,
     });
     let mut candidates = simmer.take_candidates(move_generator.plays.len());
-    let num_sim_iters = 20000;
+    let num_sim_iters = 10000;
     for sim_iter in 1..=num_sim_iters {
         let should_output = sim_iter % 50 == 0;
         if should_output {
