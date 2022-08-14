@@ -51,3 +51,7 @@ path = "src/main_lex.rs"
 [[bin]]
 name = "shell"
 path = "src/main_shell.rs"
+
+[[bin]]
+name = "simmer"
+path = "src/main_simmer.rs"
