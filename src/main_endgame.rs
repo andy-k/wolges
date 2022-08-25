@@ -1163,6 +1163,50 @@ fn main() -> error::Returns<()> {
         "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA4HAM/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOAI/UT1AT1N1L2FEHM/GUR2WIRER4A/SNEEZED7L", // O9 (MAXIMA)L: +54 +41 "I"
         "ADENOOO",
     )?;
+    let _ = question;
+    // https://woogles.io/game/BLRma3oH?turn=20
+    let _question = Question::from_gcg(
+        &game_config::make_common_english_game_config(),
+        "CSW21",
+        r"#character-encoding UTF-8
+#description Created with Macondo
+#id io.woogles BLRma3oH
+#lexicon CSW21
+#note Variant: classic
+#note BoardLayout: CrosswordGame
+#note LetterDistribution: english
+#player1 STEEBot STEEBot
+#player2 rak1507 rak1507
+>STEEBot: AEHNORT 8H ANOTHER +78 78
+>rak1507: AADEOOR 9J ROADEO +25 25
+>STEEBot: AIIOOPU 7M POI +20 98
+>rak1507: ABIMRSW 6K BRAW +39 64
+>STEEBot: AINOOTU 5K OUT +24 122
+>rak1507: AEGIIMS 10G IMAGE +23 87
+>STEEBot: ?AINOST 4F rATIONS +75 197
+>rak1507: EEFILSS 11D SELFIES +86 173
+>STEEBot: EILNTXY 3G YEX +53 250
+>rak1507: AIIMRUU -IIMUU +0 173
+>STEEBot: ABIILNT 12A BINIT +26 276
+>rak1507: AAEPRVY O9 .VERPAY +48 221
+>STEEBot: AIKLNRS 14J KIRAN. +40 316
+>rak1507: AAEFHMT B10 FA.TH +38 259
+>STEEBot: ELLRSUW 7E WULL +10 326
+>rak1507: AEEGIMO 6D MAGE +25 284
+>STEEBot: DEORSVZ 15H DZO +45 371
+>rak1507: DEEILNO C3 ELOINED +80 364
+>STEEBot: EEJQRSV 8A RE.VES +49 420
+#>rak1507: ?CGINTU 13K GUT +17 381
+#>STEEBot: CDJQU E5 J...D +32 452
+#>rak1507: ?CIN 13A I. +6 387
+#>STEEBot: CQU H10 ..C +10 462
+#>rak1507: ?CN A12 ..Ce +28 415
+#>STEEBot: QU M12 U.. +3 465
+#>rak1507: N D11 ..N +3 418
+#>rak1507: (Q) +20 438
+    ",
+        "CGINTU?",
+    )?;
 
     let kwg;
     let game_config;
