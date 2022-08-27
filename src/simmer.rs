@@ -38,9 +38,7 @@ pub struct Simmer {
     pub initial_score_spread: i16,
     num_sim_plies: usize,
     num_tiles_that_matter: usize,
-
-    // prepare_iteration() sets these
-    possible_to_play_out: bool,
+    win_prob_weightage: f64,
 
     // simulate() simulates a single iteration and sets these
     game_state: game_state::GameState,
@@ -60,8 +58,7 @@ impl Simmer {
             initial_score_spread: 0,
             num_sim_plies: 0,
             num_tiles_that_matter: 0,
-
-            possible_to_play_out: false,
+            win_prob_weightage: 0.0,
 
             game_state: game_state::GameState::new(game_config),
             last_seen_leave_values: vec![0.0f32; game_config.num_players() as usize]
@@ -91,6 +88,26 @@ impl Simmer {
                 .unwrap_or(0);
         self.num_sim_plies = num_sim_plies;
         self.num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
+        let mut num_unseen_tiles = self.initial_game_state.bag.0.len();
+        let initial_turn = self.initial_game_state.turn as usize;
+        for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
+            if i != initial_turn {
+                num_unseen_tiles += player.rack.len();
+            }
+        }
+        const W_NO_OUT: f64 = 10.0;
+        const W_OUT: f64 = 10000.0;
+        self.win_prob_weightage = if num_unseen_tiles <= self.num_tiles_that_matter {
+            // possible to play out
+            W_OUT
+        } else if num_unseen_tiles < 2 * self.num_tiles_that_matter {
+            W_OUT
+                + ((num_unseen_tiles - self.num_tiles_that_matter) as f64
+                    / self.num_tiles_that_matter as f64)
+                    * (W_NO_OUT - W_OUT)
+        } else {
+            W_NO_OUT
+        };
     }
 
     #[inline(always)]
@@ -106,8 +123,6 @@ impl Simmer {
                 player.rack.clear();
             }
         }
-        self.possible_to_play_out =
-            self.initial_game_state.bag.0.len() <= self.num_tiles_that_matter;
         RNG.with(|rng| {
             self.initial_game_state
                 .bag
@@ -207,7 +222,7 @@ impl Simmer {
         if best_opponent_equity != f32::NEG_INFINITY {
             this_equity -= best_opponent_equity;
         }
-        this_equity - self.initial_score_spread as f32
+        this_equity
     }
 
     #[inline(always)]
@@ -222,6 +237,7 @@ impl Simmer {
             }
         } else {
             // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
+            // (to adjust these, adjust the 30.0 and 0.9 consts below)
             let num_unseen_tiles = self.game_state.bag.0.len()
                 + self
                     .game_state
@@ -237,10 +253,6 @@ impl Simmer {
 
     #[inline(always)]
     pub fn win_prob_weightage(&self) -> f64 {
-        if self.possible_to_play_out {
-            1000.0
-        } else {
-            10.0
-        }
+        self.win_prob_weightage
     }
 }

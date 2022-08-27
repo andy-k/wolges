@@ -271,12 +271,17 @@ fn main() -> error::Returns<()> {
             .zip(available_tally.iter())
             .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize)),
     );
+    for player in game_state.players.iter_mut() {
+        game_state
+            .bag
+            .replenish(&mut player.rack, game_config.rack_size() as usize);
+    }
     display::print_game_state(&game_config, &game_state, None);
 
     // ok, let's sim...
 
     let mut simmer = ObservableSimmer::new(&game_config, &kwg, &klv);
-    simmer.simmer.prepare(&game_config, &game_state, 30);
+    simmer.simmer.prepare(&game_config, &game_state, 2);
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &game_state.board_tiles,
         game_config: simmer.game_config,
