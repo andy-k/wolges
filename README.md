@@ -42,4 +42,4 @@ Details are not in this short readme.
 
 ## GitHub Badge
 
-- [![Rust](https://github.com/andy-k/wolges/actions/workflows/rust.yml/badge.svg)](https://github.com/andy-k/wolges/actions/workflows/rust.yml)
+- [![Actions](https://github.com/andy-k/wolges/actions/workflows/actions.yml/badge.svg)](https://github.com/andy-k/wolges/actions/workflows/actions.yml)
