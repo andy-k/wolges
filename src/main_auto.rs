@@ -13,7 +13,8 @@ fn main() -> error::Returns<()> {
     } else {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?)
     };
-    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/leaves.klv")?);
+    let _klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv")?);
+    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv")?);
     let game_config = &if jumbled {
         game_config::make_jumbled_english_game_config()
     } else {

@@ -276,7 +276,7 @@ fn main() -> error::Returns<()> {
             "args:
   auto
     just to test
-  english-klv leaves.csv leaves.klv
+  english-klv english.csv english.klv
     generate klv file
   english-kwg CSW21.txt CSW21.kwg
     generate kwg file containing gaddawg
@@ -311,10 +311,38 @@ fn main() -> error::Returns<()> {
 
 fn old_main() -> error::Returns<()> {
     std::fs::write(
-        "lexbin/leaves.klv",
+        "lexbin/english.klv",
         build_leaves(
-            Box::new(std::fs::File::open("lexsrc/leaves.csv")?),
+            Box::new(std::fs::File::open("lexsrc/english.csv")?),
             alphabet::make_english_alphabet(),
+        )?,
+    )?;
+    std::fs::write(
+        "lexbin/CSW21.klv",
+        build_leaves(
+            Box::new(std::fs::File::open("lexsrc/CSW21.csv")?),
+            alphabet::make_english_alphabet(),
+        )?,
+    )?;
+    std::fs::write(
+        "lexbin/french.klv",
+        build_leaves(
+            Box::new(std::fs::File::open("lexsrc/french.csv")?),
+            alphabet::make_french_alphabet(),
+        )?,
+    )?;
+    std::fs::write(
+        "lexbin/german.klv",
+        build_leaves(
+            Box::new(std::fs::File::open("lexsrc/german.csv")?),
+            alphabet::make_german_alphabet(),
+        )?,
+    )?;
+    std::fs::write(
+        "lexbin/norwegian.klv",
+        build_leaves(
+            Box::new(std::fs::File::open("lexsrc/norwegian.csv")?),
+            alphabet::make_norwegian_alphabet(),
         )?,
     )?;
     {
