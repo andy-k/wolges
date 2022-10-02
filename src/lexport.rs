@@ -60,7 +60,7 @@ pub fn to_macondo<'a>(
     }
     let mut env = Env {
         kwg,
-        unicode_sorted_tiles: &*unicode_sorted_tiles,
+        unicode_sorted_tiles: &unicode_sorted_tiles,
         tile_mapping: &tile_mapping,
         nodes: &mut nodes,
         node_indexes: &mut node_indexes,

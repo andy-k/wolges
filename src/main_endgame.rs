@@ -134,7 +134,7 @@ fn is_score_token(coord: &str) -> bool {
 // /^-?\d+$/
 fn is_cum_token(coord: &str) -> bool {
     let b = coord.as_bytes();
-    let b = &b[if !b.is_empty() && b[0] == b'-' { 1 } else { 0 }..];
+    let b = &b[(!b.is_empty() && b[0] == b'-') as usize..];
     if b.is_empty() {
         return false;
     }

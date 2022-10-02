@@ -44,14 +44,14 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(&args3)?))
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args3)?))
                 };
                 let arc_klv1 = if args3 == args4 {
                     std::sync::Arc::clone(&arc_klv0)
                 } else if args4 == "-" {
                     std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(&args4)?))
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
                 };
                 generate_autoplay_logs(make_game_config(), kwg, arc_klv0, arc_klv1)?;
                 Ok(true)
