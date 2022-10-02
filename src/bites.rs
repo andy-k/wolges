@@ -51,9 +51,9 @@ impl Drop for Bites {
             // Inline: nothing to do.
         } else {
             // Heap: free the pointer.
-            unsafe {
-                Box::from_raw(u64::from_le_bytes(self.0[0..8].try_into().unwrap()) as *mut u8);
-            }
+            drop(unsafe {
+                Box::from_raw(u64::from_le_bytes(self.0[0..8].try_into().unwrap()) as *mut u8)
+            });
         }
     }
 }
