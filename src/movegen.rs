@@ -977,7 +977,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         for &idx in &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end] {
             if idx_left <= idx && idx < idx_right && env.params.board_strip[idx as usize] == 0 {
                 best_scoring += *desc_scores_iter.next().unwrap() as i16
-                    * precomputed_square_multiplier_slice[idx as usize] as i16;
+                    * precomputed_square_multiplier_slice[idx as usize];
                 to_assign -= 1;
                 if to_assign == 0 {
                     break;

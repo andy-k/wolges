@@ -416,7 +416,7 @@ fn generate_autoplay_logs(
                                         batched_csv_log.into_inner().unwrap();
                                     let mut batched_csv_game_buf =
                                         batched_csv_game.into_inner().unwrap();
-                                    let elapsed_time_secs = t0.elapsed().as_secs() as u64;
+                                    let elapsed_time_secs = t0.elapsed().as_secs();
                                     let tick_changed = {
                                         let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                                         mutex_guard
@@ -493,7 +493,7 @@ fn generate_autoplay_logs(
 
     println!(
         "After {} seconds, have logged {} games ({} moves) into {}",
-        t0.elapsed().as_secs() as u64,
+        t0.elapsed().as_secs(),
         completed_games.load(std::sync::atomic::Ordering::Relaxed),
         completed_moves.load(std::sync::atomic::Ordering::Relaxed),
         run_identifier
@@ -561,7 +561,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 } else {
                     full_rack_map.insert(rack_bytes[..].into(), Cumulate { equity, count: 1 });
                 }
-                let elapsed_time_secs = t0.elapsed().as_secs() as u64;
+                let elapsed_time_secs = t0.elapsed().as_secs();
                 if tick_periods.update(elapsed_time_secs) {
                     println!(
                         "After {} seconds, have read {} rows",
@@ -728,7 +728,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
             },
             0,
         );
-        let elapsed_time_secs = t0.elapsed().as_secs() as u64;
+        let elapsed_time_secs = t0.elapsed().as_secs();
         if tick_periods.update(elapsed_time_secs) {
             println!(
                 "After {} seconds, have processed {} racks into {} unique subracks",
@@ -795,7 +795,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
                     }
                 }
                 ev_map.insert(rack_bytes.into(), new_v);
-                let elapsed_time_secs = t0.elapsed().as_secs() as u64;
+                let elapsed_time_secs = t0.elapsed().as_secs();
                 if tick_periods.update(elapsed_time_secs) {
                     println!(
                         "After {} seconds, have processed {} subracks and smoothed {}",
@@ -814,7 +814,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     );
     println!(
         "After {} seconds, have processed {} subracks and smoothed {}",
-        t0.elapsed().as_secs() as u64,
+        t0.elapsed().as_secs(),
         ev_map.len(),
         num_smoothed,
     );
@@ -888,7 +888,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     }
     println!(
         "After {} seconds, have processed {} subracks, smoothed {}, filled in {}",
-        t0.elapsed().as_secs() as u64,
+        t0.elapsed().as_secs(),
         ev_map.len(),
         num_smoothed,
         num_filled_in,

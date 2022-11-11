@@ -14,7 +14,7 @@ impl Bag {
         );
         for tile in 0..alphabet.len() {
             for _ in 0..alphabet.freq(tile) {
-                bag.push(tile as u8);
+                bag.push(tile);
             }
         }
         Bag(bag)

@@ -246,7 +246,7 @@ impl Simmer {
                     .map(|player| player.rack.len())
                     .sum::<usize>();
             // this could be precomputed for every possible num_unseen_tiles (1 to 93)
-            let exp_width = -(30.0 + num_unseen_tiles as f64) / ((1.0 / 0.9 - 1.0) as f64).ln();
+            let exp_width = -(30.0 + num_unseen_tiles as f64) / (1.0f64 / 0.9 - 1.0).ln();
             1.0 / (1.0 + (-(final_spread as f64) / exp_width).exp())
         }
     }

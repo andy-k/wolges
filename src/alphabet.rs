@@ -516,7 +516,7 @@ impl<'a> AlphabetReader<'a> {
         // Safe because we have all 256.
         if let Some((if_single, range_lo, range_hi)) = unsafe {
             self.by_first_byte
-                .get_unchecked(*sb.get_unchecked(ix as usize) as usize)
+                .get_unchecked(*sb.get_unchecked(ix) as usize)
         } {
             if range_hi > range_lo {
                 // Safe after accessing sb[ix].

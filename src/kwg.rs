@@ -58,7 +58,7 @@ impl Kwg {
     #[inline(always)]
     pub fn seek(&self, mut p: i32, tile: u8) -> i32 {
         if p >= 0 {
-            p = self[p].arc_index() as i32;
+            p = self[p].arc_index();
             if p > 0 {
                 loop {
                     let node = self[p];
@@ -246,7 +246,7 @@ impl Kwg {
 
     pub fn compute_alpha_cross_set(&self, letters_tally: &[u8]) -> u64 {
         let mut answer = 1; // always set bit 0 here
-        let mut p = self[0].arc_index() as i32;
+        let mut p = self[0].arc_index();
         if p <= 0 {
             return answer;
         }

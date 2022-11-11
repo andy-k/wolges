@@ -168,14 +168,14 @@ pub fn to_macondo<'a>(
             remapped_letter_set_bitset |=
                 ((letter_set_bitset & (1 << tile) != 0) as u64) << tile_mapping[tile as usize];
         }
-        bin[z..z + 8].copy_from_slice(&(remapped_letter_set_bitset as u64).to_be_bytes());
+        bin[z..z + 8].copy_from_slice(&remapped_letter_set_bitset.to_be_bytes());
     }
     w += letter_sets.len() * 8;
 
     bin[w..w + 4].copy_from_slice(&(nodes.len() as u32).to_be_bytes());
     w += 4;
     for node in nodes {
-        bin[w..w + 4].copy_from_slice(&(node as u32).to_be_bytes());
+        bin[w..w + 4].copy_from_slice(&node.to_be_bytes());
         w += 4;
     }
 

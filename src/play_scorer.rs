@@ -547,7 +547,7 @@ impl PlayScorer {
                             })
                             .count();
                         let dangerous_vowel_penalty = dangerous_vowel_count as f32 * 0.7;
-                        recounted_equity -= dangerous_vowel_penalty as f32;
+                        recounted_equity -= dangerous_vowel_penalty;
                     }
                 }
             }

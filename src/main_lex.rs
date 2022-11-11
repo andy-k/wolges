@@ -153,7 +153,7 @@ impl EmbeddedWordsFinder {
         if node.accepts() {
             (params.record_finding)(&self.wbuf, multiplier);
         }
-        if node.arc_index() as i32 != 0 {
+        if node.arc_index() != 0 {
             for dr in -1..=1 {
                 for dc in -1..=1 {
                     self.iter_embedded_words(
@@ -175,7 +175,7 @@ impl EmbeddedWordsFinder {
                     if node.accepts() {
                         (params.record_finding)(&self.wbuf, multiplier);
                     }
-                    if node.arc_index() as i32 != 0 {
+                    if node.arc_index() != 0 {
                         for dr in -1..=1 {
                             for dc in -1..=1 {
                                 self.iter_embedded_words(

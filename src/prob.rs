@@ -63,9 +63,9 @@ impl WordProbability {
         word.iter().for_each(|&c| self.word_tally[c as usize] += 1);
         let n_blanks = self.alphabet_freqs[0] as isize;
         for c in 1..self.alphabet_freqs.len() {
-            let n_c_in_word = self.word_tally[c as usize] as isize;
+            let n_c_in_word = self.word_tally[c] as isize;
             if n_c_in_word != 0 {
-                let n_c_in_bag = self.alphabet_freqs[c as usize] as isize;
+                let n_c_in_bag = self.alphabet_freqs[c] as isize;
                 let this_pas = self.pascal.row(n_c_in_bag as usize);
                 for j in (0..=n_blanks).rev() {
                     let baseline = j - n_c_in_word;

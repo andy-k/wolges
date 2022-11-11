@@ -124,24 +124,12 @@ impl<'a> Tilt<'a> {
         }
     }
 
-    // to remove when rust 1.50 stabilizes x.clamp(lo, hi)
-    #[inline(always)]
-    fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
-        if x < lo {
-            lo
-        } else if x > hi {
-            hi
-        } else {
-            x
-        }
-    }
-
     #[inline(always)]
     pub fn tilt_to(&mut self, new_tilt_factor: f32, bot_level: i8) {
         // 0.0 = untilted (can see all valid moves)
         // 1.0 = tilted (can see no valid moves)
-        self.tilt_factor = Self::clamp(new_tilt_factor, 0.0, 1.0);
-        self.leave_scale = Self::clamp(bot_level as f32 * 0.1 + (1.0 - self.tilt_factor), 0.0, 1.0);
+        self.tilt_factor = new_tilt_factor.clamp(0.0, 1.0);
+        self.leave_scale = (bot_level as f32 * 0.1 + (1.0 - self.tilt_factor)).clamp(0.0, 1.0);
     }
 
     #[inline(always)]
