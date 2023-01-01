@@ -2102,7 +2102,7 @@ impl std::fmt::Display for WriteablePlay<'_> {
                 if inside {
                     write!(f, ")")?;
                 }
-                write!(f, " {}", score)?;
+                write!(f, " {score}")?;
             }
         }
         Ok(())

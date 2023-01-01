@@ -45,7 +45,7 @@ impl Question {
                         v.push(tile);
                         ix = end_ix;
                     } else {
-                        return Err(format!("invalid tile after {:?} in {:?}", v, s));
+                        return Err(format!("invalid tile after {v:?} in {s:?}"));
                     }
                 }
             }
@@ -68,8 +68,7 @@ impl Question {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        parse_rack(&mut v, rack)
-            .map_err(|e| error::new(format!("invalid rack {:?}: {}", rack, e)))?;
+        parse_rack(&mut v, rack).map_err(|e| error::new(format!("invalid rack {rack:?}: {e}")))?;
         Ok(Question {
             lexicon: lexicon.to_string(),
             rack: v,
@@ -185,8 +184,7 @@ fn main() -> error::Returns<()> {
     for &tile in &question.rack {
         if tile > alphabet_len_without_blank {
             wolges::return_error!(format!(
-                "rack has invalid tile {}, alphabet size is {}",
-                tile, alphabet_len_without_blank,
+                "rack has invalid tile {tile}, alphabet size is {alphabet_len_without_blank}",
             ));
         }
         if available_tally[tile as usize] > 0 {
@@ -251,8 +249,7 @@ fn main() -> error::Returns<()> {
                 }
             } else {
                 wolges::return_error!(format!(
-                    "board row {} col {} (0-based): invalid tile {}, alphabet size is {}",
-                    row_num, col_num, signed_tile, alphabet_len_without_blank,
+                    "board row {row_num} col {col_num} (0-based): invalid tile {signed_tile}, alphabet size is {alphabet_len_without_blank}",
                 ));
             }
         }
@@ -300,7 +297,7 @@ fn main() -> error::Returns<()> {
     for sim_iter in 1..=num_sim_iters {
         let should_output = sim_iter % 50 == 0;
         if should_output {
-            println!("\niter {}", sim_iter);
+            println!("\niter {sim_iter}");
         }
         simmer.simmer.prepare_iteration();
         for candidate in candidates.iter_mut() {

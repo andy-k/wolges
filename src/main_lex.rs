@@ -2,7 +2,7 @@
 
 use wolges::{alphabet, bites, error, fash, game_config, kwg};
 
-fn print_dawg<'a>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg) {
+fn print_dawg(a: &alphabet::Alphabet, g: &kwg::Kwg) {
     struct Env<'a> {
         a: &'a alphabet::Alphabet<'a>,
         g: &'a kwg::Kwg,
@@ -61,7 +61,7 @@ fn parse_embedded_words_board(
                 v.push(0);
                 ix += 1;
             } else {
-                wolges::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
+                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
             }
         }
     }
@@ -227,10 +227,7 @@ fn test_find_embedded_words<'a>(
         };
         let board_dim = isqrt(board_len);
         if board_dim * board_dim != board_len {
-            wolges::return_error!(format!(
-                "{} length {} is not a square",
-                board_str, board_len
-            ));
+            wolges::return_error!(format!("{board_str} length {board_len} is not a square"));
         }
         let rows = board_dim;
         let cols = board_dim;
@@ -299,7 +296,7 @@ fn test_find_embedded_words<'a>(
                 for &tile in &word[..] {
                     print!("{}", alphabet.of_rack(tile).unwrap());
                 }
-                print!(" ({})", score);
+                print!(" ({score})");
             }
             println!();
             pt = pt2;
@@ -417,7 +414,7 @@ TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
             out_vec.push(v);
         });
         let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
-        println!("{} {} {:?}", i, j, out_vec);
+        println!("{i} {j} {out_vec:?}");
         assert_eq!(i, j);
     }
     assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[5, 3, 1]), !0);

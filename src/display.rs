@@ -185,15 +185,15 @@ impl std::fmt::Display for BoardFenner<'_> {
                     }
                     Some(tile) => {
                         if empties > 0 {
-                            write!(f, "{}", empties)?;
+                            write!(f, "{empties}")?;
                             empties = 0;
                         }
-                        write!(f, "{}", tile)?;
+                        write!(f, "{tile}")?;
                     }
                 }
             }
             if empties > 0 {
-                write!(f, "{}", empties)?;
+                write!(f, "{empties}")?;
             }
         }
         Ok(())
@@ -308,7 +308,7 @@ impl std::fmt::Display for MsPrinter {
         let sec = ms / 1000;
         let just_sec = sec % 60;
         let min = sec / 60;
-        write!(f, "{:02}:{:02}.{:03}", min, just_sec, just_ms)?;
+        write!(f, "{min:02}:{just_sec:02}.{just_ms:03}")?;
         Ok(())
     }
 }
@@ -351,7 +351,7 @@ impl std::fmt::Display for GameStatePrinter<'_> {
                 write!(f, " {}", MsPrinter { ms: clock_ms })?;
                 let adjustment = self.game_config.time_adjustment(clock_ms);
                 if adjustment != 0 {
-                    write!(f, " ({})", adjustment)?;
+                    write!(f, " ({adjustment})")?;
                 }
                 if game_timers.turn as usize == i {
                     // may differ from game_state.turn if timer is paused

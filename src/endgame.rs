@@ -316,7 +316,7 @@ impl<'a> EndgameSolver<'a> {
                 f32::INFINITY,
                 false,
             );
-            println!("valuation for depth {} is {}", max_depth, valuation);
+            println!("valuation for depth {max_depth} is {valuation}");
             self.print_progress();
             self.print_best_line(player_idx);
             // check for time limit here

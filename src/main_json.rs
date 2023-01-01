@@ -192,7 +192,7 @@ fn main() -> error::Returns<()> {
         .map(|x| x.into())
         .collect::<Vec<kibitzer::JsonPlayWithEquity>>();
     let ret = serde_json::to_value(result)?;
-    println!("{}", ret);
+    println!("{ret}");
     println!("{}", serde_json::to_string_pretty(&ret)?);
 
     Ok(())

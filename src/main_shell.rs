@@ -9,7 +9,7 @@ fn main() -> error::Returns<()> {
     loop {
         if let Some((line, source)) = cmd_stack.pop() {
             if let Some((filename, line_num)) = source {
-                println!("{}:{}> {}", filename, line_num, line);
+                println!("{filename}:{line_num}> {line}");
             }
             match shell_words::split(&line) {
                 Ok(strings) => {
@@ -35,7 +35,7 @@ fn main() -> error::Returns<()> {
                                             cmd_stack[v..].reverse();
                                         }
                                         Err(err) => {
-                                            println!("cannot open file: {:?}", err);
+                                            println!("cannot open file: {err:?}");
                                         }
                                     }
                                 } else {
@@ -49,7 +49,7 @@ fn main() -> error::Returns<()> {
                     }
                 }
                 Err(err) => {
-                    println!("Bad quoting: {:?}", err);
+                    println!("Bad quoting: {err:?}");
                 }
             }
         } else {
@@ -67,7 +67,7 @@ fn main() -> error::Returns<()> {
                     break;
                 }
                 Err(err) => {
-                    println!("Error: {:?}", err);
+                    println!("Error: {err:?}");
                     break;
                 }
             }

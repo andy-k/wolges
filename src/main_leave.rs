@@ -138,7 +138,7 @@ fn generate_autoplay_logs(
     let kwg = std::sync::Arc::new(kwg);
     let player_aliases = std::sync::Arc::new(
         (1..=game_config.num_players())
-            .map(|x| format!("p{}", x))
+            .map(|x| format!("p{x}"))
             .collect::<Box<_>>(),
     );
     let num_threads = num_cpus::get();
@@ -150,8 +150,8 @@ fn generate_autoplay_logs(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let run_identifier = std::sync::Arc::new(format!("log-{:08x}", epoch_secs));
-    println!("logging to {}", run_identifier);
+    let run_identifier = std::sync::Arc::new(format!("log-{epoch_secs:08x}"));
+    println!("logging to {run_identifier}");
     let mut csv_log = csv::Writer::from_path(run_identifier.to_string())?;
     csv_log.serialize((
         "playerID",
@@ -168,16 +168,16 @@ fn generate_autoplay_logs(
         "oppscore",
     ))?;
     let csv_log_writer = csv_log.into_inner()?;
-    let mut csv_game = csv::Writer::from_path(format!("games-{}", run_identifier))?;
+    let mut csv_game = csv::Writer::from_path(format!("games-{run_identifier}"))?;
     csv_game.serialize((
         "gameID",
         player_aliases
             .iter()
-            .map(|x| format!("{}_score", x))
+            .map(|x| format!("{x}_score"))
             .collect::<Box<_>>(),
         player_aliases
             .iter()
-            .map(|x| format!("{}_bingos", x))
+            .map(|x| format!("{x}_bingos"))
             .collect::<Box<_>>(),
         "first",
     ))?;
@@ -431,11 +431,7 @@ fn generate_autoplay_logs(
                                     };
                                     if tick_changed {
                                         println!(
-                                        "After {} seconds, have logged {} games ({} moves) into {}",
-                                        elapsed_time_secs,
-                                        logged_games,
-                                        completed_moves,
-                                        run_identifier
+                                        "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves) into {run_identifier}"
                                     );
                                     }
                                     batched_csv_log_buf.clear();
@@ -487,7 +483,7 @@ fn generate_autoplay_logs(
 
     for thread in threads {
         if let Err(e) = thread.join() {
-            println!("{:?}", e);
+            println!("{e:?}");
         }
     }
 
@@ -518,7 +514,7 @@ fn parse_rack(
                 v.push(tile);
                 ix = end_ix;
             } else {
-                wolges::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
+                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
             }
         }
     }
@@ -563,10 +559,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 }
                 let elapsed_time_secs = t0.elapsed().as_secs();
                 if tick_periods.update(elapsed_time_secs) {
-                    println!(
-                        "After {} seconds, have read {} rows",
-                        elapsed_time_secs, row_count
-                    );
+                    println!("After {elapsed_time_secs} seconds, have read {row_count} rows");
                 }
             }
             Ok(())
@@ -874,7 +867,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
                             );
                             num_filled_in += 1;
                         } else {
-                            println!("not enough samples to derive {:?}", rack_bytes);
+                            println!("not enough samples to derive {rack_bytes:?}");
                         }
                     }
                 },

@@ -76,7 +76,7 @@ fn main() -> error::Returns<()> {
                         &game_state.board_tiles,
                     )
                 );
-                println!("{}", fen_str);
+                println!("{fen_str}");
                 let parsed_fen = fen_parser.parse(&fen_str)?;
                 if parsed_fen != &game_state.board_tiles[..] {
                     println!(
@@ -248,7 +248,7 @@ fn main() -> error::Returns<()> {
         timers.set_turn(-1);
 
         display::print_game_state(game_config, &game_state, Some(&timers));
-        println!("Final scores: {:?}", final_scores);
+        println!("Final scores: {final_scores:?}");
         let mut has_time_adjustment = false;
         for (i, &clock_ms) in timers.clocks_ms.iter().enumerate() {
             let adjustment = game_config.time_adjustment(clock_ms);
@@ -259,7 +259,7 @@ fn main() -> error::Returns<()> {
             }
         }
         if has_time_adjustment {
-            println!("Really final scores: {:?}", final_scores);
+            println!("Really final scores: {final_scores:?}");
         }
     } // temp loop
 

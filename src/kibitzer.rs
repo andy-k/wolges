@@ -157,8 +157,7 @@ impl Kibitzer {
         for &tile in rack {
             if tile > alphabet_len_without_blank {
                 return_error!(format!(
-                    "rack has invalid tile {}, alphabet size is {}",
-                    tile, alphabet_len_without_blank
+                    "rack has invalid tile {tile}, alphabet size is {alphabet_len_without_blank}"
                 ));
             }
             if self.available_tally[tile as usize] > 0 {
@@ -224,8 +223,7 @@ impl Kibitzer {
                     }
                 } else {
                     return_error!(format!(
-                        "board row {} col {} (0-based): invalid tile {}, alphabet size is {}",
-                        row_num, col_num, signed_tile, alphabet_len_without_blank
+                        "board row {row_num} col {col_num} (0-based): invalid tile {signed_tile}, alphabet size is {alphabet_len_without_blank}"
                     ));
                 }
             }

@@ -20,7 +20,7 @@ fn read_machine_words(
                 v.push(tile);
                 ix = end_ix;
             } else {
-                wolges::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
+                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
             }
         }
         machine_words.push(v[..].into());
@@ -57,13 +57,13 @@ fn read_english_machine_words_or_leaves(
         // The output must be 1-based because 0 has special meaning.
         // It should also not be too high to fit in a u64 cross-set.
         for c in s.chars() {
-            if ('A'..='Z').contains(&c) {
+            if c.is_ascii_uppercase() {
                 v.push((c as u8) & 0x3f);
             } else if c == blank {
                 // Test this after the letters. Pass a letter to disable.
                 v.push(0);
             } else {
-                wolges::return_error!(format!("invalid tile after {:?} in {:?}", v, s));
+                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
             }
         }
         // Performance notes:
@@ -73,8 +73,7 @@ fn read_english_machine_words_or_leaves(
             Some(previous_v) => {
                 if v[..] <= previous_v[..] {
                     wolges::return_error!(format!(
-                        "input is not sorted, {:?} cannot come after {:?}",
-                        v, previous_v
+                        "input is not sorted, {v:?} cannot come after {previous_v:?}"
                     ));
                 }
             }
@@ -104,7 +103,7 @@ fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::
 use std::convert::TryInto;
 use std::str::FromStr;
 
-fn iter_dawg<'a, F: FnMut(&str)>(a: &alphabet::Alphabet<'a>, g: &kwg::Kwg, f: F) {
+fn iter_dawg<F: FnMut(&str)>(a: &alphabet::Alphabet, g: &kwg::Kwg, f: F) {
     struct Env<'a, F: FnMut(&str)> {
         a: &'a alphabet::Alphabet<'a>,
         g: &'a kwg::Kwg,
@@ -809,7 +808,7 @@ fn old_main() -> error::Returns<()> {
                 out_vec.push(v);
             });
             let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
-            print!("{} {} {:?}", i, j, out_vec);
+            print!("{i} {j} {out_vec:?}");
             let byte_index = j as usize / 8;
             let bit = 1 << (j as usize % 8);
             if v_csw21_bits[byte_index] & bit != 0 {

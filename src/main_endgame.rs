@@ -180,7 +180,7 @@ impl Question {
                         v.push(tile);
                         ix = end_ix;
                     } else {
-                        return Err(format!("invalid tile after {:?} in {:?}", v, s));
+                        return Err(format!("invalid tile after {v:?} in {s:?}"));
                     }
                 }
             }
@@ -229,9 +229,9 @@ impl Question {
             let _ = player_token;
             let _ = cum_token;
             let mut move_score = i16::from_str(score_token)
-                .map_err(|e| fmt_error!(format_args!("invalid score token: {}", e)))?;
+                .map_err(|e| fmt_error!(format_args!("invalid score token: {e}")))?;
             parse_rack(&mut v, rack_token)
-                .map_err(|e| fmt_error!(format_args!("invalid rack token: {}", e)))?;
+                .map_err(|e| fmt_error!(format_args!("invalid rack token: {e}")))?;
             game_state.set_current_rack(&v);
             let mut move_to_play = None;
             if coord_token.is_empty() {
@@ -270,8 +270,7 @@ impl Question {
                                     Err(_) => false,
                                 } {
                                     return Err(fmt_error!(format_args!(
-                                        "invalid exchanged tiles {:?}: {}",
-                                        exchanged, e
+                                        "invalid exchanged tiles {exchanged:?}: {e}"
                                     )));
                                 }
                                 [][..].into()
@@ -321,8 +320,7 @@ impl Question {
                             let col = col + ((v.len() as i8) & -(!coord.down as i8));
                             if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
                                 return Err(fmt_error!(format_args!(
-                                    "invalid coord (row {} col {}) after {:?} in {:?}",
-                                    row, col, v, s
+                                    "invalid coord (row {row} col {col}) after {v:?} in {s:?}"
                                 )));
                             }
                             let tile_on_board = game_state.board_tiles[dim.at_row_col(row, col)];
@@ -330,15 +328,13 @@ impl Question {
                                 // empty square, place this tile. must not be in paren.
                                 if num_in_paren >= 0 {
                                     return Err(fmt_error!(format_args!(
-                                        "invalid tile {} after {:?} in {:?} (no tile found on board at row {} col {})",
-                                        tile, v, s, row, col
+                                        "invalid tile {tile} after {v:?} in {s:?} (no tile found on board at row {row} col {col})"
                                     )));
                                 }
                                 v.push(tile);
                             } else if tile_on_board != tile {
                                 return Err(fmt_error!(format_args!(
-                                    "invalid tile {} after {:?} in {:?} (tile {} found on board at row {} col {})",
-                                    tile, v, s, tile_on_board, row, col
+                                    "invalid tile {tile} after {v:?} in {s:?} (tile {tile_on_board} found on board at row {row} col {col})"
                                 )));
                             } else {
                                 // tile matches
@@ -351,15 +347,13 @@ impl Question {
                             let col = col + ((v.len() as i8) & -(!coord.down as i8));
                             if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
                                 return Err(fmt_error!(format_args!(
-                                    "invalid coord (row {} col {}) after {:?} in {:?}",
-                                    row, col, v, s
+                                    "invalid coord (row {row} col {col}) after {v:?} in {s:?}"
                                 )));
                             }
                             let tile_on_board = game_state.board_tiles[dim.at_row_col(row, col)];
                             if tile_on_board == 0 {
                                 return Err(fmt_error!(format_args!(
-                                    "invalid tile 0 after {:?} in {:?} (no tile found on board at row {} col {})",
-                                    v, s, row, col
+                                    "invalid tile 0 after {v:?} in {s:?} (no tile found on board at row {row} col {col})"
                                 )));
                             }
                             v.push(0);
@@ -373,8 +367,7 @@ impl Question {
                             num_in_paren = -1;
                         } else {
                             return Err(fmt_error!(format_args!(
-                                "invalid tile after {:?} in {:?}",
-                                v, s
+                                "invalid tile after {v:?} in {s:?}"
                             )));
                         }
                     }
@@ -420,7 +413,7 @@ impl Question {
                 }
                 game_state
                     .play(game_config, &mut rng, &play)
-                    .map_err(|e| fmt_error!(format_args!("invalid play: {}", e)))?;
+                    .map_err(|e| fmt_error!(format_args!("invalid play: {e}")))?;
                 game_state.next_turn();
             }
         }
@@ -440,8 +433,7 @@ impl Question {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        parse_rack(&mut v, rack)
-            .map_err(|e| error::new(format!("invalid rack {:?}: {}", rack, e)))?;
+        parse_rack(&mut v, rack).map_err(|e| error::new(format!("invalid rack {rack:?}: {e}")))?;
         Ok(Question {
             lexicon: lexicon.to_string(),
             rack: v,
@@ -472,7 +464,7 @@ impl Question {
                         v.push(tile);
                         ix = end_ix;
                     } else {
-                        return Err(format!("invalid tile after {:?} in {:?}", v, s));
+                        return Err(format!("invalid tile after {v:?} in {s:?}"));
                     }
                 }
             }
@@ -495,8 +487,7 @@ impl Question {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        parse_rack(&mut v, rack)
-            .map_err(|e| error::new(format!("invalid rack {:?}: {}", rack, e)))?;
+        parse_rack(&mut v, rack).map_err(|e| error::new(format!("invalid rack {rack:?}: {e}")))?;
         Ok(Question {
             lexicon: lexicon.to_string(),
             rack: v,
@@ -1261,8 +1252,7 @@ fn main() -> error::Returns<()> {
     for &tile in &question.rack {
         if tile > alphabet_len_without_blank {
             wolges::return_error!(format!(
-                "rack has invalid tile {}, alphabet size is {}",
-                tile, alphabet_len_without_blank,
+                "rack has invalid tile {tile}, alphabet size is {alphabet_len_without_blank}",
             ));
         }
         if available_tally[tile as usize] > 0 {
@@ -1327,8 +1317,7 @@ fn main() -> error::Returns<()> {
                 }
             } else {
                 wolges::return_error!(format!(
-                    "board row {} col {} (0-based): invalid tile {}, alphabet size is {}",
-                    row_num, col_num, signed_tile, alphabet_len_without_blank,
+                    "board row {row_num} col {col_num} (0-based): invalid tile {signed_tile}, alphabet size is {alphabet_len_without_blank}",
                 ));
             }
         }
