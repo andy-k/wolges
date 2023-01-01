@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2022 Andy Kurnia.
+// Copyright (C) 2020-2023 Andy Kurnia.
 
 use wolges::{alphabet, display, error, game_config, game_state, klv, kwg, movegen, simmer, stats};
 

@@ -9,7 +9,7 @@ It is named after Woogles.io, the best site to play the game on.
 
 ## License
 
-Copyright (C) 2020-2022 Andy Kurnia.\
+Copyright (C) 2020-2023 Andy Kurnia.\
 Released under the MIT license.
 
 Bugs included.
