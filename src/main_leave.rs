@@ -105,7 +105,7 @@ fn main() -> error::Returns<()> {
     generate leaves (no smoothing)
   english-generate summary.csv leaves.csv
     generate leaves (with smoothing)
-  (english can also be french, german, norwegian, polish, spanish)"
+  (english can also be catalan, french, german, norwegian, polish, spanish)"
         );
         Ok(())
     } else {
@@ -114,7 +114,8 @@ fn main() -> error::Returns<()> {
             &args,
             "english",
             game_config::make_common_english_game_config,
-        )? || do_lang(&args, "french", game_config::make_french_game_config)?
+        )? || do_lang(&args, "catalan", game_config::make_catalan_game_config)?
+            || do_lang(&args, "french", game_config::make_french_game_config)?
             || do_lang(&args, "german", game_config::make_german_game_config)?
             || do_lang(&args, "norwegian", game_config::make_norwegian_game_config)?
             || do_lang(&args, "polish", game_config::make_polish_game_config)?

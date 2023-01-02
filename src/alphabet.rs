@@ -126,6 +126,79 @@ macro_rules! tile {
     };
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Catalan
+// with QU tile instead of Q
+pub fn make_catalan_alphabet<'a>() -> Alphabet<'a> {
+    Alphabet::new_static(StaticAlphabet {
+        tiles: &[
+            tile!("?", "?", 2, 0, 0),
+            tile!("A", "a", 12, 1, 1),
+            tile!("B", "b", 2, 3, 0),
+            tile!("C", "c", 3, 2, 0),
+            tile!("Ç", "ç", 1, 10, 0),
+            tile!("D", "d", 3, 2, 0),
+            tile!("E", "e", 13, 1, 1),
+            tile!("F", "f", 1, 4, 0),
+            tile!("G", "g", 2, 3, 0),
+            tile!("H", "h", 1, 8, 0),
+            tile!("I", "i", 8, 1, 1),
+            tile!("J", "j", 1, 8, 0),
+            tile!("L", "l", 4, 1, 0),
+            tile!("L·L", "l·l", 1, 10, 0),
+            tile!("M", "m", 3, 2, 0),
+            tile!("N", "n", 6, 1, 0),
+            tile!("NY", "ny", 1, 10, 0),
+            tile!("O", "o", 5, 1, 1),
+            tile!("P", "p", 2, 3, 0),
+            tile!("QU", "qu", 1, 8, 0),
+            tile!("R", "r", 8, 1, 0),
+            tile!("S", "s", 8, 1, 0),
+            tile!("T", "t", 5, 1, 0),
+            tile!("U", "u", 4, 1, 1),
+            tile!("V", "v", 1, 4, 0),
+            tile!("X", "x", 1, 10, 0),
+            tile!("Z", "z", 1, 8, 0),
+        ],
+        ..Default::default()
+    })
+}
+
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Catalan
+pub fn make_super_catalan_alphabet<'a>() -> Alphabet<'a> {
+    Alphabet::new_static(StaticAlphabet {
+        tiles: &[
+            tile!("?", "?", 5, 0, 0),
+            tile!("A", "a", 25, 1, 1),
+            tile!("B", "b", 3, 3, 0),
+            tile!("C", "c", 5, 2, 0),
+            tile!("Ç", "ç", 2, 12, 0), // note: different score from regular
+            tile!("D", "d", 5, 2, 0),
+            tile!("E", "e", 27, 1, 1),
+            tile!("F", "f", 2, 4, 0),
+            tile!("G", "g", 3, 3, 0),
+            tile!("H", "h", 2, 8, 0),
+            tile!("I", "i", 17, 1, 1),
+            tile!("J", "j", 2, 8, 0),
+            tile!("L", "l", 8, 1, 0),
+            tile!("L·L", "l·l", 1, 15, 0), // note: different score from regular
+            tile!("M", "m", 7, 2, 0),
+            tile!("N", "n", 12, 1, 0),
+            tile!("NY", "ny", 2, 10, 0),
+            tile!("O", "o", 10, 1, 1),
+            tile!("P", "p", 3, 3, 0),
+            tile!("QU", "qu", 2, 8, 0),
+            tile!("R", "r", 16, 1, 0),
+            tile!("S", "s", 19, 1, 0),
+            tile!("T", "t", 10, 1, 0),
+            tile!("U", "u", 6, 1, 1),
+            tile!("V", "v", 2, 4, 0),
+            tile!("X", "x", 2, 10, 0),
+            tile!("Z", "z", 2, 8, 0),
+        ],
+        ..Default::default()
+    })
+}
+
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#English
 pub fn make_english_alphabet<'a>() -> Alphabet<'a> {
     Alphabet::new_static(StaticAlphabet {

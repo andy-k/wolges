@@ -85,6 +85,54 @@ impl<'a> GameConfig<'a> {
     }
 }
 
+#[allow(dead_code)]
+pub fn make_catalan_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_catalan_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+        exchange_tile_limit: 7,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_catalan_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Jumbled,
+        alphabet: alphabet::make_catalan_alphabet(),
+        board_layout: board_layout::make_common_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+        exchange_tile_limit: 7,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_super_catalan_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_super_catalan_alphabet(),
+        board_layout: board_layout::make_super_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+        exchange_tile_limit: 7,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_super_catalan_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Jumbled,
+        alphabet: alphabet::make_super_catalan_alphabet(),
+        board_layout: board_layout::make_super_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+        exchange_tile_limit: 7,
+    })
+}
+
 pub fn make_common_english_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
