@@ -8,6 +8,8 @@ use wolges::{
 
 fn main() -> error::Returns<()> {
     let jumbled = true;
+    let _ = jumbled;
+    let jumbled = false;
     let kwg = if jumbled {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kad")?)
     } else {
@@ -15,6 +17,14 @@ fn main() -> error::Returns<()> {
     };
     let _klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv")?);
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv")?);
+    let _ = kwg;
+    let _ = klv;
+    let klv = std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES));
+    let kwg = if jumbled {
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.kad")?)
+    } else {
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.kwg")?)
+    };
     let game_config = &if jumbled {
         game_config::make_jumbled_english_game_config()
     } else {
@@ -31,6 +41,18 @@ fn main() -> error::Returns<()> {
         game_config::make_jumbled_super_english_game_config()
     } else {
         game_config::make_super_english_game_config()
+    };
+    let _ = game_config;
+    let game_config = &if jumbled {
+        game_config::make_jumbled_catalan_game_config()
+    } else {
+        game_config::make_catalan_game_config()
+    };
+    let _ = game_config;
+    let _game_config = &if jumbled {
+        game_config::make_jumbled_super_catalan_game_config()
+    } else {
+        game_config::make_super_catalan_game_config()
     };
     //let _ = game_config;
     //let game_config = &game_config::make_hong_kong_english_game_config();
