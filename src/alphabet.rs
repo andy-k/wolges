@@ -11,6 +11,7 @@ pub struct Tile<'a> {
 #[derive(Default)]
 pub struct StaticAlphabet<'a> {
     tiles: &'a [Tile<'a>],
+    widest_label_len: usize, // in codepoints for now (graphemes is too complex)
     num_tiles: u16,
 }
 
@@ -21,6 +22,10 @@ pub enum Alphabet<'a> {
 impl<'a> Alphabet<'a> {
     pub fn new_static(x: StaticAlphabet<'a>) -> Self {
         Self::Static(StaticAlphabet {
+            widest_label_len: x.tiles.iter().fold(0, |acc, tile| {
+                acc.max(tile.label.chars().count())
+                    .max(tile.blank_label.chars().count())
+            }),
             num_tiles: x.tiles.iter().map(|tile| tile.freq as u16).sum(),
             ..x
         })
@@ -42,6 +47,13 @@ impl<'a> Alphabet<'a> {
     pub fn get(&self, idx: u8) -> &'a Tile<'a> {
         match self {
             Alphabet::Static(x) => &x.tiles[idx as usize],
+        }
+    }
+
+    #[inline(always)]
+    pub fn widest_label_len(&self) -> usize {
+        match self {
+            Alphabet::Static(x) => x.widest_label_len,
         }
     }
 

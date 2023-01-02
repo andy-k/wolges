@@ -119,38 +119,50 @@ impl std::fmt::Display for BoardPrinter<'_> {
             #[allow(clippy::recursive_format_impl)]
             return f.pad(&format!("{self}"));
         }
-        write!(f, "  ")?;
-        for c in 0..self.board_layout.dim().cols {
-            write!(f, " {}", column(c))?;
+        let ncols: i8 = self.board_layout.dim().cols;
+        let max_col_label_width = 1 + ((ncols > 26) as usize);
+        let nrows: i8 = self.board_layout.dim().rows;
+        let max_row_num_width = 1 + ((nrows >= 10) as usize) + ((nrows >= 100) as usize);
+        let max_tile_width = self.alphabet.widest_label_len();
+        let w = max_col_label_width.max(max_tile_width);
+        write!(f, "{:max_row_num_width$}", "")?;
+        for c in 0..ncols {
+            write!(f, " {:^w$}", column(c))?;
         }
         writeln!(f)?;
-        write!(f, "  +")?;
-        for _ in 1..self.board_layout.dim().cols {
-            write!(f, "--")?;
+        write!(f, "{:max_row_num_width$}+", "")?;
+        for _ in 0..ncols {
+            write!(f, "{:-<w$}", "")?;
         }
-        writeln!(f, "-+")?;
-        for r in 0..self.board_layout.dim().rows {
-            write!(f, "{:2}|", r + 1)?;
-            for c in 0..self.board_layout.dim().cols {
+        for _ in 1..ncols {
+            write!(f, "-")?;
+        }
+        writeln!(f, "+")?;
+        for r in 0..nrows {
+            write!(f, "{:max_row_num_width$}|", r + 1)?;
+            for c in 0..ncols {
                 if c > 0 {
                     write!(f, " ")?
                 }
                 write!(
                     f,
-                    "{}",
+                    "{:^w$}",
                     board_label(self.alphabet, self.board_layout, self.board_tiles, r, c)
                 )?;
             }
             writeln!(f, "|{}", r + 1)?;
         }
-        write!(f, "  +")?;
-        for _ in 1..self.board_layout.dim().cols {
-            write!(f, "--")?;
+        write!(f, "{:max_row_num_width$}+", "")?;
+        for _ in 0..ncols {
+            write!(f, "{:-<w$}", "")?;
         }
-        writeln!(f, "-+")?;
-        write!(f, "  ")?;
-        for c in 0..self.board_layout.dim().cols {
-            write!(f, " {}", column(c))?;
+        for _ in 1..ncols {
+            write!(f, "-")?;
+        }
+        writeln!(f, "+")?;
+        write!(f, "{:max_row_num_width$}", "")?;
+        for c in 0..ncols {
+            write!(f, " {:^w$}", column(c))?;
         }
         writeln!(f)?;
         Ok(())
