@@ -45,6 +45,11 @@ pub struct ColumnStr(usize);
 
 impl std::fmt::Display for ColumnStr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.width().is_some() {
+            // allocates, but no choice.
+            #[allow(clippy::recursive_format_impl)]
+            return f.pad(&format!("{self}"));
+        }
         if self.0 >= 26 {
             // usize::MAX is about 26**14 so recursion may be ok.
             write!(f, "{}", Self(self.0 / 26 - 1))?;
@@ -109,6 +114,11 @@ struct BoardPrinter<'a> {
 
 impl std::fmt::Display for BoardPrinter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.width().is_some() {
+            // allocates, but no choice.
+            #[allow(clippy::recursive_format_impl)]
+            return f.pad(&format!("{self}"));
+        }
         write!(f, "  ")?;
         for c in 0..self.board_layout.dim().cols {
             write!(f, " {}", column(c))?;
@@ -170,6 +180,11 @@ pub struct BoardFenner<'a> {
 
 impl std::fmt::Display for BoardFenner<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.width().is_some() {
+            // allocates, but no choice.
+            #[allow(clippy::recursive_format_impl)]
+            return f.pad(&format!("{self}"));
+        }
         let mut p = 0usize;
         for r in 0..self.board_layout.dim().rows {
             if r > 0 {
@@ -299,6 +314,11 @@ struct MsPrinter {
 
 impl std::fmt::Display for MsPrinter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.width().is_some() {
+            // allocates, but no choice.
+            #[allow(clippy::recursive_format_impl)]
+            return f.pad(&format!("{self}"));
+        }
         let mut ms = self.ms;
         if ms < 0 {
             write!(f, "-")?;
@@ -321,6 +341,11 @@ struct GameStatePrinter<'a> {
 
 impl std::fmt::Display for GameStatePrinter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.width().is_some() {
+            // allocates, but no choice.
+            #[allow(clippy::recursive_format_impl)]
+            return f.pad(&format!("{self}"));
+        }
         writeln!(
             f,
             "{}{}\nPool {}: {}",

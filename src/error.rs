@@ -6,7 +6,7 @@ pub struct MyError {
 
 impl std::fmt::Display for MyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.s)
+        f.pad(&self.s)
     }
 }
 

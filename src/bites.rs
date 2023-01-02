@@ -99,7 +99,9 @@ impl Clone for Bites {
 impl std::fmt::Debug for Bites {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", &self[..])
+        // caution: exactly as debug-formatting the underlying &[u8],
+        // padding/alignment is applied to each element.
+        self[..].fmt(f)
     }
 }
 

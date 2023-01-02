@@ -107,6 +107,11 @@ pub struct WriteableRack<'a> {
 
 impl std::fmt::Display for WriteableRack<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.width().is_some() {
+            // allocates, but no choice.
+            #[allow(clippy::recursive_format_impl)]
+            return f.pad(&format!("{self}"));
+        }
         for &tile in self.rack {
             write!(f, "{}", self.alphabet.of_rack(tile).unwrap())?;
         }
