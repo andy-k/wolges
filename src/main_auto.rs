@@ -20,6 +20,8 @@ fn main() -> error::Returns<()> {
     let _ = kwg;
     let _ = klv;
     let klv = std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES));
+    let _ = klv;
+    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.klv")?);
     let kwg = if jumbled {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.kad")?)
     } else {
@@ -65,7 +67,7 @@ fn main() -> error::Returns<()> {
         bot_level: 1,
     };
     let mut filtered_movegen_1 = move_filter::GenMoves::Unfiltered;
-    if false {
+    if true {
         filtered_movegen_0 = move_filter::GenMoves::Unfiltered;
     }
 
