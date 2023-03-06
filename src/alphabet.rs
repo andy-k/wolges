@@ -402,7 +402,7 @@ pub fn make_german_alphabet<'a>() -> Alphabet<'a> {
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Norwegian
 // https://en.wikipedia.org/wiki/Norwegian_orthography
-// https://webcache.googleusercontent.com/search?q=cache:z-CdwfSoN-IJ:unicode.org/mail-arch/unicode-ml/y2002-m01/0297.html
+// https://unicode.org/mail-arch/unicode-ml/y2002-m01/0297.html
 // also this ordering matches system locale files
 pub fn make_norwegian_alphabet<'a>() -> Alphabet<'a> {
     Alphabet::new_static(StaticAlphabet {
