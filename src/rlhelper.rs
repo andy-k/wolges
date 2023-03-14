@@ -71,7 +71,10 @@ impl rustyline::validate::Validator for MyHelper {
     }
 }
 
-pub fn new_rl_editor() -> Result<rustyline::Editor<MyHelper>, rustyline::error::ReadlineError> {
+pub fn new_rl_editor() -> Result<
+    rustyline::Editor<MyHelper, rustyline::history::DefaultHistory>,
+    rustyline::error::ReadlineError,
+> {
     let mut rl = rustyline::Editor::new()?;
     rl.set_helper(Some(MyHelper {
         completer: rustyline::completion::FilenameCompleter::new(),

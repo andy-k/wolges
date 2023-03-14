@@ -13,16 +13,16 @@ resolver = "2"
 opt-level = 3
 
 [dependencies]
-csv = "1.1.6"
+csv = "1.2.1"
 num_cpus = "1.15.0"
 rand = "0.8.5"
 rand_chacha = "0.3.1"
-rustyline = "10.1.1"
-rustyline-derive = "0.7.0"
-serde = { version = "1.0.152", features = ["derive"] }
-serde_json = "1.0.91"
+rustyline = "11.0.0"
+rustyline-derive = "0.8.0"
+serde = { version = "1.0.156", features = ["derive"] }
+serde_json = "1.0.94"
 shell-words = "1.1.0"
-tokio = { version = "1.24.2", features = ["full"] }
+tokio = { version = "1.26.0", features = ["full"] }
 
 [[bin]]
 name = "auto"

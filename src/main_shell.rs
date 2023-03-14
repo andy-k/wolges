@@ -55,7 +55,7 @@ fn main() -> error::Returns<()> {
         } else {
             match rl.readline(">> ") {
                 Ok(line) => {
-                    rl.add_history_entry(line.as_str());
+                    rl.add_history_entry(line.as_str())?;
                     cmd_stack.push((line, None));
                 }
                 Err(rustyline::error::ReadlineError::Interrupted) => {
