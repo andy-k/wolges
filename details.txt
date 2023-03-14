@@ -340,7 +340,7 @@ format. This first pass records forward jumps from an empty square to the next
 non-empty square and vice-versa. This first pass also records, for a contiguous
 set of tiles, the GADDAG node index so far and the face-value score so far.
 
-The second pass uses the jumps to quickly identify each empty squares next to a
+The second pass uses the jumps to quickly identify each empty square next to a
 non-empty square, which may be one of three cases. An illustration may help:
 
     . . . . P A . A B L E . . . .
