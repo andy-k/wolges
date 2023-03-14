@@ -15,13 +15,13 @@ fn main() -> error::Returns<()> {
     } else {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?)
     };
-    let _klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv")?);
-    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv")?);
+    let _klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv2")?);
+    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv2")?);
     let _ = kwg;
     let _ = klv;
     let klv = std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES));
     let _ = klv;
-    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.klv")?);
+    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.klv2")?);
     let kwg = if jumbled {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.kad")?)
     } else {

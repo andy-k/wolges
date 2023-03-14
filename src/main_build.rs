@@ -363,35 +363,35 @@ fn main() -> error::Returns<()> {
 
 fn old_main() -> error::Returns<()> {
     std::fs::write(
-        "lexbin/english.klv",
+        "lexbin/english.klv2",
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/english.csv")?),
             alphabet::make_english_alphabet(),
         )?,
     )?;
     std::fs::write(
-        "lexbin/CSW21.klv",
+        "lexbin/CSW21.klv2",
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/CSW21.csv")?),
             alphabet::make_english_alphabet(),
         )?,
     )?;
     std::fs::write(
-        "lexbin/french.klv",
+        "lexbin/french.klv2",
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/french.csv")?),
             alphabet::make_french_alphabet(),
         )?,
     )?;
     std::fs::write(
-        "lexbin/german.klv",
+        "lexbin/german.klv2",
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/german.csv")?),
             alphabet::make_german_alphabet(),
         )?,
     )?;
     std::fs::write(
-        "lexbin/norwegian.klv",
+        "lexbin/norwegian.klv2",
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/norwegian.csv")?),
             alphabet::make_norwegian_alphabet(),
