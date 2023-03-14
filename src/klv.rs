@@ -3,9 +3,9 @@
 use super::kwg;
 
 pub struct Klv {
-    pub kwg: kwg::Kwg,
-    pub counts: Box<[u32]>,
-    pub scaled_leaves: Box<[i16]>,
+    kwg: kwg::Kwg,
+    counts: Box<[u32]>,
+    leaves: Box<[f32]>,
 }
 
 pub static EMPTY_KLV_BYTES: &[u8] = b"\x01\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00";
@@ -32,22 +32,23 @@ impl Klv {
         r += 4;
         let mut elts = Vec::with_capacity(lv_len as usize);
         for _ in 0..lv_len {
-            elts.push(i16::from_le(
-                (buf[r] as u16 | (buf[r + 1] as u16) << 8) as i16,
-            ));
+            elts.push(
+                i16::from_le((buf[r] as u16 | (buf[r + 1] as u16) << 8) as i16) as f32
+                    * (1.0 / 256.0),
+            );
             r += 2;
         }
         let counts = kwg.count_words_alloc();
         Klv {
             kwg,
             counts,
-            scaled_leaves: elts.into_boxed_slice(),
+            leaves: elts.into_boxed_slice(),
         }
     }
 
     #[inline(always)]
     pub fn leave(&self, leave_idx: u32) -> f32 {
-        self.scaled_leaves[leave_idx as usize] as f32 * (1.0 / 256.0)
+        self.leaves[leave_idx as usize]
     }
 
     #[inline(always)]
