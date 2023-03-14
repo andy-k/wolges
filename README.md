@@ -24,7 +24,8 @@ rustup-init
 
 (cd src for convenience)
 (put some word list .txt files and leaves.csv files in current directory)
-cargo run --release --bin buildlex -- english-klv leaves.csv leaves.klv
+#cargo run --release --bin buildlex -- english-klv leaves.csv leaves.klv
+cargo run --release --bin buildlex -- english-klv2 leaves.csv leaves.klv2
 cargo run --release --bin buildlex -- english-kwg CSW19.txt CSW19.kwg
 cargo run --release --bin buildlex -- english-macondo CSW19.kwg CSW19 CSW19.dawg CSW19.gaddag
 cargo run --release --bin buildlex -- english-kwg-alpha CSW19.txt CSW19.kad

@@ -196,6 +196,49 @@ fn build_leaves<Readable: std::io::Read>(
     Ok(bin)
 }
 
+fn build_leaves_f32<Readable: std::io::Read>(
+    f: Readable,
+    alph: alphabet::Alphabet<'_>,
+) -> error::Returns<Vec<u8>> {
+    let mut leaves_map = fash::MyHashMap::default();
+    let mut leave_words = String::new();
+    let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
+    for result in csv_reader.records() {
+        let record = result?;
+        let float_leave = f32::from_str(&record[1])?;
+        leave_words.push_str(&record[0]);
+        leave_words.push('\n');
+        leaves_map.insert(String::from(&record[0]), float_leave);
+    }
+    let leaves_kwg = build::build(
+        build::BuildFormat::DawgOnly,
+        &read_machine_words(
+            &alphabet::AlphabetReader::new_for_racks(&alph),
+            &leave_words,
+        )?,
+    )?;
+    drop(leave_words);
+    let mut leave_values = Vec::with_capacity(leaves_map.len());
+    iter_dawg(&alph, &kwg::Kwg::from_bytes_alloc(&leaves_kwg), |s| {
+        leave_values.push(leaves_map[s])
+    });
+    drop(leaves_map);
+    let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 4];
+    let mut w = 0;
+    bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+    w += 4;
+    bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
+    w += leaves_kwg.len();
+    bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
+    w += 4;
+    for v in leave_values {
+        bin[w..w + 4].copy_from_slice(&v.to_le_bytes());
+        w += 4;
+    }
+    assert_eq!(w, bin.len());
+    Ok(bin)
+}
+
 fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
     args: &[String],
     language_name: &str,
@@ -207,6 +250,13 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                 std::fs::write(
                     &args[3],
                     build_leaves(std::fs::File::open(&args[2])?, make_alphabet())?,
+                )?;
+                Ok(true)
+            }
+            "-klv2" => {
+                std::fs::write(
+                    &args[3],
+                    build_leaves_f32(std::fs::File::open(&args[2])?, make_alphabet())?,
                 )?;
                 Ok(true)
             }
@@ -276,7 +326,9 @@ fn main() -> error::Returns<()> {
   auto
     just to test
   english-klv english.csv english.klv
-    generate klv file
+    generate klv file (deprecated?)
+  english-klv2 english.csv english.klv2
+    generate klv2 file (preferred)
   english-kwg CSW21.txt CSW21.kwg
     generate kwg file containing gaddawg
   english-macondo CSW21.kwg CSW21 CSW21.dawg CSW21.gaddag
@@ -341,6 +393,41 @@ fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/norwegian.klv",
         build_leaves(
+            Box::new(std::fs::File::open("lexsrc/norwegian.csv")?),
+            alphabet::make_norwegian_alphabet(),
+        )?,
+    )?;
+    std::fs::write(
+        "lexbin/english.klv2",
+        build_leaves_f32(
+            Box::new(std::fs::File::open("lexsrc/english.csv")?),
+            alphabet::make_english_alphabet(),
+        )?,
+    )?;
+    std::fs::write(
+        "lexbin/CSW21.klv2",
+        build_leaves_f32(
+            Box::new(std::fs::File::open("lexsrc/CSW21.csv")?),
+            alphabet::make_english_alphabet(),
+        )?,
+    )?;
+    std::fs::write(
+        "lexbin/french.klv2",
+        build_leaves_f32(
+            Box::new(std::fs::File::open("lexsrc/french.csv")?),
+            alphabet::make_french_alphabet(),
+        )?,
+    )?;
+    std::fs::write(
+        "lexbin/german.klv2",
+        build_leaves_f32(
+            Box::new(std::fs::File::open("lexsrc/german.csv")?),
+            alphabet::make_german_alphabet(),
+        )?,
+    )?;
+    std::fs::write(
+        "lexbin/norwegian.klv2",
+        build_leaves_f32(
             Box::new(std::fs::File::open("lexsrc/norwegian.csv")?),
             alphabet::make_norwegian_alphabet(),
         )?,
