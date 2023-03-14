@@ -4,7 +4,7 @@ use super::{bites, error, fash};
 
 // Unconfirmed entries.
 // Memory wastage notes:
-// - Arc index would be 22 bytes max.
+// - Arc index would be 22 bits max.
 // - Could have used u32 instead of this 8-byte struct.
 struct Transition {
     tile: u8,
@@ -39,7 +39,7 @@ impl TransitionStack<'_> {
 
 // Deduplicated entries.
 // Memory wastage notes:
-// - Each index would be 22 bytes max.
+// - Each index would be 22 bits max.
 // - Could have used u64 or a 7-byte thing instead of this 12-byte struct.
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct State {
