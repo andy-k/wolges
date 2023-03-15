@@ -15,8 +15,11 @@ fn main() -> error::Returns<()> {
     } else {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?)
     };
+    /*
     let _klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv2")?);
+    */
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv2")?);
+    /*
     let _ = kwg;
     let _ = klv;
     let klv = std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES));
@@ -27,11 +30,13 @@ fn main() -> error::Returns<()> {
     } else {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.kwg")?)
     };
+    */
     let game_config = &if jumbled {
         game_config::make_jumbled_english_game_config()
     } else {
         game_config::make_common_english_game_config()
     };
+    /*
     let _ = game_config;
     let game_config = &if jumbled {
         game_config::make_jumbled_punctured_english_game_config()
@@ -58,6 +63,7 @@ fn main() -> error::Returns<()> {
     };
     //let _ = game_config;
     //let game_config = &game_config::make_hong_kong_english_game_config();
+    */
     let mut fen_parser =
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
@@ -136,7 +142,7 @@ fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            if false {
+            if true {
                 move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot,
                     rack: &game_state.current_player().rack,
