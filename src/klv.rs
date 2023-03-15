@@ -43,12 +43,12 @@ impl Klv {
         } else {
             // klv2 uses f32
             for _ in 0..lv_len {
-                elts.push(f32::from_bits(
+                elts.push(f32::from_bits(u32::from_le(
                     buf[r] as u32
                         | (buf[r + 1] as u32) << 8
                         | (buf[r + 2] as u32) << 16
                         | (buf[r + 3] as u32) << 24,
-                ));
+                )));
                 r += 4;
             }
         }
