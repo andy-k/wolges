@@ -569,11 +569,15 @@ impl<'a> AlphabetReader<'a> {
         }
     }
 
-    // Recognizes [A-Z].
+    // Recognizes [A-Z] and [a-z] identically.
     pub fn new_for_words(alphabet: &Alphabet<'a>) -> Self {
-        let supported_tiles = (1..alphabet.len())
-            .map(|tile| (tile, alphabet.of_rack(tile).unwrap().as_bytes()))
-            .collect::<Box<_>>();
+        let mut supported_tiles = Vec::with_capacity((alphabet.len() - 1) as usize * 2);
+        for base_tile in 1..alphabet.len() {
+            for &tile in &[base_tile, base_tile | 0x80] {
+                supported_tiles.push((base_tile, alphabet.of_board(tile).unwrap().as_bytes()));
+            }
+        }
+        let supported_tiles = supported_tiles.into_boxed_slice();
         Self::new_for_tiles(supported_tiles)
     }
 
