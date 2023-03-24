@@ -40,6 +40,11 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
             "-autoplay" => {
                 let args3 = if args.len() > 3 { &args[3] } else { "-" };
                 let args4 = if args.len() > 4 { &args[4] } else { "-" };
+                let num_games = if args.len() > 5 {
+                    u64::from_str(&args[5])?
+                } else {
+                    1_000_000
+                };
                 let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
@@ -53,7 +58,7 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
                 } else {
                     std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
                 };
-                generate_autoplay_logs(make_game_config(), kwg, arc_klv0, arc_klv1)?;
+                generate_autoplay_logs(make_game_config(), kwg, arc_klv0, arc_klv1, num_games)?;
                 Ok(true)
             }
             "-summarize" => {
@@ -95,10 +100,11 @@ fn main() -> error::Returns<()> {
     if args.len() <= 1 {
         println!(
             "args:
-  english-autoplay NWL18.kwg leave0.klv leave1.klv
-    autoplay many games, logs to a pair of csv.
-    (changing number of games or output filenames needs recompile.)
+  english-autoplay NWL18.kwg leave0.klv leave1.klv 1000000
+    autoplay 1000000 games, logs to a pair of csv.
+    (changing output filenames needs recompile.)
     if leave is \"-\" or omitted, uses no leave.
+    number of games is optional.
   english-summarize logfile summary.csv
     summarize logfile into summary.csv
   english-generate-no-smooth summary.csv leaves.csv
@@ -134,6 +140,7 @@ fn generate_autoplay_logs(
     kwg: kwg::Kwg,
     arc_klv0: std::sync::Arc<klv::Klv>,
     arc_klv1: std::sync::Arc<klv::Klv>,
+    num_games: u64,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -143,7 +150,6 @@ fn generate_autoplay_logs(
             .collect::<Box<_>>(),
     );
     let num_threads = num_cpus::get();
-    let num_games = 1_000_000;
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut threads = vec![];
 

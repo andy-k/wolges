@@ -8,7 +8,7 @@ These rudimentary tools generate somewhat usable leave files. See the options:
 cargo run --release --bin leave
 cargo run --release --bin buildlex
 
-The first step is to play many games. Each run saves (a hardcoded number of
+The first step is to play many games. Each run saves (a certain number of
 games) to (a pair of random filenames) such as log-60abcdef. The name depends
 on the time, so do not start two of these on or near the same second.
 
@@ -16,6 +16,7 @@ Run either of these, they mean the same thing, that is, run with no leaves:
 
 cargo run --release --bin leave -- english-autoplay NWL18.kwg
 cargo run --release --bin leave -- english-autoplay NWL18.kwg - -
+cargo run --release --bin leave -- english-autoplay NWL18.kwg - - 1000000
 
 The second step is to summarize that:
 
@@ -30,7 +31,7 @@ The third step is either of these. Choose one or both:
 cargo run --release --bin leave -- english-generate-no-smooth summary.csv leaves-no-smooth.csv
 cargo run --release --bin leave -- english-generate summary.csv leaves-smooth.csv
 
-Next, compile it to klv:
+Next, compile it to klv (or klv2):
 
 cargo run --release --bin buildlex -- english-klv leaves-no-smooth.csv leaves-no-smooth.klv
 cargo run --release --bin buildlex -- english-klv leaves-smooth.csv leaves-smooth.klv
