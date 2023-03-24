@@ -168,23 +168,8 @@ impl Question {
         let mut game_state_undo = game_state.clone();
         let mut can_withdraw = false;
         let mut v = Vec::new(); // temp buffer
-        let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), String> {
-            let s = rack;
-            v.clear();
-            if !s.is_empty() {
-                v.reserve(s.len());
-                let sb = s.as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = racks_alphabet_reader.next_tile(sb, ix) {
-                        v.push(tile);
-                        ix = end_ix;
-                    } else {
-                        return Err(format!("invalid tile after {v:?} in {s:?}"));
-                    }
-                }
-            }
-            Ok(())
+        let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), _> {
+            racks_alphabet_reader.set_word(rack, v)
         };
         for (line_number, line) in (1usize..).zip(gcg.lines()) {
             if !line.starts_with('>') {
@@ -452,23 +437,8 @@ impl Question {
         let board_layout = game_config.board_layout();
         let dim = board_layout.dim();
         let mut v = Vec::new(); // temp buffer
-        let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), String> {
-            let s = rack;
-            v.clear();
-            if !s.is_empty() {
-                v.reserve(s.len());
-                let sb = s.as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = racks_alphabet_reader.next_tile(sb, ix) {
-                        v.push(tile);
-                        ix = end_ix;
-                    } else {
-                        return Err(format!("invalid tile after {v:?} in {s:?}"));
-                    }
-                }
-            }
-            Ok(())
+        let parse_rack = |v: &mut Vec<_>, rack: &str| -> Result<(), _> {
+            racks_alphabet_reader.set_word(rack, v)
         };
         let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
         let parsed_fen = fen_parser.parse(fen_str)?;

@@ -628,4 +628,28 @@ impl<'a> AlphabetReader<'a> {
         }
         None
     }
+
+    #[inline(always)]
+    pub fn set_word(&self, s: &str, v: &mut Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+        v.clear();
+        self.append_word(s, v)
+    }
+
+    #[inline(always)]
+    pub fn append_word(&self, s: &str, v: &mut Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+        if !s.is_empty() {
+            v.reserve(s.len());
+            let sb = s.as_bytes();
+            let mut ix = 0;
+            while ix < sb.len() {
+                if let Some((tile, end_ix)) = self.next_tile(sb, ix) {
+                    v.push(tile);
+                    ix = end_ix;
+                } else {
+                    crate::return_error!(format!("invalid tile after {v:?} in {s:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
 }

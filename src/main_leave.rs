@@ -505,21 +505,7 @@ fn parse_rack(
     s: &str,
     v: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    v.clear();
-    if !s.is_empty() {
-        v.reserve(s.len());
-        let sb = s.as_bytes();
-        let mut ix = 0;
-        while ix < sb.len() {
-            if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                v.push(tile);
-                ix = end_ix;
-            } else {
-                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
-            }
-        }
-    }
-    Ok(())
+    alphabet_reader.set_word(s, v)
 }
 
 struct Cumulate {
