@@ -111,7 +111,11 @@ fn main() -> error::Returns<()> {
     generate leaves (no smoothing)
   english-generate summary.csv leaves.csv
     generate leaves (with smoothing)
-  (english can also be catalan, french, german, norwegian, polish, spanish)"
+  (english can also be catalan, french, german, norwegian, polish, spanish,
+    super-english, super-catalan)
+  jumbled-english-autoplay NWL18.kad leave0.klv leave1.klv 1000
+    (all also take jumbled- prefix, including jumbled-super-;
+    note that jumbled autoplay requires .kad instead of .kwg)"
         );
         Ok(())
     } else {
@@ -120,12 +124,64 @@ fn main() -> error::Returns<()> {
             &args,
             "english",
             game_config::make_common_english_game_config,
+        )? || do_lang(
+            &args,
+            "jumbled-english",
+            game_config::make_jumbled_english_game_config,
+        )? || do_lang(
+            &args,
+            "super-english",
+            game_config::make_super_english_game_config,
+        )? || do_lang(
+            &args,
+            "jumbled-super-english",
+            game_config::make_jumbled_super_english_game_config,
         )? || do_lang(&args, "catalan", game_config::make_catalan_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-catalan",
+                game_config::make_jumbled_catalan_game_config,
+            )?
+            || do_lang(
+                &args,
+                "super-catalan",
+                game_config::make_super_catalan_game_config,
+            )?
+            || do_lang(
+                &args,
+                "jumbled-super-catalan",
+                game_config::make_jumbled_super_catalan_game_config,
+            )?
             || do_lang(&args, "french", game_config::make_french_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-french",
+                game_config::make_jumbled_french_game_config,
+            )?
             || do_lang(&args, "german", game_config::make_german_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-german",
+                game_config::make_jumbled_german_game_config,
+            )?
             || do_lang(&args, "norwegian", game_config::make_norwegian_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-norwegian",
+                game_config::make_jumbled_norwegian_game_config,
+            )?
             || do_lang(&args, "polish", game_config::make_polish_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-polish",
+                game_config::make_jumbled_polish_game_config,
+            )?
             || do_lang(&args, "spanish", game_config::make_spanish_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-spanish",
+                game_config::make_jumbled_spanish_game_config,
+            )?
         {
         } else {
             return Err("invalid argument".into());
