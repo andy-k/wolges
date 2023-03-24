@@ -16,7 +16,7 @@ pub enum JsonPlay {
         lane: i8,
         idx: i8,
         word: Box<[i8]>,
-        score: i16,
+        score: i32,
     },
 }
 

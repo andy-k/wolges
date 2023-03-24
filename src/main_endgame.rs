@@ -228,7 +228,7 @@ impl Question {
             }
             let _ = player_token;
             let _ = cum_token;
-            let mut move_score = i16::from_str(score_token)
+            let mut move_score = i32::from_str(score_token)
                 .map_err(|e| fmt_error!(format_args!("invalid score token: {e}")))?;
             parse_rack(&mut v, rack_token)
                 .map_err(|e| fmt_error!(format_args!("invalid rack token: {e}")))?;

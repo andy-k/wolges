@@ -15,7 +15,7 @@ pub fn use_tiles<II: IntoIterator<Item = u8>>(
 }
 
 pub struct GamePlayer {
-    pub score: i16,
+    pub score: i32,
     pub rack: Vec<u8>,
 }
 
@@ -209,7 +209,7 @@ impl GameState {
     pub fn check_game_ended(
         &self,
         game_config: &game_config::GameConfig<'_>,
-        final_scores: &mut [i16],
+        final_scores: &mut [i32],
     ) -> CheckGameEnded {
         if self.current_player().rack.is_empty() {
             for (i, player) in self.players.iter().enumerate() {

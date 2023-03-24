@@ -344,7 +344,7 @@ impl PlayScorer {
         &mut self,
         board_snapshot: &movegen::BoardSnapshot<'_>,
         play: &movegen::Play,
-    ) -> i16 {
+    ) -> i32 {
         let game_config = board_snapshot.game_config;
 
         let mut recounted_score = 0;
@@ -366,7 +366,7 @@ impl PlayScorer {
 
                 {
                     let mut word_multiplier = 1;
-                    let mut word_score = 0i16;
+                    let mut word_score = 0i32;
                     for (i, &tile) in (*idx..).zip(word.iter()) {
                         let strider_at_i = strider.at(i);
                         let tile_multiplier;
@@ -381,10 +381,10 @@ impl PlayScorer {
                             board_snapshot.board_tiles[strider_at_i]
                         };
                         let face_value_tile_score = alphabet.score(placed_tile);
-                        let tile_score = face_value_tile_score as i16 * tile_multiplier as i16;
+                        let tile_score = face_value_tile_score as i32 * tile_multiplier as i32;
                         word_score += tile_score;
                     }
-                    let multiplied_word_score = word_score * word_multiplier as i16;
+                    let multiplied_word_score = word_score * word_multiplier as i32;
                     recounted_score += multiplied_word_score;
                 }
 
@@ -409,7 +409,7 @@ impl PlayScorer {
                             continue;
                         }
                         let mut word_multiplier = 1;
-                        let mut word_score = 0i16;
+                        let mut word_score = 0i32;
                         for j in j..perpendicular_strider_len {
                             let perpendicular_strider_at_j = perpendicular_strider.at(j);
                             let tile_multiplier;
@@ -426,15 +426,15 @@ impl PlayScorer {
                                 break;
                             }
                             let face_value_tile_score = alphabet.score(placed_tile);
-                            let tile_score = face_value_tile_score as i16 * tile_multiplier as i16;
+                            let tile_score = face_value_tile_score as i32 * tile_multiplier as i32;
                             word_score += tile_score;
                         }
-                        let multiplied_word_score = word_score * word_multiplier as i16;
+                        let multiplied_word_score = word_score * word_multiplier as i32;
                         recounted_score += multiplied_word_score;
                     }
                 }
                 let num_played_bonus = game_config.num_played_bonus(num_played);
-                recounted_score += num_played_bonus;
+                recounted_score += num_played_bonus as i32;
             }
         };
 
@@ -448,7 +448,7 @@ impl PlayScorer {
         game_state: &game_state::GameState,
         play: &movegen::Play,
         leave_scale: f32,
-        recounted_score: i16,
+        recounted_score: i32,
     ) -> f32 {
         let game_config = board_snapshot.game_config;
 
@@ -476,8 +476,8 @@ impl PlayScorer {
             if self.rack_tally.iter().any(|&count| count != 0) {
                 let kept_tiles_worth = (0u8..)
                     .zip(self.rack_tally.iter())
-                    .map(|(tile, &count)| count as i16 * game_config.alphabet().score(tile) as i16)
-                    .sum::<i16>();
+                    .map(|(tile, &count)| count as i32 * game_config.alphabet().score(tile) as i32)
+                    .sum::<i32>();
                 let kept_tiles_penalty = 10 + 2 * kept_tiles_worth;
                 recounted_equity -= kept_tiles_penalty as f32;
             } else {
@@ -487,8 +487,8 @@ impl PlayScorer {
                         let their_tile_worth = player
                             .rack
                             .iter()
-                            .map(|&tile| game_config.alphabet().score(tile) as i16)
-                            .sum::<i16>();
+                            .map(|&tile| game_config.alphabet().score(tile) as i32)
+                            .sum::<i32>();
                         unplayed_tiles_worth += their_tile_worth;
                     }
                 }

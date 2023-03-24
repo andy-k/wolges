@@ -5,7 +5,7 @@ use super::{alphabet, bites, display, fash, game_config, klv, kwg, matrix};
 #[derive(Clone)]
 struct CrossSet {
     bits: u64,
-    score: i16,
+    score: i32,
 }
 
 #[derive(Clone, Copy)]
@@ -17,7 +17,7 @@ struct CachedCrossSet {
 
 #[derive(Clone)]
 struct CrossSetComputation {
-    score: i16,
+    score: i32,
     b_letter: u8,
     end_range: i8,
     p: i32,
@@ -53,18 +53,18 @@ struct WorkingBuffer {
     face_value_scores_for_down_plays: Box<[i8]>,                // c*r
     perpendicular_word_multipliers_for_across_plays: Box<[i8]>, // r*c (0 if no perpendicularly adjacent tile)
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
-    perpendicular_scores_for_across_plays: Box<[i16]>, // r*c (multiplied by perpendicular_word_multipliers)
-    perpendicular_scores_for_down_plays: Box<[i16]>,   // c*r
+    perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
+    perpendicular_scores_for_down_plays: Box<[i32]>,   // c*r
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
     num_tiles_in_bag: i16, // negative when players also have less than full racks
-    play_out_bonus: i16,
+    play_out_bonus: i32,
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     descending_scores: Vec<i8>, // rack.len()
     exchange_buffer: Vec<u8>, // rack.len()
-    square_multipliers_by_aggregated_word_multipliers_buffer: fash::MyHashMap<i16, usize>,
-    precomputed_square_multiplier_buffer: Vec<i16>,
+    square_multipliers_by_aggregated_word_multipliers_buffer: fash::MyHashMap<i32, usize>,
+    precomputed_square_multiplier_buffer: Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
     best_leave_values: Vec<f32>, // rack.len() + 1
     found_placements: Vec<PossiblePlacement>,
@@ -241,8 +241,8 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             perpendicular_word_multipliers_for_down_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
-            perpendicular_scores_for_across_plays: vec![0i16; rows_times_cols].into_boxed_slice(),
-            perpendicular_scores_for_down_plays: vec![0i16; rows_times_cols].into_boxed_slice(),
+            perpendicular_scores_for_across_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
+            perpendicular_scores_for_down_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
             num_tiles_in_bag: 0,
@@ -346,14 +346,14 @@ impl WorkingBuffer {
             2 * ((0u8..)
                 .zip(self.rack_tally.iter())
                 .map(|(tile, &num)| {
-                    (alphabet.freq(tile) as i16 - num as i16) * alphabet.score(tile) as i16
+                    (alphabet.freq(tile) as i32 - num as i32) * alphabet.score(tile) as i32
                 })
-                .sum::<i16>()
+                .sum::<i32>()
                 - board_snapshot
                     .board_tiles
                     .iter()
-                    .map(|&t| if t != 0 { alphabet.score(t) as i16 } else { 0 })
-                    .sum::<i16>())
+                    .map(|&t| if t != 0 { alphabet.score(t) as i32 } else { 0 })
+                    .sum::<i32>())
         } else {
             0
         };
@@ -383,9 +383,9 @@ impl WorkingBuffer {
         self.best_leave_values
             .resize(self.num_tiles_on_rack as usize + 1, f32::NEG_INFINITY);
         if self.num_tiles_in_bag <= 0 {
-            let mut unpaid = 0i16;
+            let mut unpaid = 0i32;
             for i in (0..self.num_tiles_on_rack).rev() {
-                unpaid += self.descending_scores[i as usize] as i16;
+                unpaid += self.descending_scores[i as usize] as i32;
                 self.best_leave_values[i as usize] = (-10 - 2 * unpaid) as f32;
             }
             self.best_leave_values[self.num_tiles_on_rack as usize] = self.play_out_bonus as f32;
@@ -467,7 +467,7 @@ impl WorkingBuffer {
                     & -(cross_set.bits as i8 & 1);
                 self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
                 self.perpendicular_scores_for_across_plays[idx] =
-                    cross_set.score * effective_pwm as i16;
+                    cross_set.score * effective_pwm as i32;
             }
         }
         for col in 0..dim.cols {
@@ -483,7 +483,7 @@ impl WorkingBuffer {
                     & -(cross_set.bits as i8 & 1);
                 self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
                 self.perpendicular_scores_for_down_plays[idx] =
-                    cross_set.score * effective_pwm as i16;
+                    cross_set.score * effective_pwm as i32;
             }
         }
     }
@@ -513,14 +513,14 @@ fn gen_classic_cross_set<'a>(
     {
         let alphabet = board_snapshot.game_config.alphabet();
         let mut p = 1;
-        let mut score = 0i16;
+        let mut score = 0i32;
         let mut last_empty = len;
         for j in (0..len).rev() {
             let b = board_strip[j as usize];
             if b != 0 {
                 let b_letter = b & 0x7f;
                 p = kwg.seek(p, b_letter);
-                score += alphabet.score(b) as i16;
+                score += alphabet.score(b) as i32;
                 cross_set_buffer[j as usize] = CrossSetComputation {
                     score,
                     b_letter,
@@ -789,7 +789,7 @@ fn gen_jumbled_cross_set<'a>(
         if b != 0 {
             cross_sets[wp] = CrossSet { bits: 0, score: 0 };
         } else {
-            let mut score = 0i16;
+            let mut score = 0i32;
             let mut j = i;
             while j > 0 {
                 let b = board_strip[j as usize - 1];
@@ -797,7 +797,7 @@ fn gen_jumbled_cross_set<'a>(
                     break;
                 }
                 j -= 1;
-                score += alphabet.score(b) as i16;
+                score += alphabet.score(b) as i32;
                 used_letters_tally[(b & 0x7f) as usize] += 1;
             }
             let mut k = i + 1;
@@ -807,7 +807,7 @@ fn gen_jumbled_cross_set<'a>(
                     break;
                 }
                 k += 1;
-                score += alphabet.score(b) as i16;
+                score += alphabet.score(b) as i32;
                 used_letters_tally[(b & 0x7f) as usize] += 1;
             }
             if k == j + 1 {
@@ -858,11 +858,11 @@ struct GenPlacePlacementsParams<'a> {
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
     face_value_scores_strip: &'a [i8],
-    perpendicular_scores_strip: &'a [i16],
+    perpendicular_scores_strip: &'a [i32],
     rack_bits: u64,
     descending_scores: &'a [i8],
-    square_multipliers_by_aggregated_word_multipliers_buffer: &'a mut fash::MyHashMap<i16, usize>,
-    precomputed_square_multiplier_buffer: &'a mut Vec<i16>,
+    square_multipliers_by_aggregated_word_multipliers_buffer: &'a mut fash::MyHashMap<i32, usize>,
+    precomputed_square_multiplier_buffer: &'a mut Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
     best_leave_values: &'a [f32],
     num_max_played: u8,
@@ -891,7 +891,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         for i in 0..strider_len {
             let mut wm = 1;
             for &wm_val in &params.remaining_word_multipliers_strip[i..strider_len] {
-                wm *= wm_val as i16;
+                wm *= wm_val as i32;
                 if let std::collections::hash_map::Entry::Vacant(entry) = params
                     .square_multipliers_by_aggregated_word_multipliers_buffer
                     .entry(wm)
@@ -924,8 +924,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 &mut params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
             for j in 0..strider_len {
                 // perpendicular_word_multipliers_strip[j] is 0 if no perpendicular tile.
-                precomputed_square_multiplier_slice[j] = remaining_tile_multipliers_strip[j] as i16
-                    * (k + perpendicular_word_multipliers_strip[j] as i16);
+                precomputed_square_multiplier_slice[j] = remaining_tile_multipliers_strip[j] as i32
+                    * (k + perpendicular_word_multipliers_strip[j] as i32);
                 indexes_to_descending_square_multiplier_slice[j] = j as i8;
             }
             indexes_to_descending_square_multiplier_slice.sort_unstable_by(|&a, &b| {
@@ -961,9 +961,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         env: &mut Env<'_>,
         idx_left: i8,
         idx_right: i8,
-        main_played_through_score: i16,
-        perpendicular_additional_score: i16,
-        word_multiplier: i16,
+        main_played_through_score: i32,
+        perpendicular_additional_score: i32,
+        word_multiplier: i32,
     ) {
         let low_end = env
             .params
@@ -976,7 +976,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         let mut to_assign = env.num_played;
         for &idx in &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end] {
             if idx_left <= idx && idx < idx_right && env.params.board_strip[idx as usize] == 0 {
-                best_scoring += *desc_scores_iter.next().unwrap() as i16
+                best_scoring += *desc_scores_iter.next().unwrap() as i32
                     * precomputed_square_multiplier_slice[idx as usize];
                 to_assign -= 1;
                 if to_assign == 0 {
@@ -996,9 +996,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     fn shadow_play_right(
         env: &mut Env<'_>,
         mut idx: i8,
-        mut main_played_through_score: i16,
-        perpendicular_additional_score: i16,
-        word_multiplier: i16,
+        mut main_played_through_score: i32,
+        perpendicular_additional_score: i32,
+        word_multiplier: i32,
         is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
@@ -1007,7 +1007,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.params.face_value_scores_strip[idx as usize] as i16;
+            main_played_through_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx += 1;
         }
         // tiles have been placed from env.idx_left to idx - 1.
@@ -1042,7 +1042,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     main_played_through_score,
                     perpendicular_additional_score,
                     word_multiplier
-                        * env.params.remaining_word_multipliers_strip[idx as usize] as i16,
+                        * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     true,
                 );
                 env.num_played -= 1;
@@ -1057,7 +1057,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     perpendicular_additional_score
                         + env.params.perpendicular_scores_strip[idx as usize],
                     word_multiplier
-                        * env.params.remaining_word_multipliers_strip[idx as usize] as i16,
+                        * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     is_unique,
                 );
                 env.num_played -= 1;
@@ -1068,9 +1068,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     fn shadow_play_left(
         env: &mut Env<'_>,
         mut idx: i8,
-        mut main_played_through_score: i16,
-        perpendicular_additional_score: i16,
-        word_multiplier: i16,
+        mut main_played_through_score: i32,
+        perpendicular_additional_score: i32,
+        word_multiplier: i32,
         is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
@@ -1079,7 +1079,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.params.face_value_scores_strip[idx as usize] as i16;
+            main_played_through_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx -= 1;
         }
         // tiles have been placed from env.anchor to idx + 1.
@@ -1124,7 +1124,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     main_played_through_score,
                     perpendicular_additional_score,
                     word_multiplier
-                        * env.params.remaining_word_multipliers_strip[idx as usize] as i16,
+                        * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     true,
                 );
                 env.num_played -= 1;
@@ -1139,7 +1139,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     perpendicular_additional_score
                         + env.params.perpendicular_scores_strip[idx as usize],
                     word_multiplier
-                        * env.params.remaining_word_multipliers_strip[idx as usize] as i16,
+                        * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     is_unique,
                 );
                 env.num_played -= 1;
@@ -1226,7 +1226,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 }
 
-struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
+struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, &[u8])> {
     board_snapshot: &'a BoardSnapshot<'a>,
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
@@ -1234,7 +1234,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
     remaining_tile_multipliers_strip: &'a [i8],
     face_value_scores_strip: &'a [i8],
     perpendicular_word_multipliers_strip: &'a [i8],
-    perpendicular_scores_strip: &'a [i16],
+    perpendicular_scores_strip: &'a [i32],
     rack_tally: &'a mut [u8],
     word_strip_buffer: &'a mut [u8],
     num_max_played: u8,
@@ -1245,24 +1245,24 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
     used_letters_tally: &'a mut [u8], // jumbled mode only
 }
 
-fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, &[u8])>(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, &[u8])> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
         alphabet: &'a alphabet::Alphabet<'a>,
         num_played: i8,
         idx_left: i8,
     }
 
-    fn record<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+    fn record<CallbackType: FnMut(i8, &[u8], i32, &[u8])>(
         env: &mut Env<'_, CallbackType>,
         idx_left: i8,
         idx_right: i8,
-        main_score: i16,
-        perpendicular_cumulative_score: i16,
-        word_multiplier: i16,
+        main_score: i32,
+        perpendicular_cumulative_score: i32,
+        word_multiplier: i32,
     ) {
         let score = main_score * word_multiplier
             + perpendicular_cumulative_score
@@ -1270,7 +1270,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 .params
                 .board_snapshot
                 .game_config
-                .num_played_bonus(env.num_played);
+                .num_played_bonus(env.num_played) as i32;
         (env.params.callback)(
             idx_left,
             &env.params.word_strip_buffer[idx_left as usize..idx_right as usize],
@@ -1279,13 +1279,13 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         );
     }
 
-    fn play_right<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+    fn play_right<CallbackType: FnMut(i8, &[u8], i32, &[u8])>(
         env: &mut Env<'_, CallbackType>,
         mut idx: i8,
         mut p: i32,
-        mut main_score: i16,
-        perpendicular_cumulative_score: i16,
-        word_multiplier: i16,
+        mut main_score: i32,
+        perpendicular_cumulative_score: i32,
+        word_multiplier: i32,
         mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
@@ -1298,7 +1298,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             if p <= 0 {
                 return;
             }
-            main_score += env.params.face_value_scores_strip[idx as usize] as i16;
+            main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx += 1;
         }
         let node = env.params.board_snapshot.kwg[p];
@@ -1337,7 +1337,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 is_unique = true;
             };
             let new_word_multiplier =
-                word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i16;
+                word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
             let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
             let perpendicular_word_multiplier =
                 env.params.perpendicular_word_multipliers_strip[idx as usize];
@@ -1349,7 +1349,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
                         env.num_played += 1;
-                        let tile_value = env.alphabet.score(tile) as i16 * tile_multiplier as i16;
+                        let tile_value = env.alphabet.score(tile) as i32 * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_right(
                             env,
@@ -1358,7 +1358,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                             main_score + tile_value,
                             perpendicular_cumulative_score
                                 + perpendicular_score
-                                + tile_value * perpendicular_word_multiplier as i16,
+                                + tile_value * perpendicular_word_multiplier as i32,
                             new_word_multiplier,
                             is_unique,
                         );
@@ -1369,7 +1369,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         env.params.rack_tally[0] -= 1;
                         env.num_played += 1;
                         // intentional to not hardcode blank tile value as zero
-                        let tile_value = env.alphabet.score(0) as i16 * tile_multiplier as i16;
+                        let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                         play_right(
                             env,
@@ -1378,7 +1378,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                             main_score + tile_value,
                             perpendicular_cumulative_score
                                 + perpendicular_score
-                                + tile_value * perpendicular_word_multiplier as i16,
+                                + tile_value * perpendicular_word_multiplier as i32,
                             new_word_multiplier,
                             is_unique,
                         );
@@ -1394,13 +1394,13 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         }
     }
 
-    fn play_left<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+    fn play_left<CallbackType: FnMut(i8, &[u8], i32, &[u8])>(
         env: &mut Env<'_, CallbackType>,
         mut idx: i8,
         mut p: i32,
-        mut main_score: i16,
-        perpendicular_cumulative_score: i16,
-        word_multiplier: i16,
+        mut main_score: i32,
+        perpendicular_cumulative_score: i32,
+        word_multiplier: i32,
         mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
@@ -1413,7 +1413,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
             if p <= 0 {
                 return;
             }
-            main_score += env.params.face_value_scores_strip[idx as usize] as i16;
+            main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx -= 1;
         }
         let mut node = env.params.board_snapshot.kwg[p];
@@ -1469,7 +1469,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 is_unique = true;
             }
             let new_word_multiplier =
-                word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i16;
+                word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
             let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
             let perpendicular_word_multiplier =
                 env.params.perpendicular_word_multipliers_strip[idx as usize];
@@ -1481,7 +1481,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
                         env.num_played += 1;
-                        let tile_value = env.alphabet.score(tile) as i16 * tile_multiplier as i16;
+                        let tile_value = env.alphabet.score(tile) as i32 * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_left(
                             env,
@@ -1490,7 +1490,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                             main_score + tile_value,
                             perpendicular_cumulative_score
                                 + perpendicular_score
-                                + tile_value * perpendicular_word_multiplier as i16,
+                                + tile_value * perpendicular_word_multiplier as i32,
                             new_word_multiplier,
                             is_unique,
                         );
@@ -1501,7 +1501,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         env.params.rack_tally[0] -= 1;
                         env.num_played += 1;
                         // intentional to not hardcode blank tile value as zero
-                        let tile_value = env.alphabet.score(0) as i16 * tile_multiplier as i16;
+                        let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                         play_left(
                             env,
@@ -1510,7 +1510,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                             main_score + tile_value,
                             perpendicular_cumulative_score
                                 + perpendicular_score
-                                + tile_value * perpendicular_word_multiplier as i16,
+                                + tile_value * perpendicular_word_multiplier as i32,
                             new_word_multiplier,
                             is_unique,
                         );
@@ -1544,24 +1544,24 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     );
 }
 
-fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, &[u8])>(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, &[u8])> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
         alphabet: &'a alphabet::Alphabet<'a>,
         num_played: i8,
         idx_left: i8,
     }
 
-    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, &[u8])>(
         env: &mut Env<'_, CallbackType>,
         idx_left: i8,
         idx_right: i8,
-        main_score: i16,
-        perpendicular_cumulative_score: i16,
-        word_multiplier: i16,
+        main_score: i32,
+        perpendicular_cumulative_score: i32,
+        word_multiplier: i32,
     ) {
         if env
             .params
@@ -1575,7 +1575,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     .params
                     .board_snapshot
                     .game_config
-                    .num_played_bonus(env.num_played);
+                    .num_played_bonus(env.num_played) as i32;
             (env.params.callback)(
                 idx_left,
                 &env.params.word_strip_buffer[idx_left as usize..idx_right as usize],
@@ -1585,12 +1585,12 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         }
     }
 
-    fn play_right<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+    fn play_right<CallbackType: FnMut(i8, &[u8], i32, &[u8])>(
         env: &mut Env<'_, CallbackType>,
         mut idx: i8,
-        mut main_score: i16,
-        perpendicular_cumulative_score: i16,
-        word_multiplier: i16,
+        mut main_score: i32,
+        perpendicular_cumulative_score: i32,
+        word_multiplier: i32,
         mut is_unique: bool,
     ) {
         let orig_idx = idx;
@@ -1601,7 +1601,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 break;
             }
             env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
-            main_score += env.params.face_value_scores_strip[idx as usize] as i16;
+            main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx += 1;
         }
         if idx > env.params.anchor + 1
@@ -1630,7 +1630,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                     is_unique = true;
                 };
                 let new_word_multiplier = word_multiplier
-                    * env.params.remaining_word_multipliers_strip[idx as usize] as i16;
+                    * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
                 let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
                 let perpendicular_word_multiplier =
                     env.params.perpendicular_word_multipliers_strip[idx as usize];
@@ -1642,7 +1642,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                             env.num_played += 1;
                             env.params.used_letters_tally[tile as usize] += 1;
                             let tile_value =
-                                env.alphabet.score(tile) as i16 * tile_multiplier as i16;
+                                env.alphabet.score(tile) as i32 * tile_multiplier as i32;
                             env.params.word_strip_buffer[idx as usize] = tile;
                             play_right(
                                 env,
@@ -1650,7 +1650,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                                 main_score + tile_value,
                                 perpendicular_cumulative_score
                                     + perpendicular_score
-                                    + tile_value * perpendicular_word_multiplier as i16,
+                                    + tile_value * perpendicular_word_multiplier as i32,
                                 new_word_multiplier,
                                 is_unique,
                             );
@@ -1663,7 +1663,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                             env.num_played += 1;
                             env.params.used_letters_tally[tile as usize] += 1;
                             // intentional to not hardcode blank tile value as zero
-                            let tile_value = env.alphabet.score(0) as i16 * tile_multiplier as i16;
+                            let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
                             env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                             play_right(
                                 env,
@@ -1671,7 +1671,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                                 main_score + tile_value,
                                 perpendicular_cumulative_score
                                     + perpendicular_score
-                                    + tile_value * perpendicular_word_multiplier as i16,
+                                    + tile_value * perpendicular_word_multiplier as i32,
                                 new_word_multiplier,
                                 is_unique,
                             );
@@ -1690,12 +1690,12 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
         }
     }
 
-    fn play_left<CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+    fn play_left<CallbackType: FnMut(i8, &[u8], i32, &[u8])>(
         env: &mut Env<'_, CallbackType>,
         mut idx: i8,
-        mut main_score: i16,
-        perpendicular_cumulative_score: i16,
-        word_multiplier: i16,
+        mut main_score: i32,
+        perpendicular_cumulative_score: i32,
+        word_multiplier: i32,
         mut is_unique: bool,
     ) {
         let orig_idx = idx;
@@ -1706,7 +1706,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                 break;
             }
             env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
-            main_score += env.params.face_value_scores_strip[idx as usize] as i16;
+            main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx -= 1;
         }
         if (env.num_played + is_unique as i8) >= 2 && env.params.anchor - idx >= 2 {
@@ -1745,7 +1745,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                         is_unique = true;
                     }
                     let new_word_multiplier = word_multiplier
-                        * env.params.remaining_word_multipliers_strip[idx as usize] as i16;
+                        * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
                     let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
                     let perpendicular_word_multiplier =
                         env.params.perpendicular_word_multipliers_strip[idx as usize];
@@ -1757,7 +1757,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                                 env.num_played += 1;
                                 env.params.used_letters_tally[tile as usize] += 1;
                                 let tile_value =
-                                    env.alphabet.score(tile) as i16 * tile_multiplier as i16;
+                                    env.alphabet.score(tile) as i32 * tile_multiplier as i32;
                                 env.params.word_strip_buffer[idx as usize] = tile;
                                 play_left(
                                     env,
@@ -1765,7 +1765,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                                     main_score + tile_value,
                                     perpendicular_cumulative_score
                                         + perpendicular_score
-                                        + tile_value * perpendicular_word_multiplier as i16,
+                                        + tile_value * perpendicular_word_multiplier as i32,
                                     new_word_multiplier,
                                     is_unique,
                                 );
@@ -1779,7 +1779,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                                 env.params.used_letters_tally[tile as usize] += 1;
                                 // intentional to not hardcode blank tile value as zero
                                 let tile_value =
-                                    env.alphabet.score(0) as i16 * tile_multiplier as i16;
+                                    env.alphabet.score(0) as i32 * tile_multiplier as i32;
                                 env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                                 play_left(
                                     env,
@@ -1787,7 +1787,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
                                     main_score + tile_value,
                                     perpendicular_cumulative_score
                                         + perpendicular_score
-                                        + tile_value * perpendicular_word_multiplier as i16,
+                                        + tile_value * perpendicular_word_multiplier as i32,
                                     new_word_multiplier,
                                     is_unique,
                                 );
@@ -1825,7 +1825,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
 }
 
 #[inline(always)]
-fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
+fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, &[u8])>(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
     single_tile_plays: bool,
 ) {
@@ -1835,7 +1835,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i16, &[u8])>(
     }
 }
 
-fn gen_place_moves_at<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[u8])>(
+fn gen_place_moves_at<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, &[u8])>(
     board_snapshot: &'a BoardSnapshot<'a>,
     working_buffer: &mut WorkingBuffer,
     placement: &PossiblePlacement,
@@ -1909,7 +1909,7 @@ fn gen_place_moves_at<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i16, &[u8])
             anchor: placement.anchor,
             leftmost: placement.leftmost,
             rightmost: placement.rightmost,
-            callback: |idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+            callback: |idx: i8, word: &[u8], score: i32, rack_tally: &[u8]| {
                 found_place_move(placement.down, placement.lane, idx, word, score, rack_tally)
             },
             used_letters_tally: &mut working_buffer.used_letters_tally,
@@ -1928,7 +1928,7 @@ pub enum Play {
         lane: i8,
         idx: i8,
         word: bites::Bites,
-        score: i16,
+        score: i32,
     },
 }
 
@@ -2178,7 +2178,7 @@ impl KurniaMoveGenerator {
         working_buffer.init(board_snapshot, rack, &|leave_value: f32| leave_value);
 
         let found_place_move =
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, _rack_tally: &[u8]| {
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _rack_tally: &[u8]| {
                 vec_moves.borrow_mut().push(ValuedMove {
                     equity: 0.0,
                     play: Play::Place {
@@ -2218,7 +2218,7 @@ impl KurniaMoveGenerator {
 
     pub async fn async_gen_moves_filtered<
         'a,
-        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i16, &[u8]) -> bool,
+        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32, &[u8]) -> bool,
         AdjustLeaveValue: Fn(f32) -> f32,
         EquityPredicate: FnMut(f32, &Play) -> bool,
         BreatheFuture: std::future::Future,
@@ -2279,8 +2279,8 @@ impl KurniaMoveGenerator {
                     -10 - 2
                         * (0u8..)
                             .zip(rack_tally)
-                            .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
-                            .sum::<i16>()
+                            .map(|(tile, num)| *num as i32 * alphabet.score(tile) as i32)
+                            .sum::<i32>()
                 }) as f32
             } else {
                 // note: adjust_leave_value(f) must return between 0.0 and f
@@ -2289,7 +2289,7 @@ impl KurniaMoveGenerator {
         };
 
         let found_place_move =
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, rack_tally: &[u8]| {
                 if place_move_predicate(down, lane, idx, word, score, rack_tally) {
                     let leave_value = leave_value_from_tally(rack_tally);
                     let other_adjustments = if num_tiles_on_board == 0 {
@@ -2364,7 +2364,7 @@ impl KurniaMoveGenerator {
 
     pub fn gen_moves_filtered<
         'a,
-        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i16, &[u8]) -> bool,
+        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32, &[u8]) -> bool,
         AdjustLeaveValue: Fn(f32) -> f32,
         EquityPredicate: FnMut(f32, &Play) -> bool,
     >(
@@ -2423,8 +2423,8 @@ impl KurniaMoveGenerator {
                     -10 - 2
                         * (0u8..)
                             .zip(rack_tally)
-                            .map(|(tile, num)| *num as i16 * alphabet.score(tile) as i16)
-                            .sum::<i16>()
+                            .map(|(tile, num)| *num as i32 * alphabet.score(tile) as i32)
+                            .sum::<i32>()
                 }) as f32
             } else {
                 // note: adjust_leave_value(f) must return between 0.0 and f
@@ -2433,7 +2433,7 @@ impl KurniaMoveGenerator {
         };
 
         let found_place_move =
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i16, rack_tally: &[u8]| {
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, rack_tally: &[u8]| {
                 if place_move_predicate(down, lane, idx, word, score, rack_tally) {
                     let leave_value = leave_value_from_tally(rack_tally);
                     let other_adjustments = if num_tiles_on_board == 0 {
@@ -2509,7 +2509,7 @@ impl KurniaMoveGenerator {
     pub fn gen_moves_unfiltered<'a>(&mut self, params: &'a GenMovesParams<'a>) {
         self.gen_moves_filtered(
             params,
-            |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i16, _rack_tally: &[u8]| true,
+            |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32, _rack_tally: &[u8]| true,
             |leave_value: f32| leave_value,
             |_equity: f32, _play: &Play| true,
         );
@@ -2570,7 +2570,7 @@ fn kurnia_gen_nonplace_moves_except_pass<'a, FoundExchangeMove: FnMut(&[u8], &[u
 
 fn kurnia_gen_place_moves_iter<
     'a,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i16, &[u8]),
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, &[u8]),
     CanAccept: 'a + Fn(f32) -> bool,
 >(
     want_raw: bool,

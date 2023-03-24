@@ -35,7 +35,7 @@ thread_local! {
 pub struct Simmer {
     // prepare() sets/resets these
     initial_game_state: game_state::GameState,
-    pub initial_score_spread: i16,
+    pub initial_score_spread: i32,
     num_sim_plies: usize,
     num_tiles_that_matter: usize,
     win_prob_weightage: f64,
@@ -43,7 +43,7 @@ pub struct Simmer {
     // simulate() simulates a single iteration and sets these
     game_state: game_state::GameState,
     last_seen_leave_values: Box<[f32]>,
-    final_scores: Box<[i16]>,
+    final_scores: Box<[i32]>,
 
     // simulate() reuses these internally
     move_generator: movegen::KurniaMoveGenerator,
@@ -115,7 +115,7 @@ impl Simmer {
         let initial_turn = self.initial_game_state.turn as usize;
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
             if i != initial_turn {
-                self.final_scores[i] = player.rack.len() as i16;
+                self.final_scores[i] = player.rack.len() as i32;
                 self.initial_game_state
                     .bag
                     .0

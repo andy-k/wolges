@@ -201,7 +201,7 @@ impl GenMoves<'_> {
                      lane: i8,
                      idx: i8,
                      word: &[u8],
-                     _score: i16,
+                     _score: i32,
                      _rack_tally: &[u8]| {
                         limited_vocab_checker.words_placed_are_ok(
                             board_snapshot,

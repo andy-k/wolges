@@ -178,7 +178,7 @@ fn main() -> error::Returns<()> {
                      _lane: i8,
                      _idx: i8,
                      _word: &[u8],
-                     _score: i16,
+                     _score: i32,
                      _rack_tally: &[u8]| true,
                     |leave_value: f32| leave_scale * leave_value,
                     |_equity: f32, _play: &movegen::Play| true,
@@ -284,7 +284,7 @@ fn main() -> error::Returns<()> {
             let adjustment = game_config.time_adjustment(clock_ms);
             if adjustment != 0 {
                 println!("Player {} adjustment {}", i + 1, adjustment);
-                final_scores[i] += adjustment;
+                final_scores[i] += adjustment as i32;
                 has_time_adjustment = true;
             }
         }

@@ -107,8 +107,8 @@ impl<'a> Alphabet<'a> {
         }
     }
 
-    pub fn rack_score(&self, rack: &[u8]) -> i16 {
-        rack.iter().map(|&t| self.score(t) as i16).sum::<i16>()
+    pub fn rack_score(&self, rack: &[u8]) -> i32 {
+        rack.iter().map(|&t| self.score(t) as i32).sum::<i32>()
     }
 }
 
