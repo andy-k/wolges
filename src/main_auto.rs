@@ -34,7 +34,7 @@ fn main() -> error::Returns<()> {
     let game_config = &if jumbled {
         game_config::make_jumbled_english_game_config()
     } else {
-        game_config::make_common_english_game_config()
+        game_config::make_english_game_config()
     };
     /*
     let _ = game_config;

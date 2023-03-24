@@ -399,7 +399,7 @@ TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
         )?;
         return Ok(());
     }
-    let game_config = &game_config::make_common_english_game_config();
+    let game_config = &game_config::make_english_game_config();
 
     print_dawg(game_config.alphabet(), &kwg);
     let t0 = std::time::Instant::now();

@@ -120,23 +120,23 @@ fn main() -> error::Returns<()> {
         Ok(())
     } else {
         let t0 = std::time::Instant::now();
-        if do_lang(
-            &args,
-            "english",
-            game_config::make_common_english_game_config,
-        )? || do_lang(
-            &args,
-            "jumbled-english",
-            game_config::make_jumbled_english_game_config,
-        )? || do_lang(
-            &args,
-            "super-english",
-            game_config::make_super_english_game_config,
-        )? || do_lang(
-            &args,
-            "jumbled-super-english",
-            game_config::make_jumbled_super_english_game_config,
-        )? || do_lang(&args, "catalan", game_config::make_catalan_game_config)?
+        if do_lang(&args, "english", game_config::make_english_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-english",
+                game_config::make_jumbled_english_game_config,
+            )?
+            || do_lang(
+                &args,
+                "super-english",
+                game_config::make_super_english_game_config,
+            )?
+            || do_lang(
+                &args,
+                "jumbled-super-english",
+                game_config::make_jumbled_super_english_game_config,
+            )?
+            || do_lang(&args, "catalan", game_config::make_catalan_game_config)?
             || do_lang(
                 &args,
                 "jumbled-catalan",

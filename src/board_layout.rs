@@ -190,7 +190,7 @@ impl BoardLayout {
 }
 
 // https://en.wikipedia.org/wiki/Scrabble
-pub fn make_common_board_layout() -> BoardLayout {
+pub fn make_standard_board_layout() -> BoardLayout {
     BoardLayout::new_static(StaticBoardLayout {
         premiums: Box::new([
             TWS, FVS, FVS, DLS, FVS, FVS, FVS, TWS, FVS, FVS, FVS, DLS, FVS, FVS, TWS, //

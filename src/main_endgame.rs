@@ -959,7 +959,7 @@ fn main() -> error::Returns<()> {
     )?;
     // https://woogles.io/game/8hg8XMSK?turn=28
     let _question = Question::from_gcg(
-        &game_config::make_common_english_game_config(),
+        &game_config::make_english_game_config(),
         "ECWL",
         r"#character-encoding UTF-8
 #description Created with Macondo
@@ -1002,7 +1002,7 @@ fn main() -> error::Returns<()> {
     )?;
     // https://woogles.io/game/YDRLWKJj?turn=23
     let _question = Question::from_gcg(
-        &game_config::make_common_english_game_config(),
+        &game_config::make_english_game_config(),
         "CSW21",
         r"#character-encoding UTF-8
 #description Created with Macondo
@@ -1089,14 +1089,14 @@ fn main() -> error::Returns<()> {
         "EIILQS?",
     )?;
     let question = Question::from_fen(
-        &game_config::make_common_english_game_config(),
+        &game_config::make_english_game_config(),
         "NWL20",
         "5BERGS5/4PA3U5/2QAID3R5/3BEE3F2S2/1P1ET2VIATIC2/MA1TAW3c2H2/ES3IS2E2A2/AT1FOLIA4V2/LI1L1EX1E6/1N1O1D2N2Y3/1GNU2C1JETE3/2ER2OHO2N3/2O3GOY6/1INDOW1U7/4DORR7",
         "IKLMTZ",
     )?;
     let _ = question;
     let question = Question::from_fen(
-        &game_config::make_common_english_game_config(),
+        &game_config::make_english_game_config(),
         "CSW21",
         "3J1Q1CILIA3/1GLUEISH3LAP1/3S1N5OXO1/3T3E2ZO3/4BROMATEs3/5E1Y2N4/2DUIT1DE6/1DIG1A1EM6/5I2p6/5L2OF2P2/4WO2REV1U2/4AR1KITINGS1/4U3ATT1HEY/4R5A2WE/CONFS1ABOVE2NA",
         "DEEIN",
@@ -1105,7 +1105,7 @@ fn main() -> error::Returns<()> {
     // 353-236: +117
     let _ = question;
     let question = Question::from_fen(
-        &game_config::make_common_english_game_config(),
+        &game_config::make_english_game_config(),
         "CSW19",
         "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA5A1/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOA1/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 353-236: +117 "AHIILMM"
         "ADENOOO",
@@ -1114,7 +1114,7 @@ fn main() -> error::Returns<()> {
     // Bob must helplessly pass 6 times in a row as Alfred starts with M8 PHO, then HAM/MAX, MAXI, MAXIM, MAXIMA, MAXIMAL. once Alfred is done now Bob can do AL/DAL/ODAL/NODAL/ENODAL, then LO/RORE to the E in ENODAL, then NOLO, to win by 1 point, for a total of 25 moves, 12 of which are passes
     let _ = question;
     let question = Question::from_fen(
-        &game_config::make_common_english_game_config(),
+        &game_config::make_english_game_config(),
         "CSW19",
         // "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA4HA1/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOA1/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 9M H(A): +21 -96 "AIILMM"
         // "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA4HAM/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOA1/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 9M (HA)M: +20 -76 "AIILM"
@@ -1127,7 +1127,7 @@ fn main() -> error::Returns<()> {
     let _ = question;
     // https://woogles.io/game/BLRma3oH?turn=20
     let _question = Question::from_gcg(
-        &game_config::make_common_english_game_config(),
+        &game_config::make_english_game_config(),
         "CSW21",
         r"#character-encoding UTF-8
 #description Created with Macondo
@@ -1176,23 +1176,23 @@ fn main() -> error::Returns<()> {
     match question.lexicon.as_str() {
         "CSW21" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
-            game_config = game_config::make_common_english_game_config();
+            game_config = game_config::make_english_game_config();
         }
         "CSW19" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
-            game_config = game_config::make_common_english_game_config();
+            game_config = game_config::make_english_game_config();
         }
         "NWL18" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);
-            game_config = game_config::make_common_english_game_config();
+            game_config = game_config::make_english_game_config();
         }
         "NWL20" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL20.kwg")?);
-            game_config = game_config::make_common_english_game_config();
+            game_config = game_config::make_english_game_config();
         }
         "ECWL" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
-            game_config = game_config::make_common_english_game_config();
+            game_config = game_config::make_english_game_config();
         }
         "OSPS42" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
