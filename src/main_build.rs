@@ -19,6 +19,9 @@ fn read_machine_words(
             if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
                 v.push(tile);
                 ix = end_ix;
+            } else if ix > 0 && *unsafe { sb.get_unchecked(ix) } <= b' ' {
+                // Safe because already checked length.
+                break;
             } else {
                 wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
             }
