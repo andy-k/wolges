@@ -36,6 +36,7 @@ fn read_machine_words(
 use std::convert::TryInto;
 use std::str::FromStr;
 
+#[allow(dead_code)]
 fn iter_dawg<F: FnMut(&str)>(a: &alphabet::Alphabet, g: &kwg::Kwg, f: F) {
     struct Env<'a, F: FnMut(&str)> {
         a: &'a alphabet::Alphabet<'a>,
@@ -76,11 +77,14 @@ fn build_leaves<Readable: std::io::Read>(
     f: Readable,
     alph: alphabet::Alphabet<'_>,
 ) -> error::Returns<Vec<u8>> {
-    let mut leaves_map = fash::MyHashMap::default();
-    let mut leave_words = String::new();
+    let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
+    let mut leaves_map: fash::MyHashMap<bites::Bites, _> = fash::MyHashMap::default();
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
+    let mut v = Vec::new();
     for result in csv_reader.records() {
         let record = result?;
+        alphabet_reader.set_word(&record[0], &mut v)?;
+        v.sort_unstable();
         let rounded_leave = (f32::from_str(&record[1])? * 256.0).round();
         let int_leave = rounded_leave as i16;
         assert!(
@@ -96,22 +100,18 @@ fn build_leaves<Readable: std::io::Read>(
             int_leave as f32 - rounded_leave,
             (int_leave as f32 - rounded_leave).abs(),
         );
-        leave_words.push_str(&record[0]);
-        leave_words.push('\n');
-        leaves_map.insert(String::from(&record[0]), int_leave);
+        if leaves_map.insert(v[..].into(), int_leave).is_some() {
+            wolges::return_error!(format!("duplicate record {}", &record[0]));
+        }
     }
-    let leaves_kwg = build::build(
-        build::BuildFormat::DawgOnly,
-        &read_machine_words(
-            &alphabet::AlphabetReader::new_for_racks(&alph),
-            &leave_words,
-        )?,
-    )?;
-    drop(leave_words);
-    let mut leave_values = Vec::with_capacity(leaves_map.len());
-    iter_dawg(&alph, &kwg::Kwg::from_bytes_alloc(&leaves_kwg), |s| {
-        leave_values.push(leaves_map[s])
-    });
+    let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
+    sorted_machine_words.sort_unstable();
+    let leaves_kwg = build::build(build::BuildFormat::DawgOnly, &sorted_machine_words)?;
+    let leave_values = sorted_machine_words
+        .iter()
+        .map(|s| leaves_map[s])
+        .collect::<Box<_>>();
+    drop(sorted_machine_words);
     drop(leaves_map);
     let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 2];
     let mut w = 0;
@@ -121,7 +121,7 @@ fn build_leaves<Readable: std::io::Read>(
     w += leaves_kwg.len();
     bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
     w += 4;
-    for v in leave_values {
+    for v in &leave_values[..] {
         bin[w..w + 2].copy_from_slice(&v.to_le_bytes());
         w += 2;
     }
@@ -133,28 +133,27 @@ fn build_leaves_f32<Readable: std::io::Read>(
     f: Readable,
     alph: alphabet::Alphabet<'_>,
 ) -> error::Returns<Vec<u8>> {
+    let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
     let mut leaves_map = fash::MyHashMap::default();
-    let mut leave_words = String::new();
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
+    let mut v = Vec::new();
     for result in csv_reader.records() {
         let record = result?;
+        alphabet_reader.set_word(&record[0], &mut v)?;
+        v.sort_unstable();
         let float_leave = f32::from_str(&record[1])?;
-        leave_words.push_str(&record[0]);
-        leave_words.push('\n');
-        leaves_map.insert(String::from(&record[0]), float_leave);
+        if leaves_map.insert(v[..].into(), float_leave).is_some() {
+            wolges::return_error!(format!("duplicate record {}", &record[0]));
+        }
     }
-    let leaves_kwg = build::build(
-        build::BuildFormat::DawgOnly,
-        &read_machine_words(
-            &alphabet::AlphabetReader::new_for_racks(&alph),
-            &leave_words,
-        )?,
-    )?;
-    drop(leave_words);
-    let mut leave_values = Vec::with_capacity(leaves_map.len());
-    iter_dawg(&alph, &kwg::Kwg::from_bytes_alloc(&leaves_kwg), |s| {
-        leave_values.push(leaves_map[s])
-    });
+    let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
+    sorted_machine_words.sort_unstable();
+    let leaves_kwg = build::build(build::BuildFormat::DawgOnly, &sorted_machine_words)?;
+    let leave_values = sorted_machine_words
+        .iter()
+        .map(|s| leaves_map[s])
+        .collect::<Box<_>>();
+    drop(sorted_machine_words);
     drop(leaves_map);
     let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 4];
     let mut w = 0;
@@ -164,7 +163,7 @@ fn build_leaves_f32<Readable: std::io::Read>(
     w += leaves_kwg.len();
     bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
     w += 4;
-    for v in leave_values {
+    for v in &leave_values[..] {
         bin[w..w + 4].copy_from_slice(&v.to_le_bytes());
         w += 4;
     }
