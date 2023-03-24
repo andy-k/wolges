@@ -33,76 +33,6 @@ fn read_machine_words(
     Ok(machine_words.into_boxed_slice())
 }
 
-// This is rarely used, so it allocates a single-use AlphabetReader.
-fn read_polish_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
-    read_machine_words(
-        &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
-        giant_string,
-    )
-}
-
-// This is a much faster replacement of
-// read_machine_words(
-//     &alphabet::AlphabetReader::new_for_racks(&alphabet::make_english_alphabet()),
-//     giant_string,
-// )
-// and requires a clean, pre-sorted input.
-fn read_english_machine_words_or_leaves(
-    blank: char,
-    giant_string: &str,
-) -> error::Returns<Box<[bites::Bites]>> {
-    let mut machine_words = Vec::<bites::Bites>::new();
-    let mut v = Vec::new();
-    for s in giant_string.lines() {
-        v.clear();
-        v.reserve(s.len());
-        // This is English-only, and will need adjustment for multibyte.
-        // The output must be 1-based because 0 has special meaning.
-        // It should also not be too high to fit in a u64 cross-set.
-        for c in s.chars() {
-            if c.is_ascii_uppercase() {
-                v.push((c as u8) & 0x3f);
-            } else if c == blank {
-                // Test this after the letters. Pass a letter to disable.
-                v.push(0);
-            } else {
-                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
-            }
-        }
-        // Performance notes:
-        // - .last() is slow.
-        // - But the borrow checker does not like raw pointer.
-        match machine_words.last() {
-            Some(previous_v) => {
-                if v[..] <= previous_v[..] {
-                    wolges::return_error!(format!(
-                        "input is not sorted, {v:?} cannot come after {previous_v:?}"
-                    ));
-                }
-            }
-            None => {
-                if v.is_empty() {
-                    wolges::return_error!("first line is blank".into());
-                }
-            }
-        };
-        machine_words.push(v[..].into());
-    }
-    Ok(machine_words.into_boxed_slice())
-}
-
-/*
-#[inline(always)]
-fn read_english_leaves_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
-    read_english_machine_words_or_leaves('?', giant_string)
-}
-*/
-
-#[inline(always)]
-fn read_english_machine_words(giant_string: &str) -> error::Returns<Box<[bites::Bites]>> {
-    read_english_machine_words_or_leaves('A', giant_string)
-}
-
 use std::convert::TryInto;
 use std::str::FromStr;
 
@@ -441,7 +371,10 @@ fn old_main() -> error::Returns<()> {
             "lexbin/CSW21.kwg",
             build::build(
                 build::BuildFormat::Gaddawg,
-                &read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW21.txt")?)?,
+                &read_machine_words(
+                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                    &std::fs::read_to_string("lexsrc/CSW21.txt")?,
+                )?,
             )?,
         )?;
         println!("{:?} for reading+building+writing CSW21 kwg", t0.elapsed());
@@ -452,9 +385,10 @@ fn old_main() -> error::Returns<()> {
             "lexbin/CSW21.kad",
             build::build(
                 build::BuildFormat::DawgOnly,
-                &build::make_alphagrams(&read_english_machine_words(&std::fs::read_to_string(
-                    "lexsrc/CSW21.txt",
-                )?)?),
+                &build::make_alphagrams(&read_machine_words(
+                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                    &std::fs::read_to_string("lexsrc/CSW21.txt")?,
+                )?),
             )?,
         )?;
         println!(
@@ -468,7 +402,10 @@ fn old_main() -> error::Returns<()> {
             "lexbin/CSW19.kwg",
             build::build(
                 build::BuildFormat::Gaddawg,
-                &read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW19.txt")?)?,
+                &read_machine_words(
+                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                    &std::fs::read_to_string("lexsrc/CSW19.txt")?,
+                )?,
             )?,
         )?;
         println!("{:?} for reading+building+writing CSW19 kwg", t0.elapsed());
@@ -479,9 +416,10 @@ fn old_main() -> error::Returns<()> {
             "lexbin/CSW19.kad",
             build::build(
                 build::BuildFormat::DawgOnly,
-                &build::make_alphagrams(&read_english_machine_words(&std::fs::read_to_string(
-                    "lexsrc/CSW19.txt",
-                )?)?),
+                &build::make_alphagrams(&read_machine_words(
+                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                    &std::fs::read_to_string("lexsrc/CSW19.txt")?,
+                )?),
             )?,
         )?;
         println!(
@@ -493,21 +431,30 @@ fn old_main() -> error::Returns<()> {
         "lexbin/ECWL.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words(&std::fs::read_to_string("lexsrc/ECWL.txt")?)?,
+            &read_machine_words(
+                &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                &std::fs::read_to_string("lexsrc/ECWL.txt")?,
+            )?,
         )?,
     )?;
     std::fs::write(
         "lexbin/NWL18.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL18.txt")?)?,
+            &read_machine_words(
+                &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                &std::fs::read_to_string("lexsrc/NWL18.txt")?,
+            )?,
         )?,
     )?;
     std::fs::write(
         "lexbin/NWL20.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL20.txt")?)?,
+            &read_machine_words(
+                &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                &std::fs::read_to_string("lexsrc/NWL20.txt")?,
+            )?,
         )?,
     )?;
     if true {
@@ -516,7 +463,10 @@ fn old_main() -> error::Returns<()> {
             "lexbin/OSPS42-dawg.kwg",
             build::build(
                 build::BuildFormat::DawgOnly,
-                &read_polish_machine_words(&std::fs::read_to_string("lexsrc/OSPS42.txt")?)?,
+                &read_machine_words(
+                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
+                    &std::fs::read_to_string("lexsrc/OSPS42.txt")?,
+                )?,
             )?,
         )?;
         println!(
@@ -530,7 +480,10 @@ fn old_main() -> error::Returns<()> {
             "lexbin/OSPS42.kwg",
             build::build(
                 build::BuildFormat::Gaddawg,
-                &read_polish_machine_words(&std::fs::read_to_string("lexsrc/OSPS42.txt")?)?,
+                &read_machine_words(
+                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
+                    &std::fs::read_to_string("lexsrc/OSPS42.txt")?,
+                )?,
             )?,
         )?;
         println!(
@@ -544,7 +497,10 @@ fn old_main() -> error::Returns<()> {
             "lexbin/OSPS44-dawg.kwg",
             build::build(
                 build::BuildFormat::DawgOnly,
-                &read_polish_machine_words(&std::fs::read_to_string("lexsrc/OSPS44.txt")?)?,
+                &read_machine_words(
+                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
+                    &std::fs::read_to_string("lexsrc/OSPS44.txt")?,
+                )?,
             )?,
         )?;
         println!(
@@ -558,7 +514,10 @@ fn old_main() -> error::Returns<()> {
             "lexbin/OSPS44.kwg",
             build::build(
                 build::BuildFormat::Gaddawg,
-                &read_polish_machine_words(&std::fs::read_to_string("lexsrc/OSPS44.txt")?)?,
+                &read_machine_words(
+                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
+                    &std::fs::read_to_string("lexsrc/OSPS44.txt")?,
+                )?,
             )?,
         )?;
         println!(
@@ -570,7 +529,10 @@ fn old_main() -> error::Returns<()> {
         "lexbin/TWL14.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words(&std::fs::read_to_string("lexsrc/TWL14.txt")?)?,
+            &read_machine_words(
+                &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                &std::fs::read_to_string("lexsrc/TWL14.txt")?,
+            )?,
         )?,
     )?;
 
@@ -754,12 +716,30 @@ fn old_main() -> error::Returns<()> {
 
     if true {
         // this reads the files again, but this code is temporary
-        let v_csw21 = read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW21.txt")?)?;
-        let v_csw19 = read_english_machine_words(&std::fs::read_to_string("lexsrc/CSW19.txt")?)?;
-        let v_ecwl = read_english_machine_words(&std::fs::read_to_string("lexsrc/ECWL.txt")?)?;
-        let v_nwl18 = read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL18.txt")?)?;
-        let v_nwl20 = read_english_machine_words(&std::fs::read_to_string("lexsrc/NWL20.txt")?)?;
-        let v_twl14 = read_english_machine_words(&std::fs::read_to_string("lexsrc/TWL14.txt")?)?;
+        let v_csw21 = read_machine_words(
+            &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+            &std::fs::read_to_string("lexsrc/CSW21.txt")?,
+        )?;
+        let v_csw19 = read_machine_words(
+            &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+            &std::fs::read_to_string("lexsrc/CSW19.txt")?,
+        )?;
+        let v_ecwl = read_machine_words(
+            &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+            &std::fs::read_to_string("lexsrc/ECWL.txt")?,
+        )?;
+        let v_nwl18 = read_machine_words(
+            &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+            &std::fs::read_to_string("lexsrc/NWL18.txt")?,
+        )?;
+        let v_nwl20 = read_machine_words(
+            &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+            &std::fs::read_to_string("lexsrc/NWL20.txt")?,
+        )?;
+        let v_twl14 = read_machine_words(
+            &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+            &std::fs::read_to_string("lexsrc/TWL14.txt")?,
+        )?;
         let mut v = Vec::<bites::Bites>::new();
         v.extend_from_slice(&v_csw21);
         v.extend_from_slice(&v_csw19);
@@ -938,14 +918,20 @@ fn old_main() -> error::Returns<()> {
         "lexbin/volost.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words("VOLOST\nVOLOSTS")?,
+            &read_machine_words(
+                &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                "VOLOST\nVOLOSTS",
+            )?,
         )?,
     )?;
     std::fs::write(
         "lexbin/empty.kwg",
         build::build(
             build::BuildFormat::Gaddawg,
-            &read_english_machine_words("")?,
+            &read_machine_words(
+                &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
+                "",
+            )?,
         )?,
     )?;
 
