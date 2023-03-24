@@ -33,45 +33,7 @@ fn read_machine_words(
     Ok(machine_words.into_boxed_slice())
 }
 
-use std::convert::TryInto;
 use std::str::FromStr;
-
-#[allow(dead_code)]
-fn iter_dawg<F: FnMut(&str)>(a: &alphabet::Alphabet, g: &kwg::Kwg, f: F) {
-    struct Env<'a, F: FnMut(&str)> {
-        a: &'a alphabet::Alphabet<'a>,
-        g: &'a kwg::Kwg,
-        s: &'a mut String,
-        f: F,
-    }
-    fn iter<F: FnMut(&str)>(env: &mut Env<'_, F>, mut p: i32) {
-        let l = env.s.len();
-        loop {
-            let t = env.g[p].tile();
-            env.s.push_str(env.a.of_rack(t).unwrap());
-            if env.g[p].accepts() {
-                (env.f)(env.s);
-            }
-            if env.g[p].arc_index() != 0 {
-                iter(env, env.g[p].arc_index());
-            }
-            env.s.truncate(l);
-            if env.g[p].is_end() {
-                break;
-            }
-            p += 1;
-        }
-    }
-    iter(
-        &mut Env {
-            a,
-            g,
-            s: &mut String::new(),
-            f,
-        },
-        g[0].arc_index(),
-    );
-}
 
 fn build_leaves<Readable: std::io::Read>(
     f: Readable,
