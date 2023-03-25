@@ -288,11 +288,6 @@ impl<'a> BoardFenParser<'a> {
                     // nothing works
                     return Err(fmt_error!("trailing chars"));
                 }
-            } else if let Some((tile, end_ix)) = self.plays_alphabet_reader.next_tile(sb, ix) {
-                self.buf[p] = tile;
-                p += 1;
-                c += 1;
-                ix = end_ix;
             } else if sb[ix] >= b'1' && sb[ix] <= b'9' {
                 // positive numbers only
                 let mut jx = ix + 1;
@@ -309,6 +304,11 @@ impl<'a> BoardFenParser<'a> {
                 }
                 c += empties as i8;
                 ix = jx;
+            } else if let Some((tile, end_ix)) = self.plays_alphabet_reader.next_tile(sb, ix) {
+                self.buf[p] = tile;
+                p += 1;
+                c += 1;
+                ix = end_ix;
             } else {
                 return Err(fmt_error!("invalid char"));
             }
