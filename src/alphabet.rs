@@ -530,7 +530,7 @@ pub fn make_spanish_alphabet<'a>() -> Alphabet<'a> {
 
 pub struct AlphabetReader<'a> {
     supported_tiles: Box<[(u8, &'a [u8])]>,
-    by_first_byte: [Option<(Option<u8>, usize, usize)>; 256],
+    by_first_byte: [Option<(usize, usize)>; 256],
 }
 
 // This is slow, but supports multi-codepoint tiles with greedy matching.
@@ -550,17 +550,13 @@ impl<'a> AlphabetReader<'a> {
         let mut i = supported_tiles.len();
         while i > 0 {
             i -= 1;
-            let (tile, label) = supported_tiles[i];
+            let (_tile, label) = supported_tiles[i];
             let label0 = label[0];
             let mut j = i;
             while j > 0 && supported_tiles[j - 1].1[0] == label0 {
                 j -= 1;
             }
-            h[label0 as usize] = Some(if label.len() > 1 {
-                (None, j, i + 1)
-            } else {
-                (Some(tile), j, i)
-            });
+            h[label0 as usize] = Some((j, i + 1));
             i = j;
         }
         Self {
@@ -613,23 +609,24 @@ impl<'a> AlphabetReader<'a> {
     #[inline(always)]
     pub fn next_tile(&self, sb: &[u8], ix: usize) -> Option<(u8, usize)> {
         // Safe because we have all 256.
-        if let Some((if_single, range_lo, range_hi)) = unsafe {
+        if let Some((range_lo, range_hi)) = unsafe {
             self.by_first_byte
                 .get_unchecked(*sb.get_unchecked(ix) as usize)
         } {
-            if range_hi > range_lo {
+            let sb_len = sb.len();
+            // Safe because of how by_first_byte was constructed.
+            for (tile, label) in unsafe { self.supported_tiles.get_unchecked(*range_lo..*range_hi) }
+            {
+                let label_len = label.len();
+                let end_ix = ix + label_len;
                 // Safe after accessing sb[ix].
-                let sb_remainder = unsafe { sb.get_unchecked(ix + 1..) };
-                // Safe because of how by_first_byte was constructed.
-                for (tile, label) in
-                    unsafe { self.supported_tiles.get_unchecked(*range_lo..*range_hi) }
+                if label_len == 1
+                    || end_ix <= sb_len
+                        && unsafe { sb.get_unchecked(ix + 1..end_ix) == label.get_unchecked(1..) }
                 {
-                    if sb_remainder.starts_with(unsafe { label.get_unchecked(1..) }) {
-                        return Some((*tile, ix + label.len()));
-                    }
+                    return Some((*tile, end_ix));
                 }
             }
-            return if_single.map(|tile| (tile, ix + 1));
         }
         None
     }
