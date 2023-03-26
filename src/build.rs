@@ -165,18 +165,18 @@ fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> 
 
 // AlphaDawg is DawgOnly on make_alphagrams(machine_words).
 pub fn make_alphagrams(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
-    let mut machine_dorws_set = fash::MyHashSet::default();
+    let mut machine_dorws = Vec::with_capacity(machine_words.len());
     let mut rearrange_buffer = Vec::new();
     for this_word in machine_words {
         rearrange_buffer.clear();
         rearrange_buffer.extend_from_slice(this_word);
         rearrange_buffer.sort_unstable();
-        machine_dorws_set.insert(rearrange_buffer[..].into());
+        machine_dorws.push(rearrange_buffer[..].into());
     }
     drop(rearrange_buffer);
-    let mut machine_dorws = machine_dorws_set.into_iter().collect::<Box<_>>();
     machine_dorws.sort_unstable();
-    machine_dorws
+    machine_dorws.dedup();
+    machine_dorws.into_boxed_slice()
 }
 
 // zero-cost type-safety
