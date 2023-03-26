@@ -94,6 +94,7 @@ pub fn str_to_column_usize_ignore_case(sb: &[u8]) -> Option<usize> {
     if (0x41..=0x5a).contains(&c) {
         let mut v = c as usize - 0x41;
         for &c in sb[1..].iter() {
+            let c = c & !0x20;
             if (0x41..=0x5a).contains(&c) {
                 v = v.checked_mul(26)?.checked_add(c as usize - (0x41 - 26))?;
             } else {
