@@ -130,23 +130,37 @@ impl StateMaker<'_> {
 }
 
 fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
-    let mut machine_drowword_set = fash::MyHashSet::default();
+    let mut machine_drowwords = Vec::new();
     let mut reverse_buffer = Vec::new();
-    for this_word in machine_words {
+    for machine_word_index in 0..machine_words.len() {
+        let this_word = &machine_words[machine_word_index];
+        let this_word_len = this_word.len();
+        let mut prefix_len = 0;
+        if machine_word_index > 0 {
+            let prev_word = &machine_words[machine_word_index - 1];
+            let prev_word_len = prev_word.len();
+            // - 1 because CAR -> CARE means we still need to emit RAC@.
+            let max_prefix_len = this_word_len.min(prev_word_len - 1);
+            while prefix_len < max_prefix_len && prev_word[prefix_len] == this_word[prefix_len] {
+                prefix_len += 1;
+            }
+        }
         // CARE = ERAC, RAC@, AC@, C@
         reverse_buffer.clear();
         reverse_buffer.extend_from_slice(this_word);
         reverse_buffer.reverse();
-        machine_drowword_set.insert(reverse_buffer[..].into());
-        reverse_buffer.push(0); // the '@'
-        for drow_prefix_len in 1..this_word.len() {
-            machine_drowword_set.insert(reverse_buffer[drow_prefix_len..].into());
+        machine_drowwords.push(reverse_buffer[..].into());
+        let num_prefixes = this_word_len - prefix_len;
+        if num_prefixes >= 2 {
+            reverse_buffer.push(0); // the '@'
+            for drow_prefix_len in 1..num_prefixes {
+                machine_drowwords.push(reverse_buffer[drow_prefix_len..].into());
+            }
         }
     }
     drop(reverse_buffer);
-    let mut machine_drowwords = machine_drowword_set.into_iter().collect::<Box<_>>();
     machine_drowwords.sort_unstable();
-    machine_drowwords
+    machine_drowwords.into_boxed_slice()
 }
 
 // AlphaDawg is DawgOnly on make_alphagrams(machine_words).
@@ -310,6 +324,7 @@ pub enum BuildFormat {
     Gaddawg,
 }
 
+// machine_words must be sorted and unique.
 pub fn build(
     build_format: BuildFormat,
     machine_words: &[bites::Bites],
