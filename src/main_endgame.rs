@@ -23,92 +23,50 @@ struct Question {
 // note: only this representation uses -1i8 for blank-as-A (in "board" input
 // and "word" response for "action":"play"). everywhere else, use 0x81u8.
 
-// /^(?:\d+[A-Z]+|[A-Z]+\d+)$/i
-// does not validate that the coordinate is within bounds
-fn is_coord_token(coord: &str) -> bool {
-    let b = coord.as_bytes();
-    let l1 = b
-        .iter()
-        .position(|c| !c.is_ascii_digit())
-        .unwrap_or(b.len());
-    let b = &b[l1..];
-    let l2 = b
-        .iter()
-        .position(|c| !c.is_ascii_alphabetic())
-        .unwrap_or(b.len());
-    if l2 == 0 {
-        return false;
-    }
-    if l1 != 0 {
-        return l2 == b.len();
-    }
-    let b = &b[l2..];
-    let l3 = b
-        .iter()
-        .position(|c| !c.is_ascii_digit())
-        .unwrap_or(b.len());
-    l3 == b.len()
-}
-
 struct Coord {
     down: bool,
     lane: i8,
     idx: i8,
 }
 
+// /^(?:\d+[A-Z]+|[A-Z]+\d+)$/i
 fn parse_coord_token(coord: &str, dim: matrix::Dim) -> Option<Coord> {
-    let b = coord.as_bytes();
-    let l1 = b
-        .iter()
-        .position(|c| !c.is_ascii_digit())
-        .unwrap_or(b.len());
-    let dig1 = if l1 != 0 {
-        i8::try_from(usize::from_str(&coord[..l1]).ok()? - 1).ok()?
-    } else {
-        0
-    };
-    let b = &b[l1..];
-    let l2 = b
-        .iter()
-        .position(|c| !c.is_ascii_alphabetic())
-        .unwrap_or(b.len());
+    let b1 = coord.as_bytes();
+    let l1 = b1.iter().take_while(|c| c.is_ascii_digit()).count();
+    let b2 = &b1[l1..];
+    let l2 = b2.iter().take_while(|c| c.is_ascii_alphabetic()).count();
     if l2 == 0 {
         return None;
     }
-    if l1 != 0 && l2 != b.len() {
-        return None;
-    }
-    let alp2 = i8::try_from(display::str_to_column_usize_ignore_case(&b[..l2])?).ok()?;
+    let alp2 = i8::try_from(display::str_to_column_usize_ignore_case(&b2[..l2])?).ok()?;
     if alp2 >= dim.cols {
         return None;
     }
-    if l1 != 0 {
-        if dig1 >= dim.rows {
-            return None;
+    let b3 = &b2[l2..];
+    let l3 = b3.iter().take_while(|c| c.is_ascii_digit()).count();
+    if l3 != b3.len() {
+        return None;
+    }
+    if l1 != 0 && l3 == 0 {
+        let dig1 = i8::from_str(&coord[..l1]).ok()?.wrapping_sub(1);
+        if (0..dim.rows).contains(&dig1) {
+            return Some(Coord {
+                down: false,
+                lane: dig1,
+                idx: alp2,
+            });
         }
-        return Some(Coord {
-            down: false,
-            lane: dig1,
-            idx: alp2,
-        });
+    } else if l1 == 0 && l3 != 0 {
+        let dig3 = i8::from_str(&coord[l1 + l2..]).ok()?.wrapping_sub(1);
+        if (0..dim.rows).contains(&dig3) {
+            return Some(Coord {
+                down: true,
+                lane: alp2,
+                idx: dig3,
+            });
+        }
     }
-    let b = &b[l2..];
-    let l3 = b
-        .iter()
-        .position(|c| !c.is_ascii_digit())
-        .unwrap_or(b.len());
-    if l3 != b.len() {
-        return None;
-    }
-    let dig3 = i8::try_from(usize::from_str(&coord[l1 + l2..]).ok()? - 1).ok()?;
-    if dig3 >= dim.rows {
-        return None;
-    }
-    Some(Coord {
-        down: true,
-        lane: alp2,
-        idx: dig3,
-    })
+    None
 }
 
 // /^[+-](?:0|[1-9]\d*)$/
@@ -195,7 +153,7 @@ impl Question {
             } else {
                 next_token!("coord")?
             };
-            let word_token = if !is_coord_token(coord_token) {
+            let word_token = if parse_coord_token(coord_token, dim).is_none() {
                 std::mem::take(&mut coord_token)
             } else {
                 next_token!("word")?
