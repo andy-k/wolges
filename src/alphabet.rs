@@ -622,10 +622,9 @@ impl<'a> AlphabetReader<'a> {
             for alias in tile.alias_labels {
                 supported_tiles.push((idx, alias.as_bytes()));
             }
-            let blank_idx = idx | 0x80;
-            supported_tiles.push((blank_idx, tile.blank_label.as_bytes()));
+            supported_tiles.push((idx, tile.blank_label.as_bytes()));
             for alias in tile.alias_blank_labels {
-                supported_tiles.push((blank_idx, alias.as_bytes()));
+                supported_tiles.push((idx, alias.as_bytes()));
             }
         }
         let supported_tiles = supported_tiles.into_boxed_slice();
