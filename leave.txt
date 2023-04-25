@@ -20,7 +20,7 @@ cargo run --release --bin leave -- english-autoplay NWL18.kwg - - 1000000
 
 The second step is to summarize that:
 
-cargo run --release --bin leave -- english-autoplay log-12345678 summary.csv
+cargo run --release --bin leave -- english-summarize log-12345678 summary.csv
 
 With the bash shell it's possible to combine multiple log files:
 
@@ -31,19 +31,19 @@ The third step is either of these. Choose one or both:
 cargo run --release --bin leave -- english-generate-no-smooth summary.csv leaves-no-smooth.csv
 cargo run --release --bin leave -- english-generate summary.csv leaves-smooth.csv
 
-Next, compile it to klv (or klv2):
+Next, compile it to klv2 (or klv):
 
-cargo run --release --bin buildlex -- english-klv leaves-no-smooth.csv leaves-no-smooth.klv
-cargo run --release --bin buildlex -- english-klv leaves-smooth.csv leaves-smooth.klv
+cargo run --release --bin buildlex -- english-klv2 leaves-no-smooth.csv leaves-no-smooth.klv2
+cargo run --release --bin buildlex -- english-klv2 leaves-smooth.csv leaves-smooth.klv2
 
 Repeat from first step as necessary, but specify the new leave files:
 
-cargo run --release --bin leave -- english-autoplay NWL18.kwg leaves-smooth.klv leaves-no-smooth.klv
+cargo run --release --bin leave -- english-autoplay NWL18.kwg leaves-smooth.klv2 leaves-no-smooth.klv2
 
 After the kwg are the klv for player0 and player1, these need not be the same.
 With the bash shell, to use the same leave file, attach the {,} without space:
 
-cargo run --release --bin leave -- english-autoplay NWL18.kwg leaves-smooth.klv{,}
+cargo run --release --bin leave -- english-autoplay NWL18.kwg leaves-smooth.klv2{,}
 
 Specify "-" for no leave (this is default for both), but is necessary if
 player0 is using no leave and player1 is using a leave file.
