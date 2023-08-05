@@ -575,7 +575,7 @@ impl<'a> EndgameSolver<'a> {
         };
 
         // fill in best_place_move
-        let mut state_eval = self.work_buffer.state_eval.get_mut(&state_idx).unwrap();
+        let state_eval = self.work_buffer.state_eval.get_mut(&state_idx).unwrap();
         if best_idx == !0 {
             // no valid place moves exist, must pass
             state_eval.best_place_move[player_idx as usize] = StateSideEval {

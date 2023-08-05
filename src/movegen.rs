@@ -504,7 +504,7 @@ fn gen_classic_cross_set<'a>(
     cross_sets: &'a mut [CrossSet],
     output_strider: matrix::Strider,
     cross_set_buffer: &'a mut [CrossSetComputation],
-    mut cached_cross_sets: &'a mut [CachedCrossSet],
+    cached_cross_sets: &'a mut [CachedCrossSet],
 ) {
     let len = output_strider.len();
     let step = output_strider.step() as usize;
