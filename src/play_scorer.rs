@@ -214,8 +214,6 @@ impl PlayScorer {
                 Ok(None)
             }
         };
-        // no-op, just to silence unused warning
-        if ret.is_ok() {}
         ret
     }
 

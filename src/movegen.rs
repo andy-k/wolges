@@ -2029,17 +2029,14 @@ impl Eq for ValuedMove {}
 impl PartialOrd for ValuedMove {
     #[inline(always)]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        other.equity.partial_cmp(&self.equity)
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for ValuedMove {
     #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.partial_cmp(other) {
-            Some(x) => x,
-            None => std::cmp::Ordering::Equal,
-        }
+        other.equity.total_cmp(&self.equity)
     }
 }
 

@@ -138,6 +138,6 @@ impl PartialEq for Bites {
 impl PartialOrd for Bites {
     #[inline(always)]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self[..].partial_cmp(&other[..])
+        Some(self.cmp(other))
     }
 }
