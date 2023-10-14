@@ -49,6 +49,10 @@ name = "lex"
 path = "src/main_lex.rs"
 
 [[bin]]
+name = "read"
+path = "src/main_read.rs"
+
+[[bin]]
 name = "shell"
 path = "src/main_shell.rs"
 
