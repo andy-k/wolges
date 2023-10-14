@@ -31,7 +31,7 @@ impl Klv {
         );
         r += 4;
         let mut elts = Vec::with_capacity(lv_len as usize);
-        if buf.len() < 4 * lv_len as usize {
+        if buf.len() < r + 4 * lv_len as usize {
             // klv uses i16
             for _ in 0..lv_len {
                 elts.push(
