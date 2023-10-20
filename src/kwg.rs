@@ -175,14 +175,15 @@ impl Kwg {
                 return !0;
             }
             let mut node = self[p];
+            idx += word_counts[p as usize];
             while node.tile() != tile {
                 if node.is_end() {
                     return !0;
                 }
-                idx += word_counts[p as usize] - word_counts[p as usize + 1];
                 p += 1;
                 node = self[p];
             }
+            idx -= word_counts[p as usize];
             if remaining == 0 {
                 return idx | ((node.accepts() as i32 - 1) as u32);
             }
@@ -204,14 +205,15 @@ impl Kwg {
         if let Some(mut tile) = iter.next() {
             while p != 0 {
                 let mut node = self[p];
+                idx += word_counts[p as usize];
                 while node.tile() != tile {
                     if node.is_end() {
                         return !0;
                     }
-                    idx += word_counts[p as usize] - word_counts[p as usize + 1];
                     p += 1;
                     node = self[p];
                 }
+                idx -= word_counts[p as usize];
                 match iter.next() {
                     Some(t) => {
                         tile = t;
