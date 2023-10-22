@@ -2,6 +2,8 @@
 
 use wolges::{alphabet, error};
 
+use std::str::FromStr;
+
 trait WgReader {
     fn tile(&self, bytes: &[u8], idx: usize) -> u8;
     fn accepts(&self, bytes: &[u8], idx: usize) -> bool;
@@ -512,6 +514,84 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                 }
                 Ok(true)
             }
+            "-make-q2-ort" => {
+                // assume input is good (e.g. no duplicates)
+                let num_buckets = u32::from_str(&args[4])?;
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
+                let mut csv_reader = csv::ReaderBuilder::new()
+                    .has_headers(false)
+                    .from_reader(std::fs::File::open(&args[2])?);
+                let mut values = Vec::new();
+                let mut v = Vec::new();
+                for result in csv_reader.records() {
+                    let record = result?;
+                    let sb = record[0].as_bytes();
+                    v.clear();
+                    let mut ix = 0;
+                    while ix < sb.len() {
+                        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                            v.push(tile);
+                            ix = end_ix;
+                        } else {
+                            return Err("invalid tile".into());
+                        }
+                    }
+                    let val = ((u8::from_str(&record[6])? as u32) << 29)
+                        | ((u8::from_str(&record[5])? as u32) << 26)
+                        | ((u8::from_str(&record[4])? as u32) << 23)
+                        | ((u8::from_str(&record[3])? as u32) << 20)
+                        | ((u8::from_str(&record[2])? as u32) << 17)
+                        | ((u8::from_str(&record[1])? as u32) << 14);
+                    let mut orig_hash = 0u64;
+                    v.sort_unstable();
+                    for &i in &v {
+                        if i != 0 {
+                            orig_hash <<= 5;
+                            orig_hash |= i as u64;
+                        }
+                    }
+                    for &i in &v {
+                        if i == 0 {
+                            orig_hash <<= 5;
+                            orig_hash |= alphabet.len() as u64;
+                        }
+                    }
+                    let quotient = (orig_hash / (num_buckets as u64)) as u32;
+                    if quotient & 0x3fff != quotient {
+                        return Err("quotient does not fit in 14 bits".into());
+                    }
+                    let bucket_num = (orig_hash % (num_buckets as u64)) as u32;
+                    values.push((bucket_num, quotient, val));
+                }
+                values.sort_unstable();
+                let num_values = values.len() as u32;
+                let mut ret =
+                    Vec::with_capacity(4 * (3 + num_buckets as usize + num_values as usize));
+                ret.extend(&num_buckets.to_le_bytes());
+                ret.extend(&num_values.to_le_bytes());
+                let mut bucket_start = 0u32;
+                ret.extend(&bucket_start.to_le_bytes());
+                let mut max_bucket_size = 0u32;
+                for bucket_num in 0..num_buckets {
+                    let this_bucket_start = bucket_start;
+                    while bucket_start < num_values && values[bucket_start as usize].0 <= bucket_num
+                    {
+                        bucket_start += 1
+                    }
+                    ret.extend(&bucket_start.to_le_bytes());
+                    max_bucket_size = max_bucket_size.max(bucket_start - this_bucket_start);
+                }
+                if bucket_start != num_values {
+                    return Err("something wrong".into());
+                }
+                for (_, quotient, val) in values {
+                    ret.extend(&(quotient | val).to_le_bytes());
+                }
+                std::fs::write(&args[3], ret)?;
+                println!("each bucket has at most {} values", max_bucket_size);
+                Ok(true)
+            }
             _ => Ok(false),
         },
         None => Ok(false),
@@ -533,6 +613,8 @@ fn main() -> error::Returns<()> {
     read gaddawg kwg file (gaddag)
   english-q2-ort something.ort something.csv
     read .ort (format subject to change)
+  english-make-q2-ort something.csv something.ort num_buckets
+    generate .ort with the given num_buckets (ideally prime eg 5297687)
   (english can also be catalan, french, german, norwegian, polish, spanish)
   quackle-make-superleaves english.klv superleaves
     read klv/klv2 file, save quackle superleaves (english/french)
