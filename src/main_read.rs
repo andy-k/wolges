@@ -409,6 +409,109 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                 std::fs::write(&args[3], ret)?;
                 Ok(true)
             }
+            "-q2-ort" => {
+                let alphabet = make_alphabet();
+                // ort: olaugh rack table.
+                // the format was discussed in woogles discord.
+                // https://discord.com/channels/741321677828522035/1157118170398724176/1164983643836530759
+                let ort_bytes = &std::fs::read(&args[2])?;
+                if ort_bytes.len() < 8 {
+                    return Err("out of bounds".into());
+                }
+                let mut r = 0;
+                let ort_num_buckets = ort_bytes[r] as u32
+                    | (ort_bytes[r + 1] as u32) << 8
+                    | (ort_bytes[r + 2] as u32) << 16
+                    | (ort_bytes[r + 3] as u32) << 24;
+                r += 4;
+                let ort_num_values = ort_bytes[r] as u32
+                    | (ort_bytes[r + 1] as u32) << 8
+                    | (ort_bytes[r + 2] as u32) << 16
+                    | (ort_bytes[r + 3] as u32) << 24;
+                r += 4;
+                if ort_bytes.len() < r + ((ort_num_buckets + 1 + ort_num_values) * 4) as usize {
+                    return Err("out of bounds".into());
+                }
+                let mut ort_buckets = Vec::with_capacity(ort_num_buckets as usize + 1);
+                for _ in 0..=ort_num_buckets {
+                    ort_buckets.push(
+                        ort_bytes[r] as u32
+                            | (ort_bytes[r + 1] as u32) << 8
+                            | (ort_bytes[r + 2] as u32) << 16
+                            | (ort_bytes[r + 3] as u32) << 24,
+                    );
+                    r += 4;
+                }
+                let mut ort_values = Vec::with_capacity(ort_num_values as usize);
+                for _ in 0..ort_num_values {
+                    ort_values.push(
+                        ort_bytes[r] as u32
+                            | (ort_bytes[r + 1] as u32) << 8
+                            | (ort_bytes[r + 2] as u32) << 16
+                            | (ort_bytes[r + 3] as u32) << 24,
+                    );
+                    r += 4;
+                }
+                if r != ort_bytes.len() {
+                    return Err("too many bytes".into());
+                }
+                if ort_buckets[0] != 0
+                    || ort_buckets[ort_num_buckets as usize] != ort_num_values
+                    || ort_buckets.windows(2).any(|x| x[0] > x[1])
+                {
+                    return Err("invalid buckets".into());
+                }
+                let mut csv_out = csv::Writer::from_path(&args[3])?;
+                let mut rack_str = String::new();
+                for bucket_num in 0..ort_num_buckets {
+                    let mut next_allowed_quotient = 0;
+                    for value in &ort_values[ort_buckets[bucket_num as usize] as usize
+                        ..ort_buckets[bucket_num as usize + 1] as usize]
+                    {
+                        let quotient = value & 0x3fff; // 14 bits
+                        if quotient < next_allowed_quotient {
+                            return Err("quotients not sorted/unique".into());
+                        }
+                        next_allowed_quotient = quotient + 1;
+                        // bucket_num is remainder, i.e. orig_hash % ort_num_buckets == bucket_num.
+                        let orig_hash =
+                            quotient as u64 * ort_num_buckets as u64 + bucket_num as u64;
+                        rack_str.clear();
+                        // recover rack_str from orig_hash, each tile uses 5 bits but can be shorter than 7 elements.
+                        let mut last_seen_tile = 0;
+                        if (orig_hash >> 35) != 0 {
+                            return Err("too many tiles".into());
+                        }
+                        for shift in &[30, 25, 20, 15, 10, 5, 0] {
+                            let tile = ((orig_hash >> shift) & 0x1f) as u8;
+                            if tile < last_seen_tile {
+                                return Err("tiles not sorted".into());
+                            }
+                            last_seen_tile = tile;
+                            if tile != 0 {
+                                rack_str.push_str(
+                                    alphabet
+                                        .of_rack(if tile == alphabet.len() { 0 } else { tile })
+                                        .ok_or("invalid tile")?,
+                                );
+                            }
+                        }
+                        // last 6 numbers are f(0)..f(5) where f(b) = max r (0..7) such
+                        // that there exists a word of length b+r with r tiles from
+                        // rack and b additional tiles on board.
+                        csv_out.serialize((
+                            &rack_str,
+                            (value >> 14) & 7,
+                            (value >> 17) & 7,
+                            (value >> 20) & 7,
+                            (value >> 23) & 7,
+                            (value >> 26) & 7,
+                            (value >> 29) & 7,
+                        ))?;
+                    }
+                }
+                Ok(true)
+            }
             _ => Ok(false),
         },
         None => Ok(false),
@@ -428,6 +531,8 @@ fn main() -> error::Returns<()> {
     read kwg/kad file (dawg)
   english-kwg-gaddag CSW21.kwg CSW21.txt
     read gaddawg kwg file (gaddag)
+  english-q2-ort something.ort something.csv
+    read .ort (format subject to change)
   (english can also be catalan, french, german, norwegian, polish, spanish)
   quackle-make-superleaves english.klv superleaves
     read klv/klv2 file, save quackle superleaves (english/french)
