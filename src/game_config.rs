@@ -13,6 +13,10 @@ pub struct StaticGameConfig<'a> {
     board_layout: board_layout::BoardLayout,
     rack_size: i8,
     num_players: u8,
+    num_passes_to_end: u8,
+    challenges_are_passes: bool,
+    num_zeros_to_end: u8,
+    zeros_can_end_empty_board: bool,
     exchange_tile_limit: i16, // >= 1
 }
 
@@ -46,6 +50,34 @@ impl<'a> GameConfig<'a> {
     pub fn num_players(&self) -> u8 {
         match self {
             GameConfig::Static(x) => x.num_players,
+        }
+    }
+
+    #[inline(always)]
+    pub fn num_passes_to_end(&self) -> u8 {
+        match self {
+            GameConfig::Static(x) => x.num_passes_to_end,
+        }
+    }
+
+    #[inline(always)]
+    pub fn challenges_are_passes(&self) -> bool {
+        match self {
+            GameConfig::Static(x) => x.challenges_are_passes,
+        }
+    }
+
+    #[inline(always)]
+    pub fn num_zeros_to_end(&self) -> u8 {
+        match self {
+            GameConfig::Static(x) => x.num_zeros_to_end,
+        }
+    }
+
+    #[inline(always)]
+    pub fn zeros_can_end_empty_board(&self) -> bool {
+        match self {
+            GameConfig::Static(x) => x.zeros_can_end_empty_board,
         }
     }
 
@@ -93,6 +125,10 @@ pub fn make_catalan_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -105,6 +141,10 @@ pub fn make_jumbled_catalan_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -117,6 +157,10 @@ pub fn make_super_catalan_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -129,6 +173,10 @@ pub fn make_jumbled_super_catalan_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -140,6 +188,10 @@ pub fn make_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -152,6 +204,10 @@ pub fn make_jumbled_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -164,6 +220,10 @@ pub fn make_punctured_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_punctured_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -176,6 +236,10 @@ pub fn make_jumbled_punctured_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_punctured_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -188,6 +252,10 @@ pub fn make_hong_kong_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 9,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 9,
     })
 }
@@ -200,6 +268,10 @@ pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -212,6 +284,10 @@ pub fn make_jumbled_super_english_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -224,6 +300,10 @@ pub fn make_french_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -236,6 +316,10 @@ pub fn make_jumbled_french_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -248,6 +332,10 @@ pub fn make_german_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 4,
+        challenges_are_passes: false,
+        num_zeros_to_end: 0,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -260,6 +348,10 @@ pub fn make_jumbled_german_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 4,
+        challenges_are_passes: false,
+        num_zeros_to_end: 0,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -272,6 +364,10 @@ pub fn make_norwegian_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -284,6 +380,10 @@ pub fn make_jumbled_norwegian_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -296,6 +396,10 @@ pub fn make_polish_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -308,6 +412,10 @@ pub fn make_jumbled_polish_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
         exchange_tile_limit: 7,
     })
 }
@@ -320,6 +428,10 @@ pub fn make_spanish_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 4,
+        challenges_are_passes: true,
+        num_zeros_to_end: 12,
+        zeros_can_end_empty_board: false,
         exchange_tile_limit: 1,
     })
 }
@@ -332,6 +444,10 @@ pub fn make_jumbled_spanish_game_config<'a>() -> GameConfig<'a> {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
+        num_passes_to_end: 4,
+        challenges_are_passes: true,
+        num_zeros_to_end: 12,
+        zeros_can_end_empty_board: false,
         exchange_tile_limit: 1,
     })
 }

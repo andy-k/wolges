@@ -41,6 +41,7 @@ pub struct GameState {
     pub bag: bag::Bag,
     pub turn: u8,
     pub zero_turns: u16,
+    pub pass_turns: u16,
 }
 
 impl Clone for GameState {
@@ -52,6 +53,7 @@ impl Clone for GameState {
             bag: self.bag.clone(),
             turn: self.turn,
             zero_turns: self.zero_turns,
+            pass_turns: self.pass_turns,
         }
     }
 
@@ -62,6 +64,7 @@ impl Clone for GameState {
         self.bag.clone_from(&source.bag);
         self.turn.clone_from(&source.turn);
         self.zero_turns.clone_from(&source.zero_turns);
+        self.pass_turns.clone_from(&source.pass_turns);
     }
 }
 
@@ -83,6 +86,7 @@ impl GameState {
             bag: bag::Bag::new(alphabet),
             turn: 0,
             zero_turns: 0,
+            pass_turns: 0,
         }
     }
 
@@ -98,6 +102,7 @@ impl GameState {
         self.board_tiles.iter_mut().for_each(|m| *m = 0);
         self.turn = 0;
         self.zero_turns = 0;
+        self.pass_turns = 0;
     }
 
     pub fn reset_and_draw_tiles(
@@ -159,10 +164,15 @@ impl GameState {
         let current_player = &mut self.players[self.turn as usize];
         match play {
             movegen::Play::Exchange { tiles } => {
-                use_tiles(&mut current_player.rack, tiles.iter().copied())?;
-                self.bag
-                    .replenish(&mut current_player.rack, game_config.rack_size() as usize);
-                self.bag.put_back(&mut rng, tiles);
+                if tiles.is_empty() {
+                    self.pass_turns += 1;
+                } else {
+                    use_tiles(&mut current_player.rack, tiles.iter().copied())?;
+                    self.bag
+                        .replenish(&mut current_player.rack, game_config.rack_size() as usize);
+                    self.bag.put_back(&mut rng, tiles);
+                    self.pass_turns = 0;
+                }
                 self.zero_turns += 1;
             }
             movegen::Play::Place {
@@ -195,6 +205,7 @@ impl GameState {
                 self.bag
                     .replenish(&mut current_player.rack, game_config.rack_size() as usize);
                 self.zero_turns = 0;
+                self.pass_turns = 0;
             }
         }
         Ok(())
@@ -229,7 +240,15 @@ impl GameState {
                 final_scores[self.turn as usize] += earned;
             }
             CheckGameEnded::PlayedOut
-        } else if self.zero_turns >= game_config.num_players() as u16 * 3 {
+        } else if (self.pass_turns > 0
+            && game_config.num_passes_to_end() != 0
+            && self.pass_turns >= game_config.num_passes_to_end() as u16)
+            || (self.zero_turns > 0
+                && game_config.num_zeros_to_end() != 0
+                && self.zero_turns >= game_config.num_zeros_to_end() as u16
+                && (game_config.zeros_can_end_empty_board()
+                    || self.board_tiles.iter().any(|&tile| tile != 0)))
+        {
             for (i, player) in self.players.iter().enumerate() {
                 final_scores[i] = player.score - game_config.alphabet().rack_score(&player.rack);
             }
