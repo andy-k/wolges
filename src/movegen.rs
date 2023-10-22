@@ -61,8 +61,9 @@ struct WorkingBuffer {
     play_out_bonus: i32,
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
+    multi_leaves: klv::MultiLeaves,
     descending_scores: Vec<i8>, // rack.len()
-    exchange_buffer: Vec<u8>, // rack.len()
+    exchange_buffer: Vec<u8>,   // rack.len()
     square_multipliers_by_aggregated_word_multipliers_buffer: fash::MyHashMap<i32, usize>,
     precomputed_square_multiplier_buffer: Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
@@ -113,6 +114,7 @@ impl Clone for WorkingBuffer {
             play_out_bonus: self.play_out_bonus,
             num_tiles_on_rack: self.num_tiles_on_rack,
             rack_bits: self.rack_bits,
+            multi_leaves: self.multi_leaves.clone(),
             descending_scores: self.descending_scores.clone(),
             exchange_buffer: self.exchange_buffer.clone(),
             square_multipliers_by_aggregated_word_multipliers_buffer: self
@@ -172,6 +174,7 @@ impl Clone for WorkingBuffer {
         self.play_out_bonus.clone_from(&source.play_out_bonus);
         self.num_tiles_on_rack.clone_from(&source.num_tiles_on_rack);
         self.rack_bits.clone_from(&source.rack_bits);
+        self.multi_leaves.clone_from(&source.multi_leaves);
         self.descending_scores.clone_from(&source.descending_scores);
         self.exchange_buffer.clone_from(&source.exchange_buffer);
         self.square_multipliers_by_aggregated_word_multipliers_buffer
@@ -249,6 +252,7 @@ impl WorkingBuffer {
             play_out_bonus: 0,
             num_tiles_on_rack: 0,
             rack_bits: 0,
+            multi_leaves: klv::MultiLeaves::new(),
             descending_scores: Vec::new(),
             exchange_buffer: Vec::new(),
             square_multipliers_by_aggregated_word_multipliers_buffer: fash::MyHashMap::default(),
@@ -365,6 +369,8 @@ impl WorkingBuffer {
             self.num_tiles_on_rack += count;
             self.rack_bits |= ((count != 0) as u64) << tile;
         }
+        self.multi_leaves
+            .init(&mut self.rack_tally, board_snapshot.klv, adjust_leave_value);
         self.descending_scores.clear();
         self.descending_scores
             .reserve(self.num_tiles_on_rack as usize);
@@ -379,10 +385,10 @@ impl WorkingBuffer {
         self.descending_scores.sort_unstable();
         self.descending_scores.reverse();
 
-        self.best_leave_values.clear();
-        self.best_leave_values
-            .resize(self.num_tiles_on_rack as usize + 1, f32::NEG_INFINITY);
         if self.num_tiles_in_bag <= 0 {
+            self.best_leave_values.clear();
+            self.best_leave_values
+                .resize(self.num_tiles_on_rack as usize + 1, f32::NEG_INFINITY);
             let mut unpaid = 0i32;
             for i in (0..self.num_tiles_on_rack).rev() {
                 unpaid += self.descending_scores[i as usize] as i32;
@@ -390,51 +396,8 @@ impl WorkingBuffer {
             }
             self.best_leave_values[self.num_tiles_on_rack as usize] = self.play_out_bonus as f32;
         } else {
-            struct Env<'a, AdjustLeaveValue> {
-                klv: &'a klv::Klv,
-                best_leave_values: &'a mut [f32],
-                rack_tally: &'a mut [u8],
-                adjust_leave_value: AdjustLeaveValue,
-            }
-            #[inline(always)]
-            fn pretend_to_generate_exchanges<AdjustLeaveValue: Fn(f32) -> f32>(
-                env: &mut Env<'_, AdjustLeaveValue>,
-                mut num_tiles_exchanged: u16,
-                mut idx: u8,
-            ) {
-                let rack_tally_len = env.rack_tally.len();
-                while (idx as usize) < rack_tally_len && env.rack_tally[idx as usize] == 0 {
-                    idx += 1;
-                }
-                if idx as usize >= rack_tally_len {
-                    let this_leave_value =
-                        (env.adjust_leave_value)(env.klv.leave_value_from_tally(env.rack_tally));
-                    if this_leave_value > env.best_leave_values[num_tiles_exchanged as usize] {
-                        env.best_leave_values[num_tiles_exchanged as usize] = this_leave_value;
-                    }
-                    return;
-                }
-                let original_count = env.rack_tally[idx as usize];
-                loop {
-                    pretend_to_generate_exchanges(env, num_tiles_exchanged, idx + 1);
-                    if env.rack_tally[idx as usize] == 0 {
-                        break;
-                    }
-                    env.rack_tally[idx as usize] -= 1;
-                    num_tiles_exchanged += 1;
-                }
-                env.rack_tally[idx as usize] = original_count;
-            }
-            pretend_to_generate_exchanges(
-                &mut Env {
-                    klv: board_snapshot.klv,
-                    best_leave_values: &mut self.best_leave_values,
-                    rack_tally: &mut self.rack_tally,
-                    adjust_leave_value,
-                },
-                0,
-                0,
-            );
+            self.multi_leaves
+                .extract_raw_best_leave_values(&mut self.best_leave_values);
         }
         for i in 0..=self.num_tiles_on_rack {
             self.best_leave_values[i as usize] +=
@@ -2263,6 +2226,7 @@ impl KurniaMoveGenerator {
 
         let working_buffer = &mut self.working_buffer;
         working_buffer.init(params.board_snapshot, params.rack, &adjust_leave_value);
+        let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
         let num_tiles_in_bag = working_buffer.num_tiles_in_bag;
         let play_out_bonus = working_buffer.play_out_bonus;
@@ -2280,8 +2244,7 @@ impl KurniaMoveGenerator {
                             .sum::<i32>()
                 }) as f32
             } else {
-                // note: adjust_leave_value(f) must return between 0.0 and f
-                adjust_leave_value(params.board_snapshot.klv.leave_value_from_tally(rack_tally))
+                multi_leaves.leave_value_from_tally(rack_tally)
             }
         };
 
@@ -2357,6 +2320,8 @@ impl KurniaMoveGenerator {
 
         self.plays = found_moves.into_inner().into_vec();
         self.plays.sort_unstable();
+
+        let _ = std::mem::replace(&mut working_buffer.multi_leaves, multi_leaves);
     }
 
     pub fn gen_moves_filtered<
@@ -2407,6 +2372,7 @@ impl KurniaMoveGenerator {
 
         let working_buffer = &mut self.working_buffer;
         working_buffer.init(params.board_snapshot, params.rack, &adjust_leave_value);
+        let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
         let num_tiles_in_bag = working_buffer.num_tiles_in_bag;
         let play_out_bonus = working_buffer.play_out_bonus;
@@ -2424,8 +2390,7 @@ impl KurniaMoveGenerator {
                             .sum::<i32>()
                 }) as f32
             } else {
-                // note: adjust_leave_value(f) must return between 0.0 and f
-                adjust_leave_value(params.board_snapshot.klv.leave_value_from_tally(rack_tally))
+                multi_leaves.leave_value_from_tally(rack_tally)
             }
         };
 
@@ -2500,6 +2465,8 @@ impl KurniaMoveGenerator {
 
         self.plays = found_moves.into_inner().into_vec();
         self.plays.sort_unstable();
+
+        let _ = std::mem::replace(&mut working_buffer.multi_leaves, multi_leaves);
     }
 
     #[inline(always)]
