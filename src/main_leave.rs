@@ -757,7 +757,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
                 },
                 rack_tally: &mut rack_tally,
                 min_len: 1,
-                max_len: game_config.rack_size() - 1,
+                max_len: game_config.rack_size(),
                 exchange_buffer: &mut exchange_buffer,
             },
             0,
@@ -841,7 +841,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
             },
             rack_tally: &mut alphabet_freqs,
             min_len: 1,
-            max_len: game_config.rack_size() - 1,
+            max_len: game_config.rack_size(),
             exchange_buffer: &mut exchange_buffer,
         },
         0,
@@ -854,8 +854,8 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     );
     let mut num_filled_in = 0u64;
 
-    let mut subrack_bytes = Vec::with_capacity(game_config.rack_size() as usize - 1);
-    for len_to_complete in 2..game_config.rack_size() {
+    let mut subrack_bytes = Vec::with_capacity(game_config.rack_size() as usize);
+    for len_to_complete in 2..=game_config.rack_size() {
         let len_minus_one = len_to_complete as usize - 1;
         generate_exchanges(
             &mut ExchangeEnv {
