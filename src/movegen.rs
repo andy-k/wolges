@@ -2494,30 +2494,22 @@ fn kurnia_gen_nonplace_moves_except_pass<'a, FoundExchangeMove: FnMut(&[u8], &[u
     }
     fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], &[u8])>(
         env: &mut ExchangeEnv<'_, FoundExchangeMove>,
-        mut idx: u8,
+        idx: u8,
     ) {
-        let rack_tally_len = env.rack_tally.len();
-        while (idx as usize) < rack_tally_len && env.rack_tally[idx as usize] == 0 {
-            idx += 1;
+        if !env.exchange_buffer.is_empty() {
+            (env.found_exchange_move)(env.rack_tally, env.exchange_buffer);
         }
-        if idx as usize >= rack_tally_len {
-            if !env.exchange_buffer.is_empty() {
-                (env.found_exchange_move)(env.rack_tally, env.exchange_buffer);
+        if env.exchange_buffer.len() < env.max_vec_len {
+            for i in idx as usize..env.rack_tally.len() {
+                if env.rack_tally[i] > 0 {
+                    env.rack_tally[i] -= 1;
+                    env.exchange_buffer.push(i as u8);
+                    generate_exchanges(env, i as u8);
+                    env.exchange_buffer.pop();
+                    env.rack_tally[i] += 1;
+                }
             }
-            return;
         }
-        let original_count = env.rack_tally[idx as usize];
-        let vec_len = env.exchange_buffer.len();
-        loop {
-            generate_exchanges(env, idx + 1);
-            if env.rack_tally[idx as usize] == 0 || env.exchange_buffer.len() >= env.max_vec_len {
-                break;
-            }
-            env.rack_tally[idx as usize] -= 1;
-            env.exchange_buffer.push(idx);
-        }
-        env.rack_tally[idx as usize] = original_count;
-        env.exchange_buffer.truncate(vec_len);
     }
     if working_buffer.num_tiles_in_bag >= board_snapshot.game_config.exchange_tile_limit() {
         generate_exchanges(

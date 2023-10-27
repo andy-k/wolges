@@ -650,30 +650,22 @@ struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
 
 fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
     env: &mut ExchangeEnv<'_, FoundExchangeMove>,
-    mut idx: u8,
+    idx: u8,
 ) {
-    let rack_tally_len = env.rack_tally.len();
-    while (idx as usize) < rack_tally_len && env.rack_tally[idx as usize] == 0 {
-        idx += 1;
+    if env.exchange_buffer.len() >= env.min_len as usize {
+        (env.found_exchange_move)(env.exchange_buffer);
     }
-    if idx as usize >= rack_tally_len {
-        if env.exchange_buffer.len() >= env.min_len as usize {
-            (env.found_exchange_move)(env.exchange_buffer);
+    if env.exchange_buffer.len() < env.max_len as usize {
+        for i in idx as usize..env.rack_tally.len() {
+            if env.rack_tally[i] > 0 {
+                env.rack_tally[i] -= 1;
+                env.exchange_buffer.push(i as u8);
+                generate_exchanges(env, i as u8);
+                env.exchange_buffer.pop();
+                env.rack_tally[i] += 1;
+            }
         }
-        return;
     }
-    let original_count = env.rack_tally[idx as usize];
-    let vec_len = env.exchange_buffer.len();
-    loop {
-        generate_exchanges(env, idx + 1);
-        if env.exchange_buffer.len() >= env.max_len as usize || env.rack_tally[idx as usize] == 0 {
-            break;
-        }
-        env.rack_tally[idx as usize] -= 1;
-        env.exchange_buffer.push(idx);
-    }
-    env.rack_tally[idx as usize] = original_count;
-    env.exchange_buffer.truncate(vec_len);
 }
 
 fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
