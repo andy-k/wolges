@@ -87,25 +87,32 @@ impl Klv {
 
 #[derive(Clone)]
 struct MultiLeavesDigit {
-    tile: u8,
+    count: u8,
     place_value: u32,
 }
 
-// example: EEHJTTU should become
-// [(5, 1), (8, 3), (10, 6), (20, 12), (21, 36)]
-// leave_values.len() == 72
-// leave_values[num(E) * 1 + num(H) * 3 + num(J) * 6 + ...]
+// example: EEHJTTU should make digits.len() == 27,
+// [5]=(2,1), [8]=(1,3), [10]=(1,6), [20]=(2,12), [21]=(1,36),
+// and the other elements are (0,0).
+// unique_tiles == [5, 8, 10, 20, 21].
+// leave_values.len() == 72.
+// leave_values[num(E) * 1 + num(H) * 3 + num(J) * 6 + ...].
+// num_playeds = [7, ..., 0] (number of tiles played, not kept)
+// leave_values = [[], [E], [EE], [H], [EH], [EEH], ...]
+// = [leave for exch 7, leave for exch 6 keep E, ... leave for pass].
 #[derive(Default)]
 pub struct MultiLeaves {
-    digits: Vec<MultiLeavesDigit>, // len() == rack_bits.count_ones()
-    leave_values: Vec<f32>,        // typically 2**7, can be shorter when duplicates
-    num_playeds: Vec<u8>,          // same length as leave_values
+    unique_tiles: Vec<u8>, // sorted, unique, len() == rack_bits.count_ones()
+    digits: Vec<MultiLeavesDigit>, // len() == rack_tally.len() == alphabet.len()
+    leave_values: Vec<f32>, // typically 2**7, can be shorter when duplicates
+    num_playeds: Vec<u8>,  // same length as leave_values
 }
 
 impl Clone for MultiLeaves {
     #[inline(always)]
     fn clone(&self) -> Self {
         Self {
+            unique_tiles: self.unique_tiles.clone(),
             digits: self.digits.clone(),
             leave_values: self.leave_values.clone(),
             num_playeds: self.num_playeds.clone(),
@@ -114,6 +121,7 @@ impl Clone for MultiLeaves {
 
     #[inline(always)]
     fn clone_from(&mut self, source: &Self) {
+        self.unique_tiles.clone_from(&source.unique_tiles);
         self.digits.clone_from(&source.digits);
         self.leave_values.clone_from(&source.leave_values);
         self.num_playeds.clone_from(&source.num_playeds);
@@ -123,24 +131,36 @@ impl Clone for MultiLeaves {
 impl MultiLeaves {
     pub fn new() -> Self {
         Self {
+            unique_tiles: Vec::new(),
             digits: Vec::new(),
             leave_values: Vec::new(),
             num_playeds: Vec::new(),
         }
     }
 
+    // use_klv=false means to just use 0.0 for all leaves, this may be slightly faster.
     pub fn init<AdjustLeaveValue: Fn(f32) -> f32>(
         &mut self,
-        rack_tally: &mut [u8],
+        rack_tally: &[u8],
         klv: &Klv,
+        use_klv: bool,
         adjust_leave_value: &AdjustLeaveValue,
     ) {
+        self.unique_tiles.clear();
         self.digits.clear();
+        self.digits.resize(
+            rack_tally.len(),
+            MultiLeavesDigit {
+                count: 0,
+                place_value: 0,
+            },
+        );
         let mut place_value = 1u32;
         let mut num_tiles_on_rack = 0u8;
         for (tile, &count) in (0u8..).zip(rack_tally.iter()) {
             if count != 0 {
-                self.digits.push(MultiLeavesDigit { tile, place_value });
+                self.unique_tiles.push(tile);
+                self.digits[tile as usize] = MultiLeavesDigit { count, place_value };
                 place_value *= count as u32 + 1;
                 num_tiles_on_rack += count;
             }
@@ -153,8 +173,8 @@ impl MultiLeaves {
 
         struct Env<'a> {
             klv: &'a Klv,
-            rack_tally: &'a mut [u8],
-            digits: &'a [MultiLeavesDigit],
+            unique_tiles: &'a [u8],
+            digits: &'a mut [MultiLeavesDigit],
             leave_values: &'a mut [f32],
             num_playeds: &'a mut [u8],
         }
@@ -163,15 +183,15 @@ impl MultiLeaves {
             mut p: i32,
             mut idx: u32,
             leave_idx_offset: u32,
-            digit_idx_offset: u8,
+            unique_tile_idx_offset: u8,
             mut num_played: u8,
         ) {
             num_played = num_played.wrapping_sub(1);
-            for digit_idx in digit_idx_offset as usize..env.digits.len() {
-                let &MultiLeavesDigit { tile, place_value } = &env.digits[digit_idx];
+            for unique_tile_idx in unique_tile_idx_offset as usize..env.unique_tiles.len() {
+                let tile = env.unique_tiles[unique_tile_idx];
                 let tile_usize = tile as usize;
-                if env.rack_tally[tile_usize] > 0 {
-                    env.rack_tally[tile_usize] -= 1;
+                if env.digits[tile_usize].count > 0 {
+                    env.digits[tile_usize].count -= 1;
                     if p != 0 {
                         idx += env.klv.count(p);
                         loop {
@@ -186,7 +206,7 @@ impl MultiLeaves {
                             p += 1;
                         }
                     }
-                    let leave_idx = leave_idx_offset + place_value;
+                    let leave_idx = leave_idx_offset + env.digits[tile_usize].place_value;
                     env.num_playeds[leave_idx as usize] = num_played;
                     if p != 0 {
                         idx -= env.klv.count(p);
@@ -202,44 +222,72 @@ impl MultiLeaves {
                             node.arc_index(),
                             idx + node.accepts() as u32,
                             leave_idx,
-                            digit_idx as u8,
+                            unique_tile_idx as u8,
                             num_played,
                         );
                     } else {
                         env.leave_values[leave_idx as usize] = 0.0;
-                        precompute_leaves(env, p, idx, leave_idx, digit_idx as u8, num_played);
+                        precompute_leaves(
+                            env,
+                            p,
+                            idx,
+                            leave_idx,
+                            unique_tile_idx as u8,
+                            num_played,
+                        );
                     }
-                    env.rack_tally[tile_usize] += 1;
+                    env.digits[tile_usize].count += 1;
                 }
             }
         }
         precompute_leaves(
             &mut Env {
                 klv,
-                rack_tally,
-                digits: &self.digits,
+                unique_tiles: &self.unique_tiles,
+                digits: &mut self.digits,
                 leave_values: &mut self.leave_values,
                 num_playeds: &mut self.num_playeds,
             },
-            klv.kwg[0].arc_index(),
+            if use_klv { klv.kwg[0].arc_index() } else { 0 },
             0,
             0,
             0,
             num_tiles_on_rack,
         );
 
-        // note: adjust_leave_value(f) must return between 0.0 and f
-        self.leave_values
-            .iter_mut()
-            .for_each(|m| *m = adjust_leave_value(*m));
+        if use_klv {
+            // note: adjust_leave_value(f) must return between 0.0 and f
+            self.leave_values
+                .iter_mut()
+                .for_each(|m| *m = adjust_leave_value(*m));
+        }
+    }
+
+    pub fn init_endgame_leaves<AlphabetScore: Fn(u8) -> i8>(
+        &mut self,
+        alphabet_score: AlphabetScore,
+        play_out_bonus: f32,
+    ) {
+        // leave value for not going out is -10 - 2 * residual tiles.
+        self.leave_values[0] = -10.0;
+        for &tile in &self.unique_tiles {
+            let penalty = -2.0 * alphabet_score(tile) as f32;
+            let &MultiLeavesDigit { count, place_value } = &self.digits[tile as usize];
+            for i in 0..place_value * count as u32 {
+                self.leave_values[(i + place_value) as usize] =
+                    self.leave_values[i as usize] + penalty;
+            }
+        }
+        // leave value for keeping 0 tiles is play_out_bonus.
+        self.leave_values[0] = play_out_bonus;
     }
 
     // undefined behavior unless rack_tally is a subset of what was init'ed.
     #[inline(always)]
     pub fn leave_value_from_tally(&self, rack_tally: &[u8]) -> f32 {
         let mut leave_idx = 0u32;
-        for &MultiLeavesDigit { tile, place_value } in &self.digits {
-            leave_idx += rack_tally[tile as usize] as u32 * place_value;
+        for &tile in &self.unique_tiles {
+            leave_idx += rack_tally[tile as usize] as u32 * self.digits[tile as usize].place_value;
         }
         self.leave_values[leave_idx as usize]
     }
@@ -255,5 +303,70 @@ impl MultiLeaves {
                 best_leave_values[num_tiles_exchanged] = this_leave_value;
             }
         }
+    }
+
+    #[inline(always)]
+    pub fn kurnia_gen_exchange_moves_unconditionally<'a, FoundExchangeMove: FnMut(&[u8], f32)>(
+        &self,
+        found_exchange_move: FoundExchangeMove,
+        rack_tally: &'a mut [u8],
+        exchange_buffer: &'a mut Vec<u8>,
+        max_vec_len: usize,
+    ) {
+        exchange_buffer.clear(); // should be no-op
+        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], f32)> {
+            multi_leaves: &'a MultiLeaves,
+            found_exchange_move: FoundExchangeMove,
+            rack_tally: &'a mut [u8],
+            exchange_buffer: &'a mut Vec<u8>,
+            max_vec_len: usize,
+        }
+        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], f32)>(
+            env: &mut ExchangeEnv<'_, FoundExchangeMove>,
+            unique_tile_idx_offset: u8,
+            leave_idx: u32,
+        ) {
+            if !env.exchange_buffer.is_empty() {
+                (env.found_exchange_move)(
+                    env.exchange_buffer,
+                    env.multi_leaves.leave_values[leave_idx as usize],
+                );
+            }
+            if env.exchange_buffer.len() < env.max_vec_len {
+                for unique_tile_idx in
+                    unique_tile_idx_offset as usize..env.multi_leaves.unique_tiles.len()
+                {
+                    let tile = env.multi_leaves.unique_tiles[unique_tile_idx];
+                    let tile_usize = tile as usize;
+                    if env.rack_tally[tile_usize] > 0 {
+                        env.rack_tally[tile_usize] -= 1;
+                        env.exchange_buffer.push(tile);
+                        generate_exchanges(
+                            env,
+                            tile,
+                            leave_idx - env.multi_leaves.digits[tile_usize].place_value,
+                        );
+                        env.exchange_buffer.pop();
+                        env.rack_tally[tile_usize] += 1;
+                    }
+                }
+            }
+        }
+        generate_exchanges(
+            &mut ExchangeEnv {
+                multi_leaves: self,
+                found_exchange_move,
+                rack_tally,
+                exchange_buffer,
+                max_vec_len,
+            },
+            0,
+            self.leave_values.len() as u32 - 1,
+        );
+    }
+
+    #[inline(always)]
+    pub fn pass_leave_value(&self) -> f32 {
+        *self.leave_values.last().unwrap()
     }
 }
