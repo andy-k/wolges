@@ -174,12 +174,7 @@ fn main() -> error::Returns<()> {
                         max_gen: usize::MAX,
                         always_include_pass: true,
                     },
-                    |_down: bool,
-                     _lane: i8,
-                     _idx: i8,
-                     _word: &[u8],
-                     _score: i32,
-                     _rack_tally: &[u8]| true,
+                    |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
                     |leave_value: f32| leave_scale * leave_value,
                     |_equity: f32, _play: &movegen::Play| true,
                 );

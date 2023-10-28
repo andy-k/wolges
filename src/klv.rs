@@ -361,8 +361,25 @@ impl MultiLeaves {
                 max_vec_len,
             },
             0,
-            self.leave_values.len() as u32 - 1,
+            self.pass_leave_idx(),
         );
+    }
+
+    #[inline(always)]
+    pub fn pass_leave_idx(&self) -> u32 {
+        self.leave_values.len() as u32 - 1
+    }
+
+    // undefined behavior unless tile was init'ed.
+    #[inline(always)]
+    pub fn place_value(&self, tile: u8) -> u32 {
+        self.digits[tile as usize].place_value
+    }
+
+    // undefined behavior unless idx is valid.
+    #[inline(always)]
+    pub fn leave_value(&self, idx: u32) -> f32 {
+        self.leave_values[idx as usize]
     }
 
     #[inline(always)]
