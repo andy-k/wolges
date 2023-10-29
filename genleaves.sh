@@ -18,10 +18,10 @@ EOF
   exit 2
 fi
 
-leave_param="${1}"
-buildlex_param="${2}"
-num="${3}"
-echo $num
+leave_param="$1"
+buildlex_param="$2"
+num="$3"
+echo "$num"
 
 kwg=""
 for x in *.kwg; do
