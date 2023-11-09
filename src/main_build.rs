@@ -231,7 +231,8 @@ fn main() -> error::Returns<()> {
     generate kad file containing alpha dawg
   english-kwg-dawg CSW21.txt outfile.dwg
     generate dawg-only file
-  (english can also be catalan, french, german, norwegian, polish, spanish)"
+  (english can also be catalan, french, german, norwegian, polish, spanish,
+    yupik)"
         );
         Ok(())
     } else if args[1] == "auto" {
@@ -246,6 +247,7 @@ fn main() -> error::Returns<()> {
             || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet)?
             || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
+            || do_lang(&args, "yupik", alphabet::make_yupik_alphabet)?
         {
         } else {
             return Err("invalid argument".into());

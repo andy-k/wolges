@@ -536,6 +536,35 @@ pub fn make_spanish_alphabet<'a>() -> Alphabet<'a> {
     })
 }
 
+// TODO: find citeable source
+// https://discord.com/channels/741321677828522035/778469677588283403/1171937313224392704
+pub fn make_yupik_alphabet<'a>() -> Alphabet<'a> {
+    Alphabet::new_static(StaticAlphabet {
+        tiles: &[
+            tile!("?", "?", 2, 0, 0),
+            tile!("A", "a", 17, 1, 1),
+            tile!("C", "c", 2, 6, 0),
+            tile!("E", "e", 6, 1, 1),
+            tile!("G", "g", 5, 2, 0),
+            tile!("I", "i", 9, 1, 1),
+            tile!("K", "k", 5, 2, 0),
+            tile!("L", "l", 8, 1, 0),
+            tile!("M", "m", 4, 4, 0),
+            tile!("N", "n", 8, 1, 0),
+            tile!("P", "p", 1, 8, 0),
+            tile!("Q", "q", 4, 4, 0),
+            tile!("R", "r", 6, 1, 0),
+            tile!("S", "s", 1, 8, 0),
+            tile!("T", "t", 8, 1, 0),
+            tile!("U", "u", 12, 1, 1),
+            tile!("V", "v", 1, 10, 0),
+            tile!("W", "w", 1, 10, 0),
+            tile!("Y", "y", 2, 6, 0),
+        ],
+        ..Default::default()
+    })
+}
+
 pub struct AlphabetReader<'a> {
     supported_tiles: Box<[(u8, &'a [u8])]>,
     by_first_byte: [Option<(usize, usize)>; 256],
