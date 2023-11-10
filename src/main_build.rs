@@ -193,6 +193,45 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                 )?;
                 Ok(true)
             }
+            "-kwg-score" => {
+                std::fs::write(
+                    &args[3],
+                    build::build(
+                        build::BuildFormat::Gaddawg,
+                        &read_machine_words(
+                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
+                            &std::fs::read_to_string(&args[2])?,
+                        )?,
+                    )?,
+                )?;
+                Ok(true)
+            }
+            "-kwg-score-dawg" => {
+                std::fs::write(
+                    &args[3],
+                    build::build(
+                        build::BuildFormat::DawgOnly,
+                        &read_machine_words(
+                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
+                            &std::fs::read_to_string(&args[2])?,
+                        )?,
+                    )?,
+                )?;
+                Ok(true)
+            }
+            "-kwg-score-alpha" => {
+                std::fs::write(
+                    &args[3],
+                    build::build(
+                        build::BuildFormat::DawgOnly,
+                        &build::make_alphagrams(&read_machine_words(
+                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
+                            &std::fs::read_to_string(&args[2])?,
+                        )?),
+                    )?,
+                )?;
+                Ok(true)
+            }
             "-macondo" => {
                 let alphabet = make_alphabet();
                 let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
@@ -231,6 +270,10 @@ fn main() -> error::Returns<()> {
     generate kad file containing alpha dawg
   english-kwg-dawg CSW21.txt outfile.dwg
     generate dawg-only file
+  english-kwg-score CSW21.txt CSW21.kwg
+  english-kwg-score-alpha CSW21.txt CSW21.kad
+  english-kwg-score-dawg CSW21.txt outfile.dwg
+    same as above but with representative same-score tiles
   (english can also be catalan, french, german, norwegian, polish, spanish,
     yupik)"
         );

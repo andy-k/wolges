@@ -15,6 +15,7 @@ pub struct StaticAlphabet<'a> {
     tiles: &'a [Tile<'a>],
     widest_label_len: usize, // in codepoints for now (graphemes is too complex)
     num_tiles: u16,
+    same_score_tile: Vec<u8>,
 }
 
 pub enum Alphabet<'a> {
@@ -23,12 +24,27 @@ pub enum Alphabet<'a> {
 
 impl<'a> Alphabet<'a> {
     pub fn new_static(x: StaticAlphabet<'a>) -> Self {
+        let num_letters = x.tiles.len() as u8;
+        let mut same_score_tile = Vec::from_iter(0..num_letters);
+        // 0 is never same as others, to prevent unexpected behavior.
+        // sameness is defined only by same scores (is_vowel may mismatch).
+        for i in 1..num_letters {
+            if same_score_tile[i as usize] == i {
+                let v = x.tiles[i as usize].score;
+                for j in i + 1..num_letters {
+                    if x.tiles[j as usize].score == v {
+                        same_score_tile[j as usize] = i;
+                    }
+                }
+            }
+        }
         Self::Static(StaticAlphabet {
             widest_label_len: x.tiles.iter().fold(0, |acc, tile| {
                 acc.max(tile.label.chars().count())
                     .max(tile.blank_label.chars().count())
             }),
             num_tiles: x.tiles.iter().map(|tile| tile.freq as u16).sum(),
+            same_score_tile,
             ..x
         })
     }
@@ -100,6 +116,20 @@ impl<'a> Alphabet<'a> {
     #[inline(always)]
     pub fn freq(&self, idx: u8) -> u8 {
         self.get(idx).freq
+    }
+
+    #[inline(always)]
+    pub fn representative_same_score_tile(&self, idx: u8) -> u8 {
+        match self {
+            Alphabet::Static(x) => {
+                let c = idx & 0x7f;
+                if c >= self.len() {
+                    c
+                } else {
+                    x.same_score_tile[c as usize]
+                }
+            }
+        }
     }
 
     pub fn fmt_rack(&'a self, rack: &'a [u8]) -> WriteableRack<'a> {
@@ -619,6 +649,31 @@ impl<'a> AlphabetReader<'a> {
             supported_tiles.push((idx, tile.blank_label.as_bytes()));
             for alias in tile.alias_blank_labels {
                 supported_tiles.push((idx, alias.as_bytes()));
+            }
+        }
+        let supported_tiles = supported_tiles.into_boxed_slice();
+        Self::new_for_tiles(supported_tiles)
+    }
+
+    // Same as new_for_words but merge tiles with same score.
+    pub fn new_for_word_scores(alphabet: &Alphabet<'a>) -> Self {
+        let alphabet_len = alphabet.len();
+        let mut cap = 0;
+        for idx in 1..alphabet_len {
+            let tile = alphabet.get(idx);
+            cap += 2 + tile.alias_labels.len() + tile.alias_blank_labels.len();
+        }
+        let mut supported_tiles = Vec::with_capacity(cap);
+        for idx in 1..alphabet_len {
+            let tile = alphabet.get(idx);
+            let representative_idx = alphabet.representative_same_score_tile(idx);
+            supported_tiles.push((representative_idx, tile.label.as_bytes()));
+            for alias in tile.alias_labels {
+                supported_tiles.push((representative_idx, alias.as_bytes()));
+            }
+            supported_tiles.push((representative_idx, tile.blank_label.as_bytes()));
+            for alias in tile.alias_blank_labels {
+                supported_tiles.push((representative_idx, alias.as_bytes()));
             }
         }
         let supported_tiles = supported_tiles.into_boxed_slice();
