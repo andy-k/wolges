@@ -38,19 +38,20 @@ struct PossiblePlacement {
 // This is not enforced.
 struct WorkingBuffer {
     rack_tally: Box<[u8]>,                                      // 27 for ?A-Z
-    word_buffer_for_across_plays: Box<[u8]>,                    // r*c
-    word_buffer_for_down_plays: Box<[u8]>,                      // c*r
-    cross_set_for_across_plays: Box<[CrossSet]>,                // r*c
-    cross_set_for_down_plays: Box<[CrossSet]>,                  // c*r
-    cached_cross_set_for_across_plays: Box<[CachedCrossSet]>,   // c*r
-    cached_cross_set_for_down_plays: Box<[CachedCrossSet]>,     // r*c
-    cross_set_buffer: Box<[CrossSetComputation]>,               // max(r, c)
-    remaining_word_multipliers_for_across_plays: Box<[i8]>,     // r*c (1 if tile placed)
-    remaining_word_multipliers_for_down_plays: Box<[i8]>,       // c*r
-    remaining_tile_multipliers_for_across_plays: Box<[i8]>,     // r*c (1 if tile placed)
-    remaining_tile_multipliers_for_down_plays: Box<[i8]>,       // c*r
-    face_value_scores_for_across_plays: Box<[i8]>,              // r*c
-    face_value_scores_for_down_plays: Box<[i8]>,                // c*r
+    representative_rack_tally: Box<[u8]>, // 27 for ?A-Z (may not always be used)
+    word_buffer_for_across_plays: Box<[u8]>, // r*c
+    word_buffer_for_down_plays: Box<[u8]>, // c*r
+    cross_set_for_across_plays: Box<[CrossSet]>, // r*c
+    cross_set_for_down_plays: Box<[CrossSet]>, // c*r
+    cached_cross_set_for_across_plays: Box<[CachedCrossSet]>, // c*r
+    cached_cross_set_for_down_plays: Box<[CachedCrossSet]>, // r*c
+    cross_set_buffer: Box<[CrossSetComputation]>, // max(r, c)
+    remaining_word_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
+    remaining_word_multipliers_for_down_plays: Box<[i8]>, // c*r
+    remaining_tile_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
+    remaining_tile_multipliers_for_down_plays: Box<[i8]>, // c*r
+    face_value_scores_for_across_plays: Box<[i8]>, // r*c
+    face_value_scores_for_down_plays: Box<[i8]>, // c*r
     perpendicular_word_multipliers_for_across_plays: Box<[i8]>, // r*c (0 if no perpendicularly adjacent tile)
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
@@ -76,6 +77,7 @@ impl Clone for WorkingBuffer {
     fn clone(&self) -> Self {
         Self {
             rack_tally: self.rack_tally.clone(),
+            representative_rack_tally: self.representative_rack_tally.clone(),
             word_buffer_for_across_plays: self.word_buffer_for_across_plays.clone(),
             word_buffer_for_down_plays: self.word_buffer_for_down_plays.clone(),
             cross_set_for_across_plays: self.cross_set_for_across_plays.clone(),
@@ -131,6 +133,8 @@ impl Clone for WorkingBuffer {
     #[inline(always)]
     fn clone_from(&mut self, source: &Self) {
         self.rack_tally.clone_from(&source.rack_tally);
+        self.representative_rack_tally
+            .clone_from(&source.representative_rack_tally);
         self.word_buffer_for_across_plays
             .clone_from(&source.word_buffer_for_across_plays);
         self.word_buffer_for_down_plays
@@ -193,6 +197,8 @@ impl WorkingBuffer {
         let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
         Self {
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
+            representative_rack_tally: vec![0u8; game_config.alphabet().len() as usize]
+                .into_boxed_slice(),
             word_buffer_for_across_plays: vec![0u8; rows_times_cols].into_boxed_slice(),
             word_buffer_for_down_plays: vec![0u8; rows_times_cols].into_boxed_slice(),
             cross_set_for_across_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
@@ -266,11 +272,17 @@ impl WorkingBuffer {
         rack: &[u8],
         adjust_leave_value: &AdjustLeaveValue,
     ) {
+        let alphabet = board_snapshot.game_config.alphabet();
         self.exchange_buffer.clear();
         self.exchange_buffer.reserve(rack.len());
         self.rack_tally.iter_mut().for_each(|m| *m = 0);
+        self.representative_rack_tally
+            .iter_mut()
+            .for_each(|m| *m = 0);
         for tile in rack {
             self.rack_tally[*tile as usize] += 1;
+            self.representative_rack_tally
+                [alphabet.representative_same_score_tile(*tile) as usize] += 1;
         }
         self.word_buffer_for_across_plays
             .iter_mut()
@@ -287,7 +299,6 @@ impl WorkingBuffer {
             m.score = 0;
         });
 
-        let alphabet = board_snapshot.game_config.alphabet();
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
         let premiums = board_layout.premiums();
