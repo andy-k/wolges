@@ -746,7 +746,6 @@ fn gen_classic_cross_set<'a>(
     }
 }
 
-// this is suboptimal, it computes lone islands twice.
 fn gen_jumbled_cross_set<'a>(
     board_snapshot: &'a BoardSnapshot<'a>,
     board_strip: &'a [u8],
@@ -759,10 +758,18 @@ fn gen_jumbled_cross_set<'a>(
     let mut wp = output_strider.base() as usize;
     let kwg = &board_snapshot.kwg;
     let alphabet = board_snapshot.game_config.alphabet();
+    let mut prev_wp = !0;
     for i in 0..len {
         let b = board_strip[i as usize];
         if b != 0 {
             cross_sets[wp] = CrossSet { bits: 0, score: 0 };
+        } else if prev_wp != !0 && (i + 1 >= len || board_strip[i as usize + 1] == 0) {
+            // this is the matching right side of a lone island.
+            // reuse the computed left side's cross set.
+            cross_sets[wp] = CrossSet {
+                ..cross_sets[prev_wp]
+            };
+            prev_wp = !0;
         } else {
             let mut score = 0i32;
             let mut j = i;
@@ -792,6 +799,9 @@ fn gen_jumbled_cross_set<'a>(
                     bits: kwg.compute_alpha_cross_set(used_letters_tally),
                     score,
                 };
+                // if j == i, this is the left side of a possible lone island.
+                // otherwise set to !0.
+                prev_wp = wp | ((j == i) as isize - 1) as usize;
                 used_letters_tally.iter_mut().for_each(|m| *m = 0);
             }
         }

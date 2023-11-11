@@ -544,11 +544,7 @@ Moves are still generated after shadow-playing, but the actual tile placements
 are not constrained by a GADDAG. Instead, each full word is rechecked against
 Kurnia Alpha Dawg.
 
-The implementation is suboptimal. For example, the cross set generation checks
-the Kurnia Alpha Dawg twice to fill in both case 1 and 2 with the same value.
-
-    . . . . . . E L O L H . . . .
-              1           2
+The implementation is suboptimal.
 
 
 POSSIBLE FUTURE WORK
