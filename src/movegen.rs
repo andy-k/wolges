@@ -932,17 +932,16 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         best_possible_equity: f32::NEG_INFINITY,
     };
 
-    fn shadow_record(
-        env: &mut Env<'_>,
-        idx_left: i8,
-        idx_right: i8,
+    struct Accumulator {
         main_played_through_score: i32,
         perpendicular_additional_score: i32,
         word_multiplier: i32,
-    ) {
+    }
+
+    fn shadow_record(env: &mut Env<'_>, acc: &Accumulator, idx_left: i8, idx_right: i8) {
         let low_end = env
             .params
-            .square_multipliers_by_aggregated_word_multipliers_buffer[&word_multiplier];
+            .square_multipliers_by_aggregated_word_multipliers_buffer[&acc.word_multiplier];
         let high_end = low_end + env.strider_len;
         let precomputed_square_multiplier_slice =
             &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
@@ -959,8 +958,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 }
             }
         }
-        let equity = (main_played_through_score * word_multiplier
-            + perpendicular_additional_score
+        let equity = (acc.main_played_through_score * acc.word_multiplier
+            + acc.perpendicular_additional_score
             + best_scoring) as f32
             + env.params.best_leave_values[env.num_played as usize];
         if equity > env.best_possible_equity {
@@ -968,21 +967,15 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         }
     }
 
-    fn shadow_play_right(
-        env: &mut Env<'_>,
-        mut idx: i8,
-        mut main_played_through_score: i32,
-        perpendicular_additional_score: i32,
-        word_multiplier: i32,
-        is_unique: bool,
-    ) {
+    fn shadow_play_right(env: &mut Env<'_>, acc: &mut Accumulator, mut idx: i8, is_unique: bool) {
         // tail-recurse placing current sequence of tiles
         while idx < env.rightmost {
             let b = env.params.board_strip[idx as usize];
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_played_through_score +=
+                env.params.face_value_scores_strip[idx as usize] as i32;
             idx += 1;
         }
         // tiles have been placed from env.idx_left to idx - 1.
@@ -992,14 +985,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             && (env.num_played + is_unique as i8) >= 2
             && idx - env.idx_left >= 2
         {
-            shadow_record(
-                env,
-                env.idx_left,
-                idx,
-                main_played_through_score,
-                perpendicular_additional_score,
-                word_multiplier,
-            );
+            shadow_record(env, acc, env.idx_left, idx);
         }
         if env.num_played as u8 >= env.params.num_max_played {
             return;
@@ -1013,11 +999,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 env.num_played += 1;
                 shadow_play_right(
                     env,
+                    &mut Accumulator {
+                        main_played_through_score: acc.main_played_through_score,
+                        perpendicular_additional_score: acc.perpendicular_additional_score,
+                        word_multiplier: acc.word_multiplier
+                            * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
+                    },
                     idx + 1,
-                    main_played_through_score,
-                    perpendicular_additional_score,
-                    word_multiplier
-                        * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     true,
                 );
                 env.num_played -= 1;
@@ -1027,12 +1015,14 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 env.num_played += 1;
                 shadow_play_right(
                     env,
+                    &mut Accumulator {
+                        main_played_through_score: acc.main_played_through_score,
+                        perpendicular_additional_score: acc.perpendicular_additional_score
+                            + env.params.perpendicular_scores_strip[idx as usize],
+                        word_multiplier: acc.word_multiplier
+                            * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
+                    },
                     idx + 1,
-                    main_played_through_score,
-                    perpendicular_additional_score
-                        + env.params.perpendicular_scores_strip[idx as usize],
-                    word_multiplier
-                        * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     is_unique,
                 );
                 env.num_played -= 1;
@@ -1040,35 +1030,22 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         }
     }
 
-    fn shadow_play_left(
-        env: &mut Env<'_>,
-        mut idx: i8,
-        mut main_played_through_score: i32,
-        perpendicular_additional_score: i32,
-        word_multiplier: i32,
-        is_unique: bool,
-    ) {
+    fn shadow_play_left(env: &mut Env<'_>, acc: &mut Accumulator, mut idx: i8, is_unique: bool) {
         // tail-recurse placing current sequence of tiles
         while idx >= env.leftmost {
             let b = env.params.board_strip[idx as usize];
             if b == 0 {
                 break;
             }
-            main_played_through_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_played_through_score +=
+                env.params.face_value_scores_strip[idx as usize] as i32;
             idx -= 1;
         }
         // tiles have been placed from env.anchor to idx + 1.
         // here idx >= env.leftmost - 1.
         // check if [idx + 1, env.anchor + 1) is a thing
         if (env.num_played + is_unique as i8) >= 2 && env.anchor - idx >= 2 {
-            shadow_record(
-                env,
-                idx + 1,
-                env.anchor + 1,
-                main_played_through_score,
-                perpendicular_additional_score,
-                word_multiplier,
-            );
+            shadow_record(env, acc, idx + 1, env.anchor + 1);
         }
         if env.num_played as u8 >= env.params.num_max_played {
             return;
@@ -1077,14 +1054,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         // can switch direction only after using the anchor square
         if idx < env.anchor {
             env.idx_left = idx + 1;
-            shadow_play_right(
-                env,
-                env.anchor + 1,
-                main_played_through_score,
-                perpendicular_additional_score,
-                word_multiplier,
-                is_unique,
-            );
+            shadow_play_right(env, acc, env.anchor + 1, is_unique);
         }
 
         // place a tile at [idx] if it is still in bounds
@@ -1095,11 +1065,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 env.num_played += 1;
                 shadow_play_left(
                     env,
+                    &mut Accumulator {
+                        main_played_through_score: acc.main_played_through_score,
+                        perpendicular_additional_score: acc.perpendicular_additional_score,
+                        word_multiplier: acc.word_multiplier
+                            * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
+                    },
                     idx - 1,
-                    main_played_through_score,
-                    perpendicular_additional_score,
-                    word_multiplier
-                        * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     true,
                 );
                 env.num_played -= 1;
@@ -1109,12 +1081,14 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 env.num_played += 1;
                 shadow_play_left(
                     env,
+                    &mut Accumulator {
+                        main_played_through_score: acc.main_played_through_score,
+                        perpendicular_additional_score: acc.perpendicular_additional_score
+                            + env.params.perpendicular_scores_strip[idx as usize],
+                        word_multiplier: acc.word_multiplier
+                            * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
+                    },
                     idx - 1,
-                    main_played_through_score,
-                    perpendicular_additional_score
-                        + env.params.perpendicular_scores_strip[idx as usize],
-                    word_multiplier
-                        * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     is_unique,
                 );
                 env.num_played -= 1;
@@ -1133,7 +1107,16 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             possible_strip_placement_callback(env.anchor, env.leftmost, env.rightmost, 0.0);
         } else {
             env.best_possible_equity = f32::NEG_INFINITY;
-            shadow_play_left(env, env.anchor, 0, 0, 1, single_tile_plays);
+            shadow_play_left(
+                env,
+                &mut Accumulator {
+                    main_played_through_score: 0,
+                    perpendicular_additional_score: 0,
+                    word_multiplier: 1,
+                },
+                env.anchor,
+                single_tile_plays,
+            );
             if env.best_possible_equity.is_finite() {
                 possible_strip_placement_callback(
                     env.anchor,
@@ -1231,18 +1214,21 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         num_played: i8,
         idx_left: i8,
     }
-
-    fn record<CallbackType: FnMut(i8, &[u8], i32, f32)>(
-        env: &mut Env<'_, CallbackType>,
-        idx_left: i8,
-        idx_right: i8,
+    struct Accumulator {
         main_score: i32,
         perpendicular_cumulative_score: i32,
         word_multiplier: i32,
         leave_idx: u32,
+    }
+
+    fn record<CallbackType: FnMut(i8, &[u8], i32, f32)>(
+        env: &mut Env<'_, CallbackType>,
+        acc: &Accumulator,
+        idx_left: i8,
+        idx_right: i8,
     ) {
-        let score = main_score * word_multiplier
-            + perpendicular_cumulative_score
+        let score = acc.main_score * acc.word_multiplier
+            + acc.perpendicular_cumulative_score
             + env
                 .params
                 .board_snapshot
@@ -1252,19 +1238,15 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             idx_left,
             &env.params.word_strip_buffer[idx_left as usize..idx_right as usize],
             score,
-            env.params.multi_leaves.leave_value(leave_idx),
+            env.params.multi_leaves.leave_value(acc.leave_idx),
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn play_right<CallbackType: FnMut(i8, &[u8], i32, f32)>(
         env: &mut Env<'_, CallbackType>,
-        mut idx: i8,
+        acc: &mut Accumulator,
         mut p: i32,
-        mut main_score: i32,
-        perpendicular_cumulative_score: i32,
-        word_multiplier: i32,
-        leave_idx: u32,
+        mut idx: i8,
         mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
@@ -1277,7 +1259,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             if p <= 0 {
                 return;
             }
-            main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx += 1;
         }
         let node = env.params.board_snapshot.kwg[p];
@@ -1286,15 +1268,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             && idx - env.idx_left >= 2
             && node.accepts()
         {
-            record(
-                env,
-                env.idx_left,
-                idx,
-                main_score,
-                perpendicular_cumulative_score,
-                word_multiplier,
-                leave_idx,
-            );
+            record(env, acc, env.idx_left, idx);
         }
         if env.num_played as u8 >= env.params.num_max_played {
             return;
@@ -1316,8 +1290,8 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                 this_cross_bits = !1;
                 is_unique = true;
             };
-            let new_word_multiplier =
-                word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let new_word_multiplier = acc.word_multiplier
+                * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
             let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
             let perpendicular_word_multiplier =
                 env.params.perpendicular_word_multipliers_strip[idx as usize];
@@ -1333,14 +1307,17 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_right(
                             env,
-                            idx + 1,
+                            &mut Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                                leave_idx: acc.leave_idx
+                                    - env.params.multi_leaves.place_value(tile),
+                            },
                             p,
-                            main_score + tile_value,
-                            perpendicular_cumulative_score
-                                + perpendicular_score
-                                + tile_value * perpendicular_word_multiplier as i32,
-                            new_word_multiplier,
-                            leave_idx - env.params.multi_leaves.place_value(tile),
+                            idx + 1,
                             is_unique,
                         );
                         env.num_played -= 1;
@@ -1354,14 +1331,16 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                         play_right(
                             env,
-                            idx + 1,
+                            &mut Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                                leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                            },
                             p,
-                            main_score + tile_value,
-                            perpendicular_cumulative_score
-                                + perpendicular_score
-                                + tile_value * perpendicular_word_multiplier as i32,
-                            new_word_multiplier,
-                            leave_idx - env.params.multi_leaves.place_value(0),
+                            idx + 1,
                             is_unique,
                         );
                         env.num_played -= 1;
@@ -1376,15 +1355,11 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn play_left<CallbackType: FnMut(i8, &[u8], i32, f32)>(
         env: &mut Env<'_, CallbackType>,
-        mut idx: i8,
+        acc: &mut Accumulator,
         mut p: i32,
-        mut main_score: i32,
-        perpendicular_cumulative_score: i32,
-        word_multiplier: i32,
-        leave_idx: u32,
+        mut idx: i8,
         mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
@@ -1397,21 +1372,13 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             if p <= 0 {
                 return;
             }
-            main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx -= 1;
         }
         let mut node = env.params.board_snapshot.kwg[p];
         if (env.num_played + is_unique as i8) >= 2 && env.params.anchor - idx >= 2 && node.accepts()
         {
-            record(
-                env,
-                idx + 1,
-                env.params.anchor + 1,
-                main_score,
-                perpendicular_cumulative_score,
-                word_multiplier,
-                leave_idx,
-            );
+            record(env, acc, idx + 1, env.params.anchor + 1);
         }
         if env.num_played as u8 >= env.params.num_max_played {
             return;
@@ -1426,16 +1393,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         if node.tile() == 0 {
             // assume idx < env.params.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
             env.idx_left = idx + 1;
-            play_right(
-                env,
-                env.params.anchor + 1,
-                p,
-                main_score,
-                perpendicular_cumulative_score,
-                word_multiplier,
-                leave_idx,
-                is_unique,
-            );
+            play_right(env, acc, p, env.params.anchor + 1, is_unique);
             if node.is_end() {
                 return;
             }
@@ -1454,8 +1412,8 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                 this_cross_bits = !1;
                 is_unique = true;
             }
-            let new_word_multiplier =
-                word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let new_word_multiplier = acc.word_multiplier
+                * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
             let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
             let perpendicular_word_multiplier =
                 env.params.perpendicular_word_multipliers_strip[idx as usize];
@@ -1471,14 +1429,17 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_left(
                             env,
-                            idx - 1,
+                            &mut Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                                leave_idx: acc.leave_idx
+                                    - env.params.multi_leaves.place_value(tile),
+                            },
                             p,
-                            main_score + tile_value,
-                            perpendicular_cumulative_score
-                                + perpendicular_score
-                                + tile_value * perpendicular_word_multiplier as i32,
-                            new_word_multiplier,
-                            leave_idx - env.params.multi_leaves.place_value(tile),
+                            idx - 1,
                             is_unique,
                         );
                         env.num_played -= 1;
@@ -1492,14 +1453,16 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                         play_left(
                             env,
-                            idx - 1,
+                            &mut Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                                leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                            },
                             p,
-                            main_score + tile_value,
-                            perpendicular_cumulative_score
-                                + perpendicular_score
-                                + tile_value * perpendicular_word_multiplier as i32,
-                            new_word_multiplier,
-                            leave_idx - env.params.multi_leaves.place_value(0),
+                            idx - 1,
                             is_unique,
                         );
                         env.num_played -= 1;
@@ -1524,12 +1487,14 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             num_played: 0,
             idx_left: 0,
         },
+        &mut Accumulator {
+            main_score: 0,
+            perpendicular_cumulative_score: 0,
+            word_multiplier: 1,
+            leave_idx: pass_leave_idx,
+        },
+        1,
         anchor,
-        1,
-        0,
-        0,
-        1,
-        pass_leave_idx,
         single_tile_plays,
     );
 }
@@ -1544,15 +1509,18 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         num_played: i8,
         idx_left: i8,
     }
-
-    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, f32)>(
-        env: &mut Env<'_, CallbackType>,
-        idx_left: i8,
-        idx_right: i8,
+    struct Accumulator {
         main_score: i32,
         perpendicular_cumulative_score: i32,
         word_multiplier: i32,
         leave_idx: u32,
+    }
+
+    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, f32)>(
+        env: &mut Env<'_, CallbackType>,
+        acc: &Accumulator,
+        idx_left: i8,
+        idx_right: i8,
     ) {
         if env
             .params
@@ -1560,8 +1528,8 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             .kwg
             .accepts_alpha(env.params.used_letters_tally)
         {
-            let score = main_score * word_multiplier
-                + perpendicular_cumulative_score
+            let score = acc.main_score * acc.word_multiplier
+                + acc.perpendicular_cumulative_score
                 + env
                     .params
                     .board_snapshot
@@ -1571,18 +1539,15 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                 idx_left,
                 &env.params.word_strip_buffer[idx_left as usize..idx_right as usize],
                 score,
-                env.params.multi_leaves.leave_value(leave_idx),
+                env.params.multi_leaves.leave_value(acc.leave_idx),
             );
         }
     }
 
     fn play_right<CallbackType: FnMut(i8, &[u8], i32, f32)>(
         env: &mut Env<'_, CallbackType>,
+        acc: &mut Accumulator,
         mut idx: i8,
-        mut main_score: i32,
-        perpendicular_cumulative_score: i32,
-        word_multiplier: i32,
-        leave_idx: u32,
         mut is_unique: bool,
     ) {
         let orig_idx = idx;
@@ -1593,22 +1558,14 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                 break;
             }
             env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
-            main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx += 1;
         }
         if idx > env.params.anchor + 1
             && (env.num_played + is_unique as i8) >= 2
             && idx - env.idx_left >= 2
         {
-            record_if_valid(
-                env,
-                env.idx_left,
-                idx,
-                main_score,
-                perpendicular_cumulative_score,
-                word_multiplier,
-                leave_idx,
-            );
+            record_if_valid(env, acc, env.idx_left, idx);
         }
         if (env.num_played as u8) < env.params.num_max_played && idx < env.params.rightmost {
             let mut this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
@@ -1622,7 +1579,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                     this_cross_bits = !1;
                     is_unique = true;
                 };
-                let new_word_multiplier = word_multiplier
+                let new_word_multiplier = acc.word_multiplier
                     * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
                 let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
                 let perpendicular_word_multiplier =
@@ -1639,13 +1596,17 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                             env.params.word_strip_buffer[idx as usize] = tile;
                             play_right(
                                 env,
+                                &mut Accumulator {
+                                    main_score: acc.main_score + tile_value,
+                                    perpendicular_cumulative_score: acc
+                                        .perpendicular_cumulative_score
+                                        + perpendicular_score
+                                        + tile_value * perpendicular_word_multiplier as i32,
+                                    word_multiplier: new_word_multiplier,
+                                    leave_idx: acc.leave_idx
+                                        - env.params.multi_leaves.place_value(tile),
+                                },
                                 idx + 1,
-                                main_score + tile_value,
-                                perpendicular_cumulative_score
-                                    + perpendicular_score
-                                    + tile_value * perpendicular_word_multiplier as i32,
-                                new_word_multiplier,
-                                leave_idx - env.params.multi_leaves.place_value(tile),
                                 is_unique,
                             );
                             env.params.used_letters_tally[tile as usize] -= 1;
@@ -1661,13 +1622,17 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                             env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                             play_right(
                                 env,
+                                &mut Accumulator {
+                                    main_score: acc.main_score + tile_value,
+                                    perpendicular_cumulative_score: acc
+                                        .perpendicular_cumulative_score
+                                        + perpendicular_score
+                                        + tile_value * perpendicular_word_multiplier as i32,
+                                    word_multiplier: new_word_multiplier,
+                                    leave_idx: acc.leave_idx
+                                        - env.params.multi_leaves.place_value(0),
+                                },
                                 idx + 1,
-                                main_score + tile_value,
-                                perpendicular_cumulative_score
-                                    + perpendicular_score
-                                    + tile_value * perpendicular_word_multiplier as i32,
-                                new_word_multiplier,
-                                leave_idx - env.params.multi_leaves.place_value(0),
                                 is_unique,
                             );
                             env.params.used_letters_tally[tile as usize] -= 1;
@@ -1687,11 +1652,8 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
 
     fn play_left<CallbackType: FnMut(i8, &[u8], i32, f32)>(
         env: &mut Env<'_, CallbackType>,
+        acc: &mut Accumulator,
         mut idx: i8,
-        mut main_score: i32,
-        perpendicular_cumulative_score: i32,
-        word_multiplier: i32,
-        leave_idx: u32,
         mut is_unique: bool,
     ) {
         let orig_idx = idx;
@@ -1702,32 +1664,16 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                 break;
             }
             env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
-            main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx -= 1;
         }
         if (env.num_played + is_unique as i8) >= 2 && env.params.anchor - idx >= 2 {
-            record_if_valid(
-                env,
-                idx + 1,
-                env.params.anchor + 1,
-                main_score,
-                perpendicular_cumulative_score,
-                word_multiplier,
-                leave_idx,
-            );
+            record_if_valid(env, acc, idx + 1, env.params.anchor + 1);
         }
         if (env.num_played as u8) < env.params.num_max_played {
             if idx < env.params.anchor {
                 env.idx_left = idx + 1;
-                play_right(
-                    env,
-                    env.params.anchor + 1,
-                    main_score,
-                    perpendicular_cumulative_score,
-                    word_multiplier,
-                    leave_idx,
-                    is_unique,
-                );
+                play_right(env, acc, env.params.anchor + 1, is_unique);
             }
 
             if idx >= env.params.leftmost {
@@ -1742,7 +1688,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                         this_cross_bits = !1;
                         is_unique = true;
                     }
-                    let new_word_multiplier = word_multiplier
+                    let new_word_multiplier = acc.word_multiplier
                         * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
                     let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
                     let perpendicular_word_multiplier =
@@ -1759,13 +1705,17 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                                 env.params.word_strip_buffer[idx as usize] = tile;
                                 play_left(
                                     env,
+                                    &mut Accumulator {
+                                        main_score: acc.main_score + tile_value,
+                                        perpendicular_cumulative_score: acc
+                                            .perpendicular_cumulative_score
+                                            + perpendicular_score
+                                            + tile_value * perpendicular_word_multiplier as i32,
+                                        word_multiplier: new_word_multiplier,
+                                        leave_idx: acc.leave_idx
+                                            - env.params.multi_leaves.place_value(tile),
+                                    },
                                     idx - 1,
-                                    main_score + tile_value,
-                                    perpendicular_cumulative_score
-                                        + perpendicular_score
-                                        + tile_value * perpendicular_word_multiplier as i32,
-                                    new_word_multiplier,
-                                    leave_idx - env.params.multi_leaves.place_value(tile),
                                     is_unique,
                                 );
                                 env.params.used_letters_tally[tile as usize] -= 1;
@@ -1782,13 +1732,17 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                                 env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                                 play_left(
                                     env,
+                                    &mut Accumulator {
+                                        main_score: acc.main_score + tile_value,
+                                        perpendicular_cumulative_score: acc
+                                            .perpendicular_cumulative_score
+                                            + perpendicular_score
+                                            + tile_value * perpendicular_word_multiplier as i32,
+                                        word_multiplier: new_word_multiplier,
+                                        leave_idx: acc.leave_idx
+                                            - env.params.multi_leaves.place_value(0),
+                                    },
                                     idx - 1,
-                                    main_score + tile_value,
-                                    perpendicular_cumulative_score
-                                        + perpendicular_score
-                                        + tile_value * perpendicular_word_multiplier as i32,
-                                    new_word_multiplier,
-                                    leave_idx - env.params.multi_leaves.place_value(0),
                                     is_unique,
                                 );
                                 env.params.used_letters_tally[tile as usize] -= 1;
@@ -1817,11 +1771,13 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             num_played: 0,
             idx_left: 0,
         },
+        &mut Accumulator {
+            main_score: 0,
+            perpendicular_cumulative_score: 0,
+            word_multiplier: 1,
+            leave_idx: pass_leave_idx,
+        },
         anchor,
-        0,
-        0,
-        1,
-        pass_leave_idx,
         single_tile_plays,
     );
 }
