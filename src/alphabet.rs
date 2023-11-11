@@ -16,6 +16,7 @@ pub struct StaticAlphabet<'a> {
     widest_label_len: usize, // in codepoints for now (graphemes is too complex)
     num_tiles: u16,
     same_score_tile: Vec<u8>,
+    same_score_tile_bits: Vec<u64>,
 }
 
 pub enum Alphabet<'a> {
@@ -26,16 +27,26 @@ impl<'a> Alphabet<'a> {
     pub fn new_static(x: StaticAlphabet<'a>) -> Self {
         let num_letters = x.tiles.len() as u8;
         let mut same_score_tile = Vec::from_iter(0..num_letters);
+        let mut same_score_tile_bits = Vec::with_capacity(num_letters as usize);
+        if num_letters != 0 {
+            same_score_tile_bits.push(1);
+        }
         // 0 is never same as others, to prevent unexpected behavior.
         // sameness is defined only by same scores (is_vowel may mismatch).
         for i in 1..num_letters {
             if same_score_tile[i as usize] == i {
+                let mut b = 1u64 << i;
                 let v = x.tiles[i as usize].score;
                 for j in i + 1..num_letters {
                     if x.tiles[j as usize].score == v {
                         same_score_tile[j as usize] = i;
+                        b |= 1u64 << j;
                     }
                 }
+                same_score_tile_bits.push(b);
+            } else {
+                same_score_tile_bits
+                    .push(same_score_tile_bits[same_score_tile[i as usize] as usize]);
             }
         }
         Self::Static(StaticAlphabet {
@@ -45,6 +56,7 @@ impl<'a> Alphabet<'a> {
             }),
             num_tiles: x.tiles.iter().map(|tile| tile.freq as u16).sum(),
             same_score_tile,
+            same_score_tile_bits,
             ..x
         })
     }
@@ -124,9 +136,22 @@ impl<'a> Alphabet<'a> {
             Alphabet::Static(x) => {
                 let c = idx & 0x7f;
                 if c >= self.len() {
-                    c
+                    idx
                 } else {
-                    x.same_score_tile[c as usize]
+                    x.same_score_tile[c as usize] | (idx & 0x80)
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn same_score_tile_bits(&self, idx: u8) -> u64 {
+        match self {
+            Alphabet::Static(x) => {
+                if idx >= self.len() {
+                    0
+                } else {
+                    x.same_score_tile_bits[idx as usize]
                 }
             }
         }
