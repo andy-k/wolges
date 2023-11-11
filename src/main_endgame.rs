@@ -332,6 +332,7 @@ impl Question {
                     game_config,
                     kwg: &empty_kwg,
                     klv: &empty_klv,
+                    kwg_representative: None,
                 };
                 match ps.validate_play(board_snapshot, &game_state, &play) {
                     Err(err) => {

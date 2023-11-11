@@ -165,6 +165,7 @@ impl Simmer {
                             game_config,
                             kwg,
                             klv,
+                            kwg_representative: None,
                         },
                         rack: &self.game_state.current_player().rack,
                         max_gen: 1,

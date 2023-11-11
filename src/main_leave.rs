@@ -325,6 +325,7 @@ fn generate_autoplay_logs(
                             } else {
                                 &arc_klv1
                             },
+                            kwg_representative: None,
                         };
                         game_state.players[game_state.turn as usize]
                             .rack

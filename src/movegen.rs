@@ -465,11 +465,13 @@ impl WorkingBuffer {
 }
 
 // kwg must be Gaddawg for Classic, AlphaDawg for Jumbled.
+// kwg_representative is optional Gaddawg of same-score tiles. only Classic.
 pub struct BoardSnapshot<'a> {
     pub board_tiles: &'a [u8],
     pub game_config: &'a game_config::GameConfig<'a>,
     pub kwg: &'a kwg::Kwg,
     pub klv: &'a klv::Klv,
+    pub kwg_representative: Option<&'a kwg::Kwg>,
 }
 
 // cached_cross_sets is just one strip, so it is transposed from cross_sets
