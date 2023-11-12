@@ -276,13 +276,22 @@ impl WorkingBuffer {
         self.exchange_buffer.clear();
         self.exchange_buffer.reserve(rack.len());
         self.rack_tally.iter_mut().for_each(|m| *m = 0);
-        self.representative_rack_tally
-            .iter_mut()
-            .for_each(|m| *m = 0);
         for tile in rack {
             self.rack_tally[*tile as usize] += 1;
-            self.representative_rack_tally
-                [alphabet.representative_same_score_tile(*tile) as usize] += 1;
+        }
+        match board_snapshot.game_config.game_rules() {
+            game_config::GameRules::Classic => {
+                if board_snapshot.kwg_representative.is_some() {
+                    self.representative_rack_tally
+                        .iter_mut()
+                        .for_each(|m| *m = 0);
+                    for tile in rack {
+                        self.representative_rack_tally
+                            [alphabet.representative_same_score_tile(*tile) as usize] += 1;
+                    }
+                }
+            }
+            game_config::GameRules::Jumbled => {}
         }
         self.word_buffer_for_across_plays
             .iter_mut()
@@ -852,6 +861,7 @@ fn gen_cross_set<'a>(
 }
 
 struct GenPlacePlacementsParams<'a> {
+    kwg_representative: Option<&'a kwg::Kwg>,
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
@@ -1131,16 +1141,49 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             possible_strip_placement_callback(env.anchor, env.leftmost, env.rightmost, 0.0);
         } else {
             env.best_possible_equity = f32::NEG_INFINITY;
-            shadow_play_left(
-                env,
-                &mut Accumulator {
-                    main_score: 0,
-                    perpendicular_cumulative_score: 0,
-                    word_multiplier: 1,
-                },
-                env.anchor,
-                single_tile_plays,
-            );
+            if env.params.kwg_representative.is_some() {
+                // classic only (do not pass a kwg_representative for jumbled).
+                // TODO: check that this works.
+                shadow_play_left(
+                    env,
+                    &mut Accumulator {
+                        main_score: 0,
+                        perpendicular_cumulative_score: 0,
+                        word_multiplier: 1,
+                    },
+                    env.anchor,
+                    single_tile_plays,
+                );
+                let baseline = env.best_possible_equity;
+                env.best_possible_equity = f32::NEG_INFINITY;
+                shadow_play_left(
+                    env,
+                    &mut Accumulator {
+                        main_score: 0,
+                        perpendicular_cumulative_score: 0,
+                        word_multiplier: 1,
+                    },
+                    env.anchor,
+                    single_tile_plays,
+                );
+                if env.best_possible_equity > baseline {
+                    panic!(
+                        "semishadow {} > shadow {}",
+                        env.best_possible_equity, baseline
+                    );
+                }
+            } else {
+                shadow_play_left(
+                    env,
+                    &mut Accumulator {
+                        main_score: 0,
+                        perpendicular_cumulative_score: 0,
+                        word_multiplier: 1,
+                    },
+                    env.anchor,
+                    single_tile_plays,
+                );
+            }
             if env.best_possible_equity.is_finite() {
                 possible_strip_placement_callback(
                     env.anchor,
@@ -2520,6 +2563,10 @@ fn kurnia_gen_place_moves_iter<
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
     let max_rack_size = game_config.rack_size() as u8;
+    let kwg_representative = match game_config.game_rules() {
+        game_config::GameRules::Classic => board_snapshot.kwg_representative,
+        game_config::GameRules::Jumbled => None,
+    };
 
     // striped by row
     for col in 0..dim.cols {
@@ -2573,6 +2620,7 @@ fn kurnia_gen_place_moves_iter<
         let strip_range_end = strip_range_start + dim.cols as usize;
         gen_place_placements(
             &mut GenPlacePlacementsParams {
+                kwg_representative,
                 board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
@@ -2618,6 +2666,7 @@ fn kurnia_gen_place_moves_iter<
         let strip_range_end = strip_range_start + dim.rows as usize;
         gen_place_placements(
             &mut GenPlacePlacementsParams {
+                kwg_representative,
                 board_strip: &working_buffer.transposed_board_tiles
                     [strip_range_start..strip_range_end],
                 cross_set_strip: &working_buffer.cross_set_for_down_plays
