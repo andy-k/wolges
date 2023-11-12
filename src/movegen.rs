@@ -867,12 +867,12 @@ struct GenPlacePlacementsParams<'a> {
 }
 
 fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
-    want_raw: bool,
     params: &'a mut GenPlacePlacementsParams<'a>,
     remaining_tile_multipliers_strip: &'a [i8],
     perpendicular_word_multipliers_strip: &'a [i8],
     num_tiles_on_rack: u8,
     single_tile_plays: bool,
+    want_raw: bool,
     mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
 ) {
     let strider_len = params.board_strip.len();
@@ -1121,9 +1121,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
 
     #[inline(always)]
     fn gen_moves_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
-        want_raw: bool,
         env: &mut Env<'_>,
         single_tile_plays: bool,
+        want_raw: bool,
         mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
     ) {
         if want_raw {
@@ -1163,9 +1163,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             env.leftmost = 0;
             env.rightmost = rightmost;
             gen_moves_from(
-                want_raw,
                 &mut env,
                 single_tile_plays,
+                want_raw,
                 &mut possible_strip_placement_callback,
             );
         }
@@ -1184,9 +1184,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                         env.leftmost = leftmost;
                         env.rightmost = rightmost;
                         gen_moves_from(
-                            want_raw,
                             &mut env,
                             single_tile_plays,
+                            want_raw,
                             &mut possible_strip_placement_callback,
                         );
                     }
@@ -2571,7 +2571,6 @@ fn kurnia_gen_place_moves_iter<
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         gen_place_placements(
-            want_raw,
             &mut GenPlacePlacementsParams {
                 board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
@@ -2600,6 +2599,7 @@ fn kurnia_gen_place_moves_iter<
                 [strip_range_start..strip_range_end],
             working_buffer.num_tiles_on_rack,
             true,
+            want_raw,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: f32| {
                 found_placements.push(PossiblePlacement {
                     down: false,
@@ -2616,7 +2616,6 @@ fn kurnia_gen_place_moves_iter<
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
         gen_place_placements(
-            want_raw,
             &mut GenPlacePlacementsParams {
                 board_strip: &working_buffer.transposed_board_tiles
                     [strip_range_start..strip_range_end],
@@ -2645,6 +2644,7 @@ fn kurnia_gen_place_moves_iter<
                 [strip_range_start..strip_range_end],
             working_buffer.num_tiles_on_rack,
             false,
+            want_raw,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: f32| {
                 found_placements.push(PossiblePlacement {
                     down: true,
