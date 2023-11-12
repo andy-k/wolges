@@ -955,9 +955,12 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         best_possible_equity: f32::NEG_INFINITY,
     };
 
+    // during shadow-playing, main_score and perpendicular_cumulative_score
+    // assume all tiles placed from rack this turn are worth zero.
+    // their scores are added separately.
     struct Accumulator {
-        main_played_through_score: i32,
-        perpendicular_additional_score: i32,
+        main_score: i32,                     // main_played_through_score
+        perpendicular_cumulative_score: i32, // perpendicular_additional_score
         word_multiplier: i32,
     }
 
@@ -981,8 +984,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 }
             }
         }
-        let equity = (acc.main_played_through_score * acc.word_multiplier
-            + acc.perpendicular_additional_score
+        let equity = (acc.main_score * acc.word_multiplier
+            + acc.perpendicular_cumulative_score
             + best_scoring) as f32
             + env.params.best_leave_values[env.num_played as usize];
         if equity > env.best_possible_equity {
@@ -997,8 +1000,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             if b == 0 {
                 break;
             }
-            acc.main_played_through_score +=
-                env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx += 1;
         }
         // tiles have been placed from env.idx_left to idx - 1.
@@ -1023,8 +1025,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 shadow_play_right(
                     env,
                     &mut Accumulator {
-                        main_played_through_score: acc.main_played_through_score,
-                        perpendicular_additional_score: acc.perpendicular_additional_score,
+                        main_score: acc.main_score,
+                        perpendicular_cumulative_score: acc.perpendicular_cumulative_score,
                         word_multiplier: acc.word_multiplier
                             * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     },
@@ -1039,8 +1041,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 shadow_play_right(
                     env,
                     &mut Accumulator {
-                        main_played_through_score: acc.main_played_through_score,
-                        perpendicular_additional_score: acc.perpendicular_additional_score
+                        main_score: acc.main_score,
+                        perpendicular_cumulative_score: acc.perpendicular_cumulative_score
                             + env.params.perpendicular_scores_strip[idx as usize],
                         word_multiplier: acc.word_multiplier
                             * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
@@ -1060,8 +1062,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             if b == 0 {
                 break;
             }
-            acc.main_played_through_score +=
-                env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx -= 1;
         }
         // tiles have been placed from env.anchor to idx + 1.
@@ -1089,8 +1090,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 shadow_play_left(
                     env,
                     &mut Accumulator {
-                        main_played_through_score: acc.main_played_through_score,
-                        perpendicular_additional_score: acc.perpendicular_additional_score,
+                        main_score: acc.main_score,
+                        perpendicular_cumulative_score: acc.perpendicular_cumulative_score,
                         word_multiplier: acc.word_multiplier
                             * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
                     },
@@ -1105,8 +1106,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 shadow_play_left(
                     env,
                     &mut Accumulator {
-                        main_played_through_score: acc.main_played_through_score,
-                        perpendicular_additional_score: acc.perpendicular_additional_score
+                        main_score: acc.main_score,
+                        perpendicular_cumulative_score: acc.perpendicular_cumulative_score
                             + env.params.perpendicular_scores_strip[idx as usize],
                         word_multiplier: acc.word_multiplier
                             * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
@@ -1133,8 +1134,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             shadow_play_left(
                 env,
                 &mut Accumulator {
-                    main_played_through_score: 0,
-                    perpendicular_additional_score: 0,
+                    main_score: 0,
+                    perpendicular_cumulative_score: 0,
                     word_multiplier: 1,
                 },
                 env.anchor,
