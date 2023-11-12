@@ -1044,7 +1044,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     true,
                 );
                 env.num_played -= 1;
-            } else if this_cross_bits & env.params.rack_bits != 0 {
+            } else if this_cross_bits & env.params.rack_bits != 0 && this_cross_bits != 1 {
                 // something hooks here
                 // rack_bits remains unchanged because assignment is tentative.
                 env.num_played += 1;
@@ -1109,7 +1109,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     true,
                 );
                 env.num_played -= 1;
-            } else if this_cross_bits & env.params.rack_bits != 0 {
+            } else if this_cross_bits & env.params.rack_bits != 0 && this_cross_bits != 1 {
                 // something hooks here
                 // rack_bits remains unchanged because assignment is tentative.
                 env.num_played += 1;
