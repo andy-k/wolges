@@ -448,6 +448,23 @@ The end result of this part is to annotate each possible placement with the
 best possible valuation. The valuation may be overestimated but may not be
 underestimated.
 
+SEMI-SHADOW-PLAYING TILES
+
+A known weakness of shadow-playing is that the bounds might be too loose.
+Shadow-playing would identify high-scoring placements that are not actually
+possible given the actual rack and play-throughs. For example, holding 7
+consonants after the first move would generate a high-scoring bingo placement
+reaching the triple word square, that then would have to be evaluated first.
+
+A theoretical way to address this for the classic variant is to build a
+"representative same-score tile" kwg, where one letter represents all letters
+with the same score (in English, all words are represented only with ADBFKJQ).
+Replacing shadow-playing with this would tighten the overestimated valuations.
+
+In practice, while this is implemented, it turns out that using this
+representative kwg is so much slower than just shadow-playing blindly without a
+kwg at all. Fortunately, the feature is mostly optional. It should not be used.
+
 PLAYING TILES
 
 Having shadow-played tiles to list out possible placements and their best
