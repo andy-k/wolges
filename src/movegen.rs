@@ -861,11 +861,15 @@ fn gen_cross_set<'a>(
 }
 
 struct GenPlacePlacementsParams<'a> {
-    kwg_representative: Option<&'a kwg::Kwg>,
+    kwg_representative: Option<&'a kwg::Kwg>, // for semi-shadow only
+    alphabet: &'a alphabet::Alphabet<'a>,     // for semi-shadow only
+    representative_rack_tally: &'a mut [u8],  // for semi-shadow only
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
+    remaining_tile_multipliers_strip: &'a [i8],
     face_value_scores_strip: &'a [i8],
+    perpendicular_word_multipliers_strip: &'a [i8],
     perpendicular_scores_strip: &'a [i32],
     rack_bits: u64,
     descending_scores: &'a [i8],
@@ -878,8 +882,6 @@ struct GenPlacePlacementsParams<'a> {
 
 fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
     params: &'a mut GenPlacePlacementsParams<'a>,
-    remaining_tile_multipliers_strip: &'a [i8],
-    perpendicular_word_multipliers_strip: &'a [i8],
     num_tiles_on_rack: u8,
     single_tile_plays: bool,
     want_raw: bool,
@@ -932,8 +934,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 &mut params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
             for j in 0..strider_len {
                 // perpendicular_word_multipliers_strip[j] is 0 if no perpendicular tile.
-                precomputed_square_multiplier_slice[j] = remaining_tile_multipliers_strip[j] as i32
-                    * (k + perpendicular_word_multipliers_strip[j] as i32);
+                precomputed_square_multiplier_slice[j] = params.remaining_tile_multipliers_strip[j]
+                    as i32
+                    * (k + params.perpendicular_word_multipliers_strip[j] as i32);
                 indexes_to_descending_square_multiplier_slice[j] = j as i8;
             }
             indexes_to_descending_square_multiplier_slice.sort_unstable_by(|&a, &b| {
@@ -944,7 +947,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     struct Env<'a> {
-        params: &'a GenPlacePlacementsParams<'a>,
+        params: &'a mut GenPlacePlacementsParams<'a>,
         strider_len: usize,
         anchor: i8,
         leftmost: i8,
@@ -1130,6 +1133,257 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         }
     }
 
+    fn classic_shadow_record(env: &mut Env<'_>, acc: &Accumulator) {
+        let equity = (acc.main_score * acc.word_multiplier + acc.perpendicular_cumulative_score)
+            as f32
+            + env.params.best_leave_values[env.num_played as usize];
+        if equity > env.best_possible_equity {
+            env.best_possible_equity = equity;
+        }
+    }
+
+    fn classic_shadow_play_right(
+        env: &mut Env<'_>,
+        acc: &mut Accumulator,
+        mut p: i32,
+        mut idx: i8,
+        mut is_unique: bool,
+    ) {
+        // assume caller has checked this.
+        let kwg_representative = unsafe { env.params.kwg_representative.unwrap_unchecked() };
+        // tail-recurse placing current sequence of tiles
+        while idx < env.rightmost {
+            let b = env.params.board_strip[idx as usize];
+            if b == 0 {
+                break;
+            }
+            p = kwg_representative.seek(
+                p,
+                env.params.alphabet.representative_same_score_tile(b & 0x7f),
+            );
+            if p <= 0 {
+                return;
+            }
+            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            idx += 1;
+        }
+        let node = kwg_representative[p];
+        if idx > env.anchor + 1
+            && (env.num_played + is_unique as i8) >= 2
+            && idx - env.idx_left >= 2
+            && node.accepts()
+        {
+            classic_shadow_record(env, acc);
+        }
+        if env.num_played as u8 >= env.params.num_max_played {
+            return;
+        }
+
+        if idx < env.rightmost {
+            p = node.arc_index();
+            if p <= 0 {
+                return;
+            }
+            let mut this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            if this_cross_bits == 1 {
+                // already handled '@'
+                return;
+            } else if this_cross_bits != 0 {
+                // turn off bit 0 so it cannot match later
+                this_cross_bits &= !1;
+            } else {
+                this_cross_bits = !1;
+                is_unique = true;
+            };
+            let new_word_multiplier = acc.word_multiplier
+                * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
+            let perpendicular_word_multiplier =
+                env.params.perpendicular_word_multipliers_strip[idx as usize];
+            let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+            loop {
+                let node = kwg_representative[p];
+                let tile = node.tile();
+                if this_cross_bits & env.params.alphabet.same_score_tile_bits(tile) != 0 {
+                    if env.params.representative_rack_tally[tile as usize] > 0
+                        && this_cross_bits & env.params.rack_bits != 0
+                    {
+                        env.params.representative_rack_tally[tile as usize] -= 1;
+                        env.num_played += 1;
+                        let tile_value =
+                            env.params.alphabet.score(tile) as i32 * tile_multiplier as i32;
+                        classic_shadow_play_right(
+                            env,
+                            &mut Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                            },
+                            p,
+                            idx + 1,
+                            is_unique,
+                        );
+                        env.num_played -= 1;
+                        env.params.representative_rack_tally[tile as usize] += 1;
+                    }
+                    if env.params.representative_rack_tally[0] > 0 {
+                        env.params.representative_rack_tally[0] -= 1;
+                        env.num_played += 1;
+                        // intentional to not hardcode blank tile value as zero
+                        let tile_value =
+                            env.params.alphabet.score(0) as i32 * tile_multiplier as i32;
+                        classic_shadow_play_right(
+                            env,
+                            &mut Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                            },
+                            p,
+                            idx + 1,
+                            is_unique,
+                        );
+                        env.num_played -= 1;
+                        env.params.representative_rack_tally[0] += 1;
+                    }
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
+            }
+        }
+    }
+
+    fn classic_shadow_play_left(
+        env: &mut Env<'_>,
+        acc: &mut Accumulator,
+        mut p: i32,
+        mut idx: i8,
+        mut is_unique: bool,
+    ) {
+        // assume caller has checked this.
+        let kwg_representative = unsafe { env.params.kwg_representative.unwrap_unchecked() };
+        // tail-recurse placing current sequence of tiles
+        while idx >= env.leftmost {
+            let b = env.params.board_strip[idx as usize];
+            if b == 0 {
+                break;
+            }
+            p = kwg_representative.seek(
+                p,
+                env.params.alphabet.representative_same_score_tile(b & 0x7f),
+            );
+            if p <= 0 {
+                return;
+            }
+            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            idx -= 1;
+        }
+        let mut node = kwg_representative[p];
+        if (env.num_played + is_unique as i8) >= 2 && env.anchor - idx >= 2 && node.accepts() {
+            classic_shadow_record(env, acc);
+        }
+        if env.num_played as u8 >= env.params.num_max_played {
+            return;
+        }
+
+        p = node.arc_index();
+        if p <= 0 {
+            return;
+        }
+
+        node = kwg_representative[p];
+        if node.tile() == 0 {
+            // assume idx < env.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
+            env.idx_left = idx + 1;
+            classic_shadow_play_right(env, acc, p, env.anchor + 1, is_unique);
+            if node.is_end() {
+                return;
+            }
+            p += 1;
+        }
+
+        if idx >= env.leftmost {
+            let mut this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            if this_cross_bits == 1 {
+                // already handled '@'
+                return;
+            } else if this_cross_bits != 0 {
+                // turn off bit 0 so it cannot match later
+                this_cross_bits &= !1;
+            } else {
+                this_cross_bits = !1;
+                is_unique = true;
+            }
+            let new_word_multiplier = acc.word_multiplier
+                * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
+            let perpendicular_word_multiplier =
+                env.params.perpendicular_word_multipliers_strip[idx as usize];
+            let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+            loop {
+                let node = kwg_representative[p];
+                let tile = node.tile();
+                if this_cross_bits & env.params.alphabet.same_score_tile_bits(tile) != 0 {
+                    if env.params.representative_rack_tally[tile as usize] > 0
+                        && this_cross_bits & env.params.rack_bits != 0
+                    {
+                        env.params.representative_rack_tally[tile as usize] -= 1;
+                        env.num_played += 1;
+                        let tile_value =
+                            env.params.alphabet.score(tile) as i32 * tile_multiplier as i32;
+                        classic_shadow_play_left(
+                            env,
+                            &mut Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                            },
+                            p,
+                            idx - 1,
+                            is_unique,
+                        );
+                        env.num_played -= 1;
+                        env.params.representative_rack_tally[tile as usize] += 1;
+                    }
+                    if env.params.representative_rack_tally[0] > 0 {
+                        env.params.representative_rack_tally[0] -= 1;
+                        env.num_played += 1;
+                        // intentional to not hardcode blank tile value as zero
+                        let tile_value =
+                            env.params.alphabet.score(0) as i32 * tile_multiplier as i32;
+                        classic_shadow_play_left(
+                            env,
+                            &mut Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                            },
+                            p,
+                            idx - 1,
+                            is_unique,
+                        );
+                        env.num_played -= 1;
+                        env.params.representative_rack_tally[0] += 1;
+                    }
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
+            }
+        }
+    }
+
     #[inline(always)]
     fn gen_moves_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
         env: &mut Env<'_>,
@@ -1143,35 +1397,17 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             env.best_possible_equity = f32::NEG_INFINITY;
             if env.params.kwg_representative.is_some() {
                 // classic only (do not pass a kwg_representative for jumbled).
-                // TODO: check that this works.
-                shadow_play_left(
+                classic_shadow_play_left(
                     env,
                     &mut Accumulator {
                         main_score: 0,
                         perpendicular_cumulative_score: 0,
                         word_multiplier: 1,
                     },
+                    1,
                     env.anchor,
                     single_tile_plays,
                 );
-                let baseline = env.best_possible_equity;
-                env.best_possible_equity = f32::NEG_INFINITY;
-                shadow_play_left(
-                    env,
-                    &mut Accumulator {
-                        main_score: 0,
-                        perpendicular_cumulative_score: 0,
-                        word_multiplier: 1,
-                    },
-                    env.anchor,
-                    single_tile_plays,
-                );
-                if env.best_possible_equity > baseline {
-                    panic!(
-                        "semishadow {} > shadow {}",
-                        env.best_possible_equity, baseline
-                    );
-                }
             } else {
                 shadow_play_left(
                     env,
@@ -1198,7 +1434,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     let mut leftmost = strider_len as i8; // processed up to here
     loop {
         let mut rightmost = leftmost;
-        while leftmost > 0 && params.board_strip[leftmost as usize - 1] == 0 {
+        while leftmost > 0 && env.params.board_strip[leftmost as usize - 1] == 0 {
             leftmost -= 1;
         }
         if leftmost > 0 {
@@ -1217,7 +1453,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
             let leftmost = leftmost + (leftmost > 0) as i8; // shadowing
             for anchor in (leftmost..rightmost).rev() {
-                let cross_set_bits = params.cross_set_strip[anchor as usize].bits;
+                let cross_set_bits = env.params.cross_set_strip[anchor as usize].bits;
                 if cross_set_bits != 0 {
                     if rightmost - leftmost < 2 {
                         // not enough room for 2-tile words
@@ -1244,7 +1480,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 // not enough room for 2-tile words
                 return;
             }
-            if params.board_strip[leftmost as usize] == 0 {
+            if env.params.board_strip[leftmost as usize] == 0 {
                 break;
             }
         }
@@ -2621,13 +2857,21 @@ fn kurnia_gen_place_moves_iter<
         gen_place_placements(
             &mut GenPlacePlacementsParams {
                 kwg_representative,
+                alphabet: board_snapshot.game_config.alphabet(),
+                representative_rack_tally: &mut working_buffer.representative_rack_tally,
                 board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_across_plays
                     [strip_range_start..strip_range_end],
+                remaining_tile_multipliers_strip: &working_buffer
+                    .remaining_tile_multipliers_for_across_plays
+                    [strip_range_start..strip_range_end],
                 face_value_scores_strip: &working_buffer.face_value_scores_for_across_plays
+                    [strip_range_start..strip_range_end],
+                perpendicular_word_multipliers_strip: &working_buffer
+                    .perpendicular_word_multipliers_for_across_plays
                     [strip_range_start..strip_range_end],
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_across_plays
                     [strip_range_start..strip_range_end],
@@ -2642,10 +2886,6 @@ fn kurnia_gen_place_moves_iter<
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played: max_rack_size,
             },
-            &working_buffer.remaining_tile_multipliers_for_across_plays
-                [strip_range_start..strip_range_end],
-            &working_buffer.perpendicular_word_multipliers_for_across_plays
-                [strip_range_start..strip_range_end],
             working_buffer.num_tiles_on_rack,
             true,
             want_raw,
@@ -2667,13 +2907,20 @@ fn kurnia_gen_place_moves_iter<
         gen_place_placements(
             &mut GenPlacePlacementsParams {
                 kwg_representative,
+                alphabet: board_snapshot.game_config.alphabet(),
+                representative_rack_tally: &mut working_buffer.representative_rack_tally,
                 board_strip: &working_buffer.transposed_board_tiles
                     [strip_range_start..strip_range_end],
                 cross_set_strip: &working_buffer.cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_down_plays[strip_range_start..strip_range_end],
+                remaining_tile_multipliers_strip: &working_buffer
+                    .remaining_tile_multipliers_for_down_plays[strip_range_start..strip_range_end],
                 face_value_scores_strip: &working_buffer.face_value_scores_for_down_plays
+                    [strip_range_start..strip_range_end],
+                perpendicular_word_multipliers_strip: &working_buffer
+                    .perpendicular_word_multipliers_for_down_plays
                     [strip_range_start..strip_range_end],
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_down_plays
                     [strip_range_start..strip_range_end],
@@ -2688,10 +2935,6 @@ fn kurnia_gen_place_moves_iter<
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played: max_rack_size,
             },
-            &working_buffer.remaining_tile_multipliers_for_down_plays
-                [strip_range_start..strip_range_end],
-            &working_buffer.perpendicular_word_multipliers_for_down_plays
-                [strip_range_start..strip_range_end],
             working_buffer.num_tiles_on_rack,
             false,
             want_raw,

@@ -134,11 +134,10 @@ impl<'a> Alphabet<'a> {
     pub fn representative_same_score_tile(&self, idx: u8) -> u8 {
         match self {
             Alphabet::Static(x) => {
-                let c = idx & 0x7f;
-                if c >= self.len() {
+                if idx >= self.len() {
                     idx
                 } else {
-                    x.same_score_tile[c as usize] | (idx & 0x80)
+                    x.same_score_tile[idx as usize]
                 }
             }
         }

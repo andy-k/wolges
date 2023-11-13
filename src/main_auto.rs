@@ -15,6 +15,15 @@ fn main() -> error::Returns<()> {
     } else {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?)
     };
+    let kwg_representative = if jumbled {
+        kwg::Kwg::from_bytes_alloc(kwg::EMPTY_KWG_BYTES)
+    } else {
+        // cargo run --release --bin buildlex -- english-kwg-score lexsrc/CSW21.txt lexbin/CSW21-s.kwg
+        // (filename convention tbd)
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21-s.kwg")?)
+    };
+    let _ = kwg_representative;
+    //let kwg_representative = None;
     /*
     let _klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv2")?);
     */
@@ -87,6 +96,8 @@ fn main() -> error::Returns<()> {
     let mut game_state = game_state::GameState::new(game_config);
     let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
     let mut timers = game_timers::GameTimers::new(game_config.num_players());
+    let mut td1 = std::time::Duration::ZERO;
+    let mut td2 = std::time::Duration::ZERO;
     loop {
         game_state.reset_and_draw_tiles(game_config, &mut rng);
         let mut final_scores = vec![0; game_state.players.len()];
@@ -140,10 +151,10 @@ fn main() -> error::Returns<()> {
                 game_config,
                 kwg: &kwg,
                 klv: &klv,
-                kwg_representative: None,
+                kwg_representative: Some(&kwg_representative),
             };
 
-            if true {
+            if false {
                 move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot,
                     rack: &game_state.current_player().rack,
@@ -159,8 +170,8 @@ fn main() -> error::Returns<()> {
 
             // stress-test scoring algorithm
             if match &board_snapshot.game_config.game_rules() {
-                game_config::GameRules::Classic => true,
-                game_config::GameRules::Jumbled => true,
+                game_config::GameRules::Classic => false,
+                game_config::GameRules::Jumbled => false,
             } {
                 let leave_scale = if let move_filter::GenMoves::Tilt { tilt, .. } = filtered_movegen
                 {
@@ -242,6 +253,7 @@ fn main() -> error::Returns<()> {
                 assert_eq!(issues, 0);
             }
 
+            let t1 = std::time::Instant::now();
             move_picker.pick_a_move(
                 filtered_movegen,
                 &mut move_generator,
@@ -249,9 +261,43 @@ fn main() -> error::Returns<()> {
                 &game_state,
                 &game_state.current_player().rack,
             );
+            let d1 = t1.elapsed();
+            let first_play;
+            let first_eq;
+            {
+                let plays = &mut move_generator.plays;
+                let play = &plays[0].play; // assume at least there's always Pass
+                println!("Playing: {}", play.fmt(board_snapshot));
+                first_play = play.clone();
+                first_eq = plays[0].equity;
+            }
+
+            let bs = &movegen::BoardSnapshot {
+                kwg_representative: None,
+                ..*board_snapshot
+            };
+            let t2 = std::time::Instant::now();
+            move_picker.pick_a_move(
+                filtered_movegen,
+                &mut move_generator,
+                bs,
+                &game_state,
+                &game_state.current_player().rack,
+            );
+            let d2 = t2.elapsed();
             let plays = &mut move_generator.plays;
             let play = &plays[0].play; // assume at least there's always Pass
-            println!("Playing: {}", play.fmt(board_snapshot));
+            println!("Playing: {}", play.fmt(bs));
+
+            td1 += d1;
+            td2 += d2;
+            if false {
+                println!("repr {:?} {:?} orig {:?}", d1, d1.cmp(&d2), d2);
+            }
+            println!("repr {:?} {:?} orig {:?}", td1, td1.cmp(&td2), td2);
+            if first_play != *play && first_eq != plays[0].equity {
+                panic!();
+            }
 
             game_state.play(game_config, &mut rng, play)?;
 
