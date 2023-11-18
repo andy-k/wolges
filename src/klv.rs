@@ -343,7 +343,7 @@ impl MultiLeaves {
                         env.exchange_buffer.push(tile);
                         generate_exchanges(
                             env,
-                            tile,
+                            unique_tile_idx as u8,
                             leave_idx - env.multi_leaves.digits[tile_usize].place_value,
                         );
                         env.exchange_buffer.pop();
