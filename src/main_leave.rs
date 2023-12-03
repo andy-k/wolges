@@ -111,8 +111,8 @@ fn main() -> error::Returns<()> {
     generate leaves (no smoothing)
   english-generate summary.csv leaves.csv
     generate leaves (with smoothing)
-  (english can also be catalan, french, german, norwegian, polish, spanish,
-    yupik, super-english, super-catalan)
+  (english can also be catalan, french, german, norwegian, polish, slovene,
+    spanish, yupik, super-english, super-catalan)
   jumbled-english-autoplay NWL18.kad leave0.klv leave1.klv 1000
     (all also take jumbled- prefix, including jumbled-super-;
     note that jumbled autoplay requires .kad instead of .kwg)"
@@ -175,6 +175,12 @@ fn main() -> error::Returns<()> {
                 &args,
                 "jumbled-polish",
                 game_config::make_jumbled_polish_game_config,
+            )?
+            || do_lang(&args, "slovene", game_config::make_slovene_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-slovene",
+                game_config::make_jumbled_slovene_game_config,
             )?
             || do_lang(&args, "spanish", game_config::make_spanish_game_config)?
             || do_lang(

@@ -550,6 +550,53 @@ pub fn make_polish_alphabet<'a>() -> Alphabet<'a> {
     })
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Slovenian
+// the additional letters are unofficial and experimental
+// (so data files may not be stable).
+pub fn make_slovene_alphabet<'a>() -> Alphabet<'a> {
+    Alphabet::new_static(StaticAlphabet {
+        tiles: &[
+            tile!("?", "?", 2, 0, 0),
+            tile!("A", "a", 10, 1, 1),
+            tile!("Å", "å", 0, 0, 1), // ?
+            tile!("Ä", "ä", 0, 0, 1), // ?
+            tile!("B", "b", 2, 4, 0),
+            tile!("C", "c", 1, 8, 0),
+            tile!("Ç", "ç", 0, 0, 0), // ?
+            tile!("Č", "č", 1, 5, 0),
+            tile!("D", "d", 4, 2, 0),
+            tile!("E", "e", 11, 1, 1),
+            tile!("F", "f", 1, 10, 0),
+            tile!("G", "g", 2, 4, 0),
+            tile!("H", "h", 1, 5, 0),
+            tile!("I", "i", 9, 1, 1),
+            tile!("J", "j", 4, 1, 0),
+            tile!("K", "k", 3, 3, 0),
+            tile!("L", "l", 4, 1, 0),
+            tile!("M", "m", 2, 3, 0),
+            tile!("N", "n", 7, 1, 0),
+            tile!("Ñ", "ñ", 0, 0, 0), // ?
+            tile!("O", "o", 8, 1, 1),
+            tile!("Ö", "ö", 0, 0, 1), // ?
+            tile!("P", "p", 2, 3, 0),
+            tile!("Q", "q", 0, 0, 0), // ?
+            tile!("R", "r", 6, 1, 0),
+            tile!("S", "s", 6, 1, 0),
+            tile!("Š", "š", 1, 6, 0),
+            tile!("T", "t", 4, 1, 0),
+            tile!("U", "u", 2, 3, 1),
+            tile!("Ü", "ü", 0, 0, 1), // ?
+            tile!("V", "v", 4, 2, 0),
+            tile!("W", "w", 0, 0, 0), // ?
+            tile!("X", "x", 0, 0, 0), // ?
+            tile!("Y", "y", 0, 0, 0), // ?
+            tile!("Z", "z", 2, 4, 0),
+            tile!("Ž", "ž", 1, 10, 0),
+        ],
+        ..Default::default()
+    })
+}
+
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Spanish
 // based on Spanish-language sets sold outside North America
 // (CH/LL/RR are ambiguous and should not be supported)

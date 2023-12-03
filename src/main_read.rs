@@ -615,8 +615,8 @@ fn main() -> error::Returns<()> {
     read .ort (format subject to change)
   english-make-q2-ort something.csv something.ort num_buckets
     generate .ort with the given num_buckets (ideally prime eg 5297687)
-  (english can also be catalan, french, german, norwegian, polish, spanish,
-    yupik)
+  (english can also be catalan, french, german, norwegian, polish, slovene,
+    spanish, yupik)
   quackle-make-superleaves english.klv superleaves
     read klv/klv2 file, save quackle superleaves (english/french)
   quackle-superleaves superleaves something.csv
@@ -639,6 +639,7 @@ fn main() -> error::Returns<()> {
             || do_lang(&args, "german", alphabet::make_german_alphabet)?
             || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet)?
             || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
+            || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
             || do_lang(&args, "yupik", alphabet::make_yupik_alphabet)?
         {

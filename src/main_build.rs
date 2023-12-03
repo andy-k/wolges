@@ -274,8 +274,8 @@ fn main() -> error::Returns<()> {
   english-kwg-score-alpha CSW21.txt CSW21.kad
   english-kwg-score-dawg CSW21.txt outfile.dwg
     same as above but with representative same-score tiles
-  (english can also be catalan, french, german, norwegian, polish, spanish,
-    yupik)"
+  (english can also be catalan, french, german, norwegian, polish, slovene,
+    spanish, yupik)"
         );
         Ok(())
     } else if args[1] == "auto" {
@@ -289,6 +289,7 @@ fn main() -> error::Returns<()> {
             || do_lang(&args, "german", alphabet::make_german_alphabet)?
             || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet)?
             || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
+            || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
             || do_lang(&args, "yupik", alphabet::make_yupik_alphabet)?
         {

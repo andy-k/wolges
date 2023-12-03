@@ -421,6 +421,38 @@ pub fn make_jumbled_polish_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
+pub fn make_slovene_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_slovene_alphabet(),
+        board_layout: board_layout::make_standard_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
+        exchange_tile_limit: 7,
+    })
+}
+
+#[allow(dead_code)]
+pub fn make_jumbled_slovene_game_config<'a>() -> GameConfig<'a> {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Jumbled,
+        alphabet: alphabet::make_slovene_alphabet(),
+        board_layout: board_layout::make_standard_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
+        exchange_tile_limit: 7,
+    })
+}
+
+#[allow(dead_code)]
 pub fn make_spanish_game_config<'a>() -> GameConfig<'a> {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
