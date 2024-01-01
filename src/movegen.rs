@@ -385,7 +385,8 @@ impl WorkingBuffer {
         self.descending_scores.clear();
         self.descending_scores
             .reserve(self.num_tiles_on_rack as usize);
-        for (tile, &count) in (0u8..).zip(self.rack_tally.iter()) {
+        for &tile in alphabet.tiles_by_descending_scores() {
+            let count = self.rack_tally[tile as usize];
             if count != 0 {
                 let score = alphabet.score(tile);
                 for _ in 0..count {
@@ -393,8 +394,6 @@ impl WorkingBuffer {
                 }
             }
         }
-        self.descending_scores.sort_unstable();
-        self.descending_scores.reverse();
 
         if self.num_tiles_in_bag <= 0 {
             // the multi_leaves is correct but doing this directly is faster.

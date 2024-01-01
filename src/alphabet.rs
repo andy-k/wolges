@@ -17,6 +17,7 @@ pub struct StaticAlphabet<'a> {
     num_tiles: u16,
     same_score_tile: Vec<u8>,
     same_score_tile_bits: Vec<u64>,
+    tiles_by_descending_scores: Vec<u8>,
 }
 
 pub enum Alphabet<'a> {
@@ -49,6 +50,13 @@ impl<'a> Alphabet<'a> {
                     .push(same_score_tile_bits[same_score_tile[i as usize] as usize]);
             }
         }
+        let mut tiles_by_descending_scores = Vec::from_iter(0..num_letters);
+        tiles_by_descending_scores.sort_unstable_by(|&a, &b| {
+            x.tiles[b as usize]
+                .score
+                .cmp(&x.tiles[a as usize].score)
+                .then(a.cmp(&b))
+        });
         Self::Static(StaticAlphabet {
             widest_label_len: x.tiles.iter().fold(0, |acc, tile| {
                 acc.max(tile.label.chars().count())
@@ -57,6 +65,7 @@ impl<'a> Alphabet<'a> {
             num_tiles: x.tiles.iter().map(|tile| tile.freq as u16).sum(),
             same_score_tile,
             same_score_tile_bits,
+            tiles_by_descending_scores,
             ..x
         })
     }
@@ -153,6 +162,13 @@ impl<'a> Alphabet<'a> {
                     x.same_score_tile_bits[idx as usize]
                 }
             }
+        }
+    }
+
+    #[inline(always)]
+    pub fn tiles_by_descending_scores(&self) -> &[u8] {
+        match self {
+            Alphabet::Static(x) => &x.tiles_by_descending_scores[..],
         }
     }
 
