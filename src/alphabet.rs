@@ -15,9 +15,9 @@ pub struct StaticAlphabet<'a> {
     tiles: &'a [Tile<'a>],
     widest_label_len: usize, // in codepoints for now (graphemes is too complex)
     num_tiles: u16,
-    same_score_tile: Vec<u8>,
-    same_score_tile_bits: Vec<u64>,
-    tiles_by_descending_scores: Vec<u8>,
+    same_score_tile: Box<[u8]>,
+    same_score_tile_bits: Box<[u64]>,
+    tiles_by_descending_scores: Box<[u8]>,
 }
 
 pub enum Alphabet<'a> {
@@ -27,7 +27,7 @@ pub enum Alphabet<'a> {
 impl<'a> Alphabet<'a> {
     pub fn new_static(x: StaticAlphabet<'a>) -> Self {
         let num_letters = x.tiles.len() as u8;
-        let mut same_score_tile = Vec::from_iter(0..num_letters);
+        let mut same_score_tile = Box::from_iter(0..num_letters);
         let mut same_score_tile_bits = Vec::with_capacity(num_letters as usize);
         if num_letters != 0 {
             same_score_tile_bits.push(1);
@@ -50,7 +50,7 @@ impl<'a> Alphabet<'a> {
                     .push(same_score_tile_bits[same_score_tile[i as usize] as usize]);
             }
         }
-        let mut tiles_by_descending_scores = Vec::from_iter(0..num_letters);
+        let mut tiles_by_descending_scores = Box::from_iter(0..num_letters);
         tiles_by_descending_scores.sort_unstable_by(|&a, &b| {
             x.tiles[b as usize]
                 .score
@@ -64,7 +64,7 @@ impl<'a> Alphabet<'a> {
             }),
             num_tiles: x.tiles.iter().map(|tile| tile.freq as u16).sum(),
             same_score_tile,
-            same_score_tile_bits,
+            same_score_tile_bits: same_score_tile_bits.into_boxed_slice(),
             tiles_by_descending_scores,
             ..x
         })
