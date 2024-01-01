@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2023 Andy Kurnia.
+// Copyright (C) 2020-2024 Andy Kurnia.
 
 use super::{game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats};
 

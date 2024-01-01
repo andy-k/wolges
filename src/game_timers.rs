@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2023 Andy Kurnia.
+// Copyright (C) 2020-2024 Andy Kurnia.
 
 pub struct GameTimers {
     instant: std::time::Instant,
