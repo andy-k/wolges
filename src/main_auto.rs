@@ -143,7 +143,7 @@ fn main() -> error::Returns<()> {
                 kwg_representative: None,
             };
 
-            if true {
+            if false {
                 move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot,
                     rack: &game_state.current_player().rack,
@@ -159,8 +159,8 @@ fn main() -> error::Returns<()> {
 
             // stress-test scoring algorithm
             if match &board_snapshot.game_config.game_rules() {
-                game_config::GameRules::Classic => true,
-                game_config::GameRules::Jumbled => true,
+                game_config::GameRules::Classic => false,
+                game_config::GameRules::Jumbled => false,
             } {
                 let leave_scale = if let move_filter::GenMoves::Tilt { tilt, .. } = filtered_movegen
                 {
