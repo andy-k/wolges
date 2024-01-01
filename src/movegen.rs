@@ -2669,9 +2669,15 @@ fn kurnia_gen_place_moves_iter<
                         let this_best = score as f32 + leave_value;
                         debug_assert!(
                             this_best <= placement.best_possible_equity,
-                            "found {} when expecting up to {}",
+                            "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",
                             this_best,
-                            placement.best_possible_equity
+                            placement.best_possible_equity,
+                            down,
+                            lane,
+                            idx,
+                            word,
+                            score,
+                            leave_value,
                         );
                         found_place_move(down, lane, idx, word, score, leave_value)
                     },
