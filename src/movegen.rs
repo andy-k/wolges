@@ -882,16 +882,11 @@ struct GenPlacePlacementsParams<'a> {
 
 fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
     params: &'a mut GenPlacePlacementsParams<'a>,
-    num_tiles_on_rack: u8,
     single_tile_plays: bool,
     want_raw: bool,
     mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
 ) {
     let strider_len = params.board_strip.len();
-
-    if num_tiles_on_rack < params.num_max_played {
-        params.num_max_played = num_tiles_on_rack;
-    }
 
     if !want_raw {
         params
@@ -2799,6 +2794,7 @@ fn kurnia_gen_place_moves_iter<
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
     let max_rack_size = game_config.rack_size() as u8;
+    let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
     let kwg_representative = match game_config.game_rules() {
         game_config::GameRules::Classic => board_snapshot.kwg_representative,
         game_config::GameRules::Jumbled => None,
@@ -2884,9 +2880,8 @@ fn kurnia_gen_place_moves_iter<
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
-                num_max_played: max_rack_size,
+                num_max_played,
             },
-            working_buffer.num_tiles_on_rack,
             true,
             want_raw,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: f32| {
@@ -2933,9 +2928,8 @@ fn kurnia_gen_place_moves_iter<
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
-                num_max_played: max_rack_size,
+                num_max_played,
             },
-            working_buffer.num_tiles_on_rack,
             false,
             want_raw,
             |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: f32| {
