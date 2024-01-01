@@ -2661,7 +2661,21 @@ fn kurnia_gen_place_moves_iter<
                     multi_leaves,
                     &placement,
                     max_rack_size,
-                    &mut found_place_move,
+                    &mut |down: bool,
+                          lane: i8,
+                          idx: i8,
+                          word: &[u8],
+                          score: i32,
+                          leave_value: f32| {
+                        let this_best = score as f32 + leave_value;
+                        debug_assert!(
+                            this_best <= placement.best_possible_equity,
+                            "found {} when expecting up to {}",
+                            this_best,
+                            placement.best_possible_equity
+                        );
+                        found_place_move(down, lane, idx, word, score, leave_value)
+                    },
                 );
                 Some(())
             } else {
