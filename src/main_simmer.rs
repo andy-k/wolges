@@ -269,7 +269,6 @@ fn main() -> error::Returns<()> {
         game_config: simmer.game_config,
         kwg: simmer.kwg,
         klv: simmer.klv,
-        kwg_representative: None,
     };
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {

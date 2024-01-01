@@ -183,7 +183,6 @@ fn main() -> error::Returns<()> {
         game_config: &game_config,
         kwg: &kwg,
         klv: &klv,
-        kwg_representative: None,
     };
 
     if false {

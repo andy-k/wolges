@@ -424,7 +424,6 @@ impl<'a> EndgameSolver<'a> {
                 game_config: self.game_config,
                 kwg: self.kwg,
                 klv: &self.klv,
-                kwg_representative: None,
             };
             let mut state_eval = StateEval {
                 best_place_move: [StateSideEval::new(), StateSideEval::new()],
@@ -701,7 +700,6 @@ impl<'a> EndgameSolver<'a> {
                     game_config: self.game_config,
                     kwg: self.kwg,
                     klv: &self.klv,
-                    kwg_representative: None,
                 }),
                 width = self.game_config.rack_size() as usize - rack.len(),
             );
