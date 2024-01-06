@@ -133,6 +133,43 @@ fn build_leaves_f32<Readable: std::io::Read>(
     Ok(bin)
 }
 
+static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// support "-" to mean stdout.
+fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
+    Ok(if filename == "-" {
+        USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(std::fs::File::create(filename)?)
+    })
+}
+
+// when using "-" as output filename, print things to stderr.
+fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
+    if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
+        Box::new(std::io::stderr()) as Box<dyn std::io::Write>
+    } else {
+        Box::new(std::io::stdout())
+    }
+}
+
+// support "-" to mean stdin.
+fn make_reader(filename: &str) -> Result<Box<dyn std::io::Read>, std::io::Error> {
+    Ok(if filename == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(std::fs::File::open(filename)?)
+    })
+}
+
+// slower than std::fs::read_to_string because it cannot preallocate the correct size.
+fn read_to_string(reader: &mut Box<dyn std::io::Read>) -> Result<String, std::io::Error> {
+    let mut s = String::new();
+    reader.read_to_string(&mut s)?;
+    Ok(s)
+}
+
 fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
     args: &[String],
     language_name: &str,
@@ -141,108 +178,92 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
     match args[1].strip_prefix(language_name) {
         Some(args1_suffix) => match args1_suffix {
             "-klv" => {
-                std::fs::write(
-                    &args[3],
-                    build_leaves(std::fs::File::open(&args[2])?, make_alphabet())?,
-                )?;
+                make_writer(&args[3])?
+                    .write_all(&build_leaves(&mut make_reader(&args[2])?, make_alphabet())?)?;
                 Ok(true)
             }
             "-klv2" => {
-                std::fs::write(
-                    &args[3],
-                    build_leaves_f32(std::fs::File::open(&args[2])?, make_alphabet())?,
-                )?;
+                make_writer(&args[3])?.write_all(&build_leaves_f32(
+                    &mut make_reader(&args[2])?,
+                    make_alphabet(),
+                )?)?;
                 Ok(true)
             }
             "-kwg" => {
-                std::fs::write(
-                    &args[3],
-                    build::build(
-                        build::BuildFormat::Gaddawg,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &std::fs::read_to_string(&args[2])?,
-                        )?,
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::Gaddawg,
+                    &read_machine_words(
+                        &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
                     )?,
-                )?;
+                )?)?;
                 Ok(true)
             }
             "-kwg-dawg" => {
-                std::fs::write(
-                    &args[3],
-                    build::build(
-                        build::BuildFormat::DawgOnly,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &std::fs::read_to_string(&args[2])?,
-                        )?,
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::DawgOnly,
+                    &read_machine_words(
+                        &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
                     )?,
-                )?;
+                )?)?;
                 Ok(true)
             }
             "-kwg-alpha" => {
-                std::fs::write(
-                    &args[3],
-                    build::build(
-                        build::BuildFormat::DawgOnly,
-                        &build::make_alphagrams(&read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &std::fs::read_to_string(&args[2])?,
-                        )?),
-                    )?,
-                )?;
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::DawgOnly,
+                    &build::make_alphagrams(&read_machine_words(
+                        &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?),
+                )?)?;
                 Ok(true)
             }
             "-kwg-score" => {
-                std::fs::write(
-                    &args[3],
-                    build::build(
-                        build::BuildFormat::Gaddawg,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
-                            &std::fs::read_to_string(&args[2])?,
-                        )?,
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::Gaddawg,
+                    &read_machine_words(
+                        &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
                     )?,
-                )?;
+                )?)?;
                 Ok(true)
             }
             "-kwg-score-dawg" => {
-                std::fs::write(
-                    &args[3],
-                    build::build(
-                        build::BuildFormat::DawgOnly,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
-                            &std::fs::read_to_string(&args[2])?,
-                        )?,
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::DawgOnly,
+                    &read_machine_words(
+                        &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
                     )?,
-                )?;
+                )?)?;
                 Ok(true)
             }
             "-kwg-score-alpha" => {
-                std::fs::write(
-                    &args[3],
-                    build::build(
-                        build::BuildFormat::DawgOnly,
-                        &build::make_alphagrams(&read_machine_words(
-                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
-                            &std::fs::read_to_string(&args[2])?,
-                        )?),
-                    )?,
-                )?;
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::DawgOnly,
+                    &build::make_alphagrams(&read_machine_words(
+                        &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?),
+                )?)?;
                 Ok(true)
             }
             "-macondo" => {
                 let alphabet = make_alphabet();
                 let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
-                std::fs::write(
-                    &args[4],
-                    lexport::to_macondo(&kwg, &alphabet, &args[3], lexport::MacondoFormat::Dawg),
-                )?;
-                std::fs::write(
-                    &args[5],
-                    lexport::to_macondo(&kwg, &alphabet, &args[3], lexport::MacondoFormat::Gaddag),
-                )?;
+                make_writer(&args[4])?.write_all(&lexport::to_macondo(
+                    &kwg,
+                    &alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Dawg,
+                ))?;
+                make_writer(&args[5])?.write_all(&lexport::to_macondo(
+                    &kwg,
+                    &alphabet,
+                    &args[3],
+                    lexport::MacondoFormat::Gaddag,
+                ))?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -275,7 +296,8 @@ fn main() -> error::Returns<()> {
   english-kwg-score-dawg CSW21.txt outfile.dwg
     same as above but with representative same-score tiles
   (english can also be catalan, french, german, norwegian, polish, slovene,
-    spanish, yupik)"
+    spanish, yupik)
+input/output files can be \"-\" (not advisable for binary files)"
         );
         Ok(())
     } else if args[1] == "auto" {
@@ -296,7 +318,7 @@ fn main() -> error::Returns<()> {
         } else {
             return Err("invalid argument".into());
         }
-        println!("time taken: {:?}", t0.elapsed());
+        writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
         Ok(())
     }
 }
