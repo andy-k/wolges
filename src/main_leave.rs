@@ -30,6 +30,43 @@ impl<T: serde::Serialize> serde::Serialize for SerializeArc<T> {
     }
 }
 
+static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// support "-" to mean stdout.
+fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
+    Ok(if filename == "-" {
+        USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(std::fs::File::create(filename)?)
+    })
+}
+
+// when using "-" as output filename, print things to stderr.
+fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
+    if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
+        Box::new(std::io::stderr()) as Box<dyn std::io::Write>
+    } else {
+        Box::new(std::io::stdout())
+    }
+}
+
+// support "-" to mean stdin.
+fn make_reader(filename: &str) -> Result<Box<dyn std::io::Read>, std::io::Error> {
+    Ok(if filename == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(std::fs::File::open(filename)?)
+    })
+}
+
+// slower than std::fs::read because it cannot preallocate the correct size.
+fn read_to_end(reader: &mut Box<dyn std::io::Read>) -> Result<Vec<u8>, std::io::Error> {
+    let mut v = Vec::new();
+    reader.read_to_end(&mut v)?;
+    Ok(v)
+}
+
 fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
     args: &[String],
     language_name: &str,
@@ -45,7 +82,7 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
+                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
                 } else {
@@ -64,8 +101,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
             "-summarize" => {
                 generate_summary(
                     make_game_config(),
-                    std::fs::File::open(&args[2])?,
-                    csv::Writer::from_path(&args[3])?,
+                    make_reader(&args[2])?,
+                    csv::Writer::from_writer(make_writer(&args[3])?),
                 )?;
                 Ok(true)
             }
@@ -74,8 +111,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
                     make_game_config(),
                     csv::ReaderBuilder::new()
                         .has_headers(false)
-                        .from_path(&args[2])?,
-                    csv::Writer::from_path(&args[3])?,
+                        .from_reader(make_reader(&args[2])?),
+                    csv::Writer::from_writer(make_writer(&args[3])?),
                 )?;
                 Ok(true)
             }
@@ -84,8 +121,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
                     make_game_config(),
                     csv::ReaderBuilder::new()
                         .has_headers(false)
-                        .from_path(&args[2])?,
-                    csv::Writer::from_path(&args[3])?,
+                        .from_reader(make_reader(&args[2])?),
+                    csv::Writer::from_writer(make_writer(&args[3])?),
                 )?;
                 Ok(true)
             }
@@ -115,7 +152,9 @@ fn main() -> error::Returns<()> {
     spanish, yupik, super-english, super-catalan)
   jumbled-english-autoplay NWL18.kad leave0.klv leave1.klv 1000
     (all also take jumbled- prefix, including jumbled-super-;
-    note that jumbled autoplay requires .kad instead of .kwg)"
+    note that jumbled autoplay requires .kad instead of .kwg)
+input/output files can be \"-\" (not advisable for binary files).
+for english-autoplay only the kwg can come from \"-\"."
         );
         Ok(())
     } else {
@@ -198,7 +237,7 @@ fn main() -> error::Returns<()> {
         } else {
             return Err("invalid argument".into());
         }
-        println!("time taken: {:?}", t0.elapsed());
+        writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
         Ok(())
     }
 }
@@ -592,6 +631,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     f: Readable,
     mut csv_out: csv::Writer<W>,
 ) -> error::Returns<()> {
+    let mut stdout_or_stderr = boxed_stdout_or_stderr();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
     let mut rack_bytes = Vec::new();
@@ -620,21 +660,31 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 }
                 let elapsed_time_secs = t0.elapsed().as_secs();
                 if tick_periods.update(elapsed_time_secs) {
-                    println!("After {elapsed_time_secs} seconds, have read {row_count} rows");
+                    writeln!(
+                        stdout_or_stderr,
+                        "After {elapsed_time_secs} seconds, have read {row_count} rows"
+                    )?;
                 }
             }
             Ok(())
         })() {
-            println!("parsing {}: {:?}: {:?}", record_num + 1, record, e);
+            writeln!(
+                stdout_or_stderr,
+                "parsing {}: {:?}: {:?}",
+                record_num + 1,
+                record,
+                e
+            )?;
         }
     }
     drop(csv_reader);
     let total_equity = full_rack_map.values().fold(0.0, |a, x| a + x.equity);
-    println!(
+    writeln!(
+        stdout_or_stderr,
         "{} records, {} unique racks",
         row_count,
         full_rack_map.len()
-    );
+    )?;
 
     let mut kv = full_rack_map.into_iter().collect::<Vec<_>>();
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
@@ -718,6 +768,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
 ) -> error::Returns<()> {
+    let mut stdout_or_stderr = boxed_stdout_or_stderr();
     let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
     let mut exchange_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let mut rack_bytes = Vec::new();
@@ -776,15 +827,16 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
         );
         let elapsed_time_secs = t0.elapsed().as_secs();
         if tick_periods.update(elapsed_time_secs) {
-            println!(
+            writeln!(
+                stdout_or_stderr,
                 "After {} seconds, have processed {} racks into {} unique subracks",
                 elapsed_time_secs,
                 idx + 1,
                 subrack_map.len(),
-            );
+            )?;
         }
     }
-    println!("{} unique subracks", subrack_map.len());
+    writeln!(stdout_or_stderr, "{} unique subracks", subrack_map.len())?;
 
     let threshold_count = if DO_SMOOTHING {
         let total_count = subrack_map.values().fold(0, |a, x| a + x.count);
@@ -843,12 +895,14 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
                 ev_map.insert(rack_bytes.into(), new_v);
                 let elapsed_time_secs = t0.elapsed().as_secs();
                 if tick_periods.update(elapsed_time_secs) {
-                    println!(
+                    writeln!(
+                        stdout_or_stderr,
                         "After {} seconds, have processed {} subracks and smoothed {}",
                         elapsed_time_secs,
                         ev_map.len(),
                         num_smoothed,
-                    );
+                    )
+                    .unwrap();
                 }
             },
             rack_tally: &mut alphabet_freqs,
@@ -858,12 +912,13 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
         },
         0,
     );
-    println!(
+    writeln!(
+        stdout_or_stderr,
         "After {} seconds, have processed {} subracks and smoothed {}",
         t0.elapsed().as_secs(),
         ev_map.len(),
         num_smoothed,
-    );
+    )?;
     let mut num_filled_in = 0u64;
 
     let mut subrack_bytes = Vec::with_capacity(game_config.rack_size() as usize - 1);
@@ -920,7 +975,11 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
                             );
                             num_filled_in += 1;
                         } else {
-                            println!("not enough samples to derive {rack_bytes:?}");
+                            writeln!(
+                                stdout_or_stderr,
+                                "not enough samples to derive {rack_bytes:?}"
+                            )
+                            .unwrap();
                         }
                     }
                 },
@@ -932,13 +991,14 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
             0,
         );
     }
-    println!(
+    writeln!(
+        stdout_or_stderr,
         "After {} seconds, have processed {} subracks, smoothed {}, filled in {}",
         t0.elapsed().as_secs(),
         ev_map.len(),
         num_smoothed,
         num_filled_in,
-    );
+    )?;
 
     let mut kv = ev_map.into_iter().collect::<Vec<_>>();
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
