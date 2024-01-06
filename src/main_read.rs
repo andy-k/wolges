@@ -288,6 +288,27 @@ fn iter_dawg<F: FnMut(&str) -> error::Returns<()>, A: AlphabetLabel, R: WgReader
     )
 }
 
+static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// support "-" to mean stdout.
+fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
+    Ok(if filename == "-" {
+        USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(std::fs::File::create(filename)?)
+    })
+}
+
+// when using "-" as output filename, print things to stderr.
+fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
+    if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
+        Box::new(std::io::stderr()) as Box<dyn std::io::Write>
+    } else {
+        Box::new(std::io::stdout())
+    }
+}
+
 fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
     args: &[String],
     language_name: &str,
@@ -324,7 +345,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                 if 0 == reader.len(kwg_bytes) {
                     return Err("out of bounds".into());
                 }
-                let mut csv_out = csv::Writer::from_path(&args[3])?;
+                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                 iter_dawg(
                     &WolgesAlphabetLabel {
                         alphabet: &alphabet,
@@ -383,7 +404,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                         Ok(())
                     },
                 )?;
-                std::fs::write(&args[3], ret)?;
+                make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
             "-kwg-gaddag" => {
@@ -408,7 +429,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                         Ok(())
                     },
                 )?;
-                std::fs::write(&args[3], ret)?;
+                make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
             "-q2-ort" => {
@@ -463,7 +484,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                 {
                     return Err("invalid buckets".into());
                 }
-                let mut csv_out = csv::Writer::from_path(&args[3])?;
+                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                 let mut rack_str = String::new();
                 for bucket_num in 0..ort_num_buckets {
                     let mut next_allowed_quotient = 0;
@@ -588,8 +609,13 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                 for (_, quotient, val) in values {
                     ret.extend(&(quotient | val).to_le_bytes());
                 }
-                std::fs::write(&args[3], ret)?;
-                println!("each bucket has at most {} values", max_bucket_size);
+                // binary output
+                make_writer(&args[3])?.write_all(&ret)?;
+                writeln!(
+                    boxed_stdout_or_stderr(),
+                    "each bucket has at most {} values",
+                    max_bucket_size
+                )?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -628,7 +654,8 @@ fn main() -> error::Returns<()> {
   zyzzyva something.dwg something.txt
     read zyzzyva dawg
   lexpert something.lxd something.txt
-    read lexpert dawg"
+    read lexpert dawg
+output files can be \"-\" (not advisable for binary files)"
         );
         Ok(())
     } else {
@@ -706,10 +733,11 @@ fn main() -> error::Returns<()> {
             if r != klv_bytes.len() {
                 return Err("too many leaves".into());
             }
-            std::fs::write(&args[3], ret)?;
+            // binary output
+            make_writer(&args[3])?.write_all(&ret)?;
         } else if args[1] == "quackle-superleaves" {
             let bytes = &std::fs::read(&args[2])?;
-            let mut csv_out = csv::Writer::from_path(&args[3])?;
+            let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
             let mut i = 0;
             let mut s = String::new();
             while i < bytes.len() {
@@ -774,7 +802,7 @@ fn main() -> error::Returns<()> {
                     Ok(())
                 },
             )?;
-            std::fs::write(&args[3], ret)?;
+            make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "quackle-small" {
             let quackle_bytes = &std::fs::read(&args[2])?;
             if 20 > quackle_bytes.len() {
@@ -814,7 +842,7 @@ fn main() -> error::Returns<()> {
                     Ok(())
                 },
             )?;
-            std::fs::write(&args[3], ret)?;
+            make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "zyzzyva" {
             let reader = &ZyzzyvaReader {};
             let zyzzyva_bytes = &std::fs::read(&args[2])?;
@@ -834,7 +862,7 @@ fn main() -> error::Returns<()> {
                     Ok(())
                 },
             )?;
-            std::fs::write(&args[3], ret)?;
+            make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "lexpert" {
             let reader = &LexpertReader {};
             let lexpert_bytes = &std::fs::read(&args[2])?;
@@ -854,11 +882,11 @@ fn main() -> error::Returns<()> {
                     Ok(())
                 },
             )?;
-            std::fs::write(&args[3], ret)?;
+            make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else {
             return Err("invalid argument".into());
         }
-        println!("time taken: {:?}", t0.elapsed());
+        writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
         Ok(())
     }
 }
