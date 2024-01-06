@@ -309,6 +309,22 @@ fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
     }
 }
 
+// support "-" to mean stdin.
+fn make_reader(filename: &str) -> Result<Box<dyn std::io::Read>, std::io::Error> {
+    Ok(if filename == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(std::fs::File::open(filename)?)
+    })
+}
+
+// slower than std::fs::read because it cannot preallocate the correct size.
+fn read_to_end(reader: &mut Box<dyn std::io::Read>) -> Result<Vec<u8>, std::io::Error> {
+    let mut v = Vec::new();
+    reader.read_to_end(&mut v)?;
+    Ok(v)
+}
+
 fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
     args: &[String],
     language_name: &str,
@@ -319,7 +335,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
             "-klv" => {
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
-                let klv_bytes = &std::fs::read(&args[2])?;
+                let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
                 if klv_bytes.len() < 4 {
                     return Err("out of bounds".into());
                 }
@@ -385,7 +401,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
             "-kwg" => {
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
-                let kwg_bytes = &std::fs::read(&args[2])?;
+                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
                 if 0 == reader.len(kwg_bytes) {
                     return Err("out of bounds".into());
                 }
@@ -410,7 +426,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
             "-kwg-gaddag" => {
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
-                let kwg_bytes = &std::fs::read(&args[2])?;
+                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
                 if 1 >= reader.len(kwg_bytes) {
                     return Err("out of bounds".into());
                 }
@@ -437,7 +453,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                 // ort: olaugh rack table.
                 // the format was discussed in woogles discord.
                 // https://discord.com/channels/741321677828522035/1157118170398724176/1164983643836530759
-                let ort_bytes = &std::fs::read(&args[2])?;
+                let ort_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
                 if ort_bytes.len() < 8 {
                     return Err("out of bounds".into());
                 }
@@ -542,7 +558,7 @@ fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
                 let mut csv_reader = csv::ReaderBuilder::new()
                     .has_headers(false)
-                    .from_reader(std::fs::File::open(&args[2])?);
+                    .from_reader(make_reader(&args[2])?);
                 let mut values = Vec::new();
                 let mut v = Vec::new();
                 for result in csv_reader.records() {
@@ -655,7 +671,7 @@ fn main() -> error::Returns<()> {
     read zyzzyva dawg
   lexpert something.lxd something.txt
     read lexpert dawg
-output files can be \"-\" (not advisable for binary files)"
+input/output files can be \"-\" (not advisable for binary files)"
         );
         Ok(())
     } else {
@@ -672,7 +688,7 @@ output files can be \"-\" (not advisable for binary files)"
         {
         } else if args[1] == "quackle-make-superleaves" {
             let reader = &KwgReader {};
-            let klv_bytes = &std::fs::read(&args[2])?;
+            let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
             if klv_bytes.len() < 4 {
                 return Err("out of bounds".into());
             }
@@ -736,7 +752,7 @@ output files can be \"-\" (not advisable for binary files)"
             // binary output
             make_writer(&args[3])?.write_all(&ret)?;
         } else if args[1] == "quackle-superleaves" {
-            let bytes = &std::fs::read(&args[2])?;
+            let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
             let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
             let mut i = 0;
             let mut s = String::new();
@@ -764,7 +780,7 @@ output files can be \"-\" (not advisable for binary files)"
                 ))?;
             }
         } else if args[1] == "quackle" {
-            let quackle_bytes = &std::fs::read(&args[2])?;
+            let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
             if 20 > quackle_bytes.len() {
                 return Err("out of bounds".into());
             }
@@ -804,7 +820,7 @@ output files can be \"-\" (not advisable for binary files)"
             )?;
             make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "quackle-small" {
-            let quackle_bytes = &std::fs::read(&args[2])?;
+            let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
             if 20 > quackle_bytes.len() {
                 return Err("out of bounds".into());
             }
@@ -845,7 +861,7 @@ output files can be \"-\" (not advisable for binary files)"
             make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "zyzzyva" {
             let reader = &ZyzzyvaReader {};
-            let zyzzyva_bytes = &std::fs::read(&args[2])?;
+            let zyzzyva_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
             if 0x8 > zyzzyva_bytes.len() {
                 return Err("out of bounds".into());
             }
@@ -865,7 +881,7 @@ output files can be \"-\" (not advisable for binary files)"
             make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "lexpert" {
             let reader = &LexpertReader {};
-            let lexpert_bytes = &std::fs::read(&args[2])?;
+            let lexpert_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
             if 0x4c > lexpert_bytes.len() {
                 return Err("out of bounds".into());
             }
