@@ -241,6 +241,10 @@ fn main() -> error::Returns<()> {
                 assert_eq!(issues, 0);
             }
 
+            if false {
+                // not required for now.
+                move_generator.reset_for_another_kwg();
+            }
             move_picker.pick_a_move(
                 filtered_movegen,
                 &mut move_generator,

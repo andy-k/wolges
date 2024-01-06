@@ -35,6 +35,8 @@ struct PossiblePlacement {
 
 // WorkingBuffer can only be reused for the same game_config and kwg.
 // (The kwg is partially cached in cached_cross_set.)
+// WorkingBuffer can also be reset for reuse with another kwg by calling
+// reset_for_another_kwg().
 // This is not enforced.
 struct WorkingBuffer {
     rack_tally: Box<[u8]>,                                      // 27 for ?A-Z
@@ -210,7 +212,7 @@ impl WorkingBuffer {
                 CachedCrossSet {
                     p_left: 0,
                     p_right: 0,
-                    bits: 0
+                    bits: 0,
                 };
                 rows_times_cols
             ]
@@ -219,7 +221,7 @@ impl WorkingBuffer {
                 CachedCrossSet {
                     p_left: 0,
                     p_right: 0,
-                    bits: 0
+                    bits: 0,
                 };
                 rows_times_cols
             ]
@@ -473,6 +475,21 @@ impl WorkingBuffer {
                     cross_set.score * effective_pwm as i32;
             }
         }
+    }
+
+    // call this before passing a different kwg.
+    #[inline(always)]
+    pub fn reset_for_another_kwg(&mut self) {
+        self.cached_cross_set_for_across_plays.fill(CachedCrossSet {
+            p_left: 0,
+            p_right: 0,
+            bits: 0,
+        });
+        self.cached_cross_set_for_down_plays.fill(CachedCrossSet {
+            p_left: 0,
+            p_right: 0,
+            bits: 0,
+        });
     }
 }
 
@@ -2327,6 +2344,12 @@ impl KurniaMoveGenerator {
             working_buffer: WorkingBuffer::new(game_config),
             plays: Vec::new(),
         }
+    }
+
+    // call this before passing a different kwg.
+    #[inline(always)]
+    pub fn reset_for_another_kwg(&mut self) {
+        self.working_buffer.reset_for_another_kwg();
     }
 
     // skip equity computation and sorting
