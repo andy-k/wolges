@@ -131,7 +131,7 @@ impl Ord for Bites {
 impl PartialEq for Bites {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self[..].eq(&other[..])
+        PartialEq::eq(&self[..], &other[..])
     }
 }
 
