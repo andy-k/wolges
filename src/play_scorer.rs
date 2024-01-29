@@ -371,7 +371,7 @@ impl PlayScorer {
                         let premium = premiums[strider_at_i];
                         let placed_tile = if tile != 0 {
                             num_played += 1;
-                            word_multiplier *= premium.word_multiplier;
+                            word_multiplier *= premium.word_multiplier as i32;
                             tile_multiplier = premium.tile_multiplier;
                             tile
                         } else {
@@ -382,7 +382,7 @@ impl PlayScorer {
                         let tile_score = face_value_tile_score as i32 * tile_multiplier as i32;
                         word_score += tile_score;
                     }
-                    let multiplied_word_score = word_score * word_multiplier as i32;
+                    let multiplied_word_score = word_score * word_multiplier;
                     recounted_score += multiplied_word_score;
                 }
 
@@ -413,7 +413,7 @@ impl PlayScorer {
                             let tile_multiplier;
                             let premium = premiums[perpendicular_strider_at_j];
                             let placed_tile = if j == *lane {
-                                word_multiplier *= premium.word_multiplier;
+                                word_multiplier *= premium.word_multiplier as i32;
                                 tile_multiplier = premium.tile_multiplier;
                                 tile
                             } else {
@@ -427,7 +427,7 @@ impl PlayScorer {
                             let tile_score = face_value_tile_score as i32 * tile_multiplier as i32;
                             word_score += tile_score;
                         }
-                        let multiplied_word_score = word_score * word_multiplier as i32;
+                        let multiplied_word_score = word_score * word_multiplier;
                         recounted_score += multiplied_word_score;
                     }
                 }
