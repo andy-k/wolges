@@ -3,6 +3,7 @@
 use rand::prelude::*;
 use wolges::{
     display, error, game_config, game_state, kibitzer, klv, kwg, move_filter, move_picker, movegen,
+    play_scorer,
 };
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -94,6 +95,62 @@ fn main() -> error::Returns<()> {
           "count": 150000
       }
     "#;
+    let _ = data;
+    let data = r#"
+      {
+          "source": "https://woogles.io/game/4jUemdhr?turn=106",
+          "rack": [2, 3, 5, 12, 14, 16, 19],
+          "board": [
+ [0, 1, 18, 0, 15, 14, 25, 0, 4, 9, 0, 8, 15, 0, 16, 8, 15, 0, 1, 20, 0],
+ [0, 0, 5, 0, 0, 1, 0, 0, 0, 20, 0, 15, 0, 0, 0, 0, 22, 0, 12, 0, 0],
+ [0, 0, 9, 0, 0, 15, 21, 20, 4, 1, 20, 5, 4, 0, 0, 7, 5, 14, 20, 0, 0],
+ [0, 0, 14, 1, 26, 9, 0, 0, 0, 0, 21, 0, 0, 14, 0, 0, 18, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 14, 6, 9, 18, 13, 19, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 24, 9, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 1, 23, 0, 0, -26, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 24, 0, 0, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 9, 0, 0, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 5, 19, 8, 0, 0, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+ [0, 0, 0, 0, 15, 2, 15, 5, 0, 5, 0, 0, 0, 0, 0, 0, 25, 0, 0, 0, 0],
+ [0, 0, 1, 13, 9, 0, 0, 13, 5, 18, 12, 19, 0, 0, 7, 0, 5, 18, 18, 0, 0],
+ [0, 0, 7, 0, 12, 15, 0, 0, 18, 0, 0, 15, 18, 7, 5, 1, 20, 0, 1, 0, 0],
+ [0, 0, 1, 0, 0, 15, 0, 0, 5, 0, 0, -16, 0, 0, -5, 0, 0, 0, 9, 0, 0],
+ [0, 1, 18, 0, 15, 14, 25, 0, 4, 9, 0, 8, 15, 0, 16, 8, 15, 0, 1, 20, 0]
+
+          ],
+          "lexicon": "CSW21+super",
+          "count": 15
+      }
+    "#;
+    /*
+      .AR.ONY.DI.HO.PHO.AT.
+      ..E..A...T.O....V.L..
+      ..I..OUTDATED..GENT..
+      ..NAZI....U..N..R....
+      ..........INFIRMS....
+      ..........N..XI......
+      .........JAW..z......
+      ...........EX........
+      ...........DI........
+      ...........G.........
+      ..........WE.........
+      .........KESH........
+      ..........N.I........
+      .........ST..........
+      .........A...........
+      .........V...........
+      ....OBOE.E......Y....
+      ..AMI..MERLS..G.ERR..
+      ..G.LO..R..ORGEAT.A..
+      ..A..O..E..p..e...I..
+      .AR.ONY.DI.HO.PHO.AT.
+    */
     let question = serde_json::from_str::<Question>(data)?;
 
     let kwg;
@@ -106,6 +163,11 @@ fn main() -> error::Returns<()> {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv2")?);
             game_config = game_config::make_english_game_config();
+        }
+        "CSW21+super" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/super-CSW21.kwg")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/super-CSW21.klv2")?);
+            game_config = game_config::make_super_english_game_config();
         }
         "CSW19" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
@@ -212,8 +274,23 @@ fn main() -> error::Returns<()> {
     let plays = &move_generator.plays;
 
     println!("found {} moves", plays.len());
+    let mut ps = play_scorer::PlayScorer::new();
     for play in plays.iter() {
         println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+
+        let movegen_score = match &play.play {
+            movegen::Play::Exchange { .. } => 0,
+            movegen::Play::Place { score, .. } => *score,
+        };
+        let recounted_score = ps.compute_score(board_snapshot, &play.play);
+        if movegen_score != recounted_score {
+            println!(
+                "{} should score {} instead of {}!",
+                play.play.fmt(board_snapshot),
+                recounted_score,
+                movegen_score
+            );
+        }
     }
 
     let result = plays
