@@ -11,7 +11,7 @@ pub struct StaticGameConfig<'a> {
     game_rules: GameRules,
     alphabet: alphabet::Alphabet<'a>,
     board_layout: board_layout::BoardLayout,
-    rack_size: i8,
+    rack_size: u8,
     num_players: u8,
     num_passes_to_end: u8,
     challenges_are_passes: bool,
@@ -40,7 +40,7 @@ impl<'a> GameConfig<'a> {
     }
 
     #[inline(always)]
-    pub fn rack_size(&self) -> i8 {
+    pub fn rack_size(&self) -> u8 {
         match self {
             GameConfig::Static(x) => x.rack_size,
         }
@@ -89,7 +89,7 @@ impl<'a> GameConfig<'a> {
     }
 
     #[inline(always)]
-    pub fn num_played_bonus(&self, num_played: i8) -> i16 {
+    pub fn num_played_bonus(&self, num_played: u8) -> i16 {
         match self {
             GameConfig::Static(x) => {
                 // branchless

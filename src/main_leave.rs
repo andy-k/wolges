@@ -705,8 +705,8 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
 struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
     found_exchange_move: FoundExchangeMove,
     rack_tally: &'a mut [u8],
-    min_len: i8,
-    max_len: i8,
+    min_len: u8,
+    max_len: u8,
     exchange_buffer: &'a mut Vec<u8>,
 }
 

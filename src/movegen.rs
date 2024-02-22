@@ -423,7 +423,7 @@ impl WorkingBuffer {
         }
         for i in 0..=self.num_tiles_on_rack {
             self.best_leave_values[i as usize] +=
-                board_snapshot.game_config.num_played_bonus(i as i8) as f32;
+                board_snapshot.game_config.num_played_bonus(i) as f32;
         }
         self.used_letters_tally.clear();
         match board_snapshot.game_config.game_rules() {
@@ -956,7 +956,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         anchor: i8,
         leftmost: i8,
         rightmost: i8,
-        num_played: i8,
+        num_played: u8,
         idx_left: i8,
         best_possible_equity: f32,
     }
@@ -1043,12 +1043,12 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         // here idx <= env.rightmost.
         // check if [env.idx_left, idx) is a thing
         if idx > env.anchor + 1
-            && (env.num_played + is_unique as i8) >= 2
+            && (env.num_played + is_unique as u8) >= 2
             && idx - env.idx_left >= 2
         {
             shadow_record(env, acc, env.idx_left, idx);
         }
-        if env.num_played as u8 >= env.params.num_max_played {
+        if env.num_played >= env.params.num_max_played {
             return;
         }
 
@@ -1184,10 +1184,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         // tiles have been placed from env.anchor to idx + 1.
         // here idx >= env.leftmost - 1.
         // check if [idx + 1, env.anchor + 1) is a thing
-        if (env.num_played + is_unique as i8) >= 2 && env.anchor - idx >= 2 {
+        if (env.num_played + is_unique as u8) >= 2 && env.anchor - idx >= 2 {
             shadow_record(env, acc, idx + 1, env.anchor + 1);
         }
-        if env.num_played as u8 >= env.params.num_max_played {
+        if env.num_played >= env.params.num_max_played {
             return;
         }
 
@@ -1431,7 +1431,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32)> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
         alphabet: &'a alphabet::Alphabet<'a>,
-        num_played: i8,
+        num_played: u8,
         idx_left: i8,
     }
     struct Accumulator {
@@ -1484,13 +1484,13 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         }
         let node = env.params.board_snapshot.kwg[p];
         if idx > env.params.anchor + 1
-            && (env.num_played + is_unique as i8) >= 2
+            && (env.num_played + is_unique as u8) >= 2
             && idx - env.idx_left >= 2
             && node.accepts()
         {
             record(env, acc, env.idx_left, idx);
         }
-        if env.num_played as u8 >= env.params.num_max_played {
+        if env.num_played >= env.params.num_max_played {
             return;
         }
 
@@ -1596,11 +1596,11 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             idx -= 1;
         }
         let mut node = env.params.board_snapshot.kwg[p];
-        if (env.num_played + is_unique as i8) >= 2 && env.params.anchor - idx >= 2 && node.accepts()
+        if (env.num_played + is_unique as u8) >= 2 && env.params.anchor - idx >= 2 && node.accepts()
         {
             record(env, acc, idx + 1, env.params.anchor + 1);
         }
-        if env.num_played as u8 >= env.params.num_max_played {
+        if env.num_played >= env.params.num_max_played {
             return;
         }
 
@@ -1726,7 +1726,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32)> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
         alphabet: &'a alphabet::Alphabet<'a>,
-        num_played: i8,
+        num_played: u8,
         idx_left: i8,
     }
     struct Accumulator {
@@ -1782,12 +1782,12 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             idx += 1;
         }
         if idx > env.params.anchor + 1
-            && (env.num_played + is_unique as i8) >= 2
+            && (env.num_played + is_unique as u8) >= 2
             && idx - env.idx_left >= 2
         {
             record_if_valid(env, acc, env.idx_left, idx);
         }
-        if (env.num_played as u8) < env.params.num_max_played && idx < env.params.rightmost {
+        if env.num_played < env.params.num_max_played && idx < env.params.rightmost {
             let mut this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
             if this_cross_bits == 1 {
                 // already handled '@'
@@ -1887,10 +1887,10 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx -= 1;
         }
-        if (env.num_played + is_unique as i8) >= 2 && env.params.anchor - idx >= 2 {
+        if (env.num_played + is_unique as u8) >= 2 && env.params.anchor - idx >= 2 {
             record_if_valid(env, acc, idx + 1, env.params.anchor + 1);
         }
-        if (env.num_played as u8) < env.params.num_max_played {
+        if env.num_played < env.params.num_max_played {
             if idx < env.params.anchor {
                 env.idx_left = idx + 1;
                 play_right(env, acc, env.params.anchor + 1, is_unique);
@@ -2721,7 +2721,7 @@ fn kurnia_gen_place_moves_iter<
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
-    let max_rack_size = game_config.rack_size() as u8;
+    let max_rack_size = game_config.rack_size();
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
     // striped by row
