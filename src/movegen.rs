@@ -1042,10 +1042,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         // tiles have been placed from env.idx_left to idx - 1.
         // here idx <= env.rightmost.
         // check if [env.idx_left, idx) is a thing
-        if idx > env.anchor + 1
-            && (env.num_played + is_unique as u8) >= 2
-            && idx - env.idx_left >= 2
-        {
+        if idx > env.anchor + 1 && env.num_played > !is_unique as u8 && idx - env.idx_left >= 2 {
             shadow_record(env, acc, env.idx_left, idx);
         }
         if env.num_played >= env.params.num_max_played {
@@ -1184,7 +1181,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         // tiles have been placed from env.anchor to idx + 1.
         // here idx >= env.leftmost - 1.
         // check if [idx + 1, env.anchor + 1) is a thing
-        if (env.num_played + is_unique as u8) >= 2 && env.anchor - idx >= 2 {
+        if env.num_played > !is_unique as u8 && env.anchor - idx >= 2 {
             shadow_record(env, acc, idx + 1, env.anchor + 1);
         }
         if env.num_played >= env.params.num_max_played {
@@ -1484,7 +1481,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         }
         let node = env.params.board_snapshot.kwg[p];
         if idx > env.params.anchor + 1
-            && (env.num_played + is_unique as u8) >= 2
+            && env.num_played > !is_unique as u8
             && idx - env.idx_left >= 2
             && node.accepts()
         {
@@ -1596,8 +1593,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             idx -= 1;
         }
         let mut node = env.params.board_snapshot.kwg[p];
-        if (env.num_played + is_unique as u8) >= 2 && env.params.anchor - idx >= 2 && node.accepts()
-        {
+        if env.num_played > !is_unique as u8 && env.params.anchor - idx >= 2 && node.accepts() {
             record(env, acc, idx + 1, env.params.anchor + 1);
         }
         if env.num_played >= env.params.num_max_played {
@@ -1782,7 +1778,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             idx += 1;
         }
         if idx > env.params.anchor + 1
-            && (env.num_played + is_unique as u8) >= 2
+            && env.num_played > !is_unique as u8
             && idx - env.idx_left >= 2
         {
             record_if_valid(env, acc, env.idx_left, idx);
@@ -1887,7 +1883,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
             idx -= 1;
         }
-        if (env.num_played + is_unique as u8) >= 2 && env.params.anchor - idx >= 2 {
+        if env.num_played > !is_unique as u8 && env.params.anchor - idx >= 2 {
             record_if_valid(env, acc, idx + 1, env.params.anchor + 1);
         }
         if env.num_played < env.params.num_max_played {
