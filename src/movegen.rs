@@ -1513,13 +1513,25 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             let perpendicular_word_multiplier =
                 env.params.perpendicular_word_multipliers_strip[idx as usize];
             let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+            env.num_played += 1;
+            let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
+                // intentional to not hardcode blank tile value as zero
+                let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
+                Accumulator {
+                    main_score: acc.main_score + tile_value,
+                    perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                        + perpendicular_score
+                        + tile_value * perpendicular_word_multiplier as i32,
+                    word_multiplier: new_word_multiplier,
+                    leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                }
+            });
             loop {
                 let node = env.params.board_snapshot.kwg[p];
                 let tile = node.tile();
                 if this_cross_bits & (1 << tile) != 0 {
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
-                        env.num_played += 1;
                         let tile_value = env.alphabet.score(tile) as i32 * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_right(
@@ -1537,30 +1549,18 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                             idx + 1,
                             is_unique,
                         );
-                        env.num_played -= 1;
                         env.params.rack_tally[tile as usize] += 1;
                     }
-                    if env.params.rack_tally[0] > 0 {
+                    if let Some(blank_acc) = &opt_blank_acc {
                         env.params.rack_tally[0] -= 1;
-                        env.num_played += 1;
-                        // intentional to not hardcode blank tile value as zero
-                        let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                         play_right(
                             env,
-                            &mut Accumulator {
-                                main_score: acc.main_score + tile_value,
-                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
-                                    + perpendicular_score
-                                    + tile_value * perpendicular_word_multiplier as i32,
-                                word_multiplier: new_word_multiplier,
-                                leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
-                            },
+                            &mut Accumulator { ..*blank_acc },
                             p,
                             idx + 1,
                             is_unique,
                         );
-                        env.num_played -= 1;
                         env.params.rack_tally[0] += 1;
                     }
                 }
@@ -1569,6 +1569,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                 }
                 p += 1;
             }
+            env.num_played -= 1;
         }
     }
 
@@ -1634,13 +1635,25 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
             let perpendicular_word_multiplier =
                 env.params.perpendicular_word_multipliers_strip[idx as usize];
             let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+            env.num_played += 1;
+            let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
+                // intentional to not hardcode blank tile value as zero
+                let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
+                Accumulator {
+                    main_score: acc.main_score + tile_value,
+                    perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                        + perpendicular_score
+                        + tile_value * perpendicular_word_multiplier as i32,
+                    word_multiplier: new_word_multiplier,
+                    leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                }
+            });
             loop {
                 let node = env.params.board_snapshot.kwg[p];
                 let tile = node.tile();
                 if this_cross_bits & (1 << tile) != 0 {
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
-                        env.num_played += 1;
                         let tile_value = env.alphabet.score(tile) as i32 * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_left(
@@ -1658,30 +1671,18 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                             idx - 1,
                             is_unique,
                         );
-                        env.num_played -= 1;
                         env.params.rack_tally[tile as usize] += 1;
                     }
-                    if env.params.rack_tally[0] > 0 {
+                    if let Some(blank_acc) = &opt_blank_acc {
                         env.params.rack_tally[0] -= 1;
-                        env.num_played += 1;
-                        // intentional to not hardcode blank tile value as zero
-                        let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                         play_left(
                             env,
-                            &mut Accumulator {
-                                main_score: acc.main_score + tile_value,
-                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
-                                    + perpendicular_score
-                                    + tile_value * perpendicular_word_multiplier as i32,
-                                word_multiplier: new_word_multiplier,
-                                leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
-                            },
+                            &mut Accumulator { ..*blank_acc },
                             p,
                             idx - 1,
                             is_unique,
                         );
-                        env.num_played -= 1;
                         env.params.rack_tally[0] += 1;
                     }
                 }
@@ -1690,6 +1691,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                 }
                 p += 1;
             }
+            env.num_played -= 1;
         }
     }
 
@@ -1801,11 +1803,23 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                 let perpendicular_word_multiplier =
                     env.params.perpendicular_word_multipliers_strip[idx as usize];
                 let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+                env.num_played += 1;
+                let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
+                    // intentional to not hardcode blank tile value as zero
+                    let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
+                    Accumulator {
+                        main_score: acc.main_score + tile_value,
+                        perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                            + perpendicular_score
+                            + tile_value * perpendicular_word_multiplier as i32,
+                        word_multiplier: new_word_multiplier,
+                        leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                    }
+                });
                 for tile in 1..env.alphabet.len() {
                     if this_cross_bits & (1 << tile) != 0 {
                         if env.params.rack_tally[tile as usize] > 0 {
                             env.params.rack_tally[tile as usize] -= 1;
-                            env.num_played += 1;
                             env.params.used_letters_tally[tile as usize] += 1;
                             let tile_value =
                                 env.alphabet.score(tile) as i32 * tile_multiplier as i32;
@@ -1826,40 +1840,21 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                                 is_unique,
                             );
                             env.params.used_letters_tally[tile as usize] -= 1;
-                            env.num_played -= 1;
                             env.params.rack_tally[tile as usize] += 1;
                         }
-                        if env.params.rack_tally[0] > 0 {
+                        if let Some(blank_acc) = &opt_blank_acc {
                             env.params.rack_tally[0] -= 1;
-                            env.num_played += 1;
                             env.params.used_letters_tally[tile as usize] += 1;
-                            // intentional to not hardcode blank tile value as zero
-                            let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
                             env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                            play_right(
-                                env,
-                                &mut Accumulator {
-                                    main_score: acc.main_score + tile_value,
-                                    perpendicular_cumulative_score: acc
-                                        .perpendicular_cumulative_score
-                                        + perpendicular_score
-                                        + tile_value * perpendicular_word_multiplier as i32,
-                                    word_multiplier: new_word_multiplier,
-                                    leave_idx: acc.leave_idx
-                                        - env.params.multi_leaves.place_value(0),
-                                },
-                                idx + 1,
-                                is_unique,
-                            );
+                            play_right(env, &mut Accumulator { ..*blank_acc }, idx + 1, is_unique);
                             env.params.used_letters_tally[tile as usize] -= 1;
-                            env.num_played -= 1;
                             env.params.rack_tally[0] += 1;
                         }
                     }
                 }
+                env.num_played -= 1;
             }
         }
-
         for idx in orig_idx..idx {
             let b = env.params.board_strip[idx as usize];
             env.params.used_letters_tally[(b & 0x7f) as usize] -= 1;
@@ -1910,11 +1905,23 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                     let perpendicular_word_multiplier =
                         env.params.perpendicular_word_multipliers_strip[idx as usize];
                     let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+                    env.num_played += 1;
+                    let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
+                        // intentional to not hardcode blank tile value as zero
+                        let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
+                        Accumulator {
+                            main_score: acc.main_score + tile_value,
+                            perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                + perpendicular_score
+                                + tile_value * perpendicular_word_multiplier as i32,
+                            word_multiplier: new_word_multiplier,
+                            leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                        }
+                    });
                     for tile in 1..env.alphabet.len() {
                         if this_cross_bits & (1 << tile) != 0 {
                             if env.params.rack_tally[tile as usize] > 0 {
                                 env.params.rack_tally[tile as usize] -= 1;
-                                env.num_played += 1;
                                 env.params.used_letters_tally[tile as usize] += 1;
                                 let tile_value =
                                     env.alphabet.score(tile) as i32 * tile_multiplier as i32;
@@ -1935,38 +1942,24 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
                                     is_unique,
                                 );
                                 env.params.used_letters_tally[tile as usize] -= 1;
-                                env.num_played -= 1;
                                 env.params.rack_tally[tile as usize] += 1;
                             }
-                            if env.params.rack_tally[0] > 0 {
+                            if let Some(blank_acc) = &opt_blank_acc {
                                 env.params.rack_tally[0] -= 1;
-                                env.num_played += 1;
                                 env.params.used_letters_tally[tile as usize] += 1;
-                                // intentional to not hardcode blank tile value as zero
-                                let tile_value =
-                                    env.alphabet.score(0) as i32 * tile_multiplier as i32;
                                 env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                                 play_left(
                                     env,
-                                    &mut Accumulator {
-                                        main_score: acc.main_score + tile_value,
-                                        perpendicular_cumulative_score: acc
-                                            .perpendicular_cumulative_score
-                                            + perpendicular_score
-                                            + tile_value * perpendicular_word_multiplier as i32,
-                                        word_multiplier: new_word_multiplier,
-                                        leave_idx: acc.leave_idx
-                                            - env.params.multi_leaves.place_value(0),
-                                    },
+                                    &mut Accumulator { ..*blank_acc },
                                     idx - 1,
                                     is_unique,
                                 );
                                 env.params.used_letters_tally[tile as usize] -= 1;
-                                env.num_played -= 1;
                                 env.params.rack_tally[0] += 1;
                             }
                         }
                     }
+                    env.num_played -= 1;
                 }
             }
         }
