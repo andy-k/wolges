@@ -21,8 +21,6 @@ impl Bites {
     }
 }
 
-use std::convert::TryInto;
-
 impl std::ops::Deref for Bites {
     type Target = [u8];
 
