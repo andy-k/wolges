@@ -2448,9 +2448,10 @@ impl KurniaMoveGenerator {
             let play = construct_play();
             if equity_pred.borrow_mut()(equity, &play) {
                 if borrowed.len() >= max_gen {
-                    borrowed.pop();
+                    *borrowed.peek_mut().unwrap() = ValuedMove { equity, play };
+                } else {
+                    borrowed.push(ValuedMove { equity, play });
                 }
-                borrowed.push(ValuedMove { equity, play });
             }
         }
 
@@ -2578,9 +2579,10 @@ impl KurniaMoveGenerator {
             let play = construct_play();
             if equity_pred.borrow_mut()(equity, &play) {
                 if borrowed.len() >= max_gen {
-                    borrowed.pop();
+                    *borrowed.peek_mut().unwrap() = ValuedMove { equity, play };
+                } else {
+                    borrowed.push(ValuedMove { equity, play });
                 }
-                borrowed.push(ValuedMove { equity, play });
             }
         }
 
