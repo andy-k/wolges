@@ -2533,8 +2533,7 @@ impl KurniaMoveGenerator {
             );
         }
 
-        self.plays = found_moves.into_inner().into_vec();
-        self.plays.sort_unstable();
+        self.plays = found_moves.into_inner().into_sorted_vec();
 
         let _ = std::mem::replace(&mut working_buffer.multi_leaves, multi_leaves);
     }
@@ -2662,8 +2661,7 @@ impl KurniaMoveGenerator {
             );
         }
 
-        self.plays = found_moves.into_inner().into_vec();
-        self.plays.sort_unstable();
+        self.plays = found_moves.into_inner().into_sorted_vec();
 
         let _ = std::mem::replace(&mut working_buffer.multi_leaves, multi_leaves);
     }
