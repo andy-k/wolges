@@ -11,7 +11,7 @@ struct Candidate {
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
 pub struct Simmer<'a> {
-    game_config: &'a game_config::GameConfig<'a>,
+    game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg,
     klv: &'a klv::Klv,
     candidates: Vec<Candidate>,
@@ -20,7 +20,7 @@ pub struct Simmer<'a> {
 
 impl<'a> Simmer<'a> {
     pub fn new(
-        game_config: &'a game_config::GameConfig<'_>,
+        game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg,
         klv: &'a klv::Klv,
     ) -> Self {

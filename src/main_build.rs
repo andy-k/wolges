@@ -37,7 +37,7 @@ use std::str::FromStr;
 
 fn build_leaves<Readable: std::io::Read>(
     f: Readable,
-    alph: alphabet::Alphabet<'_>,
+    alph: alphabet::Alphabet,
 ) -> error::Returns<Vec<u8>> {
     let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
     let mut leaves_map: fash::MyHashMap<bites::Bites, _> = fash::MyHashMap::default();
@@ -93,7 +93,7 @@ fn build_leaves<Readable: std::io::Read>(
 
 fn build_leaves_f32<Readable: std::io::Read>(
     f: Readable,
-    alph: alphabet::Alphabet<'_>,
+    alph: alphabet::Alphabet,
 ) -> error::Returns<Vec<u8>> {
     let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
     let mut leaves_map = fash::MyHashMap::default();
@@ -170,7 +170,7 @@ fn read_to_string(reader: &mut Box<dyn std::io::Read>) -> Result<String, std::io
     Ok(s)
 }
 
-fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
+fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     args: &[String],
     language_name: &str,
     make_alphabet: AlphabetMaker,

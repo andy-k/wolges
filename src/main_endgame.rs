@@ -108,7 +108,7 @@ use std::str::FromStr;
 impl Question {
     // not-very-strict gcg parser
     fn from_gcg(
-        game_config: &game_config::GameConfig<'_>,
+        game_config: &game_config::GameConfig,
         lexicon: &str,
         gcg: &str,
         rack: &str,
@@ -385,7 +385,7 @@ impl Question {
     }
 
     fn from_fen(
-        game_config: &game_config::GameConfig<'_>,
+        game_config: &game_config::GameConfig,
         lexicon: &str,
         fen_str: &str,
         rack: &str,

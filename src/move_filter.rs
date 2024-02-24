@@ -107,7 +107,7 @@ impl<'a> Tilt<'a> {
     }
 
     pub fn new(
-        game_config: &game_config::GameConfig<'_>,
+        game_config: &game_config::GameConfig,
         kwg: &kwg::Kwg,
         length_importances: &'a [f32],
     ) -> Self {

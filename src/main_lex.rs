@@ -4,7 +4,7 @@ use wolges::{alphabet, bites, error, fash, game_config, kwg};
 
 fn print_dawg(a: &alphabet::Alphabet, g: &kwg::Kwg) {
     struct Env<'a> {
-        a: &'a alphabet::Alphabet<'a>,
+        a: &'a alphabet::Alphabet,
         g: &'a kwg::Kwg,
         s: &'a mut String,
     }
@@ -208,7 +208,7 @@ impl EmbeddedWordsFinder {
 }
 
 fn test_find_embedded_words<'a>(
-    alphabet: &alphabet::Alphabet<'_>,
+    alphabet: &alphabet::Alphabet,
     kwg: &kwg::Kwg,
     board_strs: impl IntoIterator<Item = &'a str>,
     board_muls: Option<&[i8]>,

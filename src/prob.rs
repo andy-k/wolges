@@ -43,7 +43,7 @@ pub struct WordProbability {
 }
 
 impl WordProbability {
-    pub fn new(alphabet: &alphabet::Alphabet<'_>) -> Self {
+    pub fn new(alphabet: &alphabet::Alphabet) -> Self {
         let alphabet_freqs = (0..alphabet.len())
             .map(|tile| alphabet.freq(tile))
             .collect::<Box<_>>();

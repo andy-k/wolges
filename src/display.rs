@@ -30,7 +30,7 @@ pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -
 
 #[inline(always)]
 pub fn board_label<'a>(
-    alphabet: &'a alphabet::Alphabet<'a>,
+    alphabet: &'a alphabet::Alphabet,
     board_layout: &board_layout::BoardLayout,
     board_tiles: &'a [u8],
     row: i8,
@@ -108,7 +108,7 @@ pub fn str_to_column_usize_ignore_case(sb: &[u8]) -> Option<usize> {
 }
 
 struct BoardPrinter<'a> {
-    alphabet: &'a alphabet::Alphabet<'a>,
+    alphabet: &'a alphabet::Alphabet,
     board_layout: &'a board_layout::BoardLayout,
     board_tiles: &'a [u8],
 }
@@ -171,7 +171,7 @@ impl std::fmt::Display for BoardPrinter<'_> {
 }
 
 pub fn print_board(
-    alphabet: &alphabet::Alphabet<'_>,
+    alphabet: &alphabet::Alphabet,
     board_layout: &board_layout::BoardLayout,
     board_tiles: &[u8],
 ) {
@@ -186,7 +186,7 @@ pub fn print_board(
 }
 
 pub struct BoardFenner<'a> {
-    alphabet: &'a alphabet::Alphabet<'a>,
+    alphabet: &'a alphabet::Alphabet,
     board_layout: &'a board_layout::BoardLayout,
     board_tiles: &'a [u8],
 }
@@ -230,7 +230,7 @@ impl std::fmt::Display for BoardFenner<'_> {
 
 impl<'a> BoardFenner<'a> {
     pub fn new(
-        alphabet: &'a alphabet::Alphabet<'a>,
+        alphabet: &'a alphabet::Alphabet,
         board_layout: &'a board_layout::BoardLayout,
         board_tiles: &'a [u8],
     ) -> Self {
@@ -250,7 +250,7 @@ pub struct BoardFenParser<'a> {
 
 impl<'a> BoardFenParser<'a> {
     pub fn new(
-        alphabet: &'a alphabet::Alphabet<'a>,
+        alphabet: &'a alphabet::Alphabet,
         board_layout: &'a board_layout::BoardLayout,
     ) -> Self {
         let dim = board_layout.dim();
@@ -347,7 +347,7 @@ impl std::fmt::Display for MsPrinter {
 }
 
 struct GameStatePrinter<'a> {
-    game_config: &'a game_config::GameConfig<'a>,
+    game_config: &'a game_config::GameConfig,
     game_state: &'a game_state::GameState,
     optional_game_timers: Option<&'a game_timers::GameTimers>,
 }
@@ -406,7 +406,7 @@ impl std::fmt::Display for GameStatePrinter<'_> {
 }
 
 pub fn print_game_state(
-    game_config: &game_config::GameConfig<'_>,
+    game_config: &game_config::GameConfig,
     game_state: &game_state::GameState,
     optional_game_timers: Option<&game_timers::GameTimers>,
 ) {

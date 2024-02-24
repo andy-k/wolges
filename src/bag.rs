@@ -6,7 +6,7 @@ use rand::prelude::*;
 pub struct Bag(pub Vec<u8>);
 
 impl Bag {
-    pub fn new(alphabet: &alphabet::Alphabet<'_>) -> Bag {
+    pub fn new(alphabet: &alphabet::Alphabet) -> Bag {
         let mut bag = Vec::with_capacity(
             (0..alphabet.len())
                 .map(|tile| alphabet.freq(tile) as usize)

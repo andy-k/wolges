@@ -7,9 +7,9 @@ pub enum GameRules {
     Jumbled,
 }
 
-pub struct StaticGameConfig<'a> {
+pub struct StaticGameConfig {
     game_rules: GameRules,
-    alphabet: alphabet::Alphabet<'a>,
+    alphabet: alphabet::Alphabet,
     board_layout: board_layout::BoardLayout,
     rack_size: u8,
     num_players: u8,
@@ -20,13 +20,13 @@ pub struct StaticGameConfig<'a> {
     exchange_tile_limit: i16, // >= 1
 }
 
-pub enum GameConfig<'a> {
-    Static(StaticGameConfig<'a>),
+pub enum GameConfig {
+    Static(StaticGameConfig),
 }
 
-impl<'a> GameConfig<'a> {
+impl GameConfig {
     #[inline(always)]
-    pub fn alphabet(&self) -> &alphabet::Alphabet<'a> {
+    pub fn alphabet(&self) -> &alphabet::Alphabet {
         match self {
             GameConfig::Static(x) => &x.alphabet,
         }
@@ -118,7 +118,7 @@ impl<'a> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_catalan_game_config<'a>() -> GameConfig<'a> {
+pub fn make_catalan_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_catalan_alphabet(),
@@ -134,7 +134,7 @@ pub fn make_catalan_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_catalan_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_catalan_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_catalan_alphabet(),
@@ -150,7 +150,7 @@ pub fn make_jumbled_catalan_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_super_catalan_game_config<'a>() -> GameConfig<'a> {
+pub fn make_super_catalan_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_super_catalan_alphabet(),
@@ -166,7 +166,7 @@ pub fn make_super_catalan_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_super_catalan_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_super_catalan_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_super_catalan_alphabet(),
@@ -181,7 +181,7 @@ pub fn make_jumbled_super_catalan_game_config<'a>() -> GameConfig<'a> {
     })
 }
 
-pub fn make_english_game_config<'a>() -> GameConfig<'a> {
+pub fn make_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_english_alphabet(),
@@ -197,7 +197,7 @@ pub fn make_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_english_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_english_alphabet(),
@@ -213,7 +213,7 @@ pub fn make_jumbled_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_punctured_english_game_config<'a>() -> GameConfig<'a> {
+pub fn make_punctured_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_english_alphabet(),
@@ -229,7 +229,7 @@ pub fn make_punctured_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_punctured_english_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_punctured_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_english_alphabet(),
@@ -245,7 +245,7 @@ pub fn make_jumbled_punctured_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_hong_kong_english_game_config<'a>() -> GameConfig<'a> {
+pub fn make_hong_kong_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_hong_kong_english_alphabet(),
@@ -261,7 +261,7 @@ pub fn make_hong_kong_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
+pub fn make_super_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_super_english_alphabet(),
@@ -277,7 +277,7 @@ pub fn make_super_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_super_english_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_super_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_super_english_alphabet(),
@@ -293,7 +293,7 @@ pub fn make_jumbled_super_english_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_french_game_config<'a>() -> GameConfig<'a> {
+pub fn make_french_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_french_alphabet(),
@@ -309,7 +309,7 @@ pub fn make_french_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_french_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_french_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_french_alphabet(),
@@ -325,7 +325,7 @@ pub fn make_jumbled_french_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_german_game_config<'a>() -> GameConfig<'a> {
+pub fn make_german_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_german_alphabet(),
@@ -341,7 +341,7 @@ pub fn make_german_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_german_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_german_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_german_alphabet(),
@@ -357,7 +357,7 @@ pub fn make_jumbled_german_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_norwegian_game_config<'a>() -> GameConfig<'a> {
+pub fn make_norwegian_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_norwegian_alphabet(),
@@ -373,7 +373,7 @@ pub fn make_norwegian_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_norwegian_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_norwegian_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_norwegian_alphabet(),
@@ -389,7 +389,7 @@ pub fn make_jumbled_norwegian_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_polish_game_config<'a>() -> GameConfig<'a> {
+pub fn make_polish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_polish_alphabet(),
@@ -405,7 +405,7 @@ pub fn make_polish_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_polish_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_polish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_polish_alphabet(),
@@ -421,7 +421,7 @@ pub fn make_jumbled_polish_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_slovene_game_config<'a>() -> GameConfig<'a> {
+pub fn make_slovene_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_slovene_alphabet(),
@@ -437,7 +437,7 @@ pub fn make_slovene_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_slovene_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_slovene_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_slovene_alphabet(),
@@ -453,7 +453,7 @@ pub fn make_jumbled_slovene_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_spanish_game_config<'a>() -> GameConfig<'a> {
+pub fn make_spanish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_spanish_alphabet(),
@@ -469,7 +469,7 @@ pub fn make_spanish_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_spanish_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_spanish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_spanish_alphabet(),
@@ -485,7 +485,7 @@ pub fn make_jumbled_spanish_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_yupik_game_config<'a>() -> GameConfig<'a> {
+pub fn make_yupik_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_yupik_alphabet(),
@@ -501,7 +501,7 @@ pub fn make_yupik_game_config<'a>() -> GameConfig<'a> {
 }
 
 #[allow(dead_code)]
-pub fn make_jumbled_yupik_game_config<'a>() -> GameConfig<'a> {
+pub fn make_jumbled_yupik_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
         alphabet: alphabet::make_yupik_alphabet(),

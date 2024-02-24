@@ -11,7 +11,7 @@ pub enum MacondoFormat {
 // This function converts a KWG into a Macondo-compatible gaddag or dawg file.
 pub fn to_macondo<'a>(
     kwg: &'a kwg::Kwg,
-    alphabet: &'a alphabet::Alphabet<'a>,
+    alphabet: &'a alphabet::Alphabet,
     lexicon_name: &'a str,
     build_format: MacondoFormat,
 ) -> Box<[u8]> {

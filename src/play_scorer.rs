@@ -16,7 +16,7 @@ impl PlayScorer {
     }
 
     // Does not validate rack, may crash if invalid tile.
-    fn set_rack_tally(&mut self, game_config: &game_config::GameConfig<'_>, rack: &[u8]) {
+    fn set_rack_tally(&mut self, game_config: &game_config::GameConfig, rack: &[u8]) {
         self.rack_tally.clear();
         self.rack_tally
             .resize(game_config.alphabet().len() as usize, 0);

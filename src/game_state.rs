@@ -70,7 +70,7 @@ impl Clone for GameState {
 
 impl GameState {
     // The other methods must be called with the same game_config.
-    pub fn new(game_config: &game_config::GameConfig<'_>) -> Self {
+    pub fn new(game_config: &game_config::GameConfig) -> Self {
         let board_layout = game_config.board_layout();
         let dim = board_layout.dim();
         let rack_size = game_config.rack_size() as usize;
@@ -107,7 +107,7 @@ impl GameState {
 
     pub fn reset_and_draw_tiles(
         &mut self,
-        game_config: &game_config::GameConfig<'_>,
+        game_config: &game_config::GameConfig,
         mut rng: &mut dyn RngCore,
     ) {
         self.reset();
@@ -157,7 +157,7 @@ impl GameState {
 
     pub fn play(
         &mut self,
-        game_config: &game_config::GameConfig<'_>,
+        game_config: &game_config::GameConfig,
         mut rng: &mut dyn RngCore,
         play: &movegen::Play,
     ) -> error::Returns<()> {
@@ -219,7 +219,7 @@ impl GameState {
 
     pub fn check_game_ended(
         &self,
-        game_config: &game_config::GameConfig<'_>,
+        game_config: &game_config::GameConfig,
         final_scores: &mut [i32],
     ) -> CheckGameEnded {
         if self.current_player().rack.is_empty() {

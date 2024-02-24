@@ -23,7 +23,7 @@ struct Question {
 
 impl Question {
     fn from_fen(
-        game_config: &game_config::GameConfig<'_>,
+        game_config: &game_config::GameConfig,
         lexicon: &str,
         fen_str: &str,
         rack: &str,
@@ -73,7 +73,7 @@ struct ObservableCandidate {
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
 struct ObservableSimmer<'a> {
-    game_config: &'a game_config::GameConfig<'a>,
+    game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg,
     klv: &'a klv::Klv,
     candidates: Vec<ObservableCandidate>,
@@ -82,7 +82,7 @@ struct ObservableSimmer<'a> {
 
 impl<'a> ObservableSimmer<'a> {
     pub fn new(
-        game_config: &'a game_config::GameConfig<'_>,
+        game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg,
         klv: &'a klv::Klv,
     ) -> Self {

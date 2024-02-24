@@ -92,7 +92,7 @@ struct WorkBuffer {
 }
 
 impl WorkBuffer {
-    fn new(game_config: &game_config::GameConfig<'_>) -> Self {
+    fn new(game_config: &game_config::GameConfig) -> Self {
         Self {
             t0: std::time::Instant::now(),
             tick_periods: move_picker::Periods(0),
@@ -147,7 +147,7 @@ pub struct FoundPlay<'a> {
 // (Refer to note at WorkBuffer.)
 // This is not enforced.
 pub struct EndgameSolver<'a> {
-    game_config: &'a game_config::GameConfig<'a>,
+    game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg,
     klv: Box<klv::Klv>,
     board_tiles: Vec<u8>,
@@ -157,7 +157,7 @@ pub struct EndgameSolver<'a> {
 }
 
 impl<'a> EndgameSolver<'a> {
-    pub fn new(game_config: &'a game_config::GameConfig<'a>, kwg: &'a kwg::Kwg) -> Self {
+    pub fn new(game_config: &'a game_config::GameConfig, kwg: &'a kwg::Kwg) -> Self {
         if game_config.num_players() != 2 {
             panic!("cannot solve non-2-player endgames");
         }

@@ -197,7 +197,7 @@ impl Clone for WorkingBuffer {
 }
 
 impl WorkingBuffer {
-    fn new(game_config: &game_config::GameConfig<'_>) -> Self {
+    fn new(game_config: &game_config::GameConfig) -> Self {
         let dim = game_config.board_layout().dim();
         let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
         Self {
@@ -496,7 +496,7 @@ impl WorkingBuffer {
 // kwg must be Gaddawg for Classic, AlphaDawg for Jumbled.
 pub struct BoardSnapshot<'a> {
     pub board_tiles: &'a [u8],
-    pub game_config: &'a game_config::GameConfig<'a>,
+    pub game_config: &'a game_config::GameConfig,
     pub kwg: &'a kwg::Kwg,
     pub klv: &'a klv::Klv,
 }
@@ -869,7 +869,7 @@ fn gen_cross_set<'a>(
 
 struct GenPlacePlacementsParams<'a> {
     board_strip: &'a [u8],
-    alphabet: &'a alphabet::Alphabet<'a>,
+    alphabet: &'a alphabet::Alphabet,
     rack_tally: &'a mut [u8],
     used_tile_scores: &'a mut Vec<i8>,
     used_tile_scores_buffer: &'a mut Vec<i8>,
@@ -1427,7 +1427,7 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
 ) {
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32)> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
-        alphabet: &'a alphabet::Alphabet<'a>,
+        alphabet: &'a alphabet::Alphabet,
         num_played: u8,
         idx_left: i8,
     }
@@ -1723,7 +1723,7 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
 ) {
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32)> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
-        alphabet: &'a alphabet::Alphabet<'a>,
+        alphabet: &'a alphabet::Alphabet,
         num_played: u8,
         idx_left: i8,
     }
@@ -2328,7 +2328,7 @@ impl Clone for KurniaMoveGenerator {
 }
 
 impl KurniaMoveGenerator {
-    pub fn new(game_config: &game_config::GameConfig<'_>) -> Self {
+    pub fn new(game_config: &game_config::GameConfig) -> Self {
         Self {
             working_buffer: WorkingBuffer::new(game_config),
             plays: Vec::new(),

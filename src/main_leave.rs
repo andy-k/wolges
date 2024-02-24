@@ -67,7 +67,7 @@ fn read_to_end(reader: &mut Box<dyn std::io::Read>) -> Result<Vec<u8>, std::io::
     Ok(v)
 }
 
-fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig<'static>>(
+fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
     args: &[String],
     language_name: &str,
     make_game_config: GameConfigMaker,
@@ -243,7 +243,7 @@ for english-autoplay only the kwg can come from \"-\"."
 }
 
 fn generate_autoplay_logs(
-    game_config: game_config::GameConfig<'static>,
+    game_config: game_config::GameConfig,
     kwg: kwg::Kwg,
     arc_klv0: std::sync::Arc<klv::Klv>,
     arc_klv1: std::sync::Arc<klv::Klv>,
@@ -627,7 +627,7 @@ struct Cumulate {
 }
 
 fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
-    game_config: game_config::GameConfig<'_>,
+    game_config: game_config::GameConfig,
     f: Readable,
     mut csv_out: csv::Writer<W>,
 ) -> error::Returns<()> {
@@ -764,7 +764,7 @@ fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
 }
 
 fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHING: bool>(
-    game_config: game_config::GameConfig<'_>,
+    game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
 ) -> error::Returns<()> {

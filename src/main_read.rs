@@ -176,7 +176,7 @@ trait AlphabetLabel {
 }
 
 struct WolgesAlphabetLabel<'a> {
-    alphabet: &'a alphabet::Alphabet<'a>,
+    alphabet: &'a alphabet::Alphabet,
 }
 
 impl AlphabetLabel for WolgesAlphabetLabel<'_> {
@@ -325,7 +325,7 @@ fn read_to_end(reader: &mut Box<dyn std::io::Read>) -> Result<Vec<u8>, std::io::
     Ok(v)
 }
 
-fn do_lang<'a, AlphabetMaker: Fn() -> alphabet::Alphabet<'a>>(
+fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     args: &[String],
     language_name: &str,
     make_alphabet: AlphabetMaker,
