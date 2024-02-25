@@ -1,13 +1,15 @@
 // Copyright (C) 2020-2024 Andy Kurnia.
 
+use super::bites_str;
+
 struct Tile {
-    label: String,
-    blank_label: String,
+    label: bites_str::BitesStr,
+    blank_label: bites_str::BitesStr,
     freq: u8,
     score: i8,
     is_vowel: bool,
-    alias_labels: Vec<String>,
-    alias_blank_labels: Vec<String>,
+    alias_labels: Vec<bites_str::BitesStr>,
+    alias_blank_labels: Vec<bites_str::BitesStr>,
 }
 
 #[derive(Default)]

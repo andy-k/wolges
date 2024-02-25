@@ -6,6 +6,7 @@ pub mod error;
 pub mod alphabet;
 pub mod bag;
 pub mod bites;
+pub mod bites_str;
 pub mod board_layout;
 pub mod build;
 pub mod display;
