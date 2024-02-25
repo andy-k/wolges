@@ -58,6 +58,7 @@ Most files are in src.
 - prob implements some probability logic.
 - stats implements some stats logic.
 - bites is Kurnia Bites, a data structure used to store bytes.
+- bites_str (pronounced bite-size str) is bites adapted for str.
 - most of the rest are just data structures.
 
 
