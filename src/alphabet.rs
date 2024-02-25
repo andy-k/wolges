@@ -218,8 +218,8 @@ macro_rules! tile {
     };
     ($label: expr, $blank_label: expr, $freq: expr, $score: expr, $vowel_int: expr, $alias_labels: expr, $alias_blank_labels: expr) => {
         Tile {
-            label: $label.to_string(),
-            blank_label: $blank_label.to_string(),
+            label: $label.into(),
+            blank_label: $blank_label.into(),
             freq: $freq,
             score: $score,
             is_vowel: ($vowel_int) != 0,
