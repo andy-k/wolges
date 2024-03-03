@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2024 Andy Kurnia.
 
-use super::{alphabet, bites, display, fash, game_config, klv, kwg, matrix};
+use super::{alphabet, bites, display, game_config, klv, kwg, matrix};
 
 #[derive(Clone)]
 struct CrossSet {
@@ -63,9 +63,9 @@ struct WorkingBuffer {
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     multi_leaves: klv::MultiLeaves,
-    descending_scores: Vec<i8>, // rack.len()
-    exchange_buffer: Vec<u8>,   // rack.len()
-    square_multipliers_by_aggregated_word_multipliers_buffer: fash::MyHashMap<i32, usize>,
+    descending_scores: Vec<i8>,            // rack.len()
+    exchange_buffer: Vec<u8>,              // rack.len()
+    aggregated_word_multipliers: Vec<i32>, // sorted, unique, O(n) insertion but n is tiny.
     precomputed_square_multiplier_buffer: Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
     best_leave_values: Vec<f32>, // rack.len() + 1
@@ -119,9 +119,7 @@ impl Clone for WorkingBuffer {
             multi_leaves: self.multi_leaves.clone(),
             descending_scores: self.descending_scores.clone(),
             exchange_buffer: self.exchange_buffer.clone(),
-            square_multipliers_by_aggregated_word_multipliers_buffer: self
-                .square_multipliers_by_aggregated_word_multipliers_buffer
-                .clone(),
+            aggregated_word_multipliers: self.aggregated_word_multipliers.clone(),
             precomputed_square_multiplier_buffer: self.precomputed_square_multiplier_buffer.clone(),
             indexes_to_descending_square_multiplier_buffer: self
                 .indexes_to_descending_square_multiplier_buffer
@@ -180,8 +178,8 @@ impl Clone for WorkingBuffer {
         self.multi_leaves.clone_from(&source.multi_leaves);
         self.descending_scores.clone_from(&source.descending_scores);
         self.exchange_buffer.clone_from(&source.exchange_buffer);
-        self.square_multipliers_by_aggregated_word_multipliers_buffer
-            .clone_from(&source.square_multipliers_by_aggregated_word_multipliers_buffer);
+        self.aggregated_word_multipliers
+            .clone_from(&source.aggregated_word_multipliers);
         self.precomputed_square_multiplier_buffer
             .clone_from(&source.precomputed_square_multiplier_buffer);
         self.indexes_to_descending_square_multiplier_buffer
@@ -260,7 +258,7 @@ impl WorkingBuffer {
             multi_leaves: klv::MultiLeaves::new(),
             descending_scores: Vec::new(),
             exchange_buffer: Vec::new(),
-            square_multipliers_by_aggregated_word_multipliers_buffer: fash::MyHashMap::default(),
+            aggregated_word_multipliers: Vec::new(),
             precomputed_square_multiplier_buffer: Vec::new(),
             indexes_to_descending_square_multiplier_buffer: Vec::new(),
             best_leave_values: Vec::new(),
@@ -882,7 +880,7 @@ struct GenPlacePlacementsParams<'a> {
     perpendicular_scores_strip: &'a [i32],
     rack_bits: u64,
     descending_scores: &'a [i8],
-    square_multipliers_by_aggregated_word_multipliers_buffer: &'a mut fash::MyHashMap<i32, usize>,
+    aggregated_word_multipliers: &'a mut Vec<i32>,
     precomputed_square_multiplier_buffer: &'a mut Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
     best_leave_values: &'a [f32],
@@ -898,46 +896,34 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     let strider_len = params.board_strip.len();
 
     if !want_raw {
-        params
-            .square_multipliers_by_aggregated_word_multipliers_buffer
-            .clear();
-        let mut vec_size = 0usize;
+        params.aggregated_word_multipliers.clear();
         for i in 0..strider_len {
             let mut wm = params.remaining_word_multipliers_strip[i] as i32;
-            if let std::collections::hash_map::Entry::Vacant(entry) = params
-                .square_multipliers_by_aggregated_word_multipliers_buffer
-                .entry(wm)
-            {
-                entry.insert(vec_size);
-                vec_size += strider_len;
+            if let Err(idx) = params.aggregated_word_multipliers.binary_search(&wm) {
+                params.aggregated_word_multipliers.insert(idx, wm);
             }
             for &wm_val in &params.remaining_word_multipliers_strip[i + 1..strider_len] {
                 if wm_val != 1 {
-                    // wm_val == 1 is frequent and always means the entry is occupied.
+                    // wm_val == 1 is frequent.
                     wm *= wm_val as i32;
-                    if let std::collections::hash_map::Entry::Vacant(entry) = params
-                        .square_multipliers_by_aggregated_word_multipliers_buffer
-                        .entry(wm)
-                    {
-                        entry.insert(vec_size);
-                        vec_size += strider_len;
+                    // monotonically increasing only if all multipliers are positive.
+                    if let Err(idx) = params.aggregated_word_multipliers.binary_search(&wm) {
+                        params.aggregated_word_multipliers.insert(idx, wm);
                     }
                 }
             }
         }
-        params.precomputed_square_multiplier_buffer.clear();
+        let vec_size = strider_len * params.aggregated_word_multipliers.len();
         params
             .precomputed_square_multiplier_buffer
             .resize(vec_size, 0);
         params
             .indexes_to_descending_square_multiplier_buffer
-            .clear();
-        params
-            .indexes_to_descending_square_multiplier_buffer
             .resize(vec_size, 0);
-        for (k, &low_end) in params
-            .square_multipliers_by_aggregated_word_multipliers_buffer
+        for (k, low_end) in params
+            .aggregated_word_multipliers
             .iter()
+            .zip((0..).step_by(strider_len))
         {
             // k is the aggregated main word multiplier.
             // low_end is the index of the strider_len-length slice.
@@ -998,7 +984,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         // that square must be A, but this is not currently implemented.
         let low_end = env
             .params
-            .square_multipliers_by_aggregated_word_multipliers_buffer[&acc.word_multiplier];
+            .aggregated_word_multipliers
+            .binary_search(&acc.word_multiplier)
+            .unwrap()
+            * env.strider_len;
         let high_end = low_end + env.strider_len;
         let precomputed_square_multiplier_slice =
             &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
@@ -2799,8 +2788,7 @@ fn kurnia_gen_place_moves_iter<
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
                 descending_scores: &working_buffer.descending_scores,
-                square_multipliers_by_aggregated_word_multipliers_buffer: &mut working_buffer
-                    .square_multipliers_by_aggregated_word_multipliers_buffer,
+                aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
@@ -2850,8 +2838,7 @@ fn kurnia_gen_place_moves_iter<
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
                 descending_scores: &working_buffer.descending_scores,
-                square_multipliers_by_aggregated_word_multipliers_buffer: &mut working_buffer
-                    .square_multipliers_by_aggregated_word_multipliers_buffer,
+                aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
