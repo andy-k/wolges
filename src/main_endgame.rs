@@ -2,8 +2,8 @@
 
 use rand::prelude::*;
 use wolges::{
-    alphabet, display, endgame, error, game_config, game_state, klv, kwg, matrix, movegen,
-    play_scorer,
+    alphabet, bites, build, display, endgame, error, fash, game_config, game_state, klv, kwg,
+    matrix, movegen, play_scorer,
 };
 
 // this is reusing most of main_json, but main_json is the most current code.
@@ -1263,7 +1263,34 @@ fn main() -> error::Returns<()> {
         ));
     }
 
-    let mut egs = endgame::EndgameSolver::new(&game_config, &kwg);
+    // perform word prune.
+
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    // these always allocate for now.
+    let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
+    move_generator.gen_remaining_words(
+        &movegen::BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            klv: &klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
+        },
+        |word: &[u8]| {
+            set_of_words.insert(word.into());
+        },
+    );
+    println!("word_prune: {} words", set_of_words.len());
+    let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
+    vec_of_words.sort_unstable();
+    let smaller_kwg_bytes = build::build(
+        build::BuildFormat::Gaddawg,
+        &vec_of_words.into_boxed_slice(),
+    )?;
+    println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
+    let smaller_kwg = kwg::Kwg::from_bytes_alloc(&smaller_kwg_bytes);
+    move_generator.reset_for_another_kwg();
+
+    let mut egs = endgame::EndgameSolver::new(&game_config, &smaller_kwg);
     egs.init(&board_tiles, [&question.rack, &oppo_rack]);
     egs.evaluate(0);
 
