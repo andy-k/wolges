@@ -64,7 +64,7 @@ struct WorkingBuffer {
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     multi_leaves: klv::MultiLeaves,
     descending_scores: Vec<i8>,            // rack.len()
-    exchange_buffer: Vec<u8>,              // rack.len()
+    exchange_buffer: Vec<u8>,              // rack.len(), or max(word length) with word prune
     aggregated_word_multipliers: Vec<i32>, // sorted, unique, O(n) insertion but n is tiny.
     precomputed_square_multiplier_buffer: Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
@@ -423,13 +423,6 @@ impl WorkingBuffer {
             self.best_leave_values[i as usize] +=
                 board_snapshot.game_config.num_played_bonus(i) as f32;
         }
-        self.used_letters_tally.clear();
-        match board_snapshot.game_config.game_rules() {
-            game_config::GameRules::Classic => {}
-            game_config::GameRules::Jumbled => {
-                self.used_letters_tally.resize(alphabet.len() as usize, 0);
-            }
-        }
         self.used_tile_scores.clear();
         self.used_tile_scores.reserve(rack.len());
         self.used_tile_scores_buffer.clear();
@@ -437,6 +430,14 @@ impl WorkingBuffer {
     }
 
     fn init_after_cross_sets(&mut self, board_snapshot: &BoardSnapshot<'_>) {
+        let alphabet = board_snapshot.game_config.alphabet();
+        self.used_letters_tally.clear();
+        match board_snapshot.game_config.game_rules() {
+            game_config::GameRules::Classic => {}
+            game_config::GameRules::Jumbled => {
+                self.used_letters_tally.resize(alphabet.len() as usize, 0);
+            }
+        }
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
         let premiums = board_layout.premiums();
@@ -2682,6 +2683,18 @@ impl KurniaMoveGenerator {
             |_equity: f32, _play: &Play| true,
         );
     }
+
+    // found_word may be called multiple times for the same word.
+    #[inline(always)]
+    pub fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8])>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a>,
+        found_word: FoundWord,
+    ) {
+        let working_buffer = &mut self.working_buffer;
+        working_buffer.init(board_snapshot, &[], &|leave_value: f32| leave_value);
+        gen_remaining_words(board_snapshot, working_buffer, found_word)
+    }
 }
 
 fn kurnia_gen_exchange_moves<'a, FoundExchangeMove: FnMut(&[u8], f32)>(
@@ -2915,4 +2928,327 @@ fn kurnia_gen_place_moves_iter<
         }
         None => None,
     })
+}
+
+struct GenRemainingConnectedWordsParams<'a> {
+    board_strip: &'a [u8],
+    rack_tally: &'a mut [u8],
+    word_strip_buffer: &'a mut [u8],
+    kwg: &'a kwg::Kwg,
+}
+
+// note: this basic word prune algorithm does not consider hooks yet.
+fn gen_remaining_connected_words<'a, FoundWord: 'a + FnMut(&[u8]), FoundSpace: 'a + FnMut(u8)>(
+    params: &'a mut GenRemainingConnectedWordsParams<'a>,
+    found_word: FoundWord,
+    mut found_space: FoundSpace,
+) {
+    params
+        .word_strip_buffer
+        .iter_mut()
+        .zip(params.board_strip.iter().map(|x| x & 0x7f))
+        .for_each(|(m, v)| *m = v);
+
+    struct Env<'a, FoundWord: 'a + FnMut(&[u8])> {
+        params: &'a mut GenRemainingConnectedWordsParams<'a>,
+        found_word: FoundWord,
+        anchor: i8,
+        rightmost: i8,
+        num_played: i8,
+        idx_left: i8,
+    }
+
+    fn record<FoundWord: FnMut(&[u8])>(env: &mut Env<'_, FoundWord>, idx_left: i8, idx_right: i8) {
+        (env.found_word)(&env.params.word_strip_buffer[idx_left as usize..idx_right as usize]);
+    }
+
+    fn play_right<FoundWord: FnMut(&[u8])>(env: &mut Env<'_, FoundWord>, mut p: i32, mut idx: i8) {
+        // tail-recurse placing current sequence of tiles
+        while idx < env.rightmost {
+            let b = env.params.board_strip[idx as usize];
+            if b == 0 {
+                break;
+            }
+            p = env.params.kwg.seek(p, b & 0x7f);
+            if p <= 0 {
+                return;
+            }
+            idx += 1;
+        }
+        let node = env.params.kwg[p];
+        if idx > env.anchor + 1 && idx - env.idx_left >= 2 && node.accepts() {
+            record(env, env.idx_left, idx);
+        }
+
+        if idx < env.rightmost {
+            p = node.arc_index();
+            if p <= 0 {
+                return;
+            }
+            loop {
+                let node = env.params.kwg[p];
+                let tile = node.tile();
+                if env.params.rack_tally[tile as usize] > 0 {
+                    env.params.rack_tally[tile as usize] -= 1;
+                    env.params.word_strip_buffer[idx as usize] = tile;
+                    play_right(env, p, idx + 1);
+                    env.params.rack_tally[tile as usize] += 1;
+                } else if env.params.rack_tally[0] > 0 {
+                    env.params.rack_tally[0] -= 1;
+                    env.params.word_strip_buffer[idx as usize] = tile; // not blanked for kwg.
+                    play_right(env, p, idx + 1);
+                    env.params.rack_tally[0] += 1;
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
+            }
+        }
+    }
+
+    fn play_left<FoundWord: FnMut(&[u8])>(env: &mut Env<'_, FoundWord>, mut p: i32, mut idx: i8) {
+        // tail-recurse placing current sequence of tiles
+        while idx >= 0 {
+            let b = env.params.board_strip[idx as usize];
+            if b == 0 {
+                break;
+            }
+            p = env.params.kwg.seek(p, b & 0x7f);
+            if p <= 0 {
+                return;
+            }
+            idx -= 1;
+        }
+        let mut node = env.params.kwg[p];
+        if env.num_played > 0 && env.anchor - idx >= 2 && node.accepts() {
+            record(env, idx + 1, env.anchor + 1);
+        }
+
+        p = node.arc_index();
+        if p <= 0 {
+            return;
+        }
+
+        node = env.params.kwg[p];
+        if node.tile() == 0 {
+            // assume idx < env.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
+            env.idx_left = idx + 1;
+            play_right(env, p, env.anchor + 1);
+            if node.is_end() {
+                return;
+            }
+            p += 1;
+        }
+
+        if idx >= 0 {
+            loop {
+                let node = env.params.kwg[p];
+                let tile = node.tile();
+                if env.params.rack_tally[tile as usize] > 0 {
+                    env.params.rack_tally[tile as usize] -= 1;
+                    env.num_played += 1;
+                    env.params.word_strip_buffer[idx as usize] = tile;
+                    play_left(env, p, idx - 1);
+                    env.num_played -= 1;
+                    env.params.rack_tally[tile as usize] += 1;
+                } else if env.params.rack_tally[0] > 0 {
+                    env.params.rack_tally[0] -= 1;
+                    env.num_played += 1;
+                    env.params.word_strip_buffer[idx as usize] = tile; // not blanked for kwg.
+                    play_left(env, p, idx - 1);
+                    env.num_played -= 1;
+                    env.params.rack_tally[0] += 1;
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
+            }
+        }
+    }
+
+    let strider_len = params.board_strip.len();
+    let mut env = Env {
+        params,
+        found_word,
+        anchor: 0,
+        rightmost: 0,
+        num_played: 0,
+        idx_left: 0,
+    };
+    let mut leftmost = strider_len as i8; // processed up to here
+    loop {
+        env.rightmost = leftmost;
+        while leftmost > 0 && env.params.board_strip[leftmost as usize - 1] == 0 {
+            leftmost -= 1;
+        }
+        found_space((env.rightmost - leftmost - ((leftmost > 0) as i8)).max(0) as u8); // leftmost>0 requires gap from next word.
+        if leftmost > 0 {
+            // board[leftmost - 1] is a tile.
+            env.anchor = leftmost - 1;
+            // board[anchor + 1] is empty or off-board, board[anchor] has a tile.
+            let mut p = 1;
+            while leftmost > 0 && env.params.board_strip[leftmost as usize - 1] != 0 {
+                leftmost -= 1;
+                p = env
+                    .params
+                    .kwg
+                    .seek(p, env.params.board_strip[leftmost as usize] & 0x7f);
+            }
+            // board[leftmost] has a tile, board[leftmost - 1] is empty or off-board.
+            if p >= 0 {
+                play_left(&mut env, p, leftmost - 1);
+            }
+        }
+        // board[leftmost] was leftmost tile. need gap from previous word.
+        leftmost -= 1;
+        // now board[leftmost] is empty.
+        if leftmost <= 1 {
+            // assume words are >= 2.
+            break;
+        }
+    }
+    env.params.word_strip_buffer.iter_mut().for_each(|m| *m = 0);
+}
+
+struct GenRemainingUnconnectedWordsParams<'a> {
+    rack_tally: &'a mut [u8],
+    word_vec: &'a mut Vec<u8>,
+    kwg: &'a kwg::Kwg,
+    max_len: usize,
+}
+
+fn gen_remaining_unconnected_words<'a, FoundWord: 'a + FnMut(&[u8])>(
+    params: &'a mut GenRemainingUnconnectedWordsParams<'a>,
+    found_word: FoundWord,
+) {
+    params.word_vec.clear();
+    params.word_vec.reserve(params.max_len);
+    struct Env<'a, FoundWord: 'a + FnMut(&[u8])> {
+        rack_tally: &'a mut [u8],
+        word_vec: &'a mut Vec<u8>,
+        kwg: &'a kwg::Kwg,
+        max_len: usize,
+        found_word: FoundWord,
+    }
+    fn iter<FoundWord: FnMut(&[u8])>(env: &mut Env<'_, FoundWord>, mut p: i32) {
+        if env.word_vec.len() >= env.max_len {
+            return;
+        }
+        loop {
+            let node = &env.kwg[p];
+            let tile = node.tile();
+            if env.rack_tally[tile as usize] > 0 {
+                env.rack_tally[tile as usize] -= 1;
+                env.word_vec.push(tile);
+                if node.accepts() {
+                    (env.found_word)(env.word_vec);
+                }
+                let np = node.arc_index();
+                if np != 0 {
+                    iter(env, np);
+                }
+                env.word_vec.pop();
+                env.rack_tally[tile as usize] += 1;
+            } else if env.rack_tally[0] > 0 {
+                env.rack_tally[0] -= 1;
+                env.word_vec.push(tile);
+                if node.accepts() {
+                    (env.found_word)(env.word_vec);
+                }
+                let np = node.arc_index();
+                if np != 0 {
+                    iter(env, np);
+                }
+                env.word_vec.pop();
+                env.rack_tally[0] += 1;
+            }
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+    iter(
+        &mut Env {
+            rack_tally: params.rack_tally,
+            word_vec: params.word_vec,
+            kwg: params.kwg,
+            max_len: params.max_len,
+            found_word,
+        },
+        params.kwg[0].arc_index(),
+    );
+}
+
+// found_word may be called multiple times for the same word.
+fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8])>(
+    board_snapshot: &'a BoardSnapshot<'a>,
+    working_buffer: &'a mut WorkingBuffer,
+    mut found_word: FoundWord,
+) {
+    let game_config = &board_snapshot.game_config;
+    let board_layout = game_config.board_layout();
+    let dim = board_layout.dim();
+    let alphabet = game_config.alphabet();
+
+    let available_tally = &mut working_buffer.used_letters_tally;
+    available_tally.clear();
+    available_tally.reserve(alphabet.len() as usize);
+    for i in 0..alphabet.len() {
+        available_tally.push(alphabet.freq(i));
+    }
+    // should check underflow.
+    for i in board_snapshot.board_tiles.iter() {
+        if *i != 0 {
+            if i & 0x80 == 0 {
+                available_tally[*i as usize] -= 1;
+            } else {
+                available_tally[0] -= 1;
+            }
+        }
+    }
+    let mut max_space_len = 0;
+    let mut found_space = |space_len: u8| max_space_len = max_space_len.max(space_len);
+    for row in 0..dim.rows {
+        let strip_range_start = (row as isize * dim.cols as isize) as usize;
+        let strip_range_end = strip_range_start + dim.cols as usize;
+        gen_remaining_connected_words(
+            &mut GenRemainingConnectedWordsParams {
+                board_strip: &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                rack_tally: &mut working_buffer.used_letters_tally, // intentional.
+                word_strip_buffer: &mut working_buffer.word_buffer_for_across_plays
+                    [strip_range_start..strip_range_end],
+                kwg: board_snapshot.kwg,
+            },
+            &mut found_word,
+            &mut found_space,
+        );
+    }
+    for col in 0..dim.cols {
+        let strip_range_start = (col as isize * dim.rows as isize) as usize;
+        let strip_range_end = strip_range_start + dim.rows as usize;
+        gen_remaining_connected_words(
+            &mut GenRemainingConnectedWordsParams {
+                board_strip: &working_buffer.transposed_board_tiles
+                    [strip_range_start..strip_range_end],
+                rack_tally: &mut working_buffer.used_letters_tally, // intentional.
+                word_strip_buffer: &mut working_buffer.word_buffer_for_down_plays
+                    [strip_range_start..strip_range_end],
+                kwg: board_snapshot.kwg,
+            },
+            &mut found_word,
+            &mut found_space,
+        );
+    }
+    gen_remaining_unconnected_words(
+        &mut GenRemainingUnconnectedWordsParams {
+            kwg: board_snapshot.kwg,
+            rack_tally: &mut working_buffer.used_letters_tally, // intentional.
+            word_vec: &mut working_buffer.exchange_buffer,      // intentional.
+            max_len: max_space_len as usize,
+        },
+        &mut found_word,
+    );
 }

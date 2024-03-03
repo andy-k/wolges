@@ -2,8 +2,8 @@
 
 use rand::prelude::*;
 use wolges::{
-    display, error, game_config, game_state, game_timers, klv, kwg, move_filter, move_picker,
-    movegen, play_scorer,
+    bites, build, display, error, fash, game_config, game_state, game_timers, klv, kwg,
+    move_filter, move_picker, movegen, play_scorer,
 };
 
 fn main() -> error::Returns<()> {
@@ -87,6 +87,101 @@ fn main() -> error::Returns<()> {
     let mut game_state = game_state::GameState::new(game_config);
     let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
     let mut timers = game_timers::GameTimers::new(game_config.num_players());
+    if false {
+        // https://discord.com/channels/741321677828522035/1157118170398724176/1193946371129094154
+        let fen_str = "ZONULE1B2APAID/1KY2RHANJA4/GAM4R2HUI2/7G6D/6FECIT3O/6AE1TOWIES/6I7E/1EnGUARD6D/NAOI2W8/6AT7/5PYE7/5L1L7/2COVE1L7/5X1E7/7N7";
+        let parsed_fen = fen_parser.parse(fen_str)?;
+        game_state.board_tiles.copy_from_slice(parsed_fen);
+        let alphabet = game_config.alphabet();
+        let mut available_tally = (0..alphabet.len())
+            .map(|x| alphabet.freq(x))
+            .collect::<Vec<u8>>();
+        // should check underflow.
+        for i in game_state.board_tiles.iter() {
+            if *i != 0 {
+                if i & 0x80 == 0 {
+                    available_tally[*i as usize] -= 1;
+                } else {
+                    available_tally[0] -= 1;
+                }
+            }
+        }
+        // put the bag
+        game_state.bag.0.clear();
+        game_state
+            .bag
+            .0
+            .reserve(available_tally.iter().map(|&x| x as usize).sum());
+        game_state.bag.0.extend(
+            (0u8..)
+                .zip(available_tally.iter())
+                .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize)),
+        );
+        //game_state.bag.shuffle(&mut rng);
+        display::print_game_state(game_config, &game_state, Some(&timers));
+        let board_snapshot = &movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
+        move_generator.gen_remaining_words(board_snapshot, |word: &[u8]| {
+            set_of_words.insert(word.into());
+            //println!("{:?}", word);
+            //println!("{}", alphabet.fmt_rack(&word))
+        });
+        println!("word_prune: {} words", set_of_words.len());
+        let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
+        vec_of_words.sort_unstable();
+        //println!("{:?}", vec_of_words);
+        let smaller_kwg_bytes = build::build(
+            build::BuildFormat::Gaddawg,
+            &vec_of_words.into_boxed_slice(),
+        )?;
+        println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
+        //std::fs::write("_word_62702.kwg", smaller_kwg_bytes)?;
+        let smaller_kwg = kwg::Kwg::from_bytes_alloc(&smaller_kwg_bytes);
+        let test_rack = &[13, 15, 15, 15, 18, 18, 20]; // MOOORRT
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot,
+            rack: test_rack,
+            max_gen: usize::MAX,
+            always_include_pass: false,
+        });
+        let plays1 = move_generator.plays.clone();
+        move_generator.reset_for_another_kwg();
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot: &movegen::BoardSnapshot {
+                kwg: &smaller_kwg,
+                ..*board_snapshot
+            },
+            rack: test_rack,
+            max_gen: usize::MAX,
+            always_include_pass: false,
+        });
+        let plays2 = move_generator.plays.clone();
+        move_generator.reset_for_another_kwg();
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot,
+            rack: test_rack,
+            max_gen: usize::MAX,
+            always_include_pass: false,
+        });
+        let plays3 = move_generator.plays.clone();
+        if plays1 != plays3 {
+            panic!("movegen was confused");
+        }
+        if plays1 != plays2 {
+            panic!("movegen cannot work with smaller kwg");
+        }
+        let plays = plays2;
+        println!("{} moves found...", plays.len());
+        for play in plays.iter() {
+            println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+        }
+        return Ok(());
+    }
     loop {
         game_state.reset_and_draw_tiles(game_config, &mut rng);
         let mut final_scores = vec![0; game_state.players.len()];
