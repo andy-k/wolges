@@ -902,7 +902,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         let mut last_was_one = false;
         for i in 0..strider_len {
             let mut wm = params.remaining_word_multipliers_strip[i] as i32;
-            if last_was_one && wm == 1 {
+            if last_was_one {
+                last_was_one = wm == 1;
                 continue;
             }
             last_was_one = wm == 1;
