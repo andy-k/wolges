@@ -237,14 +237,62 @@ fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            if false {
+            if true {
                 move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot,
                     rack: &game_state.current_player().rack,
                     max_gen: usize::MAX,
                     always_include_pass: false,
                 });
-                let plays = &mut move_generator.plays;
+                // test word prune, only for classic.
+                let plays2;
+                let plays = if match &board_snapshot.game_config.game_rules() {
+                    game_config::GameRules::Classic => true,
+                    game_config::GameRules::Jumbled => false,
+                } {
+                    let plays1 = move_generator.plays.clone();
+                    // these always allocate for now.
+                    let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
+                    move_generator.gen_remaining_words(board_snapshot, |word: &[u8]| {
+                        set_of_words.insert(word.into());
+                    });
+                    println!("word_prune: {} words", set_of_words.len());
+                    let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
+                    vec_of_words.sort_unstable();
+                    let smaller_kwg_bytes = build::build(
+                        build::BuildFormat::Gaddawg,
+                        &vec_of_words.into_boxed_slice(),
+                    )?;
+                    println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
+                    let smaller_kwg = kwg::Kwg::from_bytes_alloc(&smaller_kwg_bytes);
+                    move_generator.reset_for_another_kwg();
+                    move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                        board_snapshot: &movegen::BoardSnapshot {
+                            kwg: &smaller_kwg,
+                            ..*board_snapshot
+                        },
+                        rack: &game_state.current_player().rack,
+                        max_gen: usize::MAX,
+                        always_include_pass: false,
+                    });
+                    plays2 = move_generator.plays.clone();
+                    move_generator.reset_for_another_kwg();
+                    move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                        board_snapshot,
+                        rack: &game_state.current_player().rack,
+                        max_gen: usize::MAX,
+                        always_include_pass: false,
+                    });
+                    if plays1 != move_generator.plays {
+                        panic!("movegen was confused");
+                    }
+                    if plays1 != plays2 {
+                        panic!("movegen cannot work with smaller kwg");
+                    }
+                    &plays2
+                } else {
+                    &move_generator.plays
+                };
                 println!("{} moves found...", plays.len());
                 for play in plays.iter() {
                     println!("{} {}", play.equity, play.play.fmt(board_snapshot));
