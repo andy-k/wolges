@@ -614,7 +614,7 @@ fn generate_autoplay_logs(
 
 // handles the equivalent of '?', A-Z
 fn parse_rack(
-    alphabet_reader: &alphabet::AlphabetReader<'_>,
+    alphabet_reader: &alphabet::AlphabetReader,
     s: &str,
     v: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {

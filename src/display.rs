@@ -245,7 +245,7 @@ impl<'a> BoardFenner<'a> {
 pub struct BoardFenParser<'a> {
     board_layout: &'a board_layout::BoardLayout,
     buf: Box<[u8]>,
-    plays_alphabet_reader: alphabet::AlphabetReader<'a>,
+    plays_alphabet_reader: alphabet::AlphabetReader,
 }
 
 impl<'a> BoardFenParser<'a> {

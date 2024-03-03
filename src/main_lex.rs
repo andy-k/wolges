@@ -44,7 +44,7 @@ fn print_dawg(a: &alphabet::Alphabet, g: &kwg::Kwg) {
 
 // parses '#' as 0
 fn parse_embedded_words_board(
-    alphabet_reader: &alphabet::AlphabetReader<'_>,
+    alphabet_reader: &alphabet::AlphabetReader,
     s: &str,
     v: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {

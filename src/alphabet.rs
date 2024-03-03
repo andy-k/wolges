@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2024 Andy Kurnia.
 
-use super::bites_str;
+use super::{bites, bites_str};
 
 struct Tile {
     label: bites_str::BitesStr,
@@ -693,14 +693,14 @@ pub fn make_yupik_alphabet() -> Alphabet {
     })
 }
 
-pub struct AlphabetReader<'a> {
-    supported_tiles: Box<[(u8, &'a [u8])]>,
+pub struct AlphabetReader {
+    supported_tiles: Box<[(u8, bites::Bites)]>,
     by_first_byte: [Option<(usize, usize)>; 256],
 }
 
 // This is slow, but supports multi-codepoint tiles with greedy matching.
-impl<'a> AlphabetReader<'a> {
-    pub fn new_for_tiles(mut supported_tiles: Box<[(u8, &'a [u8])]>) -> Self {
+impl AlphabetReader {
+    pub fn new_for_tiles(mut supported_tiles: Box<[(u8, bites::Bites)]>) -> Self {
         // sort supported tiles by first byte (asc), length (desc), and tile (asc).
         supported_tiles.sort_unstable_by(|(a_tile, a_label), (b_tile, b_label)| {
             a_label[0].cmp(&b_label[0]).then_with(|| {
@@ -730,7 +730,7 @@ impl<'a> AlphabetReader<'a> {
     }
 
     // Recognizes [A-Z] and [a-z] identically, as well as aliases.
-    pub fn new_for_words(alphabet: &'a Alphabet) -> Self {
+    pub fn new_for_words(alphabet: &Alphabet) -> Self {
         let alphabet_len = alphabet.len();
         let mut cap = 0;
         for idx in 1..alphabet_len {
@@ -740,13 +740,13 @@ impl<'a> AlphabetReader<'a> {
         let mut supported_tiles = Vec::with_capacity(cap);
         for idx in 1..alphabet_len {
             let tile = alphabet.get(idx);
-            supported_tiles.push((idx, tile.label.as_bytes()));
+            supported_tiles.push((idx, tile.label.as_bytes().into()));
             for alias in tile.alias_labels.iter() {
-                supported_tiles.push((idx, alias.as_bytes()));
+                supported_tiles.push((idx, alias.as_bytes().into()));
             }
-            supported_tiles.push((idx, tile.blank_label.as_bytes()));
+            supported_tiles.push((idx, tile.blank_label.as_bytes().into()));
             for alias in tile.alias_blank_labels.iter() {
-                supported_tiles.push((idx, alias.as_bytes()));
+                supported_tiles.push((idx, alias.as_bytes().into()));
             }
         }
         let supported_tiles = supported_tiles.into_boxed_slice();
@@ -754,7 +754,7 @@ impl<'a> AlphabetReader<'a> {
     }
 
     // Same as new_for_words but merge tiles with same score.
-    pub fn new_for_word_scores(alphabet: &'a Alphabet) -> Self {
+    pub fn new_for_word_scores(alphabet: &Alphabet) -> Self {
         let alphabet_len = alphabet.len();
         let mut cap = 0;
         for idx in 1..alphabet_len {
@@ -765,13 +765,13 @@ impl<'a> AlphabetReader<'a> {
         for idx in 1..alphabet_len {
             let tile = alphabet.get(idx);
             let representative_idx = alphabet.representative_same_score_tile(idx);
-            supported_tiles.push((representative_idx, tile.label.as_bytes()));
+            supported_tiles.push((representative_idx, tile.label.as_bytes().into()));
             for alias in tile.alias_labels.iter() {
-                supported_tiles.push((representative_idx, alias.as_bytes()));
+                supported_tiles.push((representative_idx, alias.as_bytes().into()));
             }
-            supported_tiles.push((representative_idx, tile.blank_label.as_bytes()));
+            supported_tiles.push((representative_idx, tile.blank_label.as_bytes().into()));
             for alias in tile.alias_blank_labels.iter() {
-                supported_tiles.push((representative_idx, alias.as_bytes()));
+                supported_tiles.push((representative_idx, alias.as_bytes().into()));
             }
         }
         let supported_tiles = supported_tiles.into_boxed_slice();
@@ -779,7 +779,7 @@ impl<'a> AlphabetReader<'a> {
     }
 
     // Recognizes [?A-Z] and [a-z] identically, as well as aliases.
-    pub fn new_for_racks(alphabet: &'a Alphabet) -> Self {
+    pub fn new_for_racks(alphabet: &Alphabet) -> Self {
         let alphabet_len = alphabet.len();
         let mut cap = 0;
         if alphabet_len > 0 {
@@ -793,20 +793,20 @@ impl<'a> AlphabetReader<'a> {
         let mut supported_tiles = Vec::with_capacity(cap);
         if alphabet_len > 0 {
             let tile = alphabet.get(0);
-            supported_tiles.push((0, tile.label.as_bytes()));
+            supported_tiles.push((0, tile.label.as_bytes().into()));
             for alias in tile.alias_labels.iter() {
-                supported_tiles.push((0, alias.as_bytes()));
+                supported_tiles.push((0, alias.as_bytes().into()));
             }
         }
         for idx in 1..alphabet_len {
             let tile = alphabet.get(idx);
-            supported_tiles.push((idx, tile.label.as_bytes()));
+            supported_tiles.push((idx, tile.label.as_bytes().into()));
             for alias in tile.alias_labels.iter() {
-                supported_tiles.push((idx, alias.as_bytes()));
+                supported_tiles.push((idx, alias.as_bytes().into()));
             }
-            supported_tiles.push((idx, tile.blank_label.as_bytes()));
+            supported_tiles.push((idx, tile.blank_label.as_bytes().into()));
             for alias in tile.alias_blank_labels.iter() {
-                supported_tiles.push((idx, alias.as_bytes()));
+                supported_tiles.push((idx, alias.as_bytes().into()));
             }
         }
         let supported_tiles = supported_tiles.into_boxed_slice();
@@ -814,7 +814,7 @@ impl<'a> AlphabetReader<'a> {
     }
 
     // Recognizes [A-Za-z] and aliases. Play-through needs to be dealt with separately.
-    pub fn new_for_plays(alphabet: &'a Alphabet) -> Self {
+    pub fn new_for_plays(alphabet: &Alphabet) -> Self {
         let alphabet_len = alphabet.len();
         let mut cap = 0;
         for idx in 1..alphabet_len {
@@ -824,14 +824,14 @@ impl<'a> AlphabetReader<'a> {
         let mut supported_tiles = Vec::with_capacity(cap);
         for idx in 1..alphabet_len {
             let tile = alphabet.get(idx);
-            supported_tiles.push((idx, tile.label.as_bytes()));
+            supported_tiles.push((idx, tile.label.as_bytes().into()));
             for alias in tile.alias_labels.iter() {
-                supported_tiles.push((idx, alias.as_bytes()));
+                supported_tiles.push((idx, alias.as_bytes().into()));
             }
             let blank_idx = idx | 0x80;
-            supported_tiles.push((blank_idx, tile.blank_label.as_bytes()));
+            supported_tiles.push((blank_idx, tile.blank_label.as_bytes().into()));
             for alias in tile.alias_blank_labels.iter() {
-                supported_tiles.push((blank_idx, alias.as_bytes()));
+                supported_tiles.push((blank_idx, alias.as_bytes().into()));
             }
         }
         let supported_tiles = supported_tiles.into_boxed_slice();

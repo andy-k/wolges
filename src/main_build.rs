@@ -3,7 +3,7 @@
 use wolges::{alphabet, bites, build, error, fash, kwg, lexport, prob};
 
 fn read_machine_words(
-    alphabet_reader: &alphabet::AlphabetReader<'_>,
+    alphabet_reader: &alphabet::AlphabetReader,
     giant_string: &str,
 ) -> error::Returns<Box<[bites::Bites]>> {
     let mut machine_words = Vec::<bites::Bites>::new();
