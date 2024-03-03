@@ -903,15 +903,25 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             .clear();
         let mut vec_size = 0usize;
         for i in 0..strider_len {
-            let mut wm = 1;
-            for &wm_val in &params.remaining_word_multipliers_strip[i..strider_len] {
-                wm *= wm_val as i32;
-                if let std::collections::hash_map::Entry::Vacant(entry) = params
-                    .square_multipliers_by_aggregated_word_multipliers_buffer
-                    .entry(wm)
-                {
-                    entry.insert(vec_size);
-                    vec_size += strider_len;
+            let mut wm = params.remaining_word_multipliers_strip[i] as i32;
+            if let std::collections::hash_map::Entry::Vacant(entry) = params
+                .square_multipliers_by_aggregated_word_multipliers_buffer
+                .entry(wm)
+            {
+                entry.insert(vec_size);
+                vec_size += strider_len;
+            }
+            for &wm_val in &params.remaining_word_multipliers_strip[i + 1..strider_len] {
+                if wm_val != 1 {
+                    // wm_val == 1 is frequent and always means the entry is occupied.
+                    wm *= wm_val as i32;
+                    if let std::collections::hash_map::Entry::Vacant(entry) = params
+                        .square_multipliers_by_aggregated_word_multipliers_buffer
+                        .entry(wm)
+                    {
+                        entry.insert(vec_size);
+                        vec_size += strider_len;
+                    }
                 }
             }
         }
