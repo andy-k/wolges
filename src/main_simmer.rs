@@ -1,6 +1,9 @@
 // Copyright (C) 2020-2024 Andy Kurnia.
 
-use wolges::{alphabet, display, error, game_config, game_state, klv, kwg, movegen, simmer, stats};
+use wolges::{
+    alphabet, bites, build, display, error, fash, game_config, game_state, klv, kwg, movegen,
+    simmer, stats,
+};
 
 // most of this is copied from main_endgame.
 // parsing board into Vec<Vec<i8>> then back into Vec<u8> does not make sense,
@@ -260,9 +263,36 @@ fn main() -> error::Returns<()> {
     }
     display::print_game_state(&game_config, &game_state, None);
 
+    // perform word prune.
+
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    // these always allocate for now.
+    let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
+    move_generator.gen_remaining_words(
+        &movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            klv: &klv,
+        },
+        |word: &[u8]| {
+            set_of_words.insert(word.into());
+        },
+    );
+    println!("word_prune: {} words", set_of_words.len());
+    let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
+    vec_of_words.sort_unstable();
+    let smaller_kwg_bytes = build::build(
+        build::BuildFormat::Gaddawg,
+        &vec_of_words.into_boxed_slice(),
+    )?;
+    println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
+    let smaller_kwg = kwg::Kwg::from_bytes_alloc(&smaller_kwg_bytes);
+    move_generator.reset_for_another_kwg();
+
     // ok, let's sim...
 
-    let mut simmer = ObservableSimmer::new(&game_config, &kwg, &klv);
+    let mut simmer = ObservableSimmer::new(&game_config, &smaller_kwg, &klv);
     simmer.simmer.prepare(&game_config, &game_state, 2);
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &game_state.board_tiles,
@@ -270,7 +300,6 @@ fn main() -> error::Returns<()> {
         kwg: simmer.kwg,
         klv: simmer.klv,
     };
-    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot,
         rack: &game_state.current_player().rack,
