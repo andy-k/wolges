@@ -173,6 +173,11 @@ impl WgReader for QuackleSmallReader {
 
 trait AlphabetLabel {
     fn label(&self, s: &mut String, tile: u8) -> error::Returns<()>;
+
+    #[inline(always)]
+    fn is_verbatim() -> bool {
+        false
+    }
 }
 
 struct WolgesAlphabetLabel<'a> {
@@ -194,6 +199,11 @@ impl AlphabetLabel for LexpertAlphabetLabel {
     fn label(&self, s: &mut String, tile: u8) -> error::Returns<()> {
         s.push(tile as char);
         Ok(())
+    }
+
+    #[inline(always)]
+    fn is_verbatim() -> bool {
+        true
     }
 }
 
@@ -251,7 +261,9 @@ fn iter_dawg<F: FnMut(&str) -> error::Returns<()>, A: AlphabetLabel, R: WgReader
                 return Err("out of bounds".into());
             }
             let t = env.r.tile(env.b, p);
-            if t == 0 {
+            if A::is_verbatim() {
+                env.a.label(env.s, t)?;
+            } else if t == 0 {
                 env.s.push_str(env.blank_str.ok_or("invalid tile")?);
             } else if t & 0x80 == 0 {
                 env.a.label(env.s, t)?;

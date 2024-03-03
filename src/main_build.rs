@@ -266,6 +266,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 ))?;
                 Ok(true)
             }
+            "-lxd" => {
+                let alphabet = make_alphabet();
+                let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
+                make_writer(&args[5])?
+                    .write_all(&lexport::to_lxd(&kwg, &alphabet, &args[3], &args[4])?)?;
+                Ok(true)
+            }
             _ => Ok(false),
         },
         None => Ok(false),
@@ -287,6 +294,8 @@ fn main() -> error::Returns<()> {
     generate kwg file containing gaddawg
   english-macondo CSW21.kwg CSW21 CSW21.dawg CSW21.gaddag
     read kwg file, with lexicon name save macondo dawg/gaddag
+  english-lxd CSW21.kwg \"CSW21 something\" \"17 June 2021\" UKNA.lxd
+    read kwg file, with title and date, save lxd
   english-kwg-alpha CSW21.txt CSW21.kad
     generate kad file containing alpha dawg
   english-kwg-dawg CSW21.txt outfile.dwg
