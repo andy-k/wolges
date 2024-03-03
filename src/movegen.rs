@@ -897,8 +897,14 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
 
     if !want_raw {
         params.aggregated_word_multipliers.clear();
+        // each contiguous subsequence of multiple 1s needs to be processed just once.
+        let mut last_was_one = false;
         for i in 0..strider_len {
             let mut wm = params.remaining_word_multipliers_strip[i] as i32;
+            if last_was_one && wm == 1 {
+                continue;
+            }
+            last_was_one = wm == 1;
             if let Err(idx) = params.aggregated_word_multipliers.binary_search(&wm) {
                 params.aggregated_word_multipliers.insert(idx, wm);
             }
