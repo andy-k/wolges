@@ -73,6 +73,8 @@ struct WorkingBuffer {
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
     used_tile_scores: Vec<i8>,   // rack.len() (stack)
     used_tile_scores_buffer: Vec<i8>, // rack.len() (for sorting)
+    rack_tally_shadowl: Box<[u8]>, // 27 for ?A-Z (for shadow_play_left)
+    rack_tally_shadowr: Box<[u8]>, // 27 for ?A-Z (for shadow_play_right)
 }
 
 impl Clone for WorkingBuffer {
@@ -129,6 +131,8 @@ impl Clone for WorkingBuffer {
             used_letters_tally: self.used_letters_tally.clone(),
             used_tile_scores: self.used_tile_scores.clone(),
             used_tile_scores_buffer: self.used_tile_scores_buffer.clone(),
+            rack_tally_shadowl: self.rack_tally_shadowl.clone(),
+            rack_tally_shadowr: self.rack_tally_shadowr.clone(),
         }
     }
 
@@ -191,6 +195,10 @@ impl Clone for WorkingBuffer {
         self.used_tile_scores.clone_from(&source.used_tile_scores);
         self.used_tile_scores_buffer
             .clone_from(&source.used_tile_scores_buffer);
+        self.rack_tally_shadowl
+            .clone_from(&source.rack_tally_shadowl);
+        self.rack_tally_shadowr
+            .clone_from(&source.rack_tally_shadowr);
     }
 }
 
@@ -266,6 +274,8 @@ impl WorkingBuffer {
             used_letters_tally: Vec::new(),
             used_tile_scores: Vec::new(),
             used_tile_scores_buffer: Vec::new(),
+            rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
+            rack_tally_shadowr: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
         }
     }
 
@@ -886,6 +896,8 @@ struct GenPlacePlacementsParams<'a> {
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
     best_leave_values: &'a [f32],
     num_max_played: u8,
+    rack_tally_shadowl: &'a mut [u8],
+    rack_tally_shadowr: &'a mut [u8],
 }
 
 fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
@@ -986,6 +998,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         word_multiplier: i32,
     }
 
+    #[inline(always)]
     fn shadow_record(env: &mut Env<'_>, acc: &Accumulator, idx_left: i8, idx_right: i8) {
         // if a square requiring [B] is encountered while holding a B, the B
         // must go there. if a square requiring [A,B] is encountered earlier,
@@ -1036,288 +1049,260 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         }
     }
 
-    fn shadow_play_right(env: &mut Env<'_>, acc: &mut Accumulator, mut idx: i8, is_unique: bool) {
-        // tail-recurse placing current sequence of tiles
-        while idx < env.rightmost {
-            let b = env.params.board_strip[idx as usize];
-            if b == 0 {
+    #[inline(always)]
+    fn shadow_play_right(
+        env: &mut Env<'_>,
+        mut acc: Accumulator,
+        mut idx: i8,
+        mut is_unique: bool,
+    ) {
+        let rack_bits_bak = env.params.rack_bits;
+        let num_played_bak = env.num_played;
+        let used_tile_scores_len_bak = env.params.used_tile_scores.len();
+        env.params
+            .rack_tally_shadowr
+            .clone_from_slice(env.params.rack_tally_shadowl);
+        loop {
+            // tail-recurse placing current sequence of tiles
+            while idx < env.rightmost {
+                let b = env.params.board_strip[idx as usize];
+                if b == 0 {
+                    break;
+                }
+                acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+                idx += 1;
+            }
+            // tiles have been placed from env.idx_left to idx - 1.
+            // here idx <= env.rightmost.
+            // check if [env.idx_left, idx) is a thing
+            if idx > env.anchor + 1 && env.num_played > !is_unique as u8 && idx - env.idx_left >= 2
+            {
+                shadow_record(env, &acc, env.idx_left, idx);
+            }
+            if env.num_played >= env.params.num_max_played {
                 break;
             }
-            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
-            idx += 1;
-        }
-        // tiles have been placed from env.idx_left to idx - 1.
-        // here idx <= env.rightmost.
-        // check if [env.idx_left, idx) is a thing
-        if idx > env.anchor + 1 && env.num_played > !is_unique as u8 && idx - env.idx_left >= 2 {
-            shadow_record(env, acc, env.idx_left, idx);
-        }
-        if env.num_played >= env.params.num_max_played {
-            return;
-        }
 
-        // place a tile at [idx] if it is still in bounds
-        if idx < env.rightmost {
-            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
-            if this_cross_bits & 1 == 0 {
-                // nothing hooks here.
-                env.num_played += 1;
-                shadow_play_right(
-                    env,
-                    &mut Accumulator {
-                        main_score: acc.main_score,
-                        perpendicular_cumulative_score: acc.perpendicular_cumulative_score,
-                        word_multiplier: acc.word_multiplier
-                            * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
-                    },
-                    idx + 1,
-                    true,
-                );
-                env.num_played -= 1;
-            } else if this_cross_bits != 1 {
-                // something hooks here and there is a valid letter.
-                // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits = this_cross_bits & env.params.rack_bits;
-                if matching_bits != 0 {
-                    let without_lowest_bit = matching_bits & (matching_bits - 1);
+            // place a tile at [idx] if it is still in bounds
+            if idx < env.rightmost {
+                let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+                if this_cross_bits & 1 == 0 {
+                    // nothing hooks here.
                     env.num_played += 1;
-                    if without_lowest_bit == 0 {
-                        // case 1: only one tile fits.
-                        // consume the square and the tile.
-                        // rack_bits will turn off if the tile is depleted.
-                        env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                        let tile = matching_bits.trailing_zeros() as u8;
-                        env.params.rack_tally[tile as usize] -= 1;
-                        // this is (rack_tally[tile] == 0 ? matching_bits : 0).
-                        let toggle_rack_bits = matching_bits
-                            & (-((env.params.rack_tally[tile as usize] == 0) as i64)) as u64;
-                        env.params.rack_bits ^= toggle_rack_bits;
-                        let tile_score = env.params.alphabet.score(tile);
-                        env.params.used_tile_scores.push(tile_score);
-                        let tile_value = tile_score as i32
-                            * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
-                        shadow_play_right(
-                            env,
-                            &mut Accumulator {
-                                main_score: acc.main_score + tile_value,
-                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
-                                    + env.params.perpendicular_scores_strip[idx as usize]
-                                    + tile_value
-                                        * env.params.perpendicular_word_multipliers_strip
-                                            [idx as usize]
-                                            as i32,
-                                word_multiplier: acc.word_multiplier
-                                    * env.params.remaining_word_multipliers_strip[idx as usize]
-                                        as i32,
-                            },
-                            idx + 1,
-                            is_unique,
-                        );
-                        env.params.used_tile_scores.pop();
-                        env.params.rack_bits ^= toggle_rack_bits;
-                        env.params.rack_tally[tile as usize] += 1;
-                    } else if matching_bits
-                        & env
-                            .params
-                            .alphabet
-                            .same_score_tile_bits(matching_bits.trailing_zeros() as u8)
-                        == matching_bits
-                    {
-                        // case 2: multiple tiles fit, but they all have the same score.
-                        // consume the square, but not the tile.
-                        // rack_bits remains unchanged because assignment is tentative.
-                        env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                        let tile = matching_bits.trailing_zeros() as u8;
-                        let tile_score = env.params.alphabet.score(tile);
-                        env.params.used_tile_scores.push(tile_score);
-                        let tile_value = tile_score as i32
-                            * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
-                        shadow_play_right(
-                            env,
-                            &mut Accumulator {
-                                main_score: acc.main_score + tile_value,
-                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
-                                    + env.params.perpendicular_scores_strip[idx as usize]
-                                    + tile_value
-                                        * env.params.perpendicular_word_multipliers_strip
-                                            [idx as usize]
-                                            as i32,
-                                word_multiplier: acc.word_multiplier
-                                    * env.params.remaining_word_multipliers_strip[idx as usize]
-                                        as i32,
-                            },
-                            idx + 1,
-                            is_unique,
-                        );
-                        env.params.used_tile_scores.pop();
-                    } else {
-                        // case 3: multiple tiles fit, and they have different scores.
-                        // rack_bits remains unchanged because assignment is tentative.
-                        // defer to greedy algorithm.
-                        env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
-                        shadow_play_right(
-                            env,
-                            &mut Accumulator {
-                                main_score: acc.main_score,
-                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
-                                    + env.params.perpendicular_scores_strip[idx as usize],
-                                word_multiplier: acc.word_multiplier
-                                    * env.params.remaining_word_multipliers_strip[idx as usize]
-                                        as i32,
-                            },
-                            idx + 1,
-                            is_unique,
-                        );
+                    acc.word_multiplier *=
+                        env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+                    idx += 1;
+                    is_unique = true;
+                    continue;
+                } else if this_cross_bits != 1 {
+                    // something hooks here and there is a valid letter.
+                    // this_cross_bits has bit 1 set, so blank is always allowed.
+                    let matching_bits = this_cross_bits & env.params.rack_bits;
+                    if matching_bits != 0 {
+                        let without_lowest_bit = matching_bits & (matching_bits - 1);
+                        env.num_played += 1;
+                        if without_lowest_bit == 0 {
+                            // case 1: only one tile fits.
+                            // consume the square and the tile.
+                            // rack_bits will turn off if the tile is depleted.
+                            env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
+                            let tile = matching_bits.trailing_zeros() as u8;
+                            env.params.rack_tally_shadowr[tile as usize] -= 1;
+                            // this is (rack_tally[tile] == 0 ? matching_bits : 0).
+                            let toggle_rack_bits = matching_bits
+                                & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64))
+                                    as u64;
+                            env.params.rack_bits ^= toggle_rack_bits;
+                            let tile_score = env.params.alphabet.score(tile);
+                            env.params.used_tile_scores.push(tile_score);
+                            let tile_value = tile_score as i32
+                                * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                            acc.main_score += tile_value;
+                            acc.perpendicular_cumulative_score += env
+                                .params
+                                .perpendicular_scores_strip[idx as usize]
+                                + tile_value
+                                    * env.params.perpendicular_word_multipliers_strip[idx as usize]
+                                        as i32;
+                            acc.word_multiplier *=
+                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+                            idx += 1;
+                            continue;
+                        } else if matching_bits
+                            & env
+                                .params
+                                .alphabet
+                                .same_score_tile_bits(matching_bits.trailing_zeros() as u8)
+                            == matching_bits
+                        {
+                            // case 2: multiple tiles fit, but they all have the same score.
+                            // consume the square, but not the tile.
+                            // rack_bits remains unchanged because assignment is tentative.
+                            env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
+                            let tile = matching_bits.trailing_zeros() as u8;
+                            let tile_score = env.params.alphabet.score(tile);
+                            env.params.used_tile_scores.push(tile_score);
+                            let tile_value = tile_score as i32
+                                * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                            acc.main_score += tile_value;
+                            acc.perpendicular_cumulative_score += env
+                                .params
+                                .perpendicular_scores_strip[idx as usize]
+                                + tile_value
+                                    * env.params.perpendicular_word_multipliers_strip[idx as usize]
+                                        as i32;
+                            acc.word_multiplier *=
+                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+                            idx += 1;
+                            continue;
+                        } else {
+                            // case 3: multiple tiles fit, and they have different scores.
+                            // rack_bits remains unchanged because assignment is tentative.
+                            // defer to greedy algorithm.
+                            env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
+                            acc.perpendicular_cumulative_score +=
+                                env.params.perpendicular_scores_strip[idx as usize];
+                            acc.word_multiplier *=
+                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+                            idx += 1;
+                            continue;
+                        }
                     }
-                    env.num_played -= 1;
                 }
             }
+            break;
         }
+        env.params.rack_bits = rack_bits_bak;
+        env.num_played = num_played_bak;
+        env.params
+            .used_tile_scores
+            .truncate(used_tile_scores_len_bak);
     }
 
-    fn shadow_play_left(env: &mut Env<'_>, acc: &mut Accumulator, mut idx: i8, is_unique: bool) {
-        // tail-recurse placing current sequence of tiles
-        while idx >= env.leftmost {
-            let b = env.params.board_strip[idx as usize];
-            if b == 0 {
+    #[inline(always)]
+    fn shadow_play_left(env: &mut Env<'_>, mut acc: Accumulator, mut idx: i8, mut is_unique: bool) {
+        let rack_bits_bak = env.params.rack_bits;
+        env.params
+            .rack_tally_shadowl
+            .clone_from_slice(env.params.rack_tally);
+        loop {
+            // tail-recurse placing current sequence of tiles
+            while idx >= env.leftmost {
+                let b = env.params.board_strip[idx as usize];
+                if b == 0 {
+                    break;
+                }
+                acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+                idx -= 1;
+            }
+            // tiles have been placed from env.anchor to idx + 1.
+            // here idx >= env.leftmost - 1.
+            // check if [idx + 1, env.anchor + 1) is a thing
+            if env.num_played > !is_unique as u8 && env.anchor - idx >= 2 {
+                shadow_record(env, &acc, idx + 1, env.anchor + 1);
+            }
+            if env.num_played >= env.params.num_max_played {
                 break;
             }
-            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
-            idx -= 1;
-        }
-        // tiles have been placed from env.anchor to idx + 1.
-        // here idx >= env.leftmost - 1.
-        // check if [idx + 1, env.anchor + 1) is a thing
-        if env.num_played > !is_unique as u8 && env.anchor - idx >= 2 {
-            shadow_record(env, acc, idx + 1, env.anchor + 1);
-        }
-        if env.num_played >= env.params.num_max_played {
-            return;
-        }
 
-        // can switch direction only after using the anchor square
-        if idx < env.anchor {
-            env.idx_left = idx + 1;
-            shadow_play_right(env, acc, env.anchor + 1, is_unique);
-        }
+            // can switch direction only after using the anchor square
+            if idx < env.anchor {
+                env.idx_left = idx + 1;
+                shadow_play_right(env, Accumulator { ..acc }, env.anchor + 1, is_unique);
+            }
 
-        // place a tile at [idx] if it is still in bounds
-        if idx >= env.leftmost {
-            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
-            if this_cross_bits & 1 == 0 {
-                // nothing hooks here.
-                env.num_played += 1;
-                shadow_play_left(
-                    env,
-                    &mut Accumulator {
-                        main_score: acc.main_score,
-                        perpendicular_cumulative_score: acc.perpendicular_cumulative_score,
-                        word_multiplier: acc.word_multiplier
-                            * env.params.remaining_word_multipliers_strip[idx as usize] as i32,
-                    },
-                    idx - 1,
-                    true,
-                );
-                env.num_played -= 1;
-            } else if this_cross_bits != 1 {
-                // something hooks here and there is a valid letter.
-                // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits = this_cross_bits & env.params.rack_bits;
-                if matching_bits != 0 {
-                    let without_lowest_bit = matching_bits & (matching_bits - 1);
+            // place a tile at [idx] if it is still in bounds
+            if idx >= env.leftmost {
+                let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+                if this_cross_bits & 1 == 0 {
+                    // nothing hooks here.
                     env.num_played += 1;
-                    if without_lowest_bit == 0 {
-                        // case 1: only one tile fits.
-                        // consume the square and the tile.
-                        // rack_bits will turn off if the tile is depleted.
-                        env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                        let tile = matching_bits.trailing_zeros() as u8;
-                        env.params.rack_tally[tile as usize] -= 1;
-                        // this is (rack_tally[tile] == 0 ? matching_bits : 0).
-                        let toggle_rack_bits = matching_bits
-                            & (-((env.params.rack_tally[tile as usize] == 0) as i64)) as u64;
-                        env.params.rack_bits ^= toggle_rack_bits;
-                        let tile_score = env.params.alphabet.score(tile);
-                        env.params.used_tile_scores.push(tile_score);
-                        let tile_value = tile_score as i32
-                            * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
-                        shadow_play_left(
-                            env,
-                            &mut Accumulator {
-                                main_score: acc.main_score + tile_value,
-                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
-                                    + env.params.perpendicular_scores_strip[idx as usize]
-                                    + tile_value
-                                        * env.params.perpendicular_word_multipliers_strip
-                                            [idx as usize]
-                                            as i32,
-                                word_multiplier: acc.word_multiplier
-                                    * env.params.remaining_word_multipliers_strip[idx as usize]
-                                        as i32,
-                            },
-                            idx - 1,
-                            is_unique,
-                        );
-                        env.params.used_tile_scores.pop();
-                        env.params.rack_bits ^= toggle_rack_bits;
-                        env.params.rack_tally[tile as usize] += 1;
-                    } else if matching_bits
-                        & env
-                            .params
-                            .alphabet
-                            .same_score_tile_bits(matching_bits.trailing_zeros() as u8)
-                        == matching_bits
-                    {
-                        // case 2: multiple tiles fit, but they all have the same score.
-                        // consume the square, but not the tile.
-                        // rack_bits remains unchanged because assignment is tentative.
-                        env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                        let tile = matching_bits.trailing_zeros() as u8;
-                        let tile_score = env.params.alphabet.score(tile);
-                        env.params.used_tile_scores.push(tile_score);
-                        let tile_value = tile_score as i32
-                            * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
-                        shadow_play_left(
-                            env,
-                            &mut Accumulator {
-                                main_score: acc.main_score + tile_value,
-                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
-                                    + env.params.perpendicular_scores_strip[idx as usize]
-                                    + tile_value
-                                        * env.params.perpendicular_word_multipliers_strip
-                                            [idx as usize]
-                                            as i32,
-                                word_multiplier: acc.word_multiplier
-                                    * env.params.remaining_word_multipliers_strip[idx as usize]
-                                        as i32,
-                            },
-                            idx - 1,
-                            is_unique,
-                        );
-                        env.params.used_tile_scores.pop();
-                    } else {
-                        // case 3: multiple tiles fit, and they have different scores.
-                        // rack_bits remains unchanged because assignment is tentative.
-                        // defer to greedy algorithm.
-                        env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
-                        shadow_play_left(
-                            env,
-                            &mut Accumulator {
-                                main_score: acc.main_score,
-                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
-                                    + env.params.perpendicular_scores_strip[idx as usize],
-                                word_multiplier: acc.word_multiplier
-                                    * env.params.remaining_word_multipliers_strip[idx as usize]
-                                        as i32,
-                            },
-                            idx - 1,
-                            is_unique,
-                        );
+                    acc.word_multiplier *=
+                        env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+                    idx -= 1;
+                    is_unique = true;
+                    continue;
+                } else if this_cross_bits != 1 {
+                    // something hooks here and there is a valid letter.
+                    // this_cross_bits has bit 1 set, so blank is always allowed.
+                    let matching_bits = this_cross_bits & env.params.rack_bits;
+                    if matching_bits != 0 {
+                        let without_lowest_bit = matching_bits & (matching_bits - 1);
+                        env.num_played += 1;
+                        if without_lowest_bit == 0 {
+                            // case 1: only one tile fits.
+                            // consume the square and the tile.
+                            // rack_bits will turn off if the tile is depleted.
+                            env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
+                            let tile = matching_bits.trailing_zeros() as u8;
+                            env.params.rack_tally_shadowl[tile as usize] -= 1;
+                            // this is (rack_tally[tile] == 0 ? matching_bits : 0).
+                            let toggle_rack_bits = matching_bits
+                                & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64))
+                                    as u64;
+                            env.params.rack_bits ^= toggle_rack_bits;
+                            let tile_score = env.params.alphabet.score(tile);
+                            env.params.used_tile_scores.push(tile_score);
+                            let tile_value = tile_score as i32
+                                * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                            acc.main_score += tile_value;
+                            acc.perpendicular_cumulative_score += env
+                                .params
+                                .perpendicular_scores_strip[idx as usize]
+                                + tile_value
+                                    * env.params.perpendicular_word_multipliers_strip[idx as usize]
+                                        as i32;
+                            acc.word_multiplier *=
+                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+                            idx -= 1;
+                            continue;
+                        } else if matching_bits
+                            & env
+                                .params
+                                .alphabet
+                                .same_score_tile_bits(matching_bits.trailing_zeros() as u8)
+                            == matching_bits
+                        {
+                            // case 2: multiple tiles fit, but they all have the same score.
+                            // consume the square, but not the tile.
+                            // rack_bits remains unchanged because assignment is tentative.
+                            env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
+                            let tile = matching_bits.trailing_zeros() as u8;
+                            let tile_score = env.params.alphabet.score(tile);
+                            env.params.used_tile_scores.push(tile_score);
+                            let tile_value = tile_score as i32
+                                * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                            acc.main_score += tile_value;
+                            acc.perpendicular_cumulative_score += env
+                                .params
+                                .perpendicular_scores_strip[idx as usize]
+                                + tile_value
+                                    * env.params.perpendicular_word_multipliers_strip[idx as usize]
+                                        as i32;
+                            acc.word_multiplier *=
+                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+                            idx -= 1;
+                            continue;
+                        } else {
+                            // case 3: multiple tiles fit, and they have different scores.
+                            // rack_bits remains unchanged because assignment is tentative.
+                            // defer to greedy algorithm.
+                            env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
+                            acc.perpendicular_cumulative_score +=
+                                env.params.perpendicular_scores_strip[idx as usize];
+                            acc.word_multiplier *=
+                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+                            idx -= 1;
+                            continue;
+                        }
                     }
-                    env.num_played -= 1;
                 }
             }
+            break;
         }
+        env.num_played = 0;
+        env.params.used_tile_scores.clear();
+        env.params.rack_bits = rack_bits_bak;
     }
 
     #[inline(always)]
@@ -1333,7 +1318,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             env.best_possible_equity = f32::NEG_INFINITY;
             shadow_play_left(
                 env,
-                &mut Accumulator {
+                Accumulator {
                     main_score: 0,
                     perpendicular_cumulative_score: 0,
                     word_multiplier: 1,
@@ -2815,6 +2800,8 @@ fn kurnia_gen_place_moves_iter<
                     .indexes_to_descending_square_multiplier_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
+                rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
+                rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
             },
             true,
             want_raw,
@@ -2865,6 +2852,8 @@ fn kurnia_gen_place_moves_iter<
                     .indexes_to_descending_square_multiplier_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
+                rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
+                rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
             },
             false,
             want_raw,
