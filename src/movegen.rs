@@ -972,8 +972,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         anchor: i8,
         leftmost: i8,
         rightmost: i8,
-        num_played: u8,
-        idx_left: i8,
         best_possible_equity: f32,
     }
 
@@ -983,8 +981,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         anchor: 0,
         leftmost: 0,
         rightmost: 0,
-        num_played: 0,
-        idx_left: 0,
         best_possible_equity: f32::NEG_INFINITY,
     };
 
@@ -999,7 +995,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     #[inline(always)]
-    fn shadow_record(env: &mut Env<'_>, acc: &Accumulator, idx_left: i8, idx_right: i8) {
+    fn shadow_record(
+        env: &mut Env<'_>,
+        acc: &Accumulator,
+        idx_left: i8,
+        idx_right: i8,
+        num_played: u8,
+    ) {
         // if a square requiring [B] is encountered while holding a B, the B
         // must go there. if a square requiring [A,B] is encountered earlier,
         // that square must be A, but this is not currently implemented.
@@ -1025,7 +1027,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             }
         });
         let mut best_scoring = 0;
-        let mut to_assign = env.num_played;
+        let mut to_assign = num_played;
         for &idx in &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end] {
             if idx_left <= idx
                 && idx < idx_right
@@ -1043,7 +1045,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         let equity = (acc.main_score * acc.word_multiplier
             + acc.perpendicular_cumulative_score
             + best_scoring) as f32
-            + env.params.best_leave_values[env.num_played as usize];
+            + env.params.best_leave_values[num_played as usize];
         if equity > env.best_possible_equity {
             env.best_possible_equity = equity;
         }
@@ -1055,9 +1057,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         mut acc: Accumulator,
         mut idx: i8,
         mut is_unique: bool,
+        idx_left: i8,
+        mut num_played: u8,
+        mut rack_bits: u64,
     ) {
-        let rack_bits_bak = env.params.rack_bits;
-        let num_played_bak = env.num_played;
         let used_tile_scores_len_bak = env.params.used_tile_scores.len();
         env.params
             .rack_tally_shadowr
@@ -1072,14 +1075,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
                 idx += 1;
             }
-            // tiles have been placed from env.idx_left to idx - 1.
+            // tiles have been placed from idx_left to idx - 1.
             // here idx <= env.rightmost.
-            // check if [env.idx_left, idx) is a thing
-            if idx > env.anchor + 1 && env.num_played > !is_unique as u8 && idx - env.idx_left >= 2
-            {
-                shadow_record(env, &acc, env.idx_left, idx);
+            // check if [idx_left, idx) is a thing
+            if idx > env.anchor + 1 && num_played > !is_unique as u8 && idx - idx_left >= 2 {
+                shadow_record(env, &acc, idx_left, idx, num_played);
             }
-            if env.num_played >= env.params.num_max_played {
+            if num_played >= env.params.num_max_played {
                 break;
             }
 
@@ -1088,7 +1090,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
                 if this_cross_bits & 1 == 0 {
                     // nothing hooks here.
-                    env.num_played += 1;
+                    num_played += 1;
                     acc.word_multiplier *=
                         env.params.remaining_word_multipliers_strip[idx as usize] as i32;
                     idx += 1;
@@ -1097,10 +1099,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 } else if this_cross_bits != 1 {
                     // something hooks here and there is a valid letter.
                     // this_cross_bits has bit 1 set, so blank is always allowed.
-                    let matching_bits = this_cross_bits & env.params.rack_bits;
+                    let matching_bits = this_cross_bits & rack_bits;
                     if matching_bits != 0 {
                         let without_lowest_bit = matching_bits & (matching_bits - 1);
-                        env.num_played += 1;
+                        num_played += 1;
                         if without_lowest_bit == 0 {
                             // case 1: only one tile fits.
                             // consume the square and the tile.
@@ -1109,10 +1111,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                             let tile = matching_bits.trailing_zeros() as u8;
                             env.params.rack_tally_shadowr[tile as usize] -= 1;
                             // this is (rack_tally[tile] == 0 ? matching_bits : 0).
-                            let toggle_rack_bits = matching_bits
+                            rack_bits ^= matching_bits
                                 & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64))
                                     as u64;
-                            env.params.rack_bits ^= toggle_rack_bits;
                             let tile_score = env.params.alphabet.score(tile);
                             env.params.used_tile_scores.push(tile_score);
                             let tile_value = tile_score as i32
@@ -1172,8 +1173,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             }
             break;
         }
-        env.params.rack_bits = rack_bits_bak;
-        env.num_played = num_played_bak;
         env.params
             .used_tile_scores
             .truncate(used_tile_scores_len_bak);
@@ -1181,7 +1180,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
 
     #[inline(always)]
     fn shadow_play_left(env: &mut Env<'_>, mut acc: Accumulator, mut idx: i8, mut is_unique: bool) {
-        let rack_bits_bak = env.params.rack_bits;
+        let mut num_played = 0;
+        let mut rack_bits = env.params.rack_bits;
         env.params
             .rack_tally_shadowl
             .clone_from_slice(env.params.rack_tally);
@@ -1198,17 +1198,24 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // tiles have been placed from env.anchor to idx + 1.
             // here idx >= env.leftmost - 1.
             // check if [idx + 1, env.anchor + 1) is a thing
-            if env.num_played > !is_unique as u8 && env.anchor - idx >= 2 {
-                shadow_record(env, &acc, idx + 1, env.anchor + 1);
+            if num_played > !is_unique as u8 && env.anchor - idx >= 2 {
+                shadow_record(env, &acc, idx + 1, env.anchor + 1, num_played);
             }
-            if env.num_played >= env.params.num_max_played {
+            if num_played >= env.params.num_max_played {
                 break;
             }
 
             // can switch direction only after using the anchor square
             if idx < env.anchor {
-                env.idx_left = idx + 1;
-                shadow_play_right(env, Accumulator { ..acc }, env.anchor + 1, is_unique);
+                shadow_play_right(
+                    env,
+                    Accumulator { ..acc },
+                    env.anchor + 1,
+                    is_unique,
+                    idx + 1,
+                    num_played,
+                    rack_bits,
+                );
             }
 
             // place a tile at [idx] if it is still in bounds
@@ -1216,7 +1223,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
                 if this_cross_bits & 1 == 0 {
                     // nothing hooks here.
-                    env.num_played += 1;
+                    num_played += 1;
                     acc.word_multiplier *=
                         env.params.remaining_word_multipliers_strip[idx as usize] as i32;
                     idx -= 1;
@@ -1225,10 +1232,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 } else if this_cross_bits != 1 {
                     // something hooks here and there is a valid letter.
                     // this_cross_bits has bit 1 set, so blank is always allowed.
-                    let matching_bits = this_cross_bits & env.params.rack_bits;
+                    let matching_bits = this_cross_bits & rack_bits;
                     if matching_bits != 0 {
                         let without_lowest_bit = matching_bits & (matching_bits - 1);
-                        env.num_played += 1;
+                        num_played += 1;
                         if without_lowest_bit == 0 {
                             // case 1: only one tile fits.
                             // consume the square and the tile.
@@ -1237,10 +1244,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                             let tile = matching_bits.trailing_zeros() as u8;
                             env.params.rack_tally_shadowl[tile as usize] -= 1;
                             // this is (rack_tally[tile] == 0 ? matching_bits : 0).
-                            let toggle_rack_bits = matching_bits
+                            rack_bits ^= matching_bits
                                 & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64))
                                     as u64;
-                            env.params.rack_bits ^= toggle_rack_bits;
                             let tile_score = env.params.alphabet.score(tile);
                             env.params.used_tile_scores.push(tile_score);
                             let tile_value = tile_score as i32
@@ -1300,9 +1306,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             }
             break;
         }
-        env.num_played = 0;
         env.params.used_tile_scores.clear();
-        env.params.rack_bits = rack_bits_bak;
     }
 
     #[inline(always)]
