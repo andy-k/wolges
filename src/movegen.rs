@@ -1014,6 +1014,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         let high_end = low_end + env.strider_len;
         let precomputed_square_multiplier_slice =
             &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
+        let mut to_assign = num_played - env.params.used_tile_scores.len() as u8;
         env.params
             .used_tile_scores_buffer
             .clone_from(env.params.used_tile_scores);
@@ -1027,7 +1028,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             }
         });
         let mut best_scoring = 0;
-        let mut to_assign = num_played;
         for &idx in &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end] {
             if idx_left <= idx
                 && idx < idx_right
