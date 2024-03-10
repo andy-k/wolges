@@ -975,22 +975,22 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 &mut params.precomputed_square_multiplier_buffer[low_end..high_end];
             let indexes_to_descending_square_multiplier_slice =
                 &mut params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
+            let mut left = 0;
             for j in 0..strider_len {
-                // perpendicular_word_multipliers_strip[j] is 0 if no perpendicular tile.
-                precomputed_square_multiplier_slice[j] = params.remaining_tile_multipliers_strip[j]
-                    as i32
-                    * (k + params.perpendicular_word_multipliers_strip[j] as i32);
-                indexes_to_descending_square_multiplier_slice[j] = j as i8;
+                if params.board_strip[j] == 0 {
+                    // perpendicular_word_multipliers_strip[j] is 0 if no perpendicular tile.
+                    precomputed_square_multiplier_slice[j] = params.remaining_tile_multipliers_strip
+                        [j] as i32
+                        * (k + params.perpendicular_word_multipliers_strip[j] as i32);
+                    // put the indexes of empty squares first.
+                    // the indexes of non-empty squares should never be visited.
+                    indexes_to_descending_square_multiplier_slice[left] = j as i8;
+                    left += 1;
+                }
             }
-            // put the indexes of empty squares first.
-            // the indexes of non-empty squares should never be visited.
-            indexes_to_descending_square_multiplier_slice.sort_unstable_by(|&a, &b| {
-                (params.board_strip[b as usize] == 0)
-                    .cmp(&(params.board_strip[a as usize] == 0))
-                    .then_with(|| {
-                        precomputed_square_multiplier_slice[b as usize]
-                            .cmp(&precomputed_square_multiplier_slice[a as usize])
-                    })
+            indexes_to_descending_square_multiplier_slice[..left].sort_unstable_by(|&a, &b| {
+                precomputed_square_multiplier_slice[b as usize]
+                    .cmp(&precomputed_square_multiplier_slice[a as usize])
             });
         }
 
