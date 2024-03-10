@@ -3,7 +3,7 @@
 use rand::prelude::*;
 use wolges::{
     bites, build, display, error, fash, game_config, game_state, game_timers, klv, kwg,
-    move_filter, move_picker, movegen, play_scorer,
+    move_filter, move_picker, movegen, play_scorer, stats,
 };
 
 fn main() -> error::Returns<()> {
@@ -83,6 +83,12 @@ fn main() -> error::Returns<()> {
     if true {
         move_picker_1 = move_picker::MovePicker::Hasty;
     }
+
+    let mut score_stats_0 = stats::Stats::new();
+    let mut score_stats_1 = stats::Stats::new();
+    let mut spread_stats_0 = stats::Stats::new();
+    let mut win_stats_0 = stats::Stats::new();
+    let mut loss_draw_win = [0i64; 3];
 
     let mut game_state = game_state::GameState::new(game_config);
     let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
@@ -433,6 +439,32 @@ fn main() -> error::Returns<()> {
         if has_time_adjustment {
             println!("Really final scores: {final_scores:?}");
         }
+
+        let fs0 = final_scores[0];
+        let fs1 = final_scores[1];
+        let spr = fs0 - fs1;
+        let p0dw = spr.signum() + 1; // double win (2 = win, 1 = draw/tie, 0 = loss)
+        score_stats_0.update(fs0.into());
+        score_stats_1.update(fs1.into());
+        spread_stats_0.update(spr.into());
+        win_stats_0.update(p0dw as f64 * 50.0);
+        loss_draw_win[p0dw as usize] += 1;
+
+        println!(
+            "Stats: {final_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3})",
+            loss_draw_win[0] + loss_draw_win[1] + loss_draw_win[2],
+            loss_draw_win[2],
+            loss_draw_win[0],
+            loss_draw_win[1],
+            score_stats_0.mean(),
+            score_stats_0.standard_deviation(),
+            score_stats_1.mean(),
+            score_stats_1.standard_deviation(),
+            spread_stats_0.mean(),
+            spread_stats_0.standard_deviation(),
+            win_stats_0.mean(),
+            win_stats_0.standard_deviation(),
+        );
     } // temp loop
 
     //Ok(())
