@@ -460,6 +460,60 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
+            "-kwg-check" => {
+                if args.len() < 4 {
+                    return Err("need more argument".into());
+                }
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
+                let reader = &KwgReader {};
+                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                let mut not_found = false;
+                for word in &args[3..] {
+                    let sb = &word.as_bytes();
+                    let mut p = 0;
+                    let mut ix = 0;
+                    while ix < sb.len() {
+                        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                            if !not_found {
+                                p = reader.arc_index(kwg_bytes, p);
+                                if p > 0 {
+                                    loop {
+                                        if reader.tile(kwg_bytes, p) == tile {
+                                            break;
+                                        }
+                                        if reader.is_end(kwg_bytes, p) {
+                                            not_found = true;
+                                            break;
+                                        }
+                                        p += 1;
+                                    }
+                                } else {
+                                    not_found = true;
+                                }
+                            }
+                            ix = end_ix;
+                        } else {
+                            return Err("invalid tile".into());
+                        }
+                    }
+                    if !not_found && (ix == 0 || (p != 0 && !reader.accepts(kwg_bytes, p))) {
+                        not_found = true;
+                    }
+                }
+                println!(
+                    "{}",
+                    if not_found {
+                        "Play is NOT acceptable"
+                    } else {
+                        "Play is Acceptable"
+                    }
+                );
+                Ok(true)
+            }
             "-q2-ort" => {
                 let alphabet = make_alphabet();
                 // ort: olaugh rack table.
@@ -665,6 +719,8 @@ fn main() -> error::Returns<()> {
     read kwg/kad file (dawg)
   english-kwg-gaddag CSW21.kwg CSW21.txt
     read gaddawg kwg file (gaddag)
+  english-kwg-check CSW21.kwg word [word...]
+    checks if all words are valid (using dawg)
   english-q2-ort something.ort something.csv
     read .ort (format subject to change)
   english-make-q2-ort something.csv something.ort num_buckets
