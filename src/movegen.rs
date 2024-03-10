@@ -959,9 +959,15 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     * (k + params.perpendicular_word_multipliers_strip[j] as i32);
                 indexes_to_descending_square_multiplier_slice[j] = j as i8;
             }
+            // put the indexes of empty squares first.
+            // the indexes of non-empty squares should never be visited.
             indexes_to_descending_square_multiplier_slice.sort_unstable_by(|&a, &b| {
-                precomputed_square_multiplier_slice[b as usize]
-                    .cmp(&precomputed_square_multiplier_slice[a as usize])
+                (params.board_strip[b as usize] == 0)
+                    .cmp(&(params.board_strip[a as usize] == 0))
+                    .then_with(|| {
+                        precomputed_square_multiplier_slice[b as usize]
+                            .cmp(&precomputed_square_multiplier_slice[a as usize])
+                    })
             });
         }
     }
@@ -1002,43 +1008,46 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         idx_right: i8,
         num_played: u8,
     ) {
-        // if a square requiring [B] is encountered while holding a B, the B
-        // must go there. if a square requiring [A,B] is encountered earlier,
-        // that square must be A, but this is not currently implemented.
-        let low_end = env
-            .params
-            .aggregated_word_multipliers
-            .binary_search(&acc.word_multiplier)
-            .unwrap()
-            * env.strider_len;
-        let high_end = low_end + env.strider_len;
-        let precomputed_square_multiplier_slice =
-            &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
-        let mut to_assign = num_played - env.params.used_tile_scores.len() as u8;
-        env.params
-            .used_tile_scores_buffer
-            .clone_from(env.params.used_tile_scores);
-        env.params.used_tile_scores_buffer.sort_unstable(); // highest score is now last item
-        let mut desc_scores_iter = env.params.descending_scores.iter().filter(|&score| {
-            if env.params.used_tile_scores_buffer.last() == Some(score) {
-                env.params.used_tile_scores_buffer.pop();
-                false
-            } else {
-                true
-            }
-        });
         let mut best_scoring = 0;
-        for &idx in &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end] {
-            if idx_left <= idx
-                && idx < idx_right
-                && env.params.board_strip[idx as usize] == 0
-                && env.params.shadow_strip_buffer[idx as usize] == 0
+        let mut to_assign = num_played - env.params.used_tile_scores.len() as u8;
+        if to_assign != 0 {
+            // if a square requiring [B] is encountered while holding a B, the B
+            // must go there. if a square requiring [A,B] is encountered earlier,
+            // that square must be A, but this is not currently implemented.
+            let low_end = env
+                .params
+                .aggregated_word_multipliers
+                .binary_search(&acc.word_multiplier)
+                .unwrap()
+                * env.strider_len;
+            let high_end = low_end + env.strider_len;
+            let precomputed_square_multiplier_slice =
+                &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
+            env.params
+                .used_tile_scores_buffer
+                .clone_from(env.params.used_tile_scores);
+            env.params.used_tile_scores_buffer.sort_unstable(); // highest score is now last item
+            let mut desc_scores_iter = env.params.descending_scores.iter().filter(|&score| {
+                if env.params.used_tile_scores_buffer.last() == Some(score) {
+                    env.params.used_tile_scores_buffer.pop();
+                    false
+                } else {
+                    true
+                }
+            });
+            for &idx in
+                &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end]
             {
-                best_scoring += *desc_scores_iter.next().unwrap() as i32
-                    * precomputed_square_multiplier_slice[idx as usize];
-                to_assign -= 1;
-                if to_assign == 0 {
-                    break;
+                if idx_left <= idx
+                    && idx < idx_right
+                    && env.params.shadow_strip_buffer[idx as usize] == 0
+                {
+                    best_scoring += *desc_scores_iter.next().unwrap() as i32
+                        * precomputed_square_multiplier_slice[idx as usize];
+                    to_assign -= 1;
+                    if to_assign == 0 {
+                        break;
+                    }
                 }
             }
         }
