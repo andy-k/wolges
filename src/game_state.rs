@@ -213,8 +213,12 @@ impl GameState {
 
     pub fn next_turn(&mut self) {
         let num_players = self.players.len() as u8;
+        let cur_turn = self.turn;
         self.turn += 1;
         self.turn -= num_players & -((self.turn >= num_players) as i8) as u8;
+        if (cur_turn ^ self.turn) & 1 != 0 {
+            self.bag.0.reverse();
+        }
     }
 
     pub fn check_game_ended(
