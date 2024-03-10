@@ -30,7 +30,7 @@ struct Coord {
 }
 
 // /^(?:\d+[A-Z]+|[A-Z]+\d+)$/i
-fn parse_coord_token(coord: &str, dim: matrix::Dim) -> Option<Coord> {
+fn parse_coord_token(coord: &str, dim: &matrix::Dim) -> Option<Coord> {
     let b1 = coord.as_bytes();
     let l1 = b1.iter().take_while(|c| c.is_ascii_digit()).count();
     let b2 = &b1[l1..];

@@ -527,14 +527,14 @@ impl PlayScorer {
                             .filter(|(i, &tile)| {
                                 tile != 0 && alphabet.is_vowel(tile) && {
                                     (match strider1 {
-                                        Some(strider) => {
+                                        Some(ref strider) => {
                                             let premium = premiums[strider.at(*i)];
                                             premium.tile_multiplier != 1
                                                 || premium.word_multiplier != 1
                                         }
                                         None => false,
                                     }) || (match strider2 {
-                                        Some(strider) => {
+                                        Some(ref strider) => {
                                             let premium = premiums[strider.at(*i)];
                                             premium.tile_multiplier != 1
                                                 || premium.word_multiplier != 1

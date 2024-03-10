@@ -129,9 +129,9 @@ impl BoardLayout {
     }
 
     #[inline(always)]
-    pub fn dim(&self) -> matrix::Dim {
+    pub fn dim(&self) -> &matrix::Dim {
         match self {
-            BoardLayout::Static(x) => x.dim,
+            BoardLayout::Static(x) => &x.dim,
         }
     }
 

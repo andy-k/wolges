@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2024 Andy Kurnia.
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Strider {
     base: i16,
     step: i8,
@@ -34,7 +34,7 @@ impl Strider {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct Dim {
     pub rows: i8,
     pub cols: i8,

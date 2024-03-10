@@ -8,7 +8,7 @@ struct CrossSet {
     score: i32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct CachedCrossSet {
     p_left: i32,
     p_right: i32,
