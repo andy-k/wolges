@@ -976,17 +976,15 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             let indexes_to_descending_square_multiplier_slice =
                 &mut params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
             let mut left = 0;
-            for j in 0..strider_len {
-                if params.board_strip[j] == 0 {
-                    // perpendicular_word_multipliers_strip[j] is 0 if no perpendicular tile.
-                    precomputed_square_multiplier_slice[j] = params.remaining_tile_multipliers_strip
-                        [j] as i32
-                        * (k + params.perpendicular_word_multipliers_strip[j] as i32);
-                    // put the indexes of empty squares first.
-                    // the indexes of non-empty squares should never be visited.
-                    indexes_to_descending_square_multiplier_slice[left] = j as i8;
-                    left += 1;
-                }
+            for j in (0..strider_len).filter(|&j| params.board_strip[j] == 0) {
+                // perpendicular_word_multipliers_strip[j] is 0 if no perpendicular tile.
+                precomputed_square_multiplier_slice[j] = params.remaining_tile_multipliers_strip[j]
+                    as i32
+                    * (k + params.perpendicular_word_multipliers_strip[j] as i32);
+                // put the indexes of empty squares first.
+                // the indexes of non-empty squares should never be visited.
+                indexes_to_descending_square_multiplier_slice[left] = j as i8;
+                left += 1;
             }
             indexes_to_descending_square_multiplier_slice[..left].sort_unstable_by(|&a, &b| {
                 precomputed_square_multiplier_slice[b as usize]
