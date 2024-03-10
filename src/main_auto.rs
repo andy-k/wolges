@@ -237,7 +237,7 @@ fn main() -> error::Returns<()> {
                 klv: &klv,
             };
 
-            if true {
+            if false {
                 move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                     board_snapshot,
                     rack: &game_state.current_player().rack,
