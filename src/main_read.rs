@@ -235,24 +235,47 @@ impl AlphabetLabel for QuackleLeavesAlphabetLabel {
     }
 }
 
-fn iter_dawg<F: FnMut(&str) -> error::Returns<()>, A: AlphabetLabel, R: WgReader>(
+fn iter_dawg<
+    F: FnMut(&str) -> error::Returns<()>,
+    In: FnMut(u8) -> error::Returns<Option<u8>>,
+    Out: FnMut(u8) -> error::Returns<()>,
+    A: AlphabetLabel,
+    R: WgReader,
+>(
     a: &A,
     r: &R,
     b: &[u8],
     initial_idx: usize,
     blank_str: Option<&str>,
     accepts: &mut F,
+    on_in: &mut In,
+    on_out: &mut Out,
 ) -> error::Returns<()> {
-    struct Env<'a, F: FnMut(&str) -> error::Returns<()>, A: AlphabetLabel, R: WgReader> {
+    struct Env<
+        'a,
+        F: FnMut(&str) -> error::Returns<()>,
+        In: FnMut(u8) -> error::Returns<Option<u8>>,
+        Out: FnMut(u8) -> error::Returns<()>,
+        A: AlphabetLabel,
+        R: WgReader,
+    > {
         a: &'a A,
         r: &'a R,
         b: &'a [u8],
         s: &'a mut String,
         blank_str: Option<&'a str>,
         accepts: &'a mut F,
+        on_in: &'a mut In,
+        on_out: &'a mut Out,
     }
-    fn iter<F: FnMut(&str) -> error::Returns<()>, A: AlphabetLabel, R: WgReader>(
-        env: &mut Env<'_, F, A, R>,
+    fn iter<
+        F: FnMut(&str) -> error::Returns<()>,
+        In: FnMut(u8) -> error::Returns<Option<u8>>,
+        Out: FnMut(u8) -> error::Returns<()>,
+        A: AlphabetLabel,
+        R: WgReader,
+    >(
+        env: &mut Env<'_, F, In, Out, A, R>,
         mut p: usize,
     ) -> error::Returns<()> {
         let l = env.s.len();
@@ -270,11 +293,14 @@ fn iter_dawg<F: FnMut(&str) -> error::Returns<()>, A: AlphabetLabel, R: WgReader
             } else {
                 return Err("invalid tile".into());
             }
-            if env.r.accepts(env.b, p) {
-                (env.accepts)(env.s)?;
-            }
-            if env.r.arc_index(env.b, p) != 0 {
-                iter(env, env.r.arc_index(env.b, p))?;
+            if let Some(b) = (env.on_in)(t)? {
+                if env.r.accepts(env.b, p) {
+                    (env.accepts)(env.s)?;
+                }
+                if env.r.arc_index(env.b, p) != 0 {
+                    iter(env, env.r.arc_index(env.b, p))?;
+                }
+                (env.on_out)(b)?;
             }
             env.s.truncate(l);
             if env.r.is_end(env.b, p) {
@@ -295,6 +321,8 @@ fn iter_dawg<F: FnMut(&str) -> error::Returns<()>, A: AlphabetLabel, R: WgReader
             s: &mut String::new(),
             blank_str,
             accepts,
+            on_in,
+            on_out,
         },
         initial_idx,
     )
@@ -335,6 +363,16 @@ fn read_to_end(reader: &mut Box<dyn std::io::Read>) -> Result<Vec<u8>, std::io::
     let mut v = Vec::new();
     reader.read_to_end(&mut v)?;
     Ok(v)
+}
+
+#[inline(always)]
+fn default_in(_b: u8) -> error::Returns<Option<u8>> {
+    Ok(Some(_b))
+}
+
+#[inline(always)]
+fn default_out(_b: u8) -> error::Returns<()> {
+    Ok(())
 }
 
 fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
@@ -404,6 +442,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         ))?;
                         Ok(())
                     },
+                    &mut default_in,
+                    &mut default_out,
                 )?;
                 if r != klv_bytes.len() {
                     return Err("too many leaves".into());
@@ -431,6 +471,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         ret.push('\n');
                         Ok(())
                     },
+                    &mut default_in,
+                    &mut default_out,
                 )?;
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
@@ -454,6 +496,191 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     &mut |s: &str| {
                         ret.push_str(s);
                         ret.push('\n');
+                        Ok(())
+                    },
+                    &mut default_in,
+                    &mut default_out,
+                )?;
+                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                Ok(true)
+            }
+            "-kwg-anagram-" => {
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
+                let reader = &KwgReader {};
+                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                let mut rack = vec![0; alphabet.len().into()];
+                let sb = &args[4].as_bytes();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                        rack[tile as usize] += 1;
+                        ix = end_ix;
+                    } else {
+                        return Err("invalid tile".into());
+                    }
+                }
+                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
+                let mut ret = String::new();
+                iter_dawg(
+                    &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    reader,
+                    kwg_bytes,
+                    reader.arc_index(kwg_bytes, 0),
+                    None,
+                    &mut |s: &str| {
+                        ret.push_str(s);
+                        ret.push('\n');
+                        Ok(())
+                    },
+                    &mut |b: u8| {
+                        let mut rack = rack_cell.borrow_mut();
+                        if rack[b as usize] > 0 {
+                            rack[b as usize] -= 1;
+                            Ok(Some(b))
+                        } else if rack[0] > 0 {
+                            rack[0] -= 1;
+                            Ok(Some(0))
+                        } else {
+                            Ok(None)
+                        }
+                    },
+                    &mut |b: u8| {
+                        let mut rack = rack_cell.borrow_mut();
+                        rack[b as usize] += 1;
+                        Ok(())
+                    },
+                )?;
+                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                Ok(true)
+            }
+            "-kwg-anagram" => {
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
+                let reader = &KwgReader {};
+                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                let mut rack = vec![0; alphabet.len().into()];
+                let mut given_num_tiles = 0usize;
+                let sb = &args[4].as_bytes();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                        rack[tile as usize] += 1;
+                        given_num_tiles += 1;
+                        ix = end_ix;
+                    } else {
+                        return Err("invalid tile".into());
+                    }
+                }
+                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
+                let num_tiles_cell = std::cell::RefCell::new(0);
+                let mut ret = String::new();
+                iter_dawg(
+                    &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    reader,
+                    kwg_bytes,
+                    reader.arc_index(kwg_bytes, 0),
+                    None,
+                    &mut |s: &str| {
+                        if *num_tiles_cell.borrow() == given_num_tiles {
+                            ret.push_str(s);
+                            ret.push('\n');
+                        }
+                        Ok(())
+                    },
+                    &mut |b: u8| {
+                        let mut rack = rack_cell.borrow_mut();
+                        if rack[b as usize] > 0 {
+                            rack[b as usize] -= 1;
+                            *num_tiles_cell.borrow_mut() += 1;
+                            Ok(Some(b))
+                        } else if rack[0] > 0 {
+                            rack[0] -= 1;
+                            *num_tiles_cell.borrow_mut() += 1;
+                            Ok(Some(0))
+                        } else {
+                            Ok(None)
+                        }
+                    },
+                    &mut |b: u8| {
+                        let mut rack = rack_cell.borrow_mut();
+                        rack[b as usize] += 1;
+                        *num_tiles_cell.borrow_mut() -= 1;
+                        Ok(())
+                    },
+                )?;
+                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                Ok(true)
+            }
+            "-kwg-anagram+" => {
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
+                let reader = &KwgReader {};
+                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                let mut rack = vec![0; alphabet.len().into()];
+                let mut given_num_tiles = 0usize;
+                let sb = &args[4].as_bytes();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                        rack[tile as usize] += 1;
+                        given_num_tiles += 1;
+                        ix = end_ix;
+                    } else {
+                        return Err("invalid tile".into());
+                    }
+                }
+                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
+                let num_tiles_cell = std::cell::RefCell::new(0);
+                let mut ret = String::new();
+                iter_dawg(
+                    &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    reader,
+                    kwg_bytes,
+                    reader.arc_index(kwg_bytes, 0),
+                    None,
+                    &mut |s: &str| {
+                        if *num_tiles_cell.borrow() == given_num_tiles {
+                            ret.push_str(s);
+                            ret.push('\n');
+                        }
+                        Ok(())
+                    },
+                    &mut |b: u8| {
+                        let mut rack = rack_cell.borrow_mut();
+                        if rack[b as usize] > 0 {
+                            rack[b as usize] -= 1;
+                            *num_tiles_cell.borrow_mut() += 1;
+                            Ok(Some(b))
+                        } else if rack[0] > 0 {
+                            rack[0] -= 1;
+                            *num_tiles_cell.borrow_mut() += 1;
+                            Ok(Some(0))
+                        } else {
+                            Ok(Some(0xff))
+                        }
+                    },
+                    &mut |b: u8| {
+                        if b != 0xff {
+                            let mut rack = rack_cell.borrow_mut();
+                            rack[b as usize] += 1;
+                            *num_tiles_cell.borrow_mut() -= 1;
+                        }
                         Ok(())
                     },
                 )?;
@@ -719,6 +946,10 @@ fn main() -> error::Returns<()> {
     read kwg/kad file (dawg)
   english-kwg-gaddag CSW21.kwg CSW21.txt
     read gaddawg kwg file (gaddag)
+  english-kwg-anagram- CSW21.kwg - A?AC
+  english-kwg-anagram CSW21.kwg - A?AC
+  english-kwg-anagram+ CSW21.kwg - A?AC
+    list all words with subanagram, anagram, or superanagram (using dawg)
   english-kwg-check CSW21.kwg word [word...]
     checks if all words are valid (using dawg)
   english-q2-ort something.ort something.csv
@@ -813,6 +1044,8 @@ input/output files can be \"-\" (not advisable for binary files)"
                     ret.extend(int_leave.to_le_bytes());
                     Ok(())
                 },
+                &mut default_in,
+                &mut default_out,
             )?;
             if r != klv_bytes.len() {
                 return Err("too many leaves".into());
@@ -885,6 +1118,8 @@ input/output files can be \"-\" (not advisable for binary files)"
                     ret.push('\n');
                     Ok(())
                 },
+                &mut default_in,
+                &mut default_out,
             )?;
             make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "quackle-small" {
@@ -925,6 +1160,8 @@ input/output files can be \"-\" (not advisable for binary files)"
                     ret.push('\n');
                     Ok(())
                 },
+                &mut default_in,
+                &mut default_out,
             )?;
             make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "zyzzyva" {
@@ -945,6 +1182,8 @@ input/output files can be \"-\" (not advisable for binary files)"
                     ret.push('\n');
                     Ok(())
                 },
+                &mut default_in,
+                &mut default_out,
             )?;
             make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "lexpert" {
@@ -965,6 +1204,8 @@ input/output files can be \"-\" (not advisable for binary files)"
                     ret.push('\n');
                     Ok(())
                 },
+                &mut default_in,
+                &mut default_out,
             )?;
             make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else {
