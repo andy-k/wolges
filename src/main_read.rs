@@ -570,6 +570,30 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 Ok(true)
             }
+            "-prob" => {
+                if args.len() < 3 {
+                    return Err("need more argument".into());
+                }
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
+                let mut word_prob = prob::WordProbability::new(&alphabet);
+                let mut v = Vec::new();
+                for word in &args[2..] {
+                    v.clear();
+                    let sb = &word.as_bytes();
+                    let mut ix = 0;
+                    while ix < sb.len() {
+                        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                            v.push(tile);
+                            ix = end_ix;
+                        } else {
+                            return Err("invalid tile".into());
+                        }
+                    }
+                    println!("{}", word_prob.count_ways(&v));
+                }
+                Ok(true)
+            }
             "-klv-anagram-" => {
                 let alphabet = make_alphabet();
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
@@ -1319,6 +1343,8 @@ fn main() -> error::Returns<()> {
     read gaddawg kwg file (gaddag)
   english-kwg-prob CSW21.kwg -
     read kwg file (dawg) by probability (output format subject to changes)
+  english-prob word [word...]
+    show raw probability
   english-klv-anagram- english.klv2 - A?AC
   english-klv-anagram english.klv2 - A?AC
   english-klv-anagram+ english.klv2 - A?AC
