@@ -3,6 +3,8 @@
 use wolges::error;
 mod rlhelper;
 
+use std::io::BufRead;
+
 fn main() -> error::Returns<()> {
     let mut rl = rlhelper::new_rl_editor()?;
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
@@ -23,20 +25,23 @@ fn main() -> error::Returns<()> {
                             }
                             "source" => {
                                 if strings.len() > 1 {
-                                    match std::fs::read_to_string(&strings[1]) {
-                                        Ok(whole_file) => {
-                                            let v = cmd_stack.len();
-                                            for (line_num, line) in whole_file.lines().enumerate() {
-                                                cmd_stack.push((
-                                                    line.to_string(),
-                                                    Some((strings[1].clone(), line_num + 1)),
-                                                ));
-                                            }
-                                            cmd_stack[v..].reverse();
+                                    if let Err(err) = (|| -> error::Returns<()> {
+                                        let v = cmd_stack.len();
+                                        for (line_num, line) in std::io::BufReader::new(
+                                            std::fs::File::open(&strings[1])?,
+                                        )
+                                        .lines()
+                                        .enumerate()
+                                        {
+                                            cmd_stack.push((
+                                                line?.to_string(),
+                                                Some((strings[1].clone(), line_num + 1)),
+                                            ));
                                         }
-                                        Err(err) => {
-                                            println!("cannot open file: {err:?}");
-                                        }
+                                        cmd_stack[v..].reverse();
+                                        Ok(())
+                                    })() {
+                                        println!("cannot read file: {err:?}");
                                     }
                                 } else {
                                     println!("need another arg");
