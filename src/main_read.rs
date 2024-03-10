@@ -636,8 +636,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         return Err("invalid tile".into());
                     }
                 }
-                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
-                let num_unspecified_cell = std::cell::RefCell::new(0);
+                let rack_cell = std::cell::RefCell::new(rack);
+                let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                 iter_dawg(
                     &WolgesAlphabetLabel {
@@ -664,7 +664,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         } else {
                             return Err("missing leaves".into());
                         };
-                        if *num_unspecified_cell.borrow() == 0 {
+                        if num_unspecified.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                             csv_out.serialize((s, leave_value))?;
                         }
                         Ok(())
@@ -675,7 +675,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             rack[b as usize] -= 1;
                             Ok(Some(b))
                         } else {
-                            *num_unspecified_cell.borrow_mut() += 1;
+                            num_unspecified.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             Ok(Some(0xff))
                         }
                     },
@@ -684,7 +684,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             let mut rack = rack_cell.borrow_mut();
                             rack[b as usize] += 1;
                         } else {
-                            *num_unspecified_cell.borrow_mut() -= 1;
+                            num_unspecified.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         Ok(())
                     },
@@ -737,9 +737,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         return Err("invalid tile".into());
                     }
                 }
-                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
-                let num_tiles_cell = std::cell::RefCell::new(0);
-                let num_unspecified_cell = std::cell::RefCell::new(0);
+                let rack_cell = std::cell::RefCell::new(rack);
+                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
+                let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                 iter_dawg(
                     &WolgesAlphabetLabel {
@@ -766,8 +766,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         } else {
                             return Err("missing leaves".into());
                         };
-                        if *num_tiles_cell.borrow() == given_num_tiles
-                            && *num_unspecified_cell.borrow() == 0
+                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles
+                            && num_unspecified.load(std::sync::atomic::Ordering::Relaxed) == 0
                         {
                             csv_out.serialize((s, leave_value))?;
                         }
@@ -777,10 +777,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         let mut rack = rack_cell.borrow_mut();
                         if rack[b as usize] > 0 {
                             rack[b as usize] -= 1;
-                            *num_tiles_cell.borrow_mut() += 1;
+                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             Ok(Some(b))
                         } else {
-                            *num_unspecified_cell.borrow_mut() += 1;
+                            num_unspecified.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             Ok(Some(0xff))
                         }
                     },
@@ -788,9 +788,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         if b != 0xff {
                             let mut rack = rack_cell.borrow_mut();
                             rack[b as usize] += 1;
-                            *num_tiles_cell.borrow_mut() -= 1;
+                            num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         } else {
-                            *num_unspecified_cell.borrow_mut() -= 1;
+                            num_unspecified.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         Ok(())
                     },
@@ -843,8 +843,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         return Err("invalid tile".into());
                     }
                 }
-                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
-                let num_tiles_cell = std::cell::RefCell::new(0);
+                let rack_cell = std::cell::RefCell::new(rack);
+                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                 iter_dawg(
                     &WolgesAlphabetLabel {
@@ -871,7 +871,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         } else {
                             return Err("missing leaves".into());
                         };
-                        if *num_tiles_cell.borrow() == given_num_tiles {
+                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
                             csv_out.serialize((s, leave_value))?;
                         }
                         Ok(())
@@ -880,7 +880,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         let mut rack = rack_cell.borrow_mut();
                         if rack[b as usize] > 0 {
                             rack[b as usize] -= 1;
-                            *num_tiles_cell.borrow_mut() += 1;
+                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             Ok(Some(b))
                         } else {
                             Ok(Some(0xff))
@@ -890,7 +890,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         if b != 0xff {
                             let mut rack = rack_cell.borrow_mut();
                             rack[b as usize] += 1;
-                            *num_tiles_cell.borrow_mut() -= 1;
+                            num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         Ok(())
                     },
@@ -919,7 +919,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         return Err("invalid tile".into());
                     }
                 }
-                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
+                let rack_cell = std::cell::RefCell::new(rack);
                 let mut ret = String::new();
                 iter_dawg(
                     &WolgesAlphabetLabel {
@@ -976,8 +976,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         return Err("invalid tile".into());
                     }
                 }
-                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
-                let num_tiles_cell = std::cell::RefCell::new(0);
+                let rack_cell = std::cell::RefCell::new(rack);
+                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
                 let mut ret = String::new();
                 iter_dawg(
                     &WolgesAlphabetLabel {
@@ -988,7 +988,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     reader.arc_index(kwg_bytes, 0),
                     None,
                     &mut |s: &str| {
-                        if *num_tiles_cell.borrow() == given_num_tiles {
+                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
                             ret.push_str(s);
                             ret.push('\n');
                         }
@@ -998,11 +998,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         let mut rack = rack_cell.borrow_mut();
                         if rack[b as usize] > 0 {
                             rack[b as usize] -= 1;
-                            *num_tiles_cell.borrow_mut() += 1;
+                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             Ok(Some(b))
                         } else if rack[0] > 0 {
                             rack[0] -= 1;
-                            *num_tiles_cell.borrow_mut() += 1;
+                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             Ok(Some(0))
                         } else {
                             Ok(None)
@@ -1011,7 +1011,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     &mut |b: u8| {
                         let mut rack = rack_cell.borrow_mut();
                         rack[b as usize] += 1;
-                        *num_tiles_cell.borrow_mut() -= 1;
+                        num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         Ok(())
                     },
                 )?;
@@ -1039,8 +1039,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         return Err("invalid tile".into());
                     }
                 }
-                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
-                let num_tiles_cell = std::cell::RefCell::new(0);
+                let rack_cell = std::cell::RefCell::new(rack);
+                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
                 let mut ret = String::new();
                 iter_dawg(
                     &WolgesAlphabetLabel {
@@ -1051,7 +1051,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     reader.arc_index(kwg_bytes, 0),
                     None,
                     &mut |s: &str| {
-                        if *num_tiles_cell.borrow() == given_num_tiles {
+                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
                             ret.push_str(s);
                             ret.push('\n');
                         }
@@ -1061,11 +1061,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         let mut rack = rack_cell.borrow_mut();
                         if rack[b as usize] > 0 {
                             rack[b as usize] -= 1;
-                            *num_tiles_cell.borrow_mut() += 1;
+                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             Ok(Some(b))
                         } else if rack[0] > 0 {
                             rack[0] -= 1;
-                            *num_tiles_cell.borrow_mut() += 1;
+                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             Ok(Some(0))
                         } else {
                             Ok(Some(0xff))
@@ -1075,7 +1075,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         if b != 0xff {
                             let mut rack = rack_cell.borrow_mut();
                             rack[b as usize] += 1;
-                            *num_tiles_cell.borrow_mut() -= 1;
+                            num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         Ok(())
                     },
