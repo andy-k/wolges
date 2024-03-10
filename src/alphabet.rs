@@ -27,17 +27,17 @@ pub enum Alphabet {
 }
 
 impl Alphabet {
-    pub fn new_static(x: StaticAlphabet) -> Self {
-        let num_letters = x.tiles.len() as u8;
+    fn new_static(tiles: Vec<Tile>) -> Self {
+        let num_letters = tiles.len() as u8;
         let mut same_score_tile = Box::from_iter(0..num_letters);
         let mut same_score_tile_bits = Vec::with_capacity(num_letters as usize);
         // sameness is defined only by same scores (is_vowel may mismatch).
         for i in 0..num_letters {
             if same_score_tile[i as usize] == i {
                 let mut b = 1u64 << i;
-                let v = x.tiles[i as usize].score;
+                let v = tiles[i as usize].score;
                 for j in i + 1..num_letters {
-                    if x.tiles[j as usize].score == v {
+                    if tiles[j as usize].score == v {
                         same_score_tile[j as usize] = i;
                         b |= 1u64 << j;
                     }
@@ -59,21 +59,21 @@ impl Alphabet {
         }
         let mut tiles_by_descending_scores = Box::from_iter(0..num_letters);
         tiles_by_descending_scores.sort_unstable_by(|&a, &b| {
-            x.tiles[b as usize]
+            tiles[b as usize]
                 .score
-                .cmp(&x.tiles[a as usize].score)
+                .cmp(&tiles[a as usize].score)
                 .then(a.cmp(&b))
         });
         Self::Static(StaticAlphabet {
-            widest_label_len: x.tiles.iter().fold(0, |acc, tile| {
+            widest_label_len: tiles.iter().fold(0, |acc, tile| {
                 acc.max(tile.label.chars().count())
                     .max(tile.blank_label.chars().count())
             }),
-            num_tiles: x.tiles.iter().map(|tile| tile.freq as u16).sum(),
+            num_tiles: tiles.iter().map(|tile| tile.freq as u16).sum(),
             same_score_tile,
             same_score_tile_bits: same_score_tile_bits.into_boxed_slice(),
             tiles_by_descending_scores,
-            ..x
+            tiles,
         })
     }
 
@@ -234,258 +234,237 @@ macro_rules! tile {
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Catalan
 // with QU tile instead of Q
 pub fn make_catalan_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 2, 0, 0),
-            tile!("A", "a", 12, 1, 1),
-            tile!("B", "b", 2, 3, 0),
-            tile!("C", "c", 3, 2, 0),
-            tile!("Ç", "ç", 1, 10, 0, v!["K"], v!["k"]),
-            tile!("D", "d", 3, 2, 0),
-            tile!("E", "e", 13, 1, 1),
-            tile!("F", "f", 1, 4, 0),
-            tile!("G", "g", 2, 3, 0),
-            tile!("H", "h", 1, 8, 0),
-            tile!("I", "i", 8, 1, 1),
-            tile!("J", "j", 1, 8, 0),
-            tile!("L", "l", 4, 1, 0),
-            tile!("L·L", "l·l", 1, 10, 0, v!["W"], v!["w"]),
-            tile!("M", "m", 3, 2, 0),
-            tile!("N", "n", 6, 1, 0),
-            tile!("NY", "ny", 1, 10, 0, v!["Y"], v!["y"]),
-            tile!("O", "o", 5, 1, 1),
-            tile!("P", "p", 2, 3, 0),
-            tile!("QU", "qu", 1, 8, 0, v!["Q"], v!["q"]),
-            tile!("R", "r", 8, 1, 0),
-            tile!("S", "s", 8, 1, 0),
-            tile!("T", "t", 5, 1, 0),
-            tile!("U", "u", 4, 1, 1),
-            tile!("V", "v", 1, 4, 0),
-            tile!("X", "x", 1, 10, 0),
-            tile!("Z", "z", 1, 8, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 2, 0, 0),
+        tile!("A", "a", 12, 1, 1),
+        tile!("B", "b", 2, 3, 0),
+        tile!("C", "c", 3, 2, 0),
+        tile!("Ç", "ç", 1, 10, 0, v!["K"], v!["k"]),
+        tile!("D", "d", 3, 2, 0),
+        tile!("E", "e", 13, 1, 1),
+        tile!("F", "f", 1, 4, 0),
+        tile!("G", "g", 2, 3, 0),
+        tile!("H", "h", 1, 8, 0),
+        tile!("I", "i", 8, 1, 1),
+        tile!("J", "j", 1, 8, 0),
+        tile!("L", "l", 4, 1, 0),
+        tile!("L·L", "l·l", 1, 10, 0, v!["W"], v!["w"]),
+        tile!("M", "m", 3, 2, 0),
+        tile!("N", "n", 6, 1, 0),
+        tile!("NY", "ny", 1, 10, 0, v!["Y"], v!["y"]),
+        tile!("O", "o", 5, 1, 1),
+        tile!("P", "p", 2, 3, 0),
+        tile!("QU", "qu", 1, 8, 0, v!["Q"], v!["q"]),
+        tile!("R", "r", 8, 1, 0),
+        tile!("S", "s", 8, 1, 0),
+        tile!("T", "t", 5, 1, 0),
+        tile!("U", "u", 4, 1, 1),
+        tile!("V", "v", 1, 4, 0),
+        tile!("X", "x", 1, 10, 0),
+        tile!("Z", "z", 1, 8, 0),
+    ])
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Catalan
 pub fn make_super_catalan_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 5, 0, 0),
-            tile!("A", "a", 25, 1, 1),
-            tile!("B", "b", 3, 3, 0),
-            tile!("C", "c", 5, 2, 0),
-            tile!("Ç", "ç", 2, 12, 0, v!["K"], v!["k"]), // note: different score from regular
-            tile!("D", "d", 5, 2, 0),
-            tile!("E", "e", 27, 1, 1),
-            tile!("F", "f", 2, 4, 0),
-            tile!("G", "g", 3, 3, 0),
-            tile!("H", "h", 2, 8, 0),
-            tile!("I", "i", 17, 1, 1),
-            tile!("J", "j", 2, 8, 0),
-            tile!("L", "l", 8, 1, 0),
-            tile!("L·L", "l·l", 1, 15, 0, v!["W"], v!["w"]), // note: different score from regular
-            tile!("M", "m", 7, 2, 0),
-            tile!("N", "n", 12, 1, 0),
-            tile!("NY", "ny", 2, 10, 0, v!["Y"], v!["y"]),
-            tile!("O", "o", 10, 1, 1),
-            tile!("P", "p", 3, 3, 0),
-            tile!("QU", "qu", 2, 8, 0, v!["Q"], v!["q"]),
-            tile!("R", "r", 16, 1, 0),
-            tile!("S", "s", 19, 1, 0),
-            tile!("T", "t", 10, 1, 0),
-            tile!("U", "u", 6, 1, 1),
-            tile!("V", "v", 2, 4, 0),
-            tile!("X", "x", 2, 10, 0),
-            tile!("Z", "z", 2, 8, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 5, 0, 0),
+        tile!("A", "a", 25, 1, 1),
+        tile!("B", "b", 3, 3, 0),
+        tile!("C", "c", 5, 2, 0),
+        tile!("Ç", "ç", 2, 12, 0, v!["K"], v!["k"]), // note: different score from regular
+        tile!("D", "d", 5, 2, 0),
+        tile!("E", "e", 27, 1, 1),
+        tile!("F", "f", 2, 4, 0),
+        tile!("G", "g", 3, 3, 0),
+        tile!("H", "h", 2, 8, 0),
+        tile!("I", "i", 17, 1, 1),
+        tile!("J", "j", 2, 8, 0),
+        tile!("L", "l", 8, 1, 0),
+        tile!("L·L", "l·l", 1, 15, 0, v!["W"], v!["w"]), // note: different score from regular
+        tile!("M", "m", 7, 2, 0),
+        tile!("N", "n", 12, 1, 0),
+        tile!("NY", "ny", 2, 10, 0, v!["Y"], v!["y"]),
+        tile!("O", "o", 10, 1, 1),
+        tile!("P", "p", 3, 3, 0),
+        tile!("QU", "qu", 2, 8, 0, v!["Q"], v!["q"]),
+        tile!("R", "r", 16, 1, 0),
+        tile!("S", "s", 19, 1, 0),
+        tile!("T", "t", 10, 1, 0),
+        tile!("U", "u", 6, 1, 1),
+        tile!("V", "v", 2, 4, 0),
+        tile!("X", "x", 2, 10, 0),
+        tile!("Z", "z", 2, 8, 0),
+    ])
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#English
 pub fn make_english_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 2, 0, 0),
-            tile!("A", "a", 9, 1, 1),
-            tile!("B", "b", 2, 3, 0),
-            tile!("C", "c", 2, 3, 0),
-            tile!("D", "d", 4, 2, 0),
-            tile!("E", "e", 12, 1, 1),
-            tile!("F", "f", 2, 4, 0),
-            tile!("G", "g", 3, 2, 0),
-            tile!("H", "h", 2, 4, 0),
-            tile!("I", "i", 9, 1, 1),
-            tile!("J", "j", 1, 8, 0),
-            tile!("K", "k", 1, 5, 0),
-            tile!("L", "l", 4, 1, 0),
-            tile!("M", "m", 2, 3, 0),
-            tile!("N", "n", 6, 1, 0),
-            tile!("O", "o", 8, 1, 1),
-            tile!("P", "p", 2, 3, 0),
-            tile!("Q", "q", 1, 10, 0),
-            tile!("R", "r", 6, 1, 0),
-            tile!("S", "s", 4, 1, 0),
-            tile!("T", "t", 6, 1, 0),
-            tile!("U", "u", 4, 1, 1),
-            tile!("V", "v", 2, 4, 0),
-            tile!("W", "w", 2, 4, 0),
-            tile!("X", "x", 1, 8, 0),
-            tile!("Y", "y", 2, 4, 0),
-            tile!("Z", "z", 1, 10, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 2, 0, 0),
+        tile!("A", "a", 9, 1, 1),
+        tile!("B", "b", 2, 3, 0),
+        tile!("C", "c", 2, 3, 0),
+        tile!("D", "d", 4, 2, 0),
+        tile!("E", "e", 12, 1, 1),
+        tile!("F", "f", 2, 4, 0),
+        tile!("G", "g", 3, 2, 0),
+        tile!("H", "h", 2, 4, 0),
+        tile!("I", "i", 9, 1, 1),
+        tile!("J", "j", 1, 8, 0),
+        tile!("K", "k", 1, 5, 0),
+        tile!("L", "l", 4, 1, 0),
+        tile!("M", "m", 2, 3, 0),
+        tile!("N", "n", 6, 1, 0),
+        tile!("O", "o", 8, 1, 1),
+        tile!("P", "p", 2, 3, 0),
+        tile!("Q", "q", 1, 10, 0),
+        tile!("R", "r", 6, 1, 0),
+        tile!("S", "s", 4, 1, 0),
+        tile!("T", "t", 6, 1, 0),
+        tile!("U", "u", 4, 1, 1),
+        tile!("V", "v", 2, 4, 0),
+        tile!("W", "w", 2, 4, 0),
+        tile!("X", "x", 1, 8, 0),
+        tile!("Y", "y", 2, 4, 0),
+        tile!("Z", "z", 1, 10, 0),
+    ])
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#French
 // https://en.wikipedia.org/wiki/French_orthography
 pub fn make_french_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 2, 0, 0),
-            tile!("A", "a", 9, 1, 1),
-            tile!("B", "b", 2, 3, 0),
-            tile!("C", "c", 2, 3, 0),
-            tile!("D", "d", 3, 2, 0),
-            tile!("E", "e", 15, 1, 1),
-            tile!("F", "f", 2, 4, 0),
-            tile!("G", "g", 2, 2, 0),
-            tile!("H", "h", 2, 4, 0),
-            tile!("I", "i", 8, 1, 1),
-            tile!("J", "j", 1, 8, 0),
-            tile!("K", "k", 1, 10, 0),
-            tile!("L", "l", 5, 1, 0),
-            tile!("M", "m", 3, 2, 0),
-            tile!("N", "n", 6, 1, 0),
-            tile!("O", "o", 6, 1, 1),
-            tile!("P", "p", 2, 3, 0),
-            tile!("Q", "q", 1, 8, 0),
-            tile!("R", "r", 6, 1, 0),
-            tile!("S", "s", 6, 1, 0),
-            tile!("T", "t", 6, 1, 0),
-            tile!("U", "u", 6, 1, 1),
-            tile!("V", "v", 2, 4, 0),
-            tile!("W", "w", 1, 10, 0),
-            tile!("X", "x", 1, 10, 0),
-            tile!("Y", "y", 1, 10, 1),
-            tile!("Z", "z", 1, 10, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 2, 0, 0),
+        tile!("A", "a", 9, 1, 1),
+        tile!("B", "b", 2, 3, 0),
+        tile!("C", "c", 2, 3, 0),
+        tile!("D", "d", 3, 2, 0),
+        tile!("E", "e", 15, 1, 1),
+        tile!("F", "f", 2, 4, 0),
+        tile!("G", "g", 2, 2, 0),
+        tile!("H", "h", 2, 4, 0),
+        tile!("I", "i", 8, 1, 1),
+        tile!("J", "j", 1, 8, 0),
+        tile!("K", "k", 1, 10, 0),
+        tile!("L", "l", 5, 1, 0),
+        tile!("M", "m", 3, 2, 0),
+        tile!("N", "n", 6, 1, 0),
+        tile!("O", "o", 6, 1, 1),
+        tile!("P", "p", 2, 3, 0),
+        tile!("Q", "q", 1, 8, 0),
+        tile!("R", "r", 6, 1, 0),
+        tile!("S", "s", 6, 1, 0),
+        tile!("T", "t", 6, 1, 0),
+        tile!("U", "u", 6, 1, 1),
+        tile!("V", "v", 2, 4, 0),
+        tile!("W", "w", 1, 10, 0),
+        tile!("X", "x", 1, 10, 0),
+        tile!("Y", "y", 1, 10, 1),
+        tile!("Z", "z", 1, 10, 0),
+    ])
 }
 
 // http://hkcrosswordclub.com/?cat=14
 pub fn make_hong_kong_english_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 4, 0, 0),
-            tile!("A", "a", 9, 1, 1),
-            tile!("B", "b", 2, 3, 0),
-            tile!("C", "c", 2, 3, 0),
-            tile!("D", "d", 4, 2, 0),
-            tile!("E", "e", 12, 1, 1),
-            tile!("F", "f", 2, 4, 0),
-            tile!("G", "g", 3, 2, 0),
-            tile!("H", "h", 2, 4, 0),
-            tile!("I", "i", 9, 1, 1),
-            tile!("J", "j", 2, 8, 0),
-            tile!("K", "k", 2, 5, 0),
-            tile!("L", "l", 4, 1, 0),
-            tile!("M", "m", 2, 3, 0),
-            tile!("N", "n", 6, 1, 0),
-            tile!("O", "o", 8, 1, 1),
-            tile!("P", "p", 2, 3, 0),
-            tile!("Q", "q", 2, 10, 0),
-            tile!("R", "r", 6, 1, 0),
-            tile!("S", "s", 4, 1, 0),
-            tile!("T", "t", 6, 1, 0),
-            tile!("U", "u", 4, 1, 1),
-            tile!("V", "v", 2, 4, 0),
-            tile!("W", "w", 2, 4, 0),
-            tile!("X", "x", 2, 8, 0),
-            tile!("Y", "y", 2, 4, 0),
-            tile!("Z", "z", 2, 10, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 4, 0, 0),
+        tile!("A", "a", 9, 1, 1),
+        tile!("B", "b", 2, 3, 0),
+        tile!("C", "c", 2, 3, 0),
+        tile!("D", "d", 4, 2, 0),
+        tile!("E", "e", 12, 1, 1),
+        tile!("F", "f", 2, 4, 0),
+        tile!("G", "g", 3, 2, 0),
+        tile!("H", "h", 2, 4, 0),
+        tile!("I", "i", 9, 1, 1),
+        tile!("J", "j", 2, 8, 0),
+        tile!("K", "k", 2, 5, 0),
+        tile!("L", "l", 4, 1, 0),
+        tile!("M", "m", 2, 3, 0),
+        tile!("N", "n", 6, 1, 0),
+        tile!("O", "o", 8, 1, 1),
+        tile!("P", "p", 2, 3, 0),
+        tile!("Q", "q", 2, 10, 0),
+        tile!("R", "r", 6, 1, 0),
+        tile!("S", "s", 4, 1, 0),
+        tile!("T", "t", 6, 1, 0),
+        tile!("U", "u", 4, 1, 1),
+        tile!("V", "v", 2, 4, 0),
+        tile!("W", "w", 2, 4, 0),
+        tile!("X", "x", 2, 8, 0),
+        tile!("Y", "y", 2, 4, 0),
+        tile!("Z", "z", 2, 10, 0),
+    ])
 }
 
 // https://en.wikipedia.org/wiki/Super_Scrabble
 pub fn make_super_english_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 4, 0, 0),
-            tile!("A", "a", 16, 1, 1),
-            tile!("B", "b", 4, 3, 0),
-            tile!("C", "c", 6, 3, 0),
-            tile!("D", "d", 8, 2, 0),
-            tile!("E", "e", 24, 1, 1),
-            tile!("F", "f", 4, 4, 0),
-            tile!("G", "g", 5, 2, 0),
-            tile!("H", "h", 5, 4, 0),
-            tile!("I", "i", 13, 1, 1),
-            tile!("J", "j", 2, 8, 0),
-            tile!("K", "k", 2, 5, 0),
-            tile!("L", "l", 7, 1, 0),
-            tile!("M", "m", 6, 3, 0),
-            tile!("N", "n", 13, 1, 0),
-            tile!("O", "o", 15, 1, 1),
-            tile!("P", "p", 4, 3, 0),
-            tile!("Q", "q", 2, 10, 0),
-            tile!("R", "r", 13, 1, 0),
-            tile!("S", "s", 10, 1, 0),
-            tile!("T", "t", 15, 1, 0),
-            tile!("U", "u", 7, 1, 1),
-            tile!("V", "v", 3, 4, 0),
-            tile!("W", "w", 4, 4, 0),
-            tile!("X", "x", 2, 8, 0),
-            tile!("Y", "y", 4, 4, 0),
-            tile!("Z", "z", 2, 10, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 4, 0, 0),
+        tile!("A", "a", 16, 1, 1),
+        tile!("B", "b", 4, 3, 0),
+        tile!("C", "c", 6, 3, 0),
+        tile!("D", "d", 8, 2, 0),
+        tile!("E", "e", 24, 1, 1),
+        tile!("F", "f", 4, 4, 0),
+        tile!("G", "g", 5, 2, 0),
+        tile!("H", "h", 5, 4, 0),
+        tile!("I", "i", 13, 1, 1),
+        tile!("J", "j", 2, 8, 0),
+        tile!("K", "k", 2, 5, 0),
+        tile!("L", "l", 7, 1, 0),
+        tile!("M", "m", 6, 3, 0),
+        tile!("N", "n", 13, 1, 0),
+        tile!("O", "o", 15, 1, 1),
+        tile!("P", "p", 4, 3, 0),
+        tile!("Q", "q", 2, 10, 0),
+        tile!("R", "r", 13, 1, 0),
+        tile!("S", "s", 10, 1, 0),
+        tile!("T", "t", 15, 1, 0),
+        tile!("U", "u", 7, 1, 1),
+        tile!("V", "v", 3, 4, 0),
+        tile!("W", "w", 4, 4, 0),
+        tile!("X", "x", 2, 8, 0),
+        tile!("Y", "y", 4, 4, 0),
+        tile!("Z", "z", 2, 10, 0),
+    ])
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#German
 pub fn make_german_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 2, 0, 0),
-            tile!("A", "a", 5, 1, 1),
-            tile!("Ä", "ä", 1, 6, 1),
-            tile!("B", "b", 2, 3, 0),
-            tile!("C", "c", 2, 4, 0),
-            tile!("D", "d", 4, 1, 0),
-            tile!("E", "e", 15, 1, 1),
-            tile!("F", "f", 2, 4, 0),
-            tile!("G", "g", 3, 2, 0),
-            tile!("H", "h", 4, 2, 0),
-            tile!("I", "i", 6, 1, 1),
-            tile!("J", "j", 1, 6, 0),
-            tile!("K", "k", 2, 4, 0),
-            tile!("L", "l", 3, 2, 0),
-            tile!("M", "m", 4, 3, 0),
-            tile!("N", "n", 9, 1, 0),
-            tile!("O", "o", 3, 2, 1),
-            tile!("Ö", "ö", 1, 8, 1),
-            tile!("P", "p", 1, 4, 0),
-            tile!("Q", "q", 1, 10, 0),
-            tile!("R", "r", 6, 1, 0),
-            tile!("S", "s", 7, 1, 0),
-            tile!("T", "t", 6, 1, 0),
-            tile!("U", "u", 6, 1, 1),
-            tile!("Ü", "ü", 1, 6, 1),
-            tile!("V", "v", 1, 6, 0),
-            tile!("W", "w", 1, 3, 0),
-            tile!("X", "x", 1, 8, 0),
-            tile!("Y", "y", 1, 10, 0),
-            tile!("Z", "z", 1, 3, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 2, 0, 0),
+        tile!("A", "a", 5, 1, 1),
+        tile!("Ä", "ä", 1, 6, 1),
+        tile!("B", "b", 2, 3, 0),
+        tile!("C", "c", 2, 4, 0),
+        tile!("D", "d", 4, 1, 0),
+        tile!("E", "e", 15, 1, 1),
+        tile!("F", "f", 2, 4, 0),
+        tile!("G", "g", 3, 2, 0),
+        tile!("H", "h", 4, 2, 0),
+        tile!("I", "i", 6, 1, 1),
+        tile!("J", "j", 1, 6, 0),
+        tile!("K", "k", 2, 4, 0),
+        tile!("L", "l", 3, 2, 0),
+        tile!("M", "m", 4, 3, 0),
+        tile!("N", "n", 9, 1, 0),
+        tile!("O", "o", 3, 2, 1),
+        tile!("Ö", "ö", 1, 8, 1),
+        tile!("P", "p", 1, 4, 0),
+        tile!("Q", "q", 1, 10, 0),
+        tile!("R", "r", 6, 1, 0),
+        tile!("S", "s", 7, 1, 0),
+        tile!("T", "t", 6, 1, 0),
+        tile!("U", "u", 6, 1, 1),
+        tile!("Ü", "ü", 1, 6, 1),
+        tile!("V", "v", 1, 6, 0),
+        tile!("W", "w", 1, 3, 0),
+        tile!("X", "x", 1, 8, 0),
+        tile!("Y", "y", 1, 10, 0),
+        tile!("Z", "z", 1, 3, 0),
+    ])
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Norwegian
@@ -493,204 +472,189 @@ pub fn make_german_alphabet() -> Alphabet {
 // https://unicode.org/mail-arch/unicode-ml/y2002-m01/0297.html
 // also this ordering matches system locale files
 pub fn make_norwegian_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 2, 0, 0),
-            tile!("A", "a", 7, 1, 1),
-            tile!("B", "b", 3, 4, 0),
-            tile!("C", "c", 1, 10, 0),
-            tile!("D", "d", 5, 1, 0),
-            tile!("E", "e", 9, 1, 1),
-            tile!("F", "f", 4, 2, 0),
-            tile!("G", "g", 4, 2, 0),
-            tile!("H", "h", 3, 3, 0),
-            tile!("I", "i", 5, 1, 1),
-            tile!("J", "j", 2, 4, 0),
-            tile!("K", "k", 4, 2, 0),
-            tile!("L", "l", 5, 1, 0),
-            tile!("M", "m", 3, 2, 0),
-            tile!("N", "n", 6, 1, 0),
-            tile!("O", "o", 4, 2, 1),
-            tile!("P", "p", 2, 4, 0),
-            tile!("Q", "q", 0, 0, 0),
-            tile!("R", "r", 6, 1, 0),
-            tile!("S", "s", 6, 1, 0),
-            tile!("T", "t", 6, 1, 0),
-            tile!("U", "u", 3, 4, 1),
-            tile!("V", "v", 3, 4, 0),
-            tile!("W", "w", 1, 8, 0),
-            tile!("X", "x", 0, 0, 0),
-            tile!("Y", "y", 1, 6, 1),
-            tile!("Ü", "ü", 0, 0, 1),
-            tile!("Z", "z", 0, 0, 0),
-            tile!("Æ", "æ", 1, 6, 1),
-            tile!("Ä", "ä", 0, 0, 1),
-            tile!("Ø", "ø", 2, 5, 1),
-            tile!("Ö", "ö", 0, 0, 1),
-            tile!("Å", "å", 2, 4, 1),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 2, 0, 0),
+        tile!("A", "a", 7, 1, 1),
+        tile!("B", "b", 3, 4, 0),
+        tile!("C", "c", 1, 10, 0),
+        tile!("D", "d", 5, 1, 0),
+        tile!("E", "e", 9, 1, 1),
+        tile!("F", "f", 4, 2, 0),
+        tile!("G", "g", 4, 2, 0),
+        tile!("H", "h", 3, 3, 0),
+        tile!("I", "i", 5, 1, 1),
+        tile!("J", "j", 2, 4, 0),
+        tile!("K", "k", 4, 2, 0),
+        tile!("L", "l", 5, 1, 0),
+        tile!("M", "m", 3, 2, 0),
+        tile!("N", "n", 6, 1, 0),
+        tile!("O", "o", 4, 2, 1),
+        tile!("P", "p", 2, 4, 0),
+        tile!("Q", "q", 0, 0, 0),
+        tile!("R", "r", 6, 1, 0),
+        tile!("S", "s", 6, 1, 0),
+        tile!("T", "t", 6, 1, 0),
+        tile!("U", "u", 3, 4, 1),
+        tile!("V", "v", 3, 4, 0),
+        tile!("W", "w", 1, 8, 0),
+        tile!("X", "x", 0, 0, 0),
+        tile!("Y", "y", 1, 6, 1),
+        tile!("Ü", "ü", 0, 0, 1),
+        tile!("Z", "z", 0, 0, 0),
+        tile!("Æ", "æ", 1, 6, 1),
+        tile!("Ä", "ä", 0, 0, 1),
+        tile!("Ø", "ø", 2, 5, 1),
+        tile!("Ö", "ö", 0, 0, 1),
+        tile!("Å", "å", 2, 4, 1),
+    ])
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Polish
 // https://en.wikipedia.org/wiki/Polish_alphabet#Letters
 // https://en.wikipedia.org/wiki/Polish_phonology#Vowels
 pub fn make_polish_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 2, 0, 0),
-            tile!("A", "a", 9, 1, 1),
-            tile!("Ą", "ą", 1, 5, 1),
-            tile!("B", "b", 2, 3, 0),
-            tile!("C", "c", 3, 2, 0),
-            tile!("Ć", "ć", 1, 6, 0),
-            tile!("D", "d", 3, 2, 0),
-            tile!("E", "e", 7, 1, 1),
-            tile!("Ę", "ę", 1, 5, 1),
-            tile!("F", "f", 1, 5, 0),
-            tile!("G", "g", 2, 3, 0),
-            tile!("H", "h", 2, 3, 0),
-            tile!("I", "i", 8, 1, 1),
-            tile!("J", "j", 2, 3, 0),
-            tile!("K", "k", 3, 2, 0),
-            tile!("L", "l", 3, 2, 0),
-            tile!("Ł", "ł", 2, 3, 0),
-            tile!("M", "m", 3, 2, 0),
-            tile!("N", "n", 5, 1, 0),
-            tile!("Ń", "ń", 1, 7, 0),
-            tile!("O", "o", 6, 1, 1),
-            tile!("Ó", "ó", 1, 5, 1),
-            tile!("P", "p", 3, 2, 0),
-            tile!("R", "r", 4, 1, 0),
-            tile!("S", "s", 4, 1, 0),
-            tile!("Ś", "ś", 1, 5, 0),
-            tile!("T", "t", 3, 2, 0),
-            tile!("U", "u", 2, 3, 1),
-            tile!("W", "w", 4, 1, 0),
-            tile!("Y", "y", 4, 2, 1),
-            tile!("Z", "z", 5, 1, 0),
-            tile!("Ź", "ź", 1, 9, 0),
-            tile!("Ż", "ż", 1, 5, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 2, 0, 0),
+        tile!("A", "a", 9, 1, 1),
+        tile!("Ą", "ą", 1, 5, 1),
+        tile!("B", "b", 2, 3, 0),
+        tile!("C", "c", 3, 2, 0),
+        tile!("Ć", "ć", 1, 6, 0),
+        tile!("D", "d", 3, 2, 0),
+        tile!("E", "e", 7, 1, 1),
+        tile!("Ę", "ę", 1, 5, 1),
+        tile!("F", "f", 1, 5, 0),
+        tile!("G", "g", 2, 3, 0),
+        tile!("H", "h", 2, 3, 0),
+        tile!("I", "i", 8, 1, 1),
+        tile!("J", "j", 2, 3, 0),
+        tile!("K", "k", 3, 2, 0),
+        tile!("L", "l", 3, 2, 0),
+        tile!("Ł", "ł", 2, 3, 0),
+        tile!("M", "m", 3, 2, 0),
+        tile!("N", "n", 5, 1, 0),
+        tile!("Ń", "ń", 1, 7, 0),
+        tile!("O", "o", 6, 1, 1),
+        tile!("Ó", "ó", 1, 5, 1),
+        tile!("P", "p", 3, 2, 0),
+        tile!("R", "r", 4, 1, 0),
+        tile!("S", "s", 4, 1, 0),
+        tile!("Ś", "ś", 1, 5, 0),
+        tile!("T", "t", 3, 2, 0),
+        tile!("U", "u", 2, 3, 1),
+        tile!("W", "w", 4, 1, 0),
+        tile!("Y", "y", 4, 2, 1),
+        tile!("Z", "z", 5, 1, 0),
+        tile!("Ź", "ź", 1, 9, 0),
+        tile!("Ż", "ż", 1, 5, 0),
+    ])
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Slovenian
 // the additional letters are unofficial and experimental
 // (so data files may not be stable).
 pub fn make_slovene_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 2, 0, 0),
-            tile!("A", "a", 10, 1, 1),
-            tile!("Å", "å", 0, 0, 1), // ?
-            tile!("Ä", "ä", 0, 0, 1), // ?
-            tile!("B", "b", 2, 4, 0),
-            tile!("C", "c", 1, 8, 0),
-            tile!("Ç", "ç", 0, 0, 0), // ?
-            tile!("Č", "č", 1, 5, 0),
-            tile!("D", "d", 4, 2, 0),
-            tile!("E", "e", 11, 1, 1),
-            tile!("F", "f", 1, 10, 0),
-            tile!("G", "g", 2, 4, 0),
-            tile!("H", "h", 1, 5, 0),
-            tile!("I", "i", 9, 1, 1),
-            tile!("J", "j", 4, 1, 0),
-            tile!("K", "k", 3, 3, 0),
-            tile!("L", "l", 4, 1, 0),
-            tile!("M", "m", 2, 3, 0),
-            tile!("N", "n", 7, 1, 0),
-            tile!("Ñ", "ñ", 0, 0, 0), // ?
-            tile!("O", "o", 8, 1, 1),
-            tile!("Ö", "ö", 0, 0, 1), // ?
-            tile!("P", "p", 2, 3, 0),
-            tile!("Q", "q", 0, 0, 0), // ?
-            tile!("R", "r", 6, 1, 0),
-            tile!("S", "s", 6, 1, 0),
-            tile!("Š", "š", 1, 6, 0),
-            tile!("T", "t", 4, 1, 0),
-            tile!("U", "u", 2, 3, 1),
-            tile!("Ü", "ü", 0, 0, 1), // ?
-            tile!("V", "v", 4, 2, 0),
-            tile!("W", "w", 0, 0, 0), // ?
-            tile!("X", "x", 0, 0, 0), // ?
-            tile!("Y", "y", 0, 0, 0), // ?
-            tile!("Z", "z", 2, 4, 0),
-            tile!("Ž", "ž", 1, 10, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 2, 0, 0),
+        tile!("A", "a", 10, 1, 1),
+        tile!("Å", "å", 0, 0, 1), // ?
+        tile!("Ä", "ä", 0, 0, 1), // ?
+        tile!("B", "b", 2, 4, 0),
+        tile!("C", "c", 1, 8, 0),
+        tile!("Ç", "ç", 0, 0, 0), // ?
+        tile!("Č", "č", 1, 5, 0),
+        tile!("D", "d", 4, 2, 0),
+        tile!("E", "e", 11, 1, 1),
+        tile!("F", "f", 1, 10, 0),
+        tile!("G", "g", 2, 4, 0),
+        tile!("H", "h", 1, 5, 0),
+        tile!("I", "i", 9, 1, 1),
+        tile!("J", "j", 4, 1, 0),
+        tile!("K", "k", 3, 3, 0),
+        tile!("L", "l", 4, 1, 0),
+        tile!("M", "m", 2, 3, 0),
+        tile!("N", "n", 7, 1, 0),
+        tile!("Ñ", "ñ", 0, 0, 0), // ?
+        tile!("O", "o", 8, 1, 1),
+        tile!("Ö", "ö", 0, 0, 1), // ?
+        tile!("P", "p", 2, 3, 0),
+        tile!("Q", "q", 0, 0, 0), // ?
+        tile!("R", "r", 6, 1, 0),
+        tile!("S", "s", 6, 1, 0),
+        tile!("Š", "š", 1, 6, 0),
+        tile!("T", "t", 4, 1, 0),
+        tile!("U", "u", 2, 3, 1),
+        tile!("Ü", "ü", 0, 0, 1), // ?
+        tile!("V", "v", 4, 2, 0),
+        tile!("W", "w", 0, 0, 0), // ?
+        tile!("X", "x", 0, 0, 0), // ?
+        tile!("Y", "y", 0, 0, 0), // ?
+        tile!("Z", "z", 2, 4, 0),
+        tile!("Ž", "ž", 1, 10, 0),
+    ])
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Spanish
 // based on Spanish-language sets sold outside North America
 // (CH/LL/RR are ambiguous and should not be supported)
 pub fn make_spanish_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 2, 0, 0),
-            tile!("A", "a", 12, 1, 1),
-            tile!("B", "b", 2, 3, 0),
-            tile!("C", "c", 4, 3, 0),
-            tile!("[CH]", "[ch]", 1, 5, 0, v!["1"], v![]),
-            tile!("D", "d", 5, 2, 0),
-            tile!("E", "e", 12, 1, 1),
-            tile!("F", "f", 1, 4, 0),
-            tile!("G", "g", 2, 2, 0),
-            tile!("H", "h", 2, 4, 0),
-            tile!("I", "i", 6, 1, 1),
-            tile!("J", "j", 1, 8, 0),
-            tile!("L", "l", 4, 1, 0),
-            tile!("[LL]", "[ll]", 1, 8, 0, v!["2"], v![]),
-            tile!("M", "m", 2, 3, 0),
-            tile!("N", "n", 5, 1, 0),
-            tile!("Ñ", "ñ", 1, 8, 0),
-            tile!("O", "o", 9, 1, 1),
-            tile!("P", "p", 2, 3, 0),
-            tile!("Q", "q", 1, 5, 0),
-            tile!("R", "r", 5, 1, 0),
-            tile!("[RR]", "[rr]", 1, 8, 0, v!["3"], v![]),
-            tile!("S", "s", 6, 1, 0),
-            tile!("T", "t", 4, 1, 0),
-            tile!("U", "u", 5, 1, 1),
-            tile!("V", "v", 1, 4, 0),
-            tile!("X", "x", 1, 8, 0),
-            tile!("Y", "y", 1, 4, 0),
-            tile!("Z", "z", 1, 10, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 2, 0, 0),
+        tile!("A", "a", 12, 1, 1),
+        tile!("B", "b", 2, 3, 0),
+        tile!("C", "c", 4, 3, 0),
+        tile!("[CH]", "[ch]", 1, 5, 0, v!["1"], v![]),
+        tile!("D", "d", 5, 2, 0),
+        tile!("E", "e", 12, 1, 1),
+        tile!("F", "f", 1, 4, 0),
+        tile!("G", "g", 2, 2, 0),
+        tile!("H", "h", 2, 4, 0),
+        tile!("I", "i", 6, 1, 1),
+        tile!("J", "j", 1, 8, 0),
+        tile!("L", "l", 4, 1, 0),
+        tile!("[LL]", "[ll]", 1, 8, 0, v!["2"], v![]),
+        tile!("M", "m", 2, 3, 0),
+        tile!("N", "n", 5, 1, 0),
+        tile!("Ñ", "ñ", 1, 8, 0),
+        tile!("O", "o", 9, 1, 1),
+        tile!("P", "p", 2, 3, 0),
+        tile!("Q", "q", 1, 5, 0),
+        tile!("R", "r", 5, 1, 0),
+        tile!("[RR]", "[rr]", 1, 8, 0, v!["3"], v![]),
+        tile!("S", "s", 6, 1, 0),
+        tile!("T", "t", 4, 1, 0),
+        tile!("U", "u", 5, 1, 1),
+        tile!("V", "v", 1, 4, 0),
+        tile!("X", "x", 1, 8, 0),
+        tile!("Y", "y", 1, 4, 0),
+        tile!("Z", "z", 1, 10, 0),
+    ])
 }
 
 // TODO: find citeable source
 // https://discord.com/channels/741321677828522035/778469677588283403/1171937313224392704
 pub fn make_yupik_alphabet() -> Alphabet {
-    Alphabet::new_static(StaticAlphabet {
-        tiles: vec![
-            tile!("?", "?", 2, 0, 0),
-            tile!("A", "a", 17, 1, 1),
-            tile!("C", "c", 2, 6, 0),
-            tile!("E", "e", 6, 1, 1),
-            tile!("G", "g", 5, 2, 0),
-            tile!("I", "i", 9, 1, 1),
-            tile!("K", "k", 5, 2, 0),
-            tile!("L", "l", 8, 1, 0),
-            tile!("M", "m", 4, 4, 0),
-            tile!("N", "n", 8, 1, 0),
-            tile!("P", "p", 1, 8, 0),
-            tile!("Q", "q", 4, 4, 0),
-            tile!("R", "r", 6, 1, 0),
-            tile!("S", "s", 1, 8, 0),
-            tile!("T", "t", 8, 1, 0),
-            tile!("U", "u", 12, 1, 1),
-            tile!("V", "v", 1, 10, 0),
-            tile!("W", "w", 1, 10, 0),
-            tile!("Y", "y", 2, 6, 0),
-        ],
-        ..Default::default()
-    })
+    Alphabet::new_static(vec![
+        tile!("?", "?", 2, 0, 0),
+        tile!("A", "a", 17, 1, 1),
+        tile!("C", "c", 2, 6, 0),
+        tile!("E", "e", 6, 1, 1),
+        tile!("G", "g", 5, 2, 0),
+        tile!("I", "i", 9, 1, 1),
+        tile!("K", "k", 5, 2, 0),
+        tile!("L", "l", 8, 1, 0),
+        tile!("M", "m", 4, 4, 0),
+        tile!("N", "n", 8, 1, 0),
+        tile!("P", "p", 1, 8, 0),
+        tile!("Q", "q", 4, 4, 0),
+        tile!("R", "r", 6, 1, 0),
+        tile!("S", "s", 1, 8, 0),
+        tile!("T", "t", 8, 1, 0),
+        tile!("U", "u", 12, 1, 1),
+        tile!("V", "v", 1, 10, 0),
+        tile!("W", "w", 1, 10, 0),
+        tile!("Y", "y", 2, 6, 0),
+    ])
 }
 
 pub struct AlphabetReader {
