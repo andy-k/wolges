@@ -8,7 +8,7 @@ pub fn empty_label(board_layout: &board_layout::BoardLayout, row: i8, col: i8) -
     if row == board_layout.star_row() && col == board_layout.star_col() {
         return "*";
     }
-    let premium = board_layout.premiums()[board_layout.dim().at_row_col(row, col)];
+    let premium = &board_layout.premiums()[board_layout.dim().at_row_col(row, col)];
     match premium.word_multiplier {
         4 => "~",
         3 => "=",

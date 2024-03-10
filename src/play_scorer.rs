@@ -122,7 +122,7 @@ impl PlayScorer {
                         if board_tile != 0 {
                             return_error!("cannot place a tile onto an occupied square".into());
                         }
-                        let premium = premiums[strider_at_i];
+                        let premium = &premiums[strider_at_i];
                         if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
                             return_error!("cannot place a tile onto a punctured square".into());
                         }
@@ -368,7 +368,7 @@ impl PlayScorer {
                     for (i, &tile) in (*idx..).zip(word.iter()) {
                         let strider_at_i = strider.at(i);
                         let tile_multiplier;
-                        let premium = premiums[strider_at_i];
+                        let premium = &premiums[strider_at_i];
                         let placed_tile = if tile != 0 {
                             num_played += 1;
                             word_multiplier *= premium.word_multiplier as i32;
@@ -411,7 +411,7 @@ impl PlayScorer {
                         for j in j..perpendicular_strider_len {
                             let perpendicular_strider_at_j = perpendicular_strider.at(j);
                             let tile_multiplier;
-                            let premium = premiums[perpendicular_strider_at_j];
+                            let premium = &premiums[perpendicular_strider_at_j];
                             let placed_tile = if j == *lane {
                                 word_multiplier *= premium.word_multiplier as i32;
                                 tile_multiplier = premium.tile_multiplier;
@@ -528,14 +528,14 @@ impl PlayScorer {
                                 tile != 0 && alphabet.is_vowel(tile) && {
                                     (match strider1 {
                                         Some(ref strider) => {
-                                            let premium = premiums[strider.at(*i)];
+                                            let premium = &premiums[strider.at(*i)];
                                             premium.tile_multiplier != 1
                                                 || premium.word_multiplier != 1
                                         }
                                         None => false,
                                     }) || (match strider2 {
                                         Some(ref strider) => {
-                                            let premium = premiums[strider.at(*i)];
+                                            let premium = &premiums[strider.at(*i)];
                                             premium.tile_multiplier != 1
                                                 || premium.word_multiplier != 1
                                         }

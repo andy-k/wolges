@@ -317,7 +317,7 @@ impl WorkingBuffer {
                 let idx = strip_range_start + col as usize;
                 let b = board_snapshot.board_tiles[idx];
                 if b == 0 {
-                    let premium = premiums[idx];
+                    let premium = &premiums[idx];
                     self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
                     self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
                     self.face_value_scores_for_across_plays[idx] = 0;
@@ -341,7 +341,7 @@ impl WorkingBuffer {
                 let idx = strip_range_start + row as usize;
                 let b = self.transposed_board_tiles[idx];
                 if b == 0 {
-                    let premium = transposed_premiums[idx];
+                    let premium = &transposed_premiums[idx];
                     self.remaining_word_multipliers_for_down_plays[idx] = premium.word_multiplier;
                     self.remaining_tile_multipliers_for_down_plays[idx] = premium.tile_multiplier;
                     self.face_value_scores_for_down_plays[idx] = 0;
@@ -457,7 +457,7 @@ impl WorkingBuffer {
             for col in 0..dim.cols {
                 let idx = strip_range_start + col as usize;
                 let cross_set = &mut self.cross_set_for_across_plays[idx];
-                let premium = premiums[idx];
+                let premium = &premiums[idx];
                 if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
                     cross_set.bits = 1;
                 }
@@ -473,7 +473,7 @@ impl WorkingBuffer {
             for row in 0..dim.rows {
                 let idx = strip_range_start + row as usize;
                 let cross_set = &mut self.cross_set_for_down_plays[idx];
-                let premium = transposed_premiums[idx];
+                let premium = &transposed_premiums[idx];
                 if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
                     cross_set.bits = 1;
                 }
