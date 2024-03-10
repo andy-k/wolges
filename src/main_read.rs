@@ -235,6 +235,7 @@ impl AlphabetLabel for QuackleLeavesAlphabetLabel {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn iter_dawg<
     F: FnMut(&str) -> error::Returns<()>,
     In: FnMut(u8) -> error::Returns<Option<u8>>,
