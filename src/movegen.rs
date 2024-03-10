@@ -908,7 +908,6 @@ struct GenPlacePlacementsParams<'a> {
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
-    face_value_scores_strip: &'a [i8],
     perpendicular_word_multipliers_strip: &'a [i8],
     perpendicular_scores_strip: &'a [i32],
     rack_bits: u64,
@@ -1130,23 +1129,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             .clone_from_slice(env.params.rack_tally_shadowl);
         loop {
             if idx < env.rightmost {
+                // tail-recurse placing current sequence of tiles in one go
                 let multi_jump = &env.params.multi_jumps_buffer[idx as usize];
-                let expected_main_score = acc.main_score + multi_jump.right_score;
-                let expected_idx = multi_jump.right_idx;
-                if expected_idx != idx {
-                    println!("jump right {}", expected_idx - idx);
-                }
-                // tail-recurse placing current sequence of tiles
-                while idx < env.rightmost {
-                    let b = env.params.board_strip[idx as usize];
-                    if b == 0 {
-                        break;
-                    }
-                    acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
-                    idx += 1;
-                }
-                assert!(expected_main_score == acc.main_score);
-                assert!(expected_idx == idx);
+                acc.main_score += multi_jump.right_score;
+                idx = multi_jump.right_idx;
             }
             // tiles have been placed from idx_left to idx - 1.
             // here idx <= env.rightmost.
@@ -1260,23 +1246,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             .clone_from_slice(env.params.rack_tally);
         loop {
             if idx >= env.leftmost {
+                // tail-recurse placing current sequence of tiles in one go
                 let multi_jump = &env.params.multi_jumps_buffer[idx as usize];
-                let expected_main_score = acc.main_score + multi_jump.left_score;
-                let expected_idx = multi_jump.left_idx;
-                if expected_idx != idx {
-                    println!("jump left {}", idx - expected_idx);
-                }
-                // tail-recurse placing current sequence of tiles
-                while idx >= env.leftmost {
-                    let b = env.params.board_strip[idx as usize];
-                    if b == 0 {
-                        break;
-                    }
-                    acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
-                    idx -= 1;
-                }
-                assert!(expected_main_score == acc.main_score);
-                assert!(expected_idx == idx);
+                acc.main_score += multi_jump.left_score;
+                idx = multi_jump.left_idx;
             }
             // tiles have been placed from env.anchor to idx + 1.
             // here idx >= env.leftmost - 1.
@@ -2871,8 +2844,6 @@ fn kurnia_gen_place_moves_iter<
                 remaining_tile_multipliers_strip: &working_buffer
                     .remaining_tile_multipliers_for_across_plays
                     [strip_range_start..strip_range_end],
-                face_value_scores_strip: &working_buffer.face_value_scores_for_across_plays
-                    [strip_range_start..strip_range_end],
                 perpendicular_word_multipliers_strip: &working_buffer
                     .perpendicular_word_multipliers_for_across_plays
                     [strip_range_start..strip_range_end],
@@ -2924,8 +2895,6 @@ fn kurnia_gen_place_moves_iter<
                     .remaining_word_multipliers_for_down_plays[strip_range_start..strip_range_end],
                 remaining_tile_multipliers_strip: &working_buffer
                     .remaining_tile_multipliers_for_down_plays[strip_range_start..strip_range_end],
-                face_value_scores_strip: &working_buffer.face_value_scores_for_down_plays
-                    [strip_range_start..strip_range_end],
                 perpendicular_word_multipliers_strip: &working_buffer
                     .perpendicular_word_multipliers_for_down_plays
                     [strip_range_start..strip_range_end],
