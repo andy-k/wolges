@@ -504,6 +504,311 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
+            "-klv-anagram-" => {
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
+                let reader = &KwgReader {};
+                let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if klv_bytes.len() < 4 {
+                    return Err("out of bounds".into());
+                }
+                let mut r = 0;
+                let kwg_bytes_len = ((klv_bytes[r] as u32
+                    | (klv_bytes[r + 1] as u32) << 8
+                    | (klv_bytes[r + 2] as u32) << 16
+                    | (klv_bytes[r + 3] as u32) << 24)
+                    as usize)
+                    * 4;
+                r += 4;
+                if klv_bytes.len() < r + kwg_bytes_len + 4 {
+                    return Err("out of bounds".into());
+                }
+                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+                r += kwg_bytes_len;
+                let lv_len = (klv_bytes[r] as u32
+                    | (klv_bytes[r + 1] as u32) << 8
+                    | (klv_bytes[r + 2] as u32) << 16
+                    | (klv_bytes[r + 3] as u32) << 24) as usize;
+                r += 4;
+                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                let mut rack = vec![0; alphabet.len().into()];
+                let sb = &args[4].as_bytes();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                        rack[tile as usize] += 1;
+                        ix = end_ix;
+                    } else {
+                        return Err("invalid tile".into());
+                    }
+                }
+                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
+                let num_unspecified_cell = std::cell::RefCell::new(0);
+                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+                iter_dawg(
+                    &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    reader,
+                    kwg_bytes,
+                    reader.arc_index(kwg_bytes, 0),
+                    alphabet.of_rack(0),
+                    &mut |s: &str| {
+                        let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
+                            r += 4;
+                            f32::from_bits(
+                                klv_bytes[r - 4] as u32
+                                    | (klv_bytes[r - 3] as u32) << 8
+                                    | (klv_bytes[r - 2] as u32) << 16
+                                    | (klv_bytes[r - 1] as u32) << 24,
+                            )
+                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
+                            r += 2;
+                            ((klv_bytes[r - 2] as u16 | (klv_bytes[r - 1] as u16) << 8) as i16)
+                                as f32
+                                * (1.0 / 256.0)
+                        } else {
+                            return Err("missing leaves".into());
+                        };
+                        if *num_unspecified_cell.borrow() == 0 {
+                            csv_out.serialize((s, leave_value))?;
+                        }
+                        Ok(())
+                    },
+                    &mut |b: u8| {
+                        let mut rack = rack_cell.borrow_mut();
+                        if rack[b as usize] > 0 {
+                            rack[b as usize] -= 1;
+                            Ok(Some(b))
+                        } else {
+                            *num_unspecified_cell.borrow_mut() += 1;
+                            Ok(Some(0xff))
+                        }
+                    },
+                    &mut |b: u8| {
+                        if b != 0xff {
+                            let mut rack = rack_cell.borrow_mut();
+                            rack[b as usize] += 1;
+                        } else {
+                            *num_unspecified_cell.borrow_mut() -= 1;
+                        }
+                        Ok(())
+                    },
+                )?;
+                if r != klv_bytes.len() {
+                    return Err("too many leaves".into());
+                }
+                Ok(true)
+            }
+            "-klv-anagram" => {
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
+                let reader = &KwgReader {};
+                let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if klv_bytes.len() < 4 {
+                    return Err("out of bounds".into());
+                }
+                let mut r = 0;
+                let kwg_bytes_len = ((klv_bytes[r] as u32
+                    | (klv_bytes[r + 1] as u32) << 8
+                    | (klv_bytes[r + 2] as u32) << 16
+                    | (klv_bytes[r + 3] as u32) << 24)
+                    as usize)
+                    * 4;
+                r += 4;
+                if klv_bytes.len() < r + kwg_bytes_len + 4 {
+                    return Err("out of bounds".into());
+                }
+                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+                r += kwg_bytes_len;
+                let lv_len = (klv_bytes[r] as u32
+                    | (klv_bytes[r + 1] as u32) << 8
+                    | (klv_bytes[r + 2] as u32) << 16
+                    | (klv_bytes[r + 3] as u32) << 24) as usize;
+                r += 4;
+                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                let mut rack = vec![0; alphabet.len().into()];
+                let mut given_num_tiles = 0usize;
+                let sb = &args[4].as_bytes();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                        rack[tile as usize] += 1;
+                        given_num_tiles += 1;
+                        ix = end_ix;
+                    } else {
+                        return Err("invalid tile".into());
+                    }
+                }
+                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
+                let num_tiles_cell = std::cell::RefCell::new(0);
+                let num_unspecified_cell = std::cell::RefCell::new(0);
+                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+                iter_dawg(
+                    &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    reader,
+                    kwg_bytes,
+                    reader.arc_index(kwg_bytes, 0),
+                    alphabet.of_rack(0),
+                    &mut |s: &str| {
+                        let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
+                            r += 4;
+                            f32::from_bits(
+                                klv_bytes[r - 4] as u32
+                                    | (klv_bytes[r - 3] as u32) << 8
+                                    | (klv_bytes[r - 2] as u32) << 16
+                                    | (klv_bytes[r - 1] as u32) << 24,
+                            )
+                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
+                            r += 2;
+                            ((klv_bytes[r - 2] as u16 | (klv_bytes[r - 1] as u16) << 8) as i16)
+                                as f32
+                                * (1.0 / 256.0)
+                        } else {
+                            return Err("missing leaves".into());
+                        };
+                        if *num_tiles_cell.borrow() == given_num_tiles
+                            && *num_unspecified_cell.borrow() == 0
+                        {
+                            csv_out.serialize((s, leave_value))?;
+                        }
+                        Ok(())
+                    },
+                    &mut |b: u8| {
+                        let mut rack = rack_cell.borrow_mut();
+                        if rack[b as usize] > 0 {
+                            rack[b as usize] -= 1;
+                            *num_tiles_cell.borrow_mut() += 1;
+                            Ok(Some(b))
+                        } else {
+                            *num_unspecified_cell.borrow_mut() += 1;
+                            Ok(Some(0xff))
+                        }
+                    },
+                    &mut |b: u8| {
+                        if b != 0xff {
+                            let mut rack = rack_cell.borrow_mut();
+                            rack[b as usize] += 1;
+                            *num_tiles_cell.borrow_mut() -= 1;
+                        } else {
+                            *num_unspecified_cell.borrow_mut() -= 1;
+                        }
+                        Ok(())
+                    },
+                )?;
+                if r != klv_bytes.len() {
+                    return Err("too many leaves".into());
+                }
+                Ok(true)
+            }
+            "-klv-anagram+" => {
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
+                let reader = &KwgReader {};
+                let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if klv_bytes.len() < 4 {
+                    return Err("out of bounds".into());
+                }
+                let mut r = 0;
+                let kwg_bytes_len = ((klv_bytes[r] as u32
+                    | (klv_bytes[r + 1] as u32) << 8
+                    | (klv_bytes[r + 2] as u32) << 16
+                    | (klv_bytes[r + 3] as u32) << 24)
+                    as usize)
+                    * 4;
+                r += 4;
+                if klv_bytes.len() < r + kwg_bytes_len + 4 {
+                    return Err("out of bounds".into());
+                }
+                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+                r += kwg_bytes_len;
+                let lv_len = (klv_bytes[r] as u32
+                    | (klv_bytes[r + 1] as u32) << 8
+                    | (klv_bytes[r + 2] as u32) << 16
+                    | (klv_bytes[r + 3] as u32) << 24) as usize;
+                r += 4;
+                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                let mut rack = vec![0; alphabet.len().into()];
+                let mut given_num_tiles = 0usize;
+                let sb = &args[4].as_bytes();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                        rack[tile as usize] += 1;
+                        given_num_tiles += 1;
+                        ix = end_ix;
+                    } else {
+                        return Err("invalid tile".into());
+                    }
+                }
+                let rack_cell = std::cell::RefCell::new(std::mem::take(&mut rack));
+                let num_tiles_cell = std::cell::RefCell::new(0);
+                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+                iter_dawg(
+                    &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    reader,
+                    kwg_bytes,
+                    reader.arc_index(kwg_bytes, 0),
+                    alphabet.of_rack(0),
+                    &mut |s: &str| {
+                        let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
+                            r += 4;
+                            f32::from_bits(
+                                klv_bytes[r - 4] as u32
+                                    | (klv_bytes[r - 3] as u32) << 8
+                                    | (klv_bytes[r - 2] as u32) << 16
+                                    | (klv_bytes[r - 1] as u32) << 24,
+                            )
+                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
+                            r += 2;
+                            ((klv_bytes[r - 2] as u16 | (klv_bytes[r - 1] as u16) << 8) as i16)
+                                as f32
+                                * (1.0 / 256.0)
+                        } else {
+                            return Err("missing leaves".into());
+                        };
+                        if *num_tiles_cell.borrow() == given_num_tiles {
+                            csv_out.serialize((s, leave_value))?;
+                        }
+                        Ok(())
+                    },
+                    &mut |b: u8| {
+                        let mut rack = rack_cell.borrow_mut();
+                        if rack[b as usize] > 0 {
+                            rack[b as usize] -= 1;
+                            *num_tiles_cell.borrow_mut() += 1;
+                            Ok(Some(b))
+                        } else {
+                            Ok(Some(0xff))
+                        }
+                    },
+                    &mut |b: u8| {
+                        if b != 0xff {
+                            let mut rack = rack_cell.borrow_mut();
+                            rack[b as usize] += 1;
+                            *num_tiles_cell.borrow_mut() -= 1;
+                        }
+                        Ok(())
+                    },
+                )?;
+                if r != klv_bytes.len() {
+                    return Err("too many leaves".into());
+                }
+                Ok(true)
+            }
             "-kwg-anagram-" => {
                 let alphabet = make_alphabet();
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
@@ -946,6 +1251,10 @@ fn main() -> error::Returns<()> {
     read kwg/kad file (dawg)
   english-kwg-gaddag CSW21.kwg CSW21.txt
     read gaddawg kwg file (gaddag)
+  english-klv-anagram- english.klv2 - A?AC
+  english-klv-anagram english.klv2 - A?AC
+  english-klv-anagram+ english.klv2 - A?AC
+    list all leaves with subanagram, anagram, or superanagram
   english-kwg-anagram- CSW21.kwg - A?AC
   english-kwg-anagram CSW21.kwg - A?AC
   english-kwg-anagram+ CSW21.kwg - A?AC
