@@ -22,14 +22,6 @@ abcdefghijkmnopqrstuvwxyz\
 
 const GAME_ID_LEN: usize = 8;
 
-struct SerializeArc<T>(std::sync::Arc<T>);
-
-impl<T: serde::Serialize> serde::Serialize for SerializeArc<T> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        (*self.0).serialize(serializer)
-    }
-}
-
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // support "-" to mean stdout.
