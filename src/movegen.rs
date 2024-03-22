@@ -308,11 +308,14 @@ impl WorkingBuffer {
         adjust_leave_value: &AdjustLeaveValue,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
+        self.num_tiles_on_rack = rack.len().try_into().unwrap();
         self.exchange_buffer.clear();
-        self.exchange_buffer.reserve(rack.len());
+        self.exchange_buffer.reserve(self.num_tiles_on_rack as usize);
         self.rack_tally.iter_mut().for_each(|m| *m = 0);
+        self.rack_bits = 0u64;
         for tile in rack {
             self.rack_tally[*tile as usize] += 1;
+            self.rack_bits |= 1u64 << tile;
         }
         self.word_buffer_for_across_plays
             .iter_mut()
@@ -400,29 +403,6 @@ impl WorkingBuffer {
         };
 
         // eg if my rack is ZY??YVA it'd be [10,4,4,4,1,0,0].
-        self.num_tiles_on_rack = 0;
-        self.rack_bits = 0u64;
-        for (tile, &count) in (0u8..).zip(self.rack_tally.iter()) {
-            self.num_tiles_on_rack += count;
-            self.rack_bits |= ((count != 0) as u64) << tile;
-        }
-        if self.num_tiles_in_bag <= 0 {
-            self.multi_leaves.init(
-                &self.rack_tally,
-                board_snapshot.klv,
-                false,
-                adjust_leave_value,
-            );
-            self.multi_leaves
-                .init_endgame_leaves(|tile| alphabet.score(tile), play_out_bonus);
-        } else {
-            self.multi_leaves.init(
-                &self.rack_tally,
-                board_snapshot.klv,
-                true,
-                adjust_leave_value,
-            );
-        }
         self.descending_scores.clear();
         self.descending_scores
             .reserve(self.num_tiles_on_rack as usize);
@@ -437,6 +417,14 @@ impl WorkingBuffer {
         }
 
         if self.num_tiles_in_bag <= 0 {
+            self.multi_leaves.init(
+                &self.rack_tally,
+                board_snapshot.klv,
+                false,
+                adjust_leave_value,
+            );
+            self.multi_leaves
+                .init_endgame_leaves(|tile| alphabet.score(tile), play_out_bonus);
             // the multi_leaves is correct but doing this directly is faster.
             self.best_leave_values.clear();
             self.best_leave_values
@@ -448,6 +436,12 @@ impl WorkingBuffer {
             }
             self.best_leave_values[self.num_tiles_on_rack as usize] = play_out_bonus;
         } else {
+            self.multi_leaves.init(
+                &self.rack_tally,
+                board_snapshot.klv,
+                true,
+                adjust_leave_value,
+            );
             self.multi_leaves
                 .extract_raw_best_leave_values(&mut self.best_leave_values);
         }
@@ -456,9 +450,9 @@ impl WorkingBuffer {
                 board_snapshot.game_config.num_played_bonus(i) as f32;
         }
         self.used_tile_scores.clear();
-        self.used_tile_scores.reserve(rack.len());
+        self.used_tile_scores.reserve(self.num_tiles_on_rack as usize);
         self.used_tile_scores_buffer.clear();
-        self.used_tile_scores_buffer.reserve(rack.len());
+        self.used_tile_scores_buffer.reserve(self.num_tiles_on_rack as usize);
     }
 
     fn init_after_cross_sets(&mut self, board_snapshot: &BoardSnapshot<'_>) {
