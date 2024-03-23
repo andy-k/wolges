@@ -89,7 +89,7 @@ impl Clone for Bites {
             .clone_from_slice(source);
         } else {
             // Optimal for all other cases since boxed slices cannot be resized.
-            *self = source.clone();
+            *self = source.clone() as _;
         }
     }
 }

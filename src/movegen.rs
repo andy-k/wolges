@@ -2208,7 +2208,7 @@ impl Clone for Play {
                 {
                     self_tiles.clone_from(source_tiles);
                 } else {
-                    *self = source.clone();
+                    *self = source.clone() as _;
                 }
             }
             Self::Place {
@@ -2232,7 +2232,7 @@ impl Clone for Play {
                     self_word.clone_from(source_word);
                     self_score.clone_from(source_score);
                 } else {
-                    *self = source.clone();
+                    *self = source.clone() as _;
                 }
             }
         }
