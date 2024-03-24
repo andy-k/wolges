@@ -1141,103 +1141,69 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 break;
             }
 
-            // place a tile at [idx] if it is still in bounds
-            if idx < env.rightmost {
-                let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
-                if this_cross_bits & 1 == 0 {
-                    // nothing hooks here.
-                    num_played += 1;
-                    acc.word_multiplier *=
-                        env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-                    idx += 1;
-                    is_unique = true;
-                    continue;
-                } else if this_cross_bits != 1 {
-                    // something hooks here and there is a valid letter.
-                    // this_cross_bits has bit 1 set, so blank is always allowed.
-                    let matching_bits = this_cross_bits & rack_bits;
-                    if matching_bits != 0 {
-                        let without_lowest_bit = matching_bits & (matching_bits - 1);
-                        num_played += 1;
-                        if without_lowest_bit == 0 {
-                            // case 1: only one tile fits.
-                            // consume the square and the tile.
-                            // rack_bits will turn off if the tile is depleted.
-                            env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                            let tile = matching_bits.trailing_zeros() as u8;
-                            env.params.rack_tally_shadowr[tile as usize] -= 1;
-                            // this is (rack_tally[tile] == 0 ? matching_bits : 0).
-                            rack_bits ^= matching_bits
-                                & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64))
-                                    as u64;
-                            let tile_score = env.params.alphabet.score(tile);
-                            env.params.used_tile_scores_shadowr.insert(
-                                env.params
-                                    .used_tile_scores_shadowr
-                                    .partition_point(|&x| x <= tile_score),
-                                tile_score,
-                            );
-                            let tile_value = tile_score as i32
-                                * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
-                            acc.main_score += tile_value;
-                            acc.perpendicular_cumulative_score += env
-                                .params
-                                .perpendicular_scores_strip[idx as usize]
-                                + tile_value
-                                    * env.params.perpendicular_word_multipliers_strip[idx as usize]
-                                        as i32;
-                            acc.word_multiplier *=
-                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-                            idx += 1;
-                            continue;
-                        } else if matching_bits
-                            & env
-                                .params
-                                .alphabet
-                                .same_score_tile_bits(matching_bits.trailing_zeros() as u8)
-                            == matching_bits
-                        {
-                            // case 2: multiple tiles fit, but they all have the same score.
-                            // consume the square, but not the tile.
-                            // rack_bits remains unchanged because assignment is tentative.
-                            env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                            let tile = matching_bits.trailing_zeros() as u8;
-                            let tile_score = env.params.alphabet.score(tile);
-                            env.params.used_tile_scores_shadowr.insert(
-                                env.params
-                                    .used_tile_scores_shadowr
-                                    .partition_point(|&x| x <= tile_score),
-                                tile_score,
-                            );
-                            let tile_value = tile_score as i32
-                                * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
-                            acc.main_score += tile_value;
-                            acc.perpendicular_cumulative_score += env
-                                .params
-                                .perpendicular_scores_strip[idx as usize]
-                                + tile_value
-                                    * env.params.perpendicular_word_multipliers_strip[idx as usize]
-                                        as i32;
-                            acc.word_multiplier *=
-                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-                            idx += 1;
-                            continue;
-                        } else {
-                            // case 3: multiple tiles fit, and they have different scores.
-                            // rack_bits remains unchanged because assignment is tentative.
-                            // defer to greedy algorithm.
-                            env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
-                            acc.perpendicular_cumulative_score +=
-                                env.params.perpendicular_scores_strip[idx as usize];
-                            acc.word_multiplier *=
-                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-                            idx += 1;
-                            continue;
-                        }
-                    }
-                }
+            if idx >= env.rightmost {
+                break;
             }
-            break;
+
+            // place a tile at [idx] since it is still in bounds.
+            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            if this_cross_bits & 1 == 0 {
+                // nothing hooks here.
+                is_unique = true;
+            } else if this_cross_bits != 1 {
+                // something hooks here and there is a valid letter.
+                // this_cross_bits has bit 1 set, so blank is always allowed.
+                let matching_bits = this_cross_bits & rack_bits;
+                if matching_bits == 0 {
+                    break;
+                }
+                let tile = matching_bits.trailing_zeros() as u8;
+                if matching_bits & (matching_bits - 1) == 0 {
+                    // case 1: only one tile fits.
+                    // consume the square and the tile.
+                    // rack_bits will turn off if the tile is depleted.
+                    env.params.rack_tally_shadowr[tile as usize] -= 1;
+                    // this is (rack_tally[tile] == 0 ? matching_bits : 0).
+                    rack_bits ^= matching_bits
+                        & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64)) as u64;
+                    // fall-through to case 2 (assume the optimized asm does not recheck the condition).
+                }
+                if matching_bits & (matching_bits - 1) == 0
+                    || matching_bits & env.params.alphabet.same_score_tile_bits(tile)
+                        == matching_bits
+                {
+                    // case 2: multiple tiles fit, but they all have the same score.
+                    // consume the square, but not the tile.
+                    // rack_bits remains unchanged because assignment is tentative.
+                    env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
+                    let tile_score = env.params.alphabet.score(tile);
+                    env.params.used_tile_scores_shadowr.insert(
+                        env.params
+                            .used_tile_scores_shadowr
+                            .partition_point(|&x| x <= tile_score),
+                        tile_score,
+                    );
+                    let tile_value = tile_score as i32
+                        * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                    acc.main_score += tile_value;
+                    acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
+                        [idx as usize]
+                        + tile_value
+                            * env.params.perpendicular_word_multipliers_strip[idx as usize] as i32;
+                } else {
+                    // case 3: multiple tiles fit, and they have different scores.
+                    // rack_bits remains unchanged because assignment is tentative.
+                    // defer to greedy algorithm.
+                    env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
+                    acc.perpendicular_cumulative_score +=
+                        env.params.perpendicular_scores_strip[idx as usize];
+                }
+            } else {
+                break;
+            }
+            num_played += 1;
+            acc.word_multiplier *= env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            idx += 1;
         }
         env.params.used_tile_scores_shadowr.clear(); // use shadowl in shadow_record
     }
@@ -1280,103 +1246,69 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 );
             }
 
-            // place a tile at [idx] if it is still in bounds
-            if idx >= env.leftmost {
-                let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
-                if this_cross_bits & 1 == 0 {
-                    // nothing hooks here.
-                    num_played += 1;
-                    acc.word_multiplier *=
-                        env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-                    idx -= 1;
-                    is_unique = true;
-                    continue;
-                } else if this_cross_bits != 1 {
-                    // something hooks here and there is a valid letter.
-                    // this_cross_bits has bit 1 set, so blank is always allowed.
-                    let matching_bits = this_cross_bits & rack_bits;
-                    if matching_bits != 0 {
-                        let without_lowest_bit = matching_bits & (matching_bits - 1);
-                        num_played += 1;
-                        if without_lowest_bit == 0 {
-                            // case 1: only one tile fits.
-                            // consume the square and the tile.
-                            // rack_bits will turn off if the tile is depleted.
-                            env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                            let tile = matching_bits.trailing_zeros() as u8;
-                            env.params.rack_tally_shadowl[tile as usize] -= 1;
-                            // this is (rack_tally[tile] == 0 ? matching_bits : 0).
-                            rack_bits ^= matching_bits
-                                & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64))
-                                    as u64;
-                            let tile_score = env.params.alphabet.score(tile);
-                            env.params.used_tile_scores_shadowl.insert(
-                                env.params
-                                    .used_tile_scores_shadowl
-                                    .partition_point(|&x| x <= tile_score),
-                                tile_score,
-                            );
-                            let tile_value = tile_score as i32
-                                * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
-                            acc.main_score += tile_value;
-                            acc.perpendicular_cumulative_score += env
-                                .params
-                                .perpendicular_scores_strip[idx as usize]
-                                + tile_value
-                                    * env.params.perpendicular_word_multipliers_strip[idx as usize]
-                                        as i32;
-                            acc.word_multiplier *=
-                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-                            idx -= 1;
-                            continue;
-                        } else if matching_bits
-                            & env
-                                .params
-                                .alphabet
-                                .same_score_tile_bits(matching_bits.trailing_zeros() as u8)
-                            == matching_bits
-                        {
-                            // case 2: multiple tiles fit, but they all have the same score.
-                            // consume the square, but not the tile.
-                            // rack_bits remains unchanged because assignment is tentative.
-                            env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                            let tile = matching_bits.trailing_zeros() as u8;
-                            let tile_score = env.params.alphabet.score(tile);
-                            env.params.used_tile_scores_shadowl.insert(
-                                env.params
-                                    .used_tile_scores_shadowl
-                                    .partition_point(|&x| x <= tile_score),
-                                tile_score,
-                            );
-                            let tile_value = tile_score as i32
-                                * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
-                            acc.main_score += tile_value;
-                            acc.perpendicular_cumulative_score += env
-                                .params
-                                .perpendicular_scores_strip[idx as usize]
-                                + tile_value
-                                    * env.params.perpendicular_word_multipliers_strip[idx as usize]
-                                        as i32;
-                            acc.word_multiplier *=
-                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-                            idx -= 1;
-                            continue;
-                        } else {
-                            // case 3: multiple tiles fit, and they have different scores.
-                            // rack_bits remains unchanged because assignment is tentative.
-                            // defer to greedy algorithm.
-                            env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
-                            acc.perpendicular_cumulative_score +=
-                                env.params.perpendicular_scores_strip[idx as usize];
-                            acc.word_multiplier *=
-                                env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-                            idx -= 1;
-                            continue;
-                        }
-                    }
-                }
+            if idx < env.leftmost {
+                break;
             }
-            break;
+
+            // place a tile at [idx] since it is still in bounds.
+            let this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
+            if this_cross_bits & 1 == 0 {
+                // nothing hooks here.
+                is_unique = true;
+            } else if this_cross_bits != 1 {
+                // something hooks here and there is a valid letter.
+                // this_cross_bits has bit 1 set, so blank is always allowed.
+                let matching_bits = this_cross_bits & rack_bits;
+                if matching_bits == 0 {
+                    break;
+                }
+                let tile = matching_bits.trailing_zeros() as u8;
+                if matching_bits & (matching_bits - 1) == 0 {
+                    // case 1: only one tile fits.
+                    // consume the square and the tile.
+                    // rack_bits will turn off if the tile is depleted.
+                    env.params.rack_tally_shadowl[tile as usize] -= 1;
+                    // this is (rack_tally[tile] == 0 ? matching_bits : 0).
+                    rack_bits ^= matching_bits
+                        & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64)) as u64;
+                    // fall-through to case 2 (assume the optimized asm does not recheck the condition).
+                }
+                if matching_bits & (matching_bits - 1) == 0
+                    || matching_bits & env.params.alphabet.same_score_tile_bits(tile)
+                        == matching_bits
+                {
+                    // case 2: multiple tiles fit, but they all have the same score.
+                    // consume the square, but not the tile.
+                    // rack_bits remains unchanged because assignment is tentative.
+                    env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
+                    let tile_score = env.params.alphabet.score(tile);
+                    env.params.used_tile_scores_shadowl.insert(
+                        env.params
+                            .used_tile_scores_shadowl
+                            .partition_point(|&x| x <= tile_score),
+                        tile_score,
+                    );
+                    let tile_value = tile_score as i32
+                        * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
+                    acc.main_score += tile_value;
+                    acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
+                        [idx as usize]
+                        + tile_value
+                            * env.params.perpendicular_word_multipliers_strip[idx as usize] as i32;
+                } else {
+                    // case 3: multiple tiles fit, and they have different scores.
+                    // rack_bits remains unchanged because assignment is tentative.
+                    // defer to greedy algorithm.
+                    env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
+                    acc.perpendicular_cumulative_score +=
+                        env.params.perpendicular_scores_strip[idx as usize];
+                }
+            } else {
+                break;
+            }
+            num_played += 1;
+            acc.word_multiplier *= env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            idx -= 1;
         }
     }
 
