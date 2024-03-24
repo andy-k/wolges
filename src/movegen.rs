@@ -338,21 +338,18 @@ impl WorkingBuffer {
         let dim = board_layout.dim();
         let premiums = board_layout.premiums();
         let transposed_premiums = board_layout.transposed_premiums();
-        for row in 0..dim.rows {
-            let strip_range_start = (row as isize * dim.cols as isize) as usize;
-            for col in 0..dim.cols {
-                let idx = strip_range_start + col as usize;
-                let b = board_snapshot.board_tiles[idx];
-                if b == 0 {
-                    let premium = &premiums[idx];
-                    self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
-                    self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
-                    self.face_value_scores_for_across_plays[idx] = 0;
-                } else {
-                    self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
-                    self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
-                    self.face_value_scores_for_across_plays[idx] = alphabet.score(b);
-                }
+        let area = (dim.rows as isize * dim.cols as isize) as usize;
+        // row * dim.cols + col
+        for (idx, &b) in board_snapshot.board_tiles.iter().enumerate().take(area) {
+            if b == 0 {
+                let premium = &premiums[idx];
+                self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
+                self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
+                self.face_value_scores_for_across_plays[idx] = 0;
+            } else {
+                self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
+                self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
+                self.face_value_scores_for_across_plays[idx] = alphabet.score(b);
             }
         }
         for col in 0..dim.cols {
@@ -362,21 +359,17 @@ impl WorkingBuffer {
                     .board_tiles[(row as isize * dim.cols as isize + col as isize) as usize];
             }
         }
-        for col in 0..dim.cols {
-            let strip_range_start = (col as isize * dim.rows as isize) as usize;
-            for row in 0..dim.rows {
-                let idx = strip_range_start + row as usize;
-                let b = self.transposed_board_tiles[idx];
-                if b == 0 {
-                    let premium = &transposed_premiums[idx];
-                    self.remaining_word_multipliers_for_down_plays[idx] = premium.word_multiplier;
-                    self.remaining_tile_multipliers_for_down_plays[idx] = premium.tile_multiplier;
-                    self.face_value_scores_for_down_plays[idx] = 0;
-                } else {
-                    self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
-                    self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
-                    self.face_value_scores_for_down_plays[idx] = alphabet.score(b);
-                }
+        // col * dim.rows + row
+        for (idx, &b) in self.transposed_board_tiles.iter().enumerate().take(area) {
+            if b == 0 {
+                let premium = &transposed_premiums[idx];
+                self.remaining_word_multipliers_for_down_plays[idx] = premium.word_multiplier;
+                self.remaining_tile_multipliers_for_down_plays[idx] = premium.tile_multiplier;
+                self.face_value_scores_for_down_plays[idx] = 0;
+            } else {
+                self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
+                self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
+                self.face_value_scores_for_down_plays[idx] = alphabet.score(b);
             }
         }
         self.num_tiles_on_board = board_snapshot
@@ -472,37 +465,29 @@ impl WorkingBuffer {
         let dim = board_layout.dim();
         let premiums = board_layout.premiums();
         let transposed_premiums = board_layout.transposed_premiums();
-        for row in 0..dim.rows {
-            let strip_range_start = (row as isize * dim.cols as isize) as usize;
-            for col in 0..dim.cols {
-                let idx = strip_range_start + col as usize;
-                let cross_set = &mut self.cross_set_for_across_plays[idx];
-                let premium = &premiums[idx];
-                if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
-                    cross_set.bits = 1;
-                }
-                let effective_pwm = self.remaining_word_multipliers_for_across_plays[idx]
-                    & -(cross_set.bits as i8 & 1);
-                self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
-                self.perpendicular_scores_for_across_plays[idx] =
-                    cross_set.score * effective_pwm as i32;
+        let area = (dim.rows as isize * dim.cols as isize) as usize;
+        // row * dim.cols + col
+        for (idx, premium) in premiums.iter().enumerate().take(area) {
+            let cross_set = &mut self.cross_set_for_across_plays[idx];
+            if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
+                cross_set.bits = 1;
             }
+            let effective_pwm =
+                self.remaining_word_multipliers_for_across_plays[idx] & -(cross_set.bits as i8 & 1);
+            self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
+            self.perpendicular_scores_for_across_plays[idx] =
+                cross_set.score * effective_pwm as i32;
         }
-        for col in 0..dim.cols {
-            let strip_range_start = (col as isize * dim.rows as isize) as usize;
-            for row in 0..dim.rows {
-                let idx = strip_range_start + row as usize;
-                let cross_set = &mut self.cross_set_for_down_plays[idx];
-                let premium = &transposed_premiums[idx];
-                if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
-                    cross_set.bits = 1;
-                }
-                let effective_pwm = self.remaining_word_multipliers_for_down_plays[idx]
-                    & -(cross_set.bits as i8 & 1);
-                self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
-                self.perpendicular_scores_for_down_plays[idx] =
-                    cross_set.score * effective_pwm as i32;
+        // col * dim.rows + row
+        for (idx, premium) in transposed_premiums.iter().enumerate().take(area) {
+            let cross_set = &mut self.cross_set_for_down_plays[idx];
+            if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
+                cross_set.bits = 1;
             }
+            let effective_pwm =
+                self.remaining_word_multipliers_for_down_plays[idx] & -(cross_set.bits as i8 & 1);
+            self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
+            self.perpendicular_scores_for_down_plays[idx] = cross_set.score * effective_pwm as i32;
         }
     }
 
