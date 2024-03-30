@@ -249,6 +249,66 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?)?;
                 Ok(true)
             }
+            "-kwg-magpie" => {
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::GaddawgMagpie,
+                    &read_machine_words(
+                        &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?,
+                )?)?;
+                Ok(true)
+            }
+            "-kwg-magpie-dawg" => {
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::DawgOnlyMagpie,
+                    &read_machine_words(
+                        &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?,
+                )?)?;
+                Ok(true)
+            }
+            "-kwg-magpie-alpha" => {
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::DawgOnlyMagpie,
+                    &build::make_alphagrams(&read_machine_words(
+                        &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?),
+                )?)?;
+                Ok(true)
+            }
+            "-kwg-magpie-score" => {
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::GaddawgMagpie,
+                    &read_machine_words(
+                        &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?,
+                )?)?;
+                Ok(true)
+            }
+            "-kwg-magpie-score-dawg" => {
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::DawgOnlyMagpie,
+                    &read_machine_words(
+                        &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?,
+                )?)?;
+                Ok(true)
+            }
+            "-kwg-magpie-score-alpha" => {
+                make_writer(&args[3])?.write_all(&build::build(
+                    build::BuildFormat::DawgOnlyMagpie,
+                    &build::make_alphagrams(&read_machine_words(
+                        &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?),
+                )?)?;
+                Ok(true)
+            }
             "-macondo" => {
                 let alphabet = make_alphabet();
                 let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read(&args[2])?);
@@ -304,6 +364,7 @@ fn main() -> error::Returns<()> {
   english-kwg-score-alpha CSW21.txt CSW21.kad
   english-kwg-score-dawg CSW21.txt outfile.dwg
     same as above but with representative same-score tiles
+  (english-kwg can also be english-kwg-magpie for bigger magpie-style kwg)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, yupik)
 input/output files can be \"-\" (not advisable for binary files)"
