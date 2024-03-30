@@ -238,7 +238,7 @@ impl StatesDefragger<'_> {
             if self.destination[write_p as usize] != 0 {
                 break;
             }
-            if WOLGES_MODE || ofs == 0 {
+            {
                 self.destination[write_p as usize] = initial_num_written + ofs;
                 // non-wolges mode does not merge tail nodes.
             }
@@ -386,7 +386,7 @@ pub fn build(
         states: &states,
         prev_indexes: &match build_format {
             BuildFormat::DawgOnly | BuildFormat::Gaddawg => gen_prev_indexes(&states),
-            BuildFormat::DawgOnlyMagpie | BuildFormat::GaddawgMagpie => vec![0u32; states.len()],
+            BuildFormat::DawgOnlyMagpie | BuildFormat::GaddawgMagpie => gen_prev_indexes(&states),
         },
         destination: &mut vec![0u32; states.len()],
         num_written: match build_format {
