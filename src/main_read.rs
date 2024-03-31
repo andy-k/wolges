@@ -2,6 +2,7 @@
 
 use wolges::{alphabet, error, prob};
 
+use std::fmt::Write;
 use std::str::FromStr;
 
 trait WgReader {
@@ -502,6 +503,49 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     &mut default_in,
                     &mut default_out,
                 )?;
+                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                Ok(true)
+            }
+            "-kwg-nodes" => {
+                // output format not guaranteed to be stable.
+                let alphabet = make_alphabet();
+                let alphabet_label = &WolgesAlphabetLabel {
+                    alphabet: &alphabet,
+                };
+                let reader = &KwgReader {};
+                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                let kwg_len = reader.len(kwg_bytes);
+                let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
+                let mut kwg_pointed_to = vec![false; kwg_len];
+                for p in 0..kwg_len {
+                    kwg_pointed_to[reader.arc_index(kwg_bytes, p)] = true;
+                }
+                let mut ret = String::new();
+                for (p, &p_pointed_to) in kwg_pointed_to.iter().enumerate().take(kwg_len) {
+                    if p_pointed_to {
+                        write!(ret, "{p:kwg_len_width$}")?;
+                    } else {
+                        write!(ret, "{:kwg_len_width$}", "")?;
+                    }
+                    ret.push(' ');
+                    let t = reader.tile(kwg_bytes, p);
+                    if t == 0 {
+                        ret.push('@');
+                    } else {
+                        alphabet_label.label(&mut ret, t)?;
+                    }
+                    if reader.accepts(kwg_bytes, p) {
+                        ret.push('*');
+                    }
+                    let arc_index = reader.arc_index(kwg_bytes, p);
+                    if arc_index != 0 {
+                        write!(ret, " {arc_index}")?;
+                    }
+                    if reader.is_end(kwg_bytes, p) {
+                        ret.push_str(" ends");
+                    }
+                    ret.push('\n');
+                }
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
@@ -1342,6 +1386,8 @@ fn main() -> error::Returns<()> {
     read kwg/kad file (dawg)
   english-kwg-gaddag CSW21.kwg CSW21.txt
     read gaddawg kwg file (gaddag)
+  english-kwg-nodes CSW21.kwg CSW21.kwg.raw
+    read kwg file for human inspection
   english-kwg-prob CSW21.kwg -
     read kwg file (dawg) by probability (output format subject to changes)
   english-prob word [word...]
