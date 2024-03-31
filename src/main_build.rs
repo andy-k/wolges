@@ -263,7 +263,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?)?;
                 Ok(true)
             }
-            "-kwg-magpie" => {
+            "-magpie-kwg" => {
                 make_writer(&args[3])?.write_all(&build::build(
                     build::BuildContent::Gaddawg,
                     build::BuildLayout::Magpie,
@@ -274,7 +274,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?)?;
                 Ok(true)
             }
-            "-kwg-magpie-dawg" => {
+            "-magpie-kwg-dawg" => {
                 make_writer(&args[3])?.write_all(&build::build(
                     build::BuildContent::DawgOnly,
                     build::BuildLayout::Magpie,
@@ -285,7 +285,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?)?;
                 Ok(true)
             }
-            "-kwg-magpie-alpha" => {
+            "-magpie-kwg-alpha" => {
                 make_writer(&args[3])?.write_all(&build::build(
                     build::BuildContent::DawgOnly,
                     build::BuildLayout::Magpie,
@@ -296,7 +296,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?)?;
                 Ok(true)
             }
-            "-kwg-magpie-score" => {
+            "-magpie-kwg-score" => {
                 make_writer(&args[3])?.write_all(&build::build(
                     build::BuildContent::Gaddawg,
                     build::BuildLayout::Magpie,
@@ -307,7 +307,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?)?;
                 Ok(true)
             }
-            "-kwg-magpie-score-dawg" => {
+            "-magpie-kwg-score-dawg" => {
                 make_writer(&args[3])?.write_all(&build::build(
                     build::BuildContent::DawgOnly,
                     build::BuildLayout::Magpie,
@@ -318,7 +318,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?)?;
                 Ok(true)
             }
-            "-kwg-magpie-score-alpha" => {
+            "-magpie-kwg-score-alpha" => {
                 make_writer(&args[3])?.write_all(&build::build(
                     build::BuildContent::DawgOnly,
                     build::BuildLayout::Magpie,
@@ -384,7 +384,7 @@ fn main() -> error::Returns<()> {
   english-kwg-score-alpha CSW21.txt CSW21.kad
   english-kwg-score-dawg CSW21.txt outfile.dwg
     same as above but with representative same-score tiles
-  (english-kwg can also be english-kwg-magpie for bigger magpie-style kwg)
+  (english-kwg can also be english-magpie-kwg for bigger magpie-style kwg)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, yupik)
 input/output files can be \"-\" (not advisable for binary files)"
