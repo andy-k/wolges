@@ -268,13 +268,6 @@ impl StatesDefragger<'_> {
     }
 
     fn defrag_magpie(&mut self, mut p: u32) {
-        loop {
-            let prev = self.prev_indexes[p as usize];
-            if prev == 0 {
-                break;
-            }
-            p = prev;
-        }
         if self.destination[p as usize] != 0 {
             return;
         }
@@ -351,9 +344,6 @@ impl StatesDefragger<'_> {
             }
         }
         for mut p in 1..self.states.len() {
-            if self.prev_indexes[p] != 0 {
-                continue;
-            }
             let mut dp = self.destination[p] as usize;
             if dp == 0 {
                 continue;
@@ -424,7 +414,7 @@ pub fn build(
         states: &states,
         prev_indexes: &match build_format.layout() {
             BuildLayout::Wolges => gen_prev_indexes(&states),
-            BuildLayout::Magpie => vec![0u32; states.len()],
+            BuildLayout::Magpie => Vec::new(),
         },
         destination: &mut vec![0u32; states.len()],
         num_written: match build_format.content() {
