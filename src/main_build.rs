@@ -38,6 +38,7 @@ use std::str::FromStr;
 fn build_leaves<Readable: std::io::Read>(
     f: Readable,
     alph: alphabet::Alphabet,
+    build_layout: build::BuildLayout,
 ) -> error::Returns<Vec<u8>> {
     let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
     let mut leaves_map: fash::MyHashMap<bites::Bites, _> = fash::MyHashMap::default();
@@ -70,7 +71,7 @@ fn build_leaves<Readable: std::io::Read>(
     sorted_machine_words.sort_unstable();
     let leaves_kwg = build::build(
         build::BuildContent::DawgOnly,
-        build::BuildLayout::Wolges,
+        build_layout,
         &sorted_machine_words,
     )?;
     let leave_values = sorted_machine_words
@@ -98,6 +99,7 @@ fn build_leaves<Readable: std::io::Read>(
 fn build_leaves_f32<Readable: std::io::Read>(
     f: Readable,
     alph: alphabet::Alphabet,
+    build_layout: build::BuildLayout,
 ) -> error::Returns<Vec<u8>> {
     let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
     let mut leaves_map = fash::MyHashMap::default();
@@ -116,7 +118,7 @@ fn build_leaves_f32<Readable: std::io::Read>(
     sorted_machine_words.sort_unstable();
     let leaves_kwg = build::build(
         build::BuildContent::DawgOnly,
-        build::BuildLayout::Wolges,
+        build_layout,
         &sorted_machine_words,
     )?;
     let leave_values = sorted_machine_words
@@ -194,14 +196,18 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             match args1_suffix {
                 "-klv" => {
-                    make_writer(&args[3])?
-                        .write_all(&build_leaves(&mut make_reader(&args[2])?, make_alphabet())?)?;
+                    make_writer(&args[3])?.write_all(&build_leaves(
+                        &mut make_reader(&args[2])?,
+                        make_alphabet(),
+                        build_layout,
+                    )?)?;
                     Ok(true)
                 }
                 "-klv2" => {
                     make_writer(&args[3])?.write_all(&build_leaves_f32(
                         &mut make_reader(&args[2])?,
                         make_alphabet(),
+                        build_layout,
                     )?)?;
                     Ok(true)
                 }
@@ -327,7 +333,8 @@ fn main() -> error::Returns<()> {
   english-kwg-score-alpha CSW21.txt CSW21.kad
   english-kwg-score-dawg CSW21.txt outfile.dwg
     same as above but with representative same-score tiles
-  (english-kwg can also be english-magpie-kwg for bigger magpie-style kwg)
+  (english-... can also be english-magpie-... for bigger magpie-style kwg,
+    this is applicable for kwg, kwg-anything, klv/klv2)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, yupik)
 input/output files can be \"-\" (not advisable for binary files)"
@@ -362,6 +369,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/english.csv")?),
             alphabet::make_english_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     std::fs::write(
@@ -369,6 +377,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/CSW21.csv")?),
             alphabet::make_english_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     std::fs::write(
@@ -376,6 +385,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/french.csv")?),
             alphabet::make_french_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     std::fs::write(
@@ -383,6 +393,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/german.csv")?),
             alphabet::make_german_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     std::fs::write(
@@ -390,6 +401,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves(
             Box::new(std::fs::File::open("lexsrc/norwegian.csv")?),
             alphabet::make_norwegian_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     std::fs::write(
@@ -397,6 +409,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves_f32(
             Box::new(std::fs::File::open("lexsrc/english.csv")?),
             alphabet::make_english_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     std::fs::write(
@@ -404,6 +417,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves_f32(
             Box::new(std::fs::File::open("lexsrc/CSW21.csv")?),
             alphabet::make_english_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     std::fs::write(
@@ -411,6 +425,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves_f32(
             Box::new(std::fs::File::open("lexsrc/french.csv")?),
             alphabet::make_french_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     std::fs::write(
@@ -418,6 +433,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves_f32(
             Box::new(std::fs::File::open("lexsrc/german.csv")?),
             alphabet::make_german_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     std::fs::write(
@@ -425,6 +441,7 @@ fn old_main() -> error::Returns<()> {
         build_leaves_f32(
             Box::new(std::fs::File::open("lexsrc/norwegian.csv")?),
             alphabet::make_norwegian_alphabet(),
+            build::BuildLayout::Wolges,
         )?,
     )?;
     {
