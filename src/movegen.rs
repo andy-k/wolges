@@ -1991,7 +1991,7 @@ fn gen_place_moves_at<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, f32)>(
     working_buffer: &mut WorkingBuffer,
     multi_leaves: &'a klv::MultiLeaves,
     placement: &PossiblePlacement,
-    max_rack_size: u8,
+    num_max_played: u8,
     mut found_place_move: FoundPlaceMove,
 ) {
     let dim = board_snapshot.game_config.board_layout().dim();
@@ -2057,7 +2057,7 @@ fn gen_place_moves_at<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, f32)>(
             } else {
                 &mut working_buffer.word_buffer_for_across_plays[strip_range_start..strip_range_end]
             },
-            num_max_played: max_rack_size,
+            num_max_played,
             anchor: placement.anchor,
             leftmost: placement.leftmost,
             rightmost: placement.rightmost,
@@ -2876,7 +2876,7 @@ fn kurnia_gen_place_moves_iter<
                     working_buffer,
                     multi_leaves,
                     &placement,
-                    max_rack_size,
+                    num_max_played,
                     &mut |down: bool,
                           lane: i8,
                           idx: i8,
