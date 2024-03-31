@@ -188,7 +188,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     match args[1].strip_prefix(language_name) {
         Some(mut args1_suffix) => {
             let build_layout;
-            if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-magpie") {
+            if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-magpiemerged") {
+                build_layout = build::BuildLayout::MagpieMerged;
+                args1_suffix = args1_suffix_suffix;
+            } else if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-magpie") {
                 build_layout = build::BuildLayout::Magpie;
                 args1_suffix = args1_suffix_suffix;
             } else {
@@ -334,6 +337,7 @@ fn main() -> error::Returns<()> {
   english-kwg-score-dawg CSW21.txt outfile.dwg
     same as above but with representative same-score tiles
   (english-... can also be english-magpie-... for bigger magpie-style kwg,
+    english-magpiemerged-... for magpie ordering with wolges merging,
     this is applicable for kwg, kwg-anything, klv/klv2)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, yupik)

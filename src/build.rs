@@ -189,6 +189,7 @@ pub enum BuildContent {
 pub enum BuildLayout {
     Wolges,
     Magpie, // https://github.com/jvc56/MAGPIE/
+    MagpieMerged,
 }
 
 // zero-cost type-safety
@@ -268,6 +269,54 @@ impl StatesDefragger<'_> {
                 break;
             }
         }
+    }
+
+    fn defrag_magpie_merged(&mut self, mut p: u32) {
+        loop {
+            let prev = self.prev_indexes[p as usize];
+            if prev == 0 {
+                break;
+            }
+            p = prev;
+        }
+        if self.destination[p as usize] != 0 {
+            return;
+        }
+        let initial_num_written = self.num_written;
+        // temp value to break self-cycles.
+        self.destination[p as usize] = !0;
+        let mut write_p = p;
+        // non-wolges mode reserves the space first.
+        loop {
+            self.num_written += 1;
+            p = self.states[p as usize].next_index;
+            if p == 0 {
+                break;
+            }
+        }
+        p = write_p;
+        let mut num = 0u32;
+        loop {
+            num += 1;
+            let a = self.states[p as usize].arc_index;
+            if a != 0 {
+                self.defrag_magpie_merged(a);
+            }
+            p = self.states[p as usize].next_index;
+            if p == 0 {
+                break;
+            }
+        }
+        self.destination[write_p as usize] = 0;
+        for ofs in 0..num {
+            // prefer earlier index, so dawg part does not point to gaddag part
+            if self.destination[write_p as usize] != 0 {
+                break;
+            }
+            self.destination[write_p as usize] = initial_num_written + ofs;
+            write_p = self.states[write_p as usize].next_index;
+        }
+        // non-wolges mode already reserves the space.
     }
 
     // encoding: little endian of
@@ -390,7 +439,7 @@ pub fn build(
     let mut states_defragger = StatesDefragger {
         states: &states,
         prev_indexes: &match build_layout {
-            BuildLayout::Wolges => gen_prev_indexes(&states),
+            BuildLayout::Wolges | BuildLayout::MagpieMerged => gen_prev_indexes(&states),
             BuildLayout::Magpie => Vec::new(),
         },
         destination: &mut vec![0u32; states.len()],
@@ -403,12 +452,14 @@ pub fn build(
     match build_layout {
         BuildLayout::Wolges => states_defragger.defrag_wolges(dawg_start_state),
         BuildLayout::Magpie => states_defragger.defrag_magpie(dawg_start_state),
+        BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(dawg_start_state),
     }
     match build_content {
         BuildContent::DawgOnly => {}
         BuildContent::Gaddawg => match build_layout {
             BuildLayout::Wolges => states_defragger.defrag_wolges(gaddag_start_state),
             BuildLayout::Magpie => states_defragger.defrag_magpie(gaddag_start_state),
+            BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(gaddag_start_state),
         },
     }
     states_defragger.destination[0] = 0; // useful for empty lexicon
