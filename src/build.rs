@@ -278,10 +278,8 @@ impl StatesDefragger<'_> {
         if self.destination[p as usize] != 0 {
             return;
         }
-        let initial_num_written = self.num_written;
-        // temp value to break self-cycles.
-        self.destination[p as usize] = !0;
-        let mut write_p = p;
+        self.destination[p as usize] = self.num_written;
+        let write_p = p;
         // non-wolges mode reserves the space first.
         loop {
             self.num_written += 1;
@@ -291,9 +289,7 @@ impl StatesDefragger<'_> {
             }
         }
         p = write_p;
-        let mut num = 0u32;
         loop {
-            num += 1;
             let a = self.states[p as usize].arc_index;
             if a != 0 {
                 self.defrag_magpie(a);
@@ -303,19 +299,6 @@ impl StatesDefragger<'_> {
                 break;
             }
         }
-        self.destination[write_p as usize] = 0;
-        for ofs in 0..num {
-            // prefer earlier index, so dawg part does not point to gaddag part
-            if self.destination[write_p as usize] != 0 {
-                break;
-            }
-            if ofs == 0 {
-                self.destination[write_p as usize] = initial_num_written + ofs;
-                // non-wolges mode does not merge tail nodes.
-            }
-            write_p = self.states[write_p as usize].next_index;
-        }
-        // non-wolges mode already reserves the space.
     }
 
     // encoding: little endian of
