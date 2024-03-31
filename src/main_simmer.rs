@@ -283,7 +283,8 @@ fn main() -> error::Returns<()> {
     let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
     vec_of_words.sort_unstable();
     let smaller_kwg_bytes = build::build(
-        build::BuildFormat::Gaddawg,
+        build::BuildContent::Gaddawg,
+        build::BuildLayout::Wolges,
         &vec_of_words.into_boxed_slice(),
     )?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());

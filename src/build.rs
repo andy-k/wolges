@@ -179,40 +179,16 @@ pub fn make_alphagrams(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
     machine_dorws.into_boxed_slice()
 }
 
-// various build formats
-pub enum BuildFormat {
-    DawgOnly,
-    Gaddawg,
-    DawgOnlyMagpie,
-    GaddawgMagpie,
-}
+// build formats
 
-enum BuildContent {
+pub enum BuildContent {
     DawgOnly,
     Gaddawg,
 }
 
-enum BuildLayout {
+pub enum BuildLayout {
     Wolges,
     Magpie, // https://github.com/jvc56/MAGPIE/
-}
-
-impl BuildFormat {
-    #[inline(always)]
-    fn content(&self) -> BuildContent {
-        match self {
-            BuildFormat::DawgOnly | BuildFormat::DawgOnlyMagpie => BuildContent::DawgOnly,
-            BuildFormat::Gaddawg | BuildFormat::GaddawgMagpie => BuildContent::Gaddawg,
-        }
-    }
-
-    #[inline(always)]
-    fn layout(&self) -> BuildLayout {
-        match self {
-            BuildFormat::DawgOnly | BuildFormat::Gaddawg => BuildLayout::Wolges,
-            BuildFormat::DawgOnlyMagpie | BuildFormat::GaddawgMagpie => BuildLayout::Magpie,
-        }
-    }
 }
 
 // zero-cost type-safety
@@ -319,7 +295,7 @@ impl StatesDefragger<'_> {
 
     fn to_vec(
         &self,
-        build_format: BuildFormat,
+        build_content: BuildContent,
         dawg_start_state: u32,
         gaddag_start_state: u32,
     ) -> Vec<u8> {
@@ -331,7 +307,7 @@ impl StatesDefragger<'_> {
             Accepts(false),
             0,
         );
-        match build_format.content() {
+        match build_content {
             BuildContent::DawgOnly => {}
             BuildContent::Gaddawg => {
                 self.write_node(
@@ -382,7 +358,8 @@ fn gen_prev_indexes(states: &[State]) -> Vec<u32> {
 
 // machine_words must be sorted and unique.
 pub fn build(
-    build_format: BuildFormat,
+    build_content: BuildContent,
+    build_layout: BuildLayout,
     machine_words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
     // The sink state always exists.
@@ -401,7 +378,7 @@ pub fn build(
         states_finder: &mut states_finder,
     };
     let dawg_start_state = state_maker.make_dawg(machine_words, 0, false);
-    let gaddag_start_state = match build_format.content() {
+    let gaddag_start_state = match build_content {
         BuildContent::DawgOnly => 0,
         BuildContent::Gaddawg => state_maker.make_dawg(
             &gen_machine_drowwords(machine_words),
@@ -412,24 +389,24 @@ pub fn build(
 
     let mut states_defragger = StatesDefragger {
         states: &states,
-        prev_indexes: &match build_format.layout() {
+        prev_indexes: &match build_layout {
             BuildLayout::Wolges => gen_prev_indexes(&states),
             BuildLayout::Magpie => Vec::new(),
         },
         destination: &mut vec![0u32; states.len()],
-        num_written: match build_format.content() {
+        num_written: match build_content {
             BuildContent::DawgOnly => 1,
             BuildContent::Gaddawg => 2,
         },
     };
     states_defragger.destination[0] = !0; // useful for empty lexicon
-    match build_format.layout() {
+    match build_layout {
         BuildLayout::Wolges => states_defragger.defrag_wolges(dawg_start_state),
         BuildLayout::Magpie => states_defragger.defrag_magpie(dawg_start_state),
     }
-    match build_format.content() {
+    match build_content {
         BuildContent::DawgOnly => {}
-        BuildContent::Gaddawg => match build_format.layout() {
+        BuildContent::Gaddawg => match build_layout {
             BuildLayout::Wolges => states_defragger.defrag_wolges(gaddag_start_state),
             BuildLayout::Magpie => states_defragger.defrag_magpie(gaddag_start_state),
         },
@@ -444,5 +421,5 @@ pub fn build(
         ));
     }
 
-    Ok(states_defragger.to_vec(build_format, dawg_start_state, gaddag_start_state)[..].into())
+    Ok(states_defragger.to_vec(build_content, dawg_start_state, gaddag_start_state)[..].into())
 }

@@ -68,7 +68,11 @@ fn build_leaves<Readable: std::io::Read>(
     }
     let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
     sorted_machine_words.sort_unstable();
-    let leaves_kwg = build::build(build::BuildFormat::DawgOnly, &sorted_machine_words)?;
+    let leaves_kwg = build::build(
+        build::BuildContent::DawgOnly,
+        build::BuildLayout::Wolges,
+        &sorted_machine_words,
+    )?;
     let leave_values = sorted_machine_words
         .iter()
         .map(|s| leaves_map[s])
@@ -110,7 +114,11 @@ fn build_leaves_f32<Readable: std::io::Read>(
     }
     let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
     sorted_machine_words.sort_unstable();
-    let leaves_kwg = build::build(build::BuildFormat::DawgOnly, &sorted_machine_words)?;
+    let leaves_kwg = build::build(
+        build::BuildContent::DawgOnly,
+        build::BuildLayout::Wolges,
+        &sorted_machine_words,
+    )?;
     let leave_values = sorted_machine_words
         .iter()
         .map(|s| leaves_map[s])
@@ -191,7 +199,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::Gaddawg,
+                    build::BuildContent::Gaddawg,
+                    build::BuildLayout::Wolges,
                     &read_machine_words(
                         &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -201,7 +210,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-dawg" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::DawgOnly,
+                    build::BuildContent::DawgOnly,
+                    build::BuildLayout::Wolges,
                     &read_machine_words(
                         &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -211,7 +221,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-alpha" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::DawgOnly,
+                    build::BuildContent::DawgOnly,
+                    build::BuildLayout::Wolges,
                     &build::make_alphagrams(&read_machine_words(
                         &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -221,7 +232,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-score" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::Gaddawg,
+                    build::BuildContent::Gaddawg,
+                    build::BuildLayout::Wolges,
                     &read_machine_words(
                         &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -231,7 +243,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-score-dawg" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::DawgOnly,
+                    build::BuildContent::DawgOnly,
+                    build::BuildLayout::Wolges,
                     &read_machine_words(
                         &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -241,7 +254,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-score-alpha" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::DawgOnly,
+                    build::BuildContent::DawgOnly,
+                    build::BuildLayout::Wolges,
                     &build::make_alphagrams(&read_machine_words(
                         &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -251,7 +265,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-magpie" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::GaddawgMagpie,
+                    build::BuildContent::Gaddawg,
+                    build::BuildLayout::Magpie,
                     &read_machine_words(
                         &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -261,7 +276,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-magpie-dawg" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::DawgOnlyMagpie,
+                    build::BuildContent::DawgOnly,
+                    build::BuildLayout::Magpie,
                     &read_machine_words(
                         &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -271,7 +287,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-magpie-alpha" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::DawgOnlyMagpie,
+                    build::BuildContent::DawgOnly,
+                    build::BuildLayout::Magpie,
                     &build::make_alphagrams(&read_machine_words(
                         &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -281,7 +298,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-magpie-score" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::GaddawgMagpie,
+                    build::BuildContent::Gaddawg,
+                    build::BuildLayout::Magpie,
                     &read_machine_words(
                         &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -291,7 +309,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-magpie-score-dawg" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::DawgOnlyMagpie,
+                    build::BuildContent::DawgOnly,
+                    build::BuildLayout::Magpie,
                     &read_machine_words(
                         &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -301,7 +320,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-magpie-score-alpha" => {
                 make_writer(&args[3])?.write_all(&build::build(
-                    build::BuildFormat::DawgOnlyMagpie,
+                    build::BuildContent::DawgOnly,
+                    build::BuildLayout::Magpie,
                     &build::make_alphagrams(&read_machine_words(
                         &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
                         &read_to_string(&mut make_reader(&args[2])?)?,
@@ -469,7 +489,8 @@ fn old_main() -> error::Returns<()> {
         std::fs::write(
             "lexbin/CSW21.kwg",
             build::build(
-                build::BuildFormat::Gaddawg,
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
                 &read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                     &std::fs::read_to_string("lexsrc/CSW21.txt")?,
@@ -483,7 +504,8 @@ fn old_main() -> error::Returns<()> {
         std::fs::write(
             "lexbin/CSW21.kad",
             build::build(
-                build::BuildFormat::DawgOnly,
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
                 &build::make_alphagrams(&read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                     &std::fs::read_to_string("lexsrc/CSW21.txt")?,
@@ -500,7 +522,8 @@ fn old_main() -> error::Returns<()> {
         std::fs::write(
             "lexbin/CSW19.kwg",
             build::build(
-                build::BuildFormat::Gaddawg,
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
                 &read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                     &std::fs::read_to_string("lexsrc/CSW19.txt")?,
@@ -514,7 +537,8 @@ fn old_main() -> error::Returns<()> {
         std::fs::write(
             "lexbin/CSW19.kad",
             build::build(
-                build::BuildFormat::DawgOnly,
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
                 &build::make_alphagrams(&read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                     &std::fs::read_to_string("lexsrc/CSW19.txt")?,
@@ -529,7 +553,8 @@ fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/ECWL.kwg",
         build::build(
-            build::BuildFormat::Gaddawg,
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 &std::fs::read_to_string("lexsrc/ECWL.txt")?,
@@ -539,7 +564,8 @@ fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/NWL18.kwg",
         build::build(
-            build::BuildFormat::Gaddawg,
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 &std::fs::read_to_string("lexsrc/NWL18.txt")?,
@@ -549,7 +575,8 @@ fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/NWL20.kwg",
         build::build(
-            build::BuildFormat::Gaddawg,
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 &std::fs::read_to_string("lexsrc/NWL20.txt")?,
@@ -561,7 +588,8 @@ fn old_main() -> error::Returns<()> {
         std::fs::write(
             "lexbin/OSPS42-dawg.kwg",
             build::build(
-                build::BuildFormat::DawgOnly,
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
                 &read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
                     &std::fs::read_to_string("lexsrc/OSPS42.txt")?,
@@ -578,7 +606,8 @@ fn old_main() -> error::Returns<()> {
         std::fs::write(
             "lexbin/OSPS42.kwg",
             build::build(
-                build::BuildFormat::Gaddawg,
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
                 &read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
                     &std::fs::read_to_string("lexsrc/OSPS42.txt")?,
@@ -595,7 +624,8 @@ fn old_main() -> error::Returns<()> {
         std::fs::write(
             "lexbin/OSPS44-dawg.kwg",
             build::build(
-                build::BuildFormat::DawgOnly,
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
                 &read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
                     &std::fs::read_to_string("lexsrc/OSPS44.txt")?,
@@ -612,7 +642,8 @@ fn old_main() -> error::Returns<()> {
         std::fs::write(
             "lexbin/OSPS44.kwg",
             build::build(
-                build::BuildFormat::Gaddawg,
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
                 &read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
                     &std::fs::read_to_string("lexsrc/OSPS44.txt")?,
@@ -627,7 +658,8 @@ fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/TWL14.kwg",
         build::build(
-            build::BuildFormat::Gaddawg,
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 &std::fs::read_to_string("lexsrc/TWL14.txt")?,
@@ -890,7 +922,7 @@ fn old_main() -> error::Returns<()> {
         }
         std::fs::write(
             "lexbin/allgdw.kwg",
-            build::build(build::BuildFormat::Gaddawg, &v)?,
+            build::build(build::BuildContent::Gaddawg, build::BuildLayout::Wolges, &v)?,
         )?;
         std::fs::write("lexbin/all-CSW21.kwi", v_csw21_bits)?;
         std::fs::write("lexbin/all-CSW19.kwi", v_csw19_bits)?;
@@ -1016,7 +1048,8 @@ fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/volost.kwg",
         build::build(
-            build::BuildFormat::Gaddawg,
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 "VOLOST\nVOLOSTS",
@@ -1026,7 +1059,8 @@ fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/empty.kwg",
         build::build(
-            build::BuildFormat::Gaddawg,
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 "",
