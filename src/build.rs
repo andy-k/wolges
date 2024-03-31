@@ -227,7 +227,7 @@ struct StatesDefragger<'a> {
 }
 
 impl StatesDefragger<'_> {
-    fn defrag<const WOLGES_MODE: bool>(&mut self, mut p: u32) {
+    fn defrag_wolges(&mut self, mut p: u32) {
         loop {
             let prev = self.prev_indexes[p as usize];
             if prev == 0 {
@@ -238,35 +238,70 @@ impl StatesDefragger<'_> {
         if self.destination[p as usize] != 0 {
             return;
         }
-        let mut initial_num_written = self.num_written;
         // temp value to break self-cycles.
         self.destination[p as usize] = !0;
         let mut write_p = p;
-        if !WOLGES_MODE {
-            // non-wolges mode reserves the space first.
-            loop {
-                self.num_written += 1;
-                p = self.states[p as usize].next_index;
-                if p == 0 {
-                    break;
-                }
-            }
-            p = write_p;
-        }
         let mut num = 0u32;
         loop {
             num += 1;
             let a = self.states[p as usize].arc_index;
             if a != 0 {
-                self.defrag::<WOLGES_MODE>(a);
+                self.defrag_wolges(a);
             }
             p = self.states[p as usize].next_index;
             if p == 0 {
                 break;
             }
         }
-        if WOLGES_MODE {
-            initial_num_written = self.num_written;
+        let initial_num_written = self.num_written;
+        self.destination[write_p as usize] = 0;
+        for ofs in 0..num {
+            // prefer earlier index, so dawg part does not point to gaddag part
+            if self.destination[write_p as usize] != 0 {
+                break;
+            }
+            self.destination[write_p as usize] = initial_num_written + ofs;
+            write_p = self.states[write_p as usize].next_index;
+        }
+        // Always += num even if some nodes are necessarily duplicated due to sharing by different prev_nodes.
+        self.num_written += num;
+    }
+
+    fn defrag_magpie(&mut self, mut p: u32) {
+        loop {
+            let prev = self.prev_indexes[p as usize];
+            if prev == 0 {
+                break;
+            }
+            p = prev;
+        }
+        if self.destination[p as usize] != 0 {
+            return;
+        }
+        let initial_num_written = self.num_written;
+        // temp value to break self-cycles.
+        self.destination[p as usize] = !0;
+        let mut write_p = p;
+        // non-wolges mode reserves the space first.
+        loop {
+            self.num_written += 1;
+            p = self.states[p as usize].next_index;
+            if p == 0 {
+                break;
+            }
+        }
+        p = write_p;
+        let mut num = 0u32;
+        loop {
+            num += 1;
+            let a = self.states[p as usize].arc_index;
+            if a != 0 {
+                self.defrag_magpie(a);
+            }
+            p = self.states[p as usize].next_index;
+            if p == 0 {
+                break;
+            }
         }
         self.destination[write_p as usize] = 0;
         for ofs in 0..num {
@@ -274,17 +309,13 @@ impl StatesDefragger<'_> {
             if self.destination[write_p as usize] != 0 {
                 break;
             }
-            if WOLGES_MODE || ofs == 0 {
+            if ofs == 0 {
                 self.destination[write_p as usize] = initial_num_written + ofs;
                 // non-wolges mode does not merge tail nodes.
             }
             write_p = self.states[write_p as usize].next_index;
         }
-        // Always += num even if some nodes are necessarily duplicated due to sharing by different prev_nodes.
-        if WOLGES_MODE {
-            // non-wolges mode already reserves the space.
-            self.num_written += num;
-        }
+        // non-wolges mode already reserves the space.
     }
 
     // encoding: little endian of
@@ -420,14 +451,14 @@ pub fn build(
     };
     states_defragger.destination[0] = !0; // useful for empty lexicon
     match build_format.layout() {
-        BuildLayout::Wolges => states_defragger.defrag::<true>(dawg_start_state),
-        BuildLayout::Magpie => states_defragger.defrag::<false>(dawg_start_state),
+        BuildLayout::Wolges => states_defragger.defrag_wolges(dawg_start_state),
+        BuildLayout::Magpie => states_defragger.defrag_magpie(dawg_start_state),
     }
     match build_format.content() {
         BuildContent::DawgOnly => {}
         BuildContent::Gaddawg => match build_format.layout() {
-            BuildLayout::Wolges => states_defragger.defrag::<true>(gaddag_start_state),
-            BuildLayout::Magpie => states_defragger.defrag::<false>(gaddag_start_state),
+            BuildLayout::Wolges => states_defragger.defrag_wolges(gaddag_start_state),
+            BuildLayout::Magpie => states_defragger.defrag_magpie(gaddag_start_state),
         },
     }
     states_defragger.destination[0] = 0; // useful for empty lexicon
