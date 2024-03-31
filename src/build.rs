@@ -179,6 +179,42 @@ pub fn make_alphagrams(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
     machine_dorws.into_boxed_slice()
 }
 
+// various build formats
+pub enum BuildFormat {
+    DawgOnly,
+    Gaddawg,
+    DawgOnlyMagpie,
+    GaddawgMagpie,
+}
+
+enum BuildContent {
+    DawgOnly,
+    Gaddawg,
+}
+
+enum BuildLayout {
+    Wolges,
+    Magpie, // https://github.com/jvc56/MAGPIE/
+}
+
+impl BuildFormat {
+    #[inline(always)]
+    fn content(&self) -> BuildContent {
+        match self {
+            BuildFormat::DawgOnly | BuildFormat::DawgOnlyMagpie => BuildContent::DawgOnly,
+            BuildFormat::Gaddawg | BuildFormat::GaddawgMagpie => BuildContent::Gaddawg,
+        }
+    }
+
+    #[inline(always)]
+    fn layout(&self) -> BuildLayout {
+        match self {
+            BuildFormat::DawgOnly | BuildFormat::Gaddawg => BuildLayout::Wolges,
+            BuildFormat::DawgOnlyMagpie | BuildFormat::GaddawgMagpie => BuildLayout::Magpie,
+        }
+    }
+}
+
 // zero-cost type-safety
 struct IsEnd(bool);
 struct Accepts(bool);
@@ -288,9 +324,9 @@ impl StatesDefragger<'_> {
             Accepts(false),
             0,
         );
-        match build_format {
-            BuildFormat::DawgOnly | BuildFormat::DawgOnlyMagpie => (),
-            BuildFormat::Gaddawg | BuildFormat::GaddawgMagpie => {
+        match build_format.content() {
+            BuildContent::DawgOnly => {}
+            BuildContent::Gaddawg => {
                 self.write_node(
                     &mut ret[4..],
                     gaddag_start_state,
@@ -340,13 +376,6 @@ fn gen_prev_indexes(states: &[State]) -> Vec<u32> {
     prev_indexes
 }
 
-pub enum BuildFormat {
-    DawgOnly,
-    Gaddawg,
-    DawgOnlyMagpie,
-    GaddawgMagpie,
-}
-
 // machine_words must be sorted and unique.
 pub fn build(
     build_format: BuildFormat,
@@ -367,15 +396,10 @@ pub fn build(
         states: &mut states,
         states_finder: &mut states_finder,
     };
-    let dawg_start_state = match build_format {
-        BuildFormat::DawgOnly
-        | BuildFormat::Gaddawg
-        | BuildFormat::DawgOnlyMagpie
-        | BuildFormat::GaddawgMagpie => state_maker.make_dawg(machine_words, 0, false),
-    };
-    let gaddag_start_state = match build_format {
-        BuildFormat::DawgOnly | BuildFormat::DawgOnlyMagpie => 0,
-        BuildFormat::Gaddawg | BuildFormat::GaddawgMagpie => state_maker.make_dawg(
+    let dawg_start_state = state_maker.make_dawg(machine_words, 0, false);
+    let gaddag_start_state = match build_format.content() {
+        BuildContent::DawgOnly => 0,
+        BuildContent::Gaddawg => state_maker.make_dawg(
             &gen_machine_drowwords(machine_words),
             dawg_start_state,
             true,
@@ -384,33 +408,27 @@ pub fn build(
 
     let mut states_defragger = StatesDefragger {
         states: &states,
-        prev_indexes: &match build_format {
-            BuildFormat::DawgOnly | BuildFormat::Gaddawg => gen_prev_indexes(&states),
-            BuildFormat::DawgOnlyMagpie | BuildFormat::GaddawgMagpie => vec![0u32; states.len()],
+        prev_indexes: &match build_format.layout() {
+            BuildLayout::Wolges => gen_prev_indexes(&states),
+            BuildLayout::Magpie => vec![0u32; states.len()],
         },
         destination: &mut vec![0u32; states.len()],
-        num_written: match build_format {
-            BuildFormat::DawgOnly | BuildFormat::DawgOnlyMagpie => 1,
-            BuildFormat::Gaddawg | BuildFormat::GaddawgMagpie => 2,
+        num_written: match build_format.content() {
+            BuildContent::DawgOnly => 1,
+            BuildContent::Gaddawg => 2,
         },
     };
     states_defragger.destination[0] = !0; // useful for empty lexicon
-    match build_format {
-        BuildFormat::DawgOnly | BuildFormat::Gaddawg => {
-            states_defragger.defrag::<true>(dawg_start_state)
-        }
-        BuildFormat::DawgOnlyMagpie | BuildFormat::GaddawgMagpie => {
-            states_defragger.defrag::<false>(dawg_start_state)
-        }
+    match build_format.layout() {
+        BuildLayout::Wolges => states_defragger.defrag::<true>(dawg_start_state),
+        BuildLayout::Magpie => states_defragger.defrag::<false>(dawg_start_state),
     }
-    match build_format {
-        BuildFormat::DawgOnly | BuildFormat::DawgOnlyMagpie => (),
-        BuildFormat::Gaddawg => {
-            states_defragger.defrag::<true>(gaddag_start_state);
-        }
-        BuildFormat::GaddawgMagpie => {
-            states_defragger.defrag::<false>(gaddag_start_state);
-        }
+    match build_format.content() {
+        BuildContent::DawgOnly => {}
+        BuildContent::Gaddawg => match build_format.layout() {
+            BuildLayout::Wolges => states_defragger.defrag::<true>(gaddag_start_state),
+            BuildLayout::Magpie => states_defragger.defrag::<false>(gaddag_start_state),
+        },
     }
     states_defragger.destination[0] = 0; // useful for empty lexicon
 
