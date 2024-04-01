@@ -198,19 +198,16 @@ struct Accepts(bool);
 
 struct StatesDefragger<'a> {
     states: &'a [State],
-    prev_indexes: &'a [u32],
+    head_indexes: &'a [u32],
     destination: &'a mut Vec<u32>,
     num_written: u32,
 }
 
 impl StatesDefragger<'_> {
     fn defrag_wolges(&mut self, mut p: u32) {
-        loop {
-            let prev = self.prev_indexes[p as usize];
-            if prev == 0 {
-                break;
-            }
-            p = prev;
+        let head = self.head_indexes[p as usize];
+        if head != 0 {
+            p = head;
         }
         if self.destination[p as usize] != 0 {
             return;
@@ -272,12 +269,9 @@ impl StatesDefragger<'_> {
     }
 
     fn defrag_magpie_merged(&mut self, mut p: u32) {
-        loop {
-            let prev = self.prev_indexes[p as usize];
-            if prev == 0 {
-                break;
-            }
-            p = prev;
+        let head = self.head_indexes[p as usize];
+        if head != 0 {
+            p = head;
         }
         if self.destination[p as usize] != 0 {
             return;
@@ -394,15 +388,28 @@ impl StatesDefragger<'_> {
     }
 }
 
-fn gen_prev_indexes(states: &[State]) -> Vec<u32> {
+fn gen_head_indexes(states: &[State]) -> Vec<u32> {
     let states_len = states.len();
-    let mut prev_indexes = vec![0u32; states_len];
-    for p in (1..states_len).rev() {
-        prev_indexes[states[p].next_index as usize] = p as u32;
-    }
-    // prev_indexes[0] is garbage, does not matter.
+    let mut head_indexes = vec![0u32; states_len];
 
-    prev_indexes
+    // point to immediate prev.
+    for p in (1..states_len).rev() {
+        head_indexes[states[p].next_index as usize] = p as u32;
+    }
+    // head_indexes[0] is garbage, does not matter.
+
+    // adjust to point to prev heads instead.
+    for p in (1..states_len).rev() {
+        let prev = head_indexes[p];
+        if prev != 0 {
+            let prev_head = head_indexes[prev as usize];
+            if prev_head != 0 {
+                head_indexes[p] = prev_head;
+            }
+        }
+    }
+
+    head_indexes
 }
 
 // machine_words must be sorted and unique.
@@ -438,8 +445,8 @@ pub fn build(
 
     let mut states_defragger = StatesDefragger {
         states: &states,
-        prev_indexes: &match build_layout {
-            BuildLayout::Wolges | BuildLayout::MagpieMerged => gen_prev_indexes(&states),
+        head_indexes: &match build_layout {
+            BuildLayout::Wolges | BuildLayout::MagpieMerged => gen_head_indexes(&states),
             BuildLayout::Magpie => Vec::new(),
         },
         destination: &mut vec![0u32; states.len()],
