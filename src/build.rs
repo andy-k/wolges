@@ -199,6 +199,7 @@ struct Accepts(bool);
 struct StatesDefragger<'a> {
     states: &'a [State],
     head_indexes: &'a [u32],
+    to_end_lens: &'a [u32], // using u8 costs runtime.
     destination: &'a mut Vec<u32>,
     num_written: u32,
 }
@@ -212,12 +213,11 @@ impl StatesDefragger<'_> {
         if self.destination[p as usize] != 0 {
             return;
         }
+        let num = self.to_end_lens[p as usize];
         // temp value to break self-cycles.
         self.destination[p as usize] = !0;
         let mut write_p = p;
-        let mut num = 0u32;
         loop {
-            num += 1;
             let a = self.states[p as usize].arc_index;
             if a != 0 {
                 self.defrag_wolges(a);
@@ -246,16 +246,9 @@ impl StatesDefragger<'_> {
             return;
         }
         self.destination[p as usize] = self.num_written;
-        let write_p = p;
         // non-wolges mode reserves the space first.
-        loop {
-            self.num_written += 1;
-            p = self.states[p as usize].next_index;
-            if p == 0 {
-                break;
-            }
-        }
-        p = write_p;
+        let num = self.to_end_lens[p as usize];
+        self.num_written += num;
         loop {
             let a = self.states[p as usize].arc_index;
             if a != 0 {
@@ -279,19 +272,11 @@ impl StatesDefragger<'_> {
         let initial_num_written = self.num_written;
         // temp value to break self-cycles.
         self.destination[p as usize] = !0;
-        let mut write_p = p;
         // non-wolges mode reserves the space first.
+        let num = self.to_end_lens[p as usize];
+        self.num_written += num;
+        let mut write_p = p;
         loop {
-            self.num_written += 1;
-            p = self.states[p as usize].next_index;
-            if p == 0 {
-                break;
-            }
-        }
-        p = write_p;
-        let mut num = 0u32;
-        loop {
-            num += 1;
             let a = self.states[p as usize].arc_index;
             if a != 0 {
                 self.defrag_magpie_merged(a);
@@ -412,6 +397,20 @@ fn gen_head_indexes(states: &[State]) -> Vec<u32> {
     head_indexes
 }
 
+fn gen_to_end_lens(states: &[State]) -> Vec<u32> {
+    let states_len = states.len();
+    let mut to_end_lens = vec![1u32; states_len];
+
+    for p in 1..states_len {
+        let next = states[p].next_index;
+        if next != 0 {
+            to_end_lens[p] += to_end_lens[next as usize];
+        }
+    }
+
+    to_end_lens
+}
+
 // machine_words must be sorted and unique.
 pub fn build(
     build_content: BuildContent,
@@ -449,6 +448,7 @@ pub fn build(
             BuildLayout::Wolges | BuildLayout::MagpieMerged => gen_head_indexes(&states),
             BuildLayout::Magpie => Vec::new(),
         },
+        to_end_lens: &gen_to_end_lens(&states),
         destination: &mut vec![0u32; states.len()],
         num_written: match build_content {
             BuildContent::DawgOnly => 1,
