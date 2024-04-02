@@ -206,10 +206,7 @@ struct StatesDefragger<'a> {
 
 impl StatesDefragger<'_> {
     fn defrag_wolges(&mut self, mut p: u32) {
-        let head = self.head_indexes[p as usize];
-        if head != 0 {
-            p = head;
-        }
+        p = self.head_indexes[p as usize];
         if self.destination[p as usize] != 0 {
             return;
         }
@@ -262,10 +259,7 @@ impl StatesDefragger<'_> {
     }
 
     fn defrag_magpie_merged(&mut self, mut p: u32) {
-        let head = self.head_indexes[p as usize];
-        if head != 0 {
-            p = head;
-        }
+        p = self.head_indexes[p as usize];
         if self.destination[p as usize] != 0 {
             return;
         }
@@ -375,7 +369,7 @@ impl StatesDefragger<'_> {
 
 fn gen_head_indexes(states: &[State]) -> Vec<u32> {
     let states_len = states.len();
-    let mut head_indexes = vec![0u32; states_len];
+    let mut head_indexes = Vec::from_iter(0..states_len as u32);
 
     // point to immediate prev.
     for p in (1..states_len).rev() {
@@ -385,13 +379,7 @@ fn gen_head_indexes(states: &[State]) -> Vec<u32> {
 
     // adjust to point to prev heads instead.
     for p in (1..states_len).rev() {
-        let prev = head_indexes[p];
-        if prev != 0 {
-            let prev_head = head_indexes[prev as usize];
-            if prev_head != 0 {
-                head_indexes[p] = prev_head;
-            }
-        }
+        head_indexes[p] = head_indexes[head_indexes[p] as usize];
     }
 
     head_indexes
