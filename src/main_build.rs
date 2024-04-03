@@ -194,6 +194,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             } else if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-magpie") {
                 build_layout = build::BuildLayout::Magpie;
                 args1_suffix = args1_suffix_suffix;
+            } else if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-experimental") {
+                build_layout = build::BuildLayout::Experimental;
+                args1_suffix = args1_suffix_suffix;
             } else {
                 build_layout = build::BuildLayout::Wolges;
             }
@@ -338,6 +341,7 @@ fn main() -> error::Returns<()> {
     same as above but with representative same-score tiles
   (english-... can also be english-magpie-... for bigger magpie-style kwg,
     english-magpiemerged-... for magpie ordering with wolges merging,
+    english-experimental-... for experimental,
     this is applicable for kwg, kwg-anything, klv/klv2)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, yupik)

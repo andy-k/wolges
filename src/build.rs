@@ -49,6 +49,8 @@ struct State {
     next_index: u32, // Refers to states.
 }
 
+// for each i > 0, states[i].arc_index < i and states[i].next_index < i.
+// this ensures states is already a topologically sorted DAG.
 struct StateMaker<'a> {
     states: &'a mut Vec<State>,
     states_finder: &'a mut fash::MyHashMap<State, u32>,
@@ -190,11 +192,21 @@ pub enum BuildLayout {
     Wolges,
     Magpie, // https://github.com/jvc56/MAGPIE/
     MagpieMerged,
+    Experimental,
 }
 
 // zero-cost type-safety
 struct IsEnd(bool);
 struct Accepts(bool);
+
+// Each block has 16 entries (hardcoded).
+// 16 entries of u32 make 64 bytes, which is a common cache line size.
+// 0 <= block_len[i] <= 16, from (i << 4) the first block_len[i] are occupied.
+// If block_len[i] < 16, blocks_with_len[block_len[i]] stack includes i.
+struct StateDefraggerExperimentalParams<'a> {
+    block_len: &'a mut Vec<u8>,
+    blocks_with_len: &'a mut [Vec<u32>; 16],
+}
 
 struct StatesDefragger<'a> {
     states: &'a [State],
@@ -290,6 +302,118 @@ impl StatesDefragger<'_> {
             write_p = self.states[write_p as usize].next_index;
         }
         // non-wolges mode already reserves the space.
+    }
+
+    fn defrag_cache_friendly(
+        &mut self,
+        params: &mut StateDefraggerExperimentalParams<'_>,
+        mut p: u32,
+    ) {
+        p = self.head_indexes[p as usize];
+        if self.destination[p as usize] != 0 {
+            return;
+        }
+        // temp value to break self-cycles.
+        self.destination[p as usize] = !0;
+        // non-wolges mode reserves the space first.
+        let num = self.to_end_lens[p as usize];
+        // choose a cache-friendly page to place these.
+        let mut num_blocks = params.block_len.len() as u32;
+        let initial_num_written;
+        if num > 16 {
+            // always even-align for 128 byte cache line machines.
+            if num_blocks & 1 == 1 {
+                params.blocks_with_len[0].push(num_blocks);
+                params.block_len.push(0);
+                num_blocks += 1;
+            }
+            initial_num_written = num_blocks << 4;
+            let mut num = num; // shadow the variable
+            while num > 16 {
+                params.block_len.push(16);
+                num -= 16;
+            }
+            // this can be between 1 to 16.
+            if num < 16 {
+                params.blocks_with_len[num as usize].push(params.block_len.len() as u32);
+            }
+            params.block_len.push(num as u8);
+        } else {
+            // 1 <= num <= 16
+            let mut required_gap = 16 - num; // 0 <= required_gap <= 15
+            loop {
+                // if found, use it
+                if let Some(place) = params.blocks_with_len[required_gap as usize].pop() {
+                    // use | instead of + because it cannot overflow
+                    initial_num_written = place << 4 | required_gap;
+                    // repurpose this variable.
+                    required_gap += num; // 1 <= required_gap <= 16
+                    if required_gap < 16 {
+                        params.blocks_with_len[required_gap as usize].push(place);
+                    }
+                    params.block_len[place as usize] = required_gap as u8;
+                    break;
+                }
+                // if 0, add new row.
+                if required_gap == 0 {
+                    initial_num_written = num_blocks << 4;
+                    if num < 16 {
+                        params.blocks_with_len[num as usize].push(num_blocks);
+                    }
+                    params.block_len.push(num as u8);
+                    break;
+                }
+                // if not, -1 then try again
+                required_gap -= 1;
+            }
+        }
+        let mut write_p = p;
+        loop {
+            let a = self.states[p as usize].arc_index;
+            if a != 0 {
+                self.defrag_cache_friendly(params, a);
+            }
+            p = self.states[p as usize].next_index;
+            if p == 0 {
+                break;
+            }
+        }
+        self.destination[write_p as usize] = 0;
+        for ofs in 0..num {
+            // prefer earlier index, so dawg part does not point to gaddag part
+            if self.destination[write_p as usize] != 0 {
+                break;
+            }
+            self.destination[write_p as usize] = initial_num_written + ofs;
+            write_p = self.states[write_p as usize].next_index;
+        }
+        // non-wolges mode already reserves the space.
+    }
+
+    fn build_experimental(&mut self, num_ways: &[u32], top_indexes: &[u32]) {
+        let mut idxs = Box::from_iter(1..self.states.len() as u32);
+        idxs.sort_unstable_by(|&a, &b| {
+            num_ways[b as usize]
+                .cmp(&num_ways[a as usize])
+                .then_with(|| {
+                    self.to_end_lens[b as usize]
+                        .cmp(&self.to_end_lens[a as usize])
+                        .then_with(|| a.cmp(&b))
+                })
+        });
+
+        let mut params = StateDefraggerExperimentalParams {
+            block_len: &mut Vec::new(),
+            blocks_with_len: &mut [(); 16].map(|_| Vec::new()),
+        };
+        // num_written is either 1 or 2, both are < 16.
+        params.block_len.push(self.num_written as u8);
+        params.blocks_with_len[self.num_written as usize].push(0u32);
+        for &p in idxs.iter() {
+            self.defrag_cache_friendly(&mut params, top_indexes[p as usize]);
+        }
+        self.num_written =
+            ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
     }
 
     // encoding: little endian of
@@ -399,6 +523,62 @@ fn gen_to_end_lens(states: &[State]) -> Vec<u32> {
     to_end_lens
 }
 
+fn gen_num_ways(
+    states: &[State],
+    build_content: &BuildContent,
+    dawg_start_state: u32,
+    gaddag_start_state: u32,
+) -> Vec<u32> {
+    let states_len = states.len();
+    let mut num_ways = vec![0u32; states_len];
+
+    num_ways[dawg_start_state as usize] = 1;
+    match build_content {
+        BuildContent::DawgOnly => {}
+        BuildContent::Gaddawg => {
+            num_ways[gaddag_start_state as usize] = 1;
+        }
+    }
+    for p in (1..states_len).rev() {
+        let this_num_ways = num_ways[p];
+        let state = &states[p];
+        for p_dest in [state.next_index, state.arc_index] {
+            let v = &mut num_ways[p_dest as usize];
+            *v = v.saturating_add(this_num_ways);
+        }
+    }
+
+    num_ways
+}
+
+fn gen_top_indexes(states: &[State], head_indexes: &[u32]) -> Vec<u32> {
+    let states_len = states.len();
+    let mut top_indexes = vec![0u32; states_len];
+
+    for (p, p_dest) in states
+        .iter()
+        .map(|x| x.arc_index as usize)
+        .enumerate()
+        .take(states_len)
+        .skip(1)
+    {
+        top_indexes[p_dest] = p as u32 | -((top_indexes[p_dest] != 0) as i32) as u32;
+    }
+    // [p] = 0 (no parent), parent_index, or !0 if > 1 parents.
+    // if not unique, set [p] = p.
+    for (p, top_index) in top_indexes.iter_mut().enumerate().take(states_len) {
+        if *top_index == 0 || *top_index == !0 {
+            *top_index = p as u32;
+        }
+    }
+    // adjust to point to prev tops's heads instead.
+    for p in (1..states_len).rev() {
+        top_indexes[p] = head_indexes[top_indexes[top_indexes[p] as usize] as usize];
+    }
+
+    top_indexes
+}
+
 // machine_words must be sorted and unique.
 pub fn build(
     build_content: BuildContent,
@@ -433,7 +613,9 @@ pub fn build(
     let mut states_defragger = StatesDefragger {
         states: &states,
         head_indexes: &match build_layout {
-            BuildLayout::Wolges | BuildLayout::MagpieMerged => gen_head_indexes(&states),
+            BuildLayout::Wolges | BuildLayout::MagpieMerged | BuildLayout::Experimental => {
+                gen_head_indexes(&states)
+            }
             BuildLayout::Magpie => Vec::new(),
         },
         to_end_lens: &gen_to_end_lens(&states),
@@ -448,6 +630,15 @@ pub fn build(
         BuildLayout::Wolges => states_defragger.defrag_wolges(dawg_start_state),
         BuildLayout::Magpie => states_defragger.defrag_magpie(dawg_start_state),
         BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(dawg_start_state),
+        BuildLayout::Experimental => states_defragger.build_experimental(
+            &gen_num_ways(
+                &states,
+                &build_content,
+                dawg_start_state,
+                gaddag_start_state,
+            ),
+            &gen_top_indexes(&states, states_defragger.head_indexes),
+        ),
     }
     match build_content {
         BuildContent::DawgOnly => {}
@@ -455,6 +646,7 @@ pub fn build(
             BuildLayout::Wolges => states_defragger.defrag_wolges(gaddag_start_state),
             BuildLayout::Magpie => states_defragger.defrag_magpie(gaddag_start_state),
             BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(gaddag_start_state),
+            BuildLayout::Experimental => {}
         },
     }
     states_defragger.destination[0] = 0; // useful for empty lexicon
