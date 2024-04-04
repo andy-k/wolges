@@ -193,6 +193,7 @@ pub enum BuildLayout {
     Magpie, // https://github.com/jvc56/MAGPIE/
     MagpieMerged,
     Experimental,
+    Experimental2,
 }
 
 // zero-cost type-safety
@@ -416,6 +417,69 @@ impl StatesDefragger<'_> {
             ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
     }
 
+    fn build_experimental2(
+        &mut self,
+        num_ways: &[u32],
+        build_content: &BuildContent,
+        dawg_start_state: u32,
+    ) {
+        let mut idxs = Box::from_iter(1..self.states.len() as u32);
+        match build_content {
+            BuildContent::DawgOnly => {
+                // All nodes are dawg nodes.
+                idxs.sort_unstable_by(|&a, &b| {
+                    num_ways[b as usize]
+                        .cmp(&num_ways[a as usize])
+                        .then_with(|| {
+                            self.to_end_lens[b as usize]
+                                .cmp(&self.to_end_lens[a as usize])
+                                .then_with(|| a.cmp(&b))
+                        })
+                });
+            }
+            BuildContent::Gaddawg => {
+                // Check which nodes are used in dawg.
+                let mut used_in_dawg = vec![false; self.states.len()];
+                used_in_dawg
+                    .iter_mut()
+                    .take(dawg_start_state as usize + 1)
+                    .skip(1)
+                    .for_each(|m| *m = true);
+                for p in dawg_start_state as usize + 1..self.states.len() {
+                    if used_in_dawg[self.states[p].next_index as usize] {
+                        used_in_dawg[p] = true
+                    }
+                }
+                idxs.sort_unstable_by(|&a, &b| {
+                    used_in_dawg[b as usize]
+                        .cmp(&used_in_dawg[a as usize])
+                        .then_with(|| {
+                            num_ways[b as usize]
+                                .cmp(&num_ways[a as usize])
+                                .then_with(|| {
+                                    self.to_end_lens[b as usize]
+                                        .cmp(&self.to_end_lens[a as usize])
+                                        .then_with(|| a.cmp(&b))
+                                })
+                        })
+                });
+            }
+        }
+
+        let mut params = StateDefraggerExperimentalParams {
+            block_len: &mut Vec::new(),
+            blocks_with_len: &mut [(); 16].map(|_| Vec::new()),
+        };
+        // num_written is either 1 or 2, both are < 16.
+        params.block_len.push(self.num_written as u8);
+        params.blocks_with_len[self.num_written as usize].push(0u32);
+        for &p in idxs.iter() {
+            self.defrag_cache_friendly(&mut params, p);
+        }
+        self.num_written =
+            ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
+    }
+
     // encoding: little endian of
     // bits 0-21 = pointer & 0x3fffff
     // bit 22 = end
@@ -613,9 +677,10 @@ pub fn build(
     let mut states_defragger = StatesDefragger {
         states: &states,
         head_indexes: &match build_layout {
-            BuildLayout::Wolges | BuildLayout::MagpieMerged | BuildLayout::Experimental => {
-                gen_head_indexes(&states)
-            }
+            BuildLayout::Wolges
+            | BuildLayout::MagpieMerged
+            | BuildLayout::Experimental
+            | BuildLayout::Experimental2 => gen_head_indexes(&states),
             BuildLayout::Magpie => Vec::new(),
         },
         to_end_lens: &gen_to_end_lens(&states),
@@ -639,6 +704,16 @@ pub fn build(
             ),
             &gen_top_indexes(&states, states_defragger.head_indexes),
         ),
+        BuildLayout::Experimental2 => states_defragger.build_experimental2(
+            &gen_num_ways(
+                &states,
+                &build_content,
+                dawg_start_state,
+                gaddag_start_state,
+            ),
+            &build_content,
+            dawg_start_state,
+        ),
     }
     match build_content {
         BuildContent::DawgOnly => {}
@@ -646,7 +721,7 @@ pub fn build(
             BuildLayout::Wolges => states_defragger.defrag_wolges(gaddag_start_state),
             BuildLayout::Magpie => states_defragger.defrag_magpie(gaddag_start_state),
             BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(gaddag_start_state),
-            BuildLayout::Experimental => {}
+            BuildLayout::Experimental | BuildLayout::Experimental2 => {}
         },
     }
     states_defragger.destination[0] = 0; // useful for empty lexicon

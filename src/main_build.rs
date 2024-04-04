@@ -194,6 +194,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             } else if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-magpie") {
                 build_layout = build::BuildLayout::Magpie;
                 args1_suffix = args1_suffix_suffix;
+            } else if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-experimental2") {
+                build_layout = build::BuildLayout::Experimental2;
+                args1_suffix = args1_suffix_suffix;
             } else if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-experimental") {
                 build_layout = build::BuildLayout::Experimental;
                 args1_suffix = args1_suffix_suffix;
@@ -342,6 +345,7 @@ fn main() -> error::Returns<()> {
   (english-... can also be english-magpie-... for bigger magpie-style kwg,
     english-magpiemerged-... for magpie ordering with wolges merging,
     english-experimental-... for experimental,
+    english-experimental2-... for experimental2,
     this is applicable for kwg, kwg-anything, klv/klv2)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, yupik)
