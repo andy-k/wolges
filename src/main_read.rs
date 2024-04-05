@@ -479,6 +479,33 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
+            "-kwg0" => {
+                let alphabet = make_alphabet();
+                let reader = &KwgReader {};
+                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                let mut ret = String::new();
+                iter_dawg(
+                    &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    reader,
+                    kwg_bytes,
+                    reader.arc_index(kwg_bytes, 0),
+                    alphabet.of_rack(0),
+                    &mut |s: &str| {
+                        ret.push_str(s);
+                        ret.push('\n');
+                        Ok(())
+                    },
+                    &mut default_in,
+                    &mut default_out,
+                )?;
+                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                Ok(true)
+            }
             "-kwg-gaddag" => {
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
@@ -1373,6 +1400,107 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     }
 }
 
+// note: kwg in legacy layout is reported to be slower than the newer layouts.
+// this cache simulation contradicts that observation. can someone explain?
+fn kwg_hitcheck<R: WgReader>(
+    ret: &mut String,
+    r: &R,
+    b: &[u8],
+    initial_idx: usize,
+    cache_line_size: u32,
+    cache_set_associativity: u32,
+    num_cache_sets: u32,
+) -> error::Returns<()> {
+    struct Cache {
+        cache_line_size: u32,
+        cache_set_associativity: u32,
+        num_cache_sets: u32,
+        misses: u64,
+        cache_set_content: Vec<Vec<usize>>,
+    }
+
+    impl Cache {
+        #[inline(always)]
+        fn visit(&mut self, ret: &mut String, p: usize) -> error::Returns<()> {
+            let byte_idx = p << 2; // because p is an idx to u32.
+            let cache_line_idx = byte_idx / self.cache_line_size as usize; // these are cached together.
+            let cache_set_idx = cache_line_idx % self.num_cache_sets as usize; // it can only go here.
+            let cache_set = &mut self.cache_set_content[cache_set_idx];
+            if let Some(pos) = cache_set.iter().rposition(|&x| x == cache_line_idx) {
+                // to simulate FIFO instead of LRU, disable this by changing < to >.
+                if pos < cache_set.len() - 1 {
+                    cache_set.remove(pos);
+                    cache_set.push(cache_line_idx);
+                }
+            } else {
+                if cache_set.len() >= self.cache_set_associativity as usize {
+                    cache_set.remove(0); // remove least recently used.
+                }
+                cache_set.push(cache_line_idx);
+                self.misses += 1;
+                writeln!(
+                    ret,
+                    "{:7} {:6x} {:5x} {:2x} {:x?}",
+                    p, byte_idx, cache_line_idx, cache_set_idx, cache_set
+                )?;
+            }
+            Ok(())
+        }
+    }
+
+    let mut c = Cache {
+        cache_line_size,
+        cache_set_associativity,
+        num_cache_sets,
+        misses: 0,
+        cache_set_content: Vec::with_capacity(num_cache_sets as usize),
+    };
+    for _ in 0..num_cache_sets {
+        c.cache_set_content
+            .push(Vec::with_capacity(cache_set_associativity as usize));
+    }
+
+    struct Env<'a, R: WgReader> {
+        ret: &'a mut String,
+        r: &'a R,
+        b: &'a [u8],
+        c: &'a mut Cache,
+    }
+    fn iter<R: WgReader>(env: &mut Env<'_, R>, mut p: usize) -> error::Returns<()> {
+        loop {
+            if p >= env.r.len(env.b) {
+                return Err("out of bounds".into());
+            }
+            env.c.visit(env.ret, p)?;
+            if env.r.arc_index(env.b, p) != 0 {
+                iter(env, env.r.arc_index(env.b, p))?;
+                env.c.visit(env.ret, p)?; // is_end is usually read after returning.
+            }
+            if env.r.is_end(env.b, p) {
+                break;
+            }
+            p += 1;
+        }
+        Ok(())
+    }
+    if initial_idx >= r.len(b) {
+        return Err("out of bounds".into());
+    }
+    iter(
+        &mut Env {
+            ret,
+            r,
+            b,
+            c: &mut c,
+        },
+        initial_idx,
+    )?;
+
+    writeln!(ret, "cache: {} misses", c.misses)?;
+
+    Ok(())
+}
+
 fn main() -> error::Returns<()> {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() <= 1 {
@@ -1383,7 +1511,7 @@ fn main() -> error::Returns<()> {
     read klv/klv2 file
   english-kwg CSW21.kwg CSW21.txt
   english-kwg CSW21.kad CSW21.txt
-    read kwg/kad file (dawg)
+    read kwg/kad file (dawg) (use kwg0 to allow 0, such as for klv-kwg-extract)
   english-kwg-gaddag CSW21.kwg CSW21.txt
     read gaddawg kwg file (gaddag)
   english-kwg-nodes CSW21.kwg CSW21.kwg.raw
@@ -1408,6 +1536,16 @@ fn main() -> error::Returns<()> {
     generate .ort with the given num_buckets (ideally prime eg 5297687)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, yupik)
+  klv-kwg-extract CSW21.klv2 racks.kwg
+    just copy out the kwg for further analysis.
+  kwg-hitcheck CSW21.kwg cls csa ncs outfile
+    check dawg cache hit rate.
+    cls = cache line size, 64 is typical.
+    csa = cache set associativity, e.g. 8 for 8-way set associativity.
+    ncs = number of cache sets = L1D cache size / cores / csa / cls.
+    example for i7-8700B (192 kB, 6 cores, 8-way set assoc): 64 8 64.
+  kwg-hitcheck-gaddag CSW21.kwg cls csa ncs outfile
+    ditto for gaddag.
   quackle-make-superleaves english.klv superleaves
     read klv/klv2 file, save quackle superleaves (english/french)
   quackle-superleaves superleaves something.csv
@@ -1435,6 +1573,58 @@ input/output files can be \"-\" (not advisable for binary files)"
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
             || do_lang(&args, "yupik", alphabet::make_yupik_alphabet)?
         {
+        } else if args[1] == "klv-kwg-extract" {
+            let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+            if klv_bytes.len() < 4 {
+                return Err("out of bounds".into());
+            }
+            let mut r = 0;
+            let kwg_bytes_len = ((klv_bytes[r] as u32
+                | (klv_bytes[r + 1] as u32) << 8
+                | (klv_bytes[r + 2] as u32) << 16
+                | (klv_bytes[r + 3] as u32) << 24) as usize)
+                * 4;
+            r += 4;
+            if klv_bytes.len() < r + kwg_bytes_len + 4 {
+                return Err("out of bounds".into());
+            }
+            let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+            // binary output
+            make_writer(&args[3])?.write_all(kwg_bytes)?;
+        } else if args[1] == "kwg-hitcheck" {
+            let reader = &KwgReader {};
+            let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+            if 0 == reader.len(kwg_bytes) {
+                return Err("out of bounds".into());
+            }
+            let mut ret = String::new();
+            kwg_hitcheck(
+                &mut ret,
+                reader,
+                kwg_bytes,
+                0,
+                u32::from_str(&args[3])?,
+                u32::from_str(&args[4])?,
+                u32::from_str(&args[5])?,
+            )?;
+            make_writer(&args[6])?.write_all(ret.as_bytes())?;
+        } else if args[1] == "kwg-hitcheck-gaddag" {
+            let reader = &KwgReader {};
+            let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+            if 1 >= reader.len(kwg_bytes) {
+                return Err("out of bounds".into());
+            }
+            let mut ret = String::new();
+            kwg_hitcheck(
+                &mut ret,
+                reader,
+                kwg_bytes,
+                1,
+                u32::from_str(&args[3])?,
+                u32::from_str(&args[4])?,
+                u32::from_str(&args[5])?,
+            )?;
+            make_writer(&args[6])?.write_all(ret.as_bytes())?;
         } else if args[1] == "quackle-make-superleaves" {
             let reader = &KwgReader {};
             let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
