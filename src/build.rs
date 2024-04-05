@@ -189,11 +189,11 @@ pub enum BuildContent {
 }
 
 pub enum BuildLayout {
-    Wolges,
-    Magpie, // https://github.com/jvc56/MAGPIE/
-    MagpieMerged,
-    Experimental,
-    Experimental2,
+    Legacy,       // tiny, slow to movegen, leaf-first order. used to be the default.
+    Magpie, // big, fast to movegen, BFS order, no tail dedup, easy to read. https://github.com/jvc56/MAGPIE/
+    MagpieMerged, // tiny, slow to movegen, BFS order.
+    Experimental, // small, fast to movegen, frequent-first order, may put dawg behind gaddag.
+    Wolges, // small, faster to movegen, dawg-first then frequent-first. recommended default.
 }
 
 // zero-cost type-safety
@@ -218,7 +218,7 @@ struct StatesDefragger<'a> {
 }
 
 impl StatesDefragger<'_> {
-    fn defrag_wolges(&mut self, mut p: u32) {
+    fn defrag_legacy(&mut self, mut p: u32) {
         p = self.head_indexes[p as usize];
         if self.destination[p as usize] != 0 {
             return;
@@ -230,7 +230,7 @@ impl StatesDefragger<'_> {
         loop {
             let a = self.states[p as usize].arc_index;
             if a != 0 {
-                self.defrag_wolges(a);
+                self.defrag_legacy(a);
             }
             p = self.states[p as usize].next_index;
             if p == 0 {
@@ -256,7 +256,7 @@ impl StatesDefragger<'_> {
             return;
         }
         self.destination[p as usize] = self.num_written;
-        // non-wolges mode reserves the space first.
+        // non-legacy mode reserves the space first.
         let num = self.to_end_lens[p as usize];
         self.num_written += num;
         loop {
@@ -279,7 +279,7 @@ impl StatesDefragger<'_> {
         let initial_num_written = self.num_written;
         // temp value to break self-cycles.
         self.destination[p as usize] = !0;
-        // non-wolges mode reserves the space first.
+        // non-legacy mode reserves the space first.
         let num = self.to_end_lens[p as usize];
         self.num_written += num;
         let mut write_p = p;
@@ -302,7 +302,7 @@ impl StatesDefragger<'_> {
             self.destination[write_p as usize] = initial_num_written + ofs;
             write_p = self.states[write_p as usize].next_index;
         }
-        // non-wolges mode already reserves the space.
+        // non-legacy mode already reserves the space.
     }
 
     fn defrag_cache_friendly(
@@ -316,7 +316,7 @@ impl StatesDefragger<'_> {
         }
         // temp value to break self-cycles.
         self.destination[p as usize] = !0;
-        // non-wolges mode reserves the space first.
+        // non-legacy mode reserves the space first.
         let num = self.to_end_lens[p as usize];
         // choose a cache-friendly page to place these.
         let mut num_blocks = params.block_len.len() as u32;
@@ -388,7 +388,7 @@ impl StatesDefragger<'_> {
             self.destination[write_p as usize] = initial_num_written + ofs;
             write_p = self.states[write_p as usize].next_index;
         }
-        // non-wolges mode already reserves the space.
+        // non-legacy mode already reserves the space.
     }
 
     fn build_experimental(&mut self, num_ways: &[u32], top_indexes: &[u32]) {
@@ -417,7 +417,7 @@ impl StatesDefragger<'_> {
             ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
     }
 
-    fn build_experimental2(
+    fn build_wolges(
         &mut self,
         num_ways: &[u32],
         build_content: &BuildContent,
@@ -677,10 +677,10 @@ pub fn build(
     let mut states_defragger = StatesDefragger {
         states: &states,
         head_indexes: &match build_layout {
-            BuildLayout::Wolges
+            BuildLayout::Legacy
             | BuildLayout::MagpieMerged
             | BuildLayout::Experimental
-            | BuildLayout::Experimental2 => gen_head_indexes(&states),
+            | BuildLayout::Wolges => gen_head_indexes(&states),
             BuildLayout::Magpie => Vec::new(),
         },
         to_end_lens: &gen_to_end_lens(&states),
@@ -692,7 +692,7 @@ pub fn build(
     };
     states_defragger.destination[0] = !0; // useful for empty lexicon
     match build_layout {
-        BuildLayout::Wolges => states_defragger.defrag_wolges(dawg_start_state),
+        BuildLayout::Legacy => states_defragger.defrag_legacy(dawg_start_state),
         BuildLayout::Magpie => states_defragger.defrag_magpie(dawg_start_state),
         BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(dawg_start_state),
         BuildLayout::Experimental => states_defragger.build_experimental(
@@ -704,7 +704,7 @@ pub fn build(
             ),
             &gen_top_indexes(&states, states_defragger.head_indexes),
         ),
-        BuildLayout::Experimental2 => states_defragger.build_experimental2(
+        BuildLayout::Wolges => states_defragger.build_wolges(
             &gen_num_ways(
                 &states,
                 &build_content,
@@ -718,10 +718,10 @@ pub fn build(
     match build_content {
         BuildContent::DawgOnly => {}
         BuildContent::Gaddawg => match build_layout {
-            BuildLayout::Wolges => states_defragger.defrag_wolges(gaddag_start_state),
+            BuildLayout::Legacy => states_defragger.defrag_legacy(gaddag_start_state),
             BuildLayout::Magpie => states_defragger.defrag_magpie(gaddag_start_state),
             BuildLayout::MagpieMerged => states_defragger.defrag_magpie_merged(gaddag_start_state),
-            BuildLayout::Experimental | BuildLayout::Experimental2 => {}
+            BuildLayout::Experimental | BuildLayout::Wolges => {}
         },
     }
     states_defragger.destination[0] = 0; // useful for empty lexicon
