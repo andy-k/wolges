@@ -271,6 +271,11 @@ pub fn make_super_catalan_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/super_catalan.txt")
 }
 
+// for pass-through kwg reading/building, cannot be used for games.
+pub fn make_decimal_alphabet() -> Alphabet {
+    new_static_alphabet_from_file!("alphabets/decimal.txt")
+}
+
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#English
 pub fn make_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/english.txt")
