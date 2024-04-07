@@ -1416,6 +1416,7 @@ fn kwg_hitcheck<R: WgReader>(
         cache_set_associativity: u32,
         num_cache_sets: u32,
         misses: u64,
+        prefetches: u64,
         cache_set_content: Vec<Vec<usize>>,
     }
 
@@ -1425,7 +1426,7 @@ fn kwg_hitcheck<R: WgReader>(
             let byte_idx = p << 2; // because p is an idx to u32.
             let cache_line_idx = byte_idx / self.cache_line_size as usize; // these are cached together.
             let cache_set_idx = cache_line_idx % self.num_cache_sets as usize; // it can only go here.
-            let cache_set = &mut self.cache_set_content[cache_set_idx];
+            let mut cache_set = &mut self.cache_set_content[cache_set_idx];
             if let Some(pos) = cache_set.iter().rposition(|&x| x == cache_line_idx) {
                 // to simulate FIFO instead of LRU, disable this by changing < to >.
                 if pos < cache_set.len() - 1 {
@@ -1444,6 +1445,34 @@ fn kwg_hitcheck<R: WgReader>(
                     p, byte_idx, cache_line_idx, cache_set_idx, cache_set
                 )?;
             }
+            // if the previous cache set contains the previous cache line,
+            // prefetch the following cache set.
+            let prev_cache_line_idx = cache_line_idx.saturating_sub(1);
+            let prev_cache_set_idx = prev_cache_line_idx % self.num_cache_sets as usize; // it can only go here.
+            cache_set = &mut self.cache_set_content[prev_cache_set_idx];
+            if cache_set.iter().any(|&x| x == prev_cache_line_idx) {
+                let next_cache_line_idx = cache_line_idx.saturating_add(1);
+                let next_cache_set_idx = next_cache_line_idx % self.num_cache_sets as usize; // it can only go here.
+                cache_set = &mut self.cache_set_content[next_cache_set_idx];
+                if let Some(next_pos) = cache_set.iter().rposition(|&x| x == next_cache_line_idx) {
+                    // to simulate FIFO instead of LRU, disable this by changing < to >.
+                    if next_pos < cache_set.len() - 1 {
+                        cache_set.remove(next_pos);
+                        cache_set.push(next_cache_line_idx);
+                    }
+                } else {
+                    if cache_set.len() >= self.cache_set_associativity as usize {
+                        cache_set.remove(0); // remove least recently used.
+                    }
+                    cache_set.push(next_cache_line_idx);
+                    self.prefetches += 1;
+                    writeln!(
+                        ret,
+                        "{:7} {:6} {:5x} {:2x} {:x?}",
+                        p, "pre", next_cache_line_idx, next_cache_set_idx, cache_set
+                    )?;
+                }
+            }
             Ok(())
         }
     }
@@ -1453,6 +1482,7 @@ fn kwg_hitcheck<R: WgReader>(
         cache_set_associativity,
         num_cache_sets,
         misses: 0,
+        prefetches: 0,
         cache_set_content: Vec::with_capacity(num_cache_sets as usize),
     };
     for _ in 0..num_cache_sets {
@@ -1496,7 +1526,11 @@ fn kwg_hitcheck<R: WgReader>(
         initial_idx,
     )?;
 
-    writeln!(ret, "cache: {} misses", c.misses)?;
+    writeln!(
+        ret,
+        "cache: {} misses, {} prefetches",
+        c.misses, c.prefetches
+    )?;
 
     Ok(())
 }
