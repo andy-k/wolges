@@ -1305,7 +1305,12 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
     ) {
         if want_raw {
-            possible_strip_placement_callback(env.anchor, env.leftmost, env.rightmost, 0.0);
+            possible_strip_placement_callback(
+                env.anchor,
+                env.leftmost,
+                env.rightmost,
+                f32::INFINITY,
+            );
         } else {
             env.best_possible_equity = f32::NEG_INFINITY;
             shadow_play_left(
