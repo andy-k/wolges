@@ -98,6 +98,16 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 )?;
                 Ok(true)
             }
+            "-resummarize" => {
+                resummarize_summaries(
+                    make_game_config(),
+                    csv::ReaderBuilder::new()
+                        .has_headers(false)
+                        .from_reader(make_reader(&args[2])?),
+                    csv::Writer::from_writer(make_writer(&args[3])?),
+                )?;
+                Ok(true)
+            }
             "-generate-no-smooth" => {
                 generate_leaves::<_, _, false>(
                     make_game_config(),
@@ -136,6 +146,8 @@ fn main() -> error::Returns<()> {
     number of games is optional.
   english-summarize logfile summary.csv
     summarize logfile into summary.csv
+  english-resummarize concatenated_summaries.csv summary.csv
+    combine multiple summaries into one summary.csv and recompute totals
   english-generate-no-smooth summary.csv leaves.csv
     generate leaves (no smoothing)
   english-generate summary.csv leaves.csv
@@ -152,13 +164,21 @@ when low disk space, note that in bash:
   english-summarize log1 summary1.csv
   english-autoplay ... 1000
   english-summarize log2 summary2.csv
-  english-generate <( cat summary1.csv summary2.csv ) leaves.csv
+  english-resummarize <( cat summary1.csv summary2.csv ) summary.csv
+  english-generate summary.csv leaves.csv
     is the same as
+  english-autoplay ... 1000
+  english-summarize log1 summary1.csv
+  english-autoplay ... 1000
+  english-summarize log2 summary2.csv
+  english-generate <( cat summary1.csv summary2.csv ) leaves.csv
+    which is the same as
   english-autoplay ... 1000
   english-autoplay ... 1000
   english-summarize <( cat log1 log2 ) summary.csv
   english-generate summary.csv leaves.csv
-    but it becomes possible to remove log1 to free up disk space for log2."
+    but it becomes possible to remove log1 to free up disk space for log2.
+    using resummarize also allows removing summary1.csv earlier."
         );
         Ok(())
     } else {
@@ -765,6 +785,65 @@ fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
         }
         v.truncate(ol);
     }
+}
+
+fn resummarize_summaries<Readable: std::io::Read, W: std::io::Write>(
+    game_config: game_config::GameConfig,
+    mut csv_in: csv::Reader<Readable>,
+    mut csv_out: csv::Writer<W>,
+) -> error::Returns<()> {
+    let mut stdout_or_stderr = boxed_stdout_or_stderr();
+    let mut rack_bytes = Vec::new();
+    let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
+    let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    for result in csv_in.records() {
+        let record = result?;
+        parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
+        let thing = Cumulate {
+            equity: f64::from_str(&record[1])?,
+            count: u64::from_str(&record[2])?,
+        };
+        full_rack_map
+            .entry(rack_bytes[..].into())
+            .and_modify(|e| {
+                e.equity += thing.equity;
+                e.count += thing.count;
+            })
+            .or_insert(thing);
+    }
+    drop(csv_in);
+
+    // ("", total_equity, row_count) is ignored, it will be recomputed.
+    full_rack_map.remove([][..].into());
+
+    let mut total_equity = 0.0;
+    let mut row_count = 0;
+    for x in full_rack_map.values() {
+        total_equity += x.equity;
+        row_count += x.count;
+    }
+
+    writeln!(
+        stdout_or_stderr,
+        "{} records, {} unique racks",
+        row_count,
+        full_rack_map.len()
+    )?;
+
+    let mut kv = full_rack_map.into_iter().collect::<Vec<_>>();
+    kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
+
+    let mut cur_rack_ser = String::new();
+    csv_out.serialize(("", total_equity, row_count))?;
+    for (k, fv) in kv.iter() {
+        cur_rack_ser.clear();
+        for &tile in k.iter() {
+            cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
+        }
+        csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+    }
+
+    Ok(())
 }
 
 fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHING: bool>(
