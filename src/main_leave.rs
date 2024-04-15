@@ -146,7 +146,19 @@ fn main() -> error::Returns<()> {
     (all also take jumbled- prefix, including jumbled-super-;
     note that jumbled autoplay requires .kad instead of .kwg)
 input/output files can be \"-\" (not advisable for binary files).
-for english-autoplay only the kwg can come from \"-\"."
+for english-autoplay only the kwg can come from \"-\".
+when low disk space, note that in bash:
+  english-autoplay ... 1000
+  english-summarize log1 summary1.csv
+  english-autoplay ... 1000
+  english-summarize log2 summary2.csv
+  english-generate <( cat summary1.csv summary2.csv ) leaves.csv
+    is the same as
+  english-autoplay ... 1000
+  english-autoplay ... 1000
+  english-summarize <( cat log1 log2 ) summary.csv
+  english-generate summary.csv leaves.csv
+    but it becomes possible to remove log1 to free up disk space for log2."
         );
         Ok(())
     } else {
@@ -768,25 +780,29 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
-    let mut results = csv_in.records();
-    let record = results.next().unwrap()?;
-    if !record[0].is_empty() {
-        return Err("invalid input file".into());
-    }
-    let total_equity = f64::from_str(&record[1])?;
-    let row_count = u64::from_str(&record[2])?;
-    for result in results {
+    for result in csv_in.records() {
         let record = result?;
         parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
-        full_rack_map.insert(
-            rack_bytes[..].into(),
-            Cumulate {
-                equity: f64::from_str(&record[1])?,
-                count: u64::from_str(&record[2])?,
-            },
-        );
+        let thing = Cumulate {
+            equity: f64::from_str(&record[1])?,
+            count: u64::from_str(&record[2])?,
+        };
+        full_rack_map
+            .entry(rack_bytes[..].into())
+            .and_modify(|e| {
+                e.equity += thing.equity;
+                e.count += thing.count;
+            })
+            .or_insert(thing);
     }
     drop(csv_in);
+    // ("", total_equity, row_count) must exist.
+    let Cumulate {
+        equity: total_equity,
+        count: row_count,
+    } = full_rack_map
+        .remove([][..].into())
+        .ok_or("input file does not include totals line")?;
 
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
