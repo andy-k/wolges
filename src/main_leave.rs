@@ -109,7 +109,7 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 Ok(true)
             }
             "-generate-no-smooth" => {
-                generate_leaves::<_, _, false>(
+                generate_leaves::<_, _, false, false>(
                     make_game_config(),
                     csv::ReaderBuilder::new()
                         .has_headers(false)
@@ -119,7 +119,27 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 Ok(true)
             }
             "-generate" => {
-                generate_leaves::<_, _, true>(
+                generate_leaves::<_, _, true, false>(
+                    make_game_config(),
+                    csv::ReaderBuilder::new()
+                        .has_headers(false)
+                        .from_reader(make_reader(&args[2])?),
+                    csv::Writer::from_writer(make_writer(&args[3])?),
+                )?;
+                Ok(true)
+            }
+            "-generate-full-no-smooth" => {
+                generate_leaves::<_, _, false, true>(
+                    make_game_config(),
+                    csv::ReaderBuilder::new()
+                        .has_headers(false)
+                        .from_reader(make_reader(&args[2])?),
+                    csv::Writer::from_writer(make_writer(&args[3])?),
+                )?;
+                Ok(true)
+            }
+            "-generate-full" => {
+                generate_leaves::<_, _, true, true>(
                     make_game_config(),
                     csv::ReaderBuilder::new()
                         .has_headers(false)
@@ -149,9 +169,13 @@ fn main() -> error::Returns<()> {
   english-resummarize concatenated_summaries.csv summary.csv
     combine multiple summaries into one summary.csv and recompute totals
   english-generate-no-smooth summary.csv leaves.csv
-    generate leaves (no smoothing)
+    generate leaves (no smoothing) up to rack_size - 1
   english-generate summary.csv leaves.csv
-    generate leaves (with smoothing)
+    generate leaves (with smoothing) up to rack_size - 1
+  english-generate-full-no-smooth summary.csv leaves.csv
+    generate leaves (no smoothing) up to rack_size
+  english-generate-full summary.csv leaves.csv
+    generate leaves (with smoothing) up to rack_size
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, yupik, super-english, super-catalan)
   jumbled-english-autoplay NWL18.kad leave0.klv leave1.klv 1000
@@ -846,7 +870,12 @@ fn resummarize_summaries<Readable: std::io::Read, W: std::io::Write>(
     Ok(())
 }
 
-fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHING: bool>(
+fn generate_leaves<
+    Readable: std::io::Read,
+    W: std::io::Write,
+    const DO_SMOOTHING: bool,
+    const IS_FULL_RACK: bool,
+>(
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
@@ -883,6 +912,8 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
         .remove([][..].into())
         .ok_or("input file does not include totals line")?;
 
+    let leave_size = game_config.rack_size() - 1 + IS_FULL_RACK as u8;
+
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
         rack_tally.iter_mut().for_each(|m| *m = 0);
@@ -907,7 +938,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
                 },
                 rack_tally: &mut rack_tally,
                 min_len: 1,
-                max_len: game_config.rack_size() - 1,
+                max_len: leave_size,
                 exchange_buffer: &mut exchange_buffer,
             },
             0,
@@ -994,7 +1025,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
             },
             rack_tally: &mut alphabet_freqs,
             min_len: 1,
-            max_len: game_config.rack_size() - 1,
+            max_len: leave_size,
             exchange_buffer: &mut exchange_buffer,
         },
         0,
@@ -1008,8 +1039,8 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const DO_SMOOTHIN
     )?;
     let mut num_filled_in = 0u64;
 
-    let mut subrack_bytes = Vec::with_capacity(game_config.rack_size() as usize - 1);
-    for len_to_complete in 2..game_config.rack_size() {
+    let mut subrack_bytes = Vec::with_capacity(leave_size as usize);
+    for len_to_complete in 2..=leave_size {
         let len_minus_one = len_to_complete as usize - 1;
         generate_exchanges(
             &mut ExchangeEnv {
