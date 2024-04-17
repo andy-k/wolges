@@ -87,7 +87,7 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
                 };
-                generate_autoplay_logs::<false>(
+                generate_autoplay_logs::<true, false>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -117,7 +117,37 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
                 };
-                generate_autoplay_logs::<true>(
+                generate_autoplay_logs::<true, true>(
+                    make_game_config(),
+                    kwg,
+                    arc_klv0,
+                    arc_klv1,
+                    num_games,
+                )?;
+                Ok(true)
+            }
+            "-autoplay-summarize-only" => {
+                let args3 = if args.len() > 3 { &args[3] } else { "-" };
+                let args4 = if args.len() > 4 { &args[4] } else { "-" };
+                let num_games = if args.len() > 5 {
+                    u64::from_str(&args[5])?
+                } else {
+                    1_000_000
+                };
+                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let arc_klv0 = if args3 == "-" {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                } else {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args3)?))
+                };
+                let arc_klv1 = if args3 == args4 {
+                    std::sync::Arc::clone(&arc_klv0)
+                } else if args4 == "-" {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                } else {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
+                };
+                generate_autoplay_logs::<false, true>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -202,6 +232,8 @@ fn main() -> error::Returns<()> {
     number of games is optional.
   english-autoplay-summarize NWL18.kwg leave0.klv leave1.klv 1000000
     same as english-autoplay and also save summary file.
+  english-autoplay-summarize-only NWL18.kwg leave0.klv leave1.klv 1000000
+    same as english-autoplay-summarize but do not save the log files.
   english-summarize logfile summary.csv
     summarize logfile into summary.csv
   english-resummarize concatenated_summaries.csv summary.csv
@@ -328,7 +360,7 @@ when low disk space, note that in bash:
     }
 }
 
-fn generate_autoplay_logs<const SUMMARIZE: bool>(
+fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg,
     arc_klv0: std::sync::Arc<klv::Klv>,
@@ -352,22 +384,32 @@ fn generate_autoplay_logs<const SUMMARIZE: bool>(
         .as_secs();
     let run_identifier = std::sync::Arc::new(format!("log-{epoch_secs:08x}"));
     println!("logging to {run_identifier}");
-    let mut csv_log = csv::Writer::from_path(run_identifier.to_string())?;
-    csv_log.serialize((
-        "playerID",
-        "gameID",
-        "turn",
-        "rack",
-        "play",
-        "score",
-        "totalscore",
-        "tilesplayed",
-        "leave",
-        "equity",
-        "tilesremaining",
-        "oppscore",
-    ))?;
-    let csv_log_writer = csv_log.into_inner()?;
+    let mut csv_log = if WRITE_LOGS {
+        Some(csv::Writer::from_path(run_identifier.to_string())?)
+    } else {
+        None
+    };
+    if let Some(ref mut c) = csv_log {
+        c.serialize((
+            "playerID",
+            "gameID",
+            "turn",
+            "rack",
+            "play",
+            "score",
+            "totalscore",
+            "tilesplayed",
+            "leave",
+            "equity",
+            "tilesremaining",
+            "oppscore",
+        ))?;
+    }
+    let csv_log_writer = if let Some(c) = csv_log {
+        Some(c.into_inner()?)
+    } else {
+        None
+    };
     let mut csv_game = csv::Writer::from_path(format!("games-{run_identifier}"))?;
     csv_game.serialize((
         "gameID",
@@ -390,7 +432,7 @@ fn generate_autoplay_logs<const SUMMARIZE: bool>(
     let tick_periods = move_picker::Periods(0);
     struct MutexedStuffs {
         csv_game_writer: std::fs::File,
-        csv_log_writer: std::fs::File,
+        csv_log_writer: Option<std::fs::File>,
         full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
         tick_periods: move_picker::Periods,
     }
@@ -480,9 +522,12 @@ fn generate_autoplay_logs<const SUMMARIZE: bool>(
 
                         let plays = &mut move_generator.plays;
                         let play = &plays[0];
-                        cur_rack_ser.clear();
-                        for &tile in cur_rack.iter() {
-                            cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
+                        if WRITE_LOGS {
+                            cur_rack_ser.clear();
+                            for &tile in cur_rack.iter() {
+                                cur_rack_ser
+                                    .push_str(game_config.alphabet().of_rack(tile).unwrap());
+                            }
                         }
 
                         if SUMMARIZE {
@@ -490,68 +535,75 @@ fn generate_autoplay_logs<const SUMMARIZE: bool>(
                             cur_rack_sorted.sort_unstable();
                         }
 
-                        aft_rack.clone_from(cur_rack);
-                        match &play.play {
-                            movegen::Play::Exchange { tiles } => {
-                                game_state::use_tiles(&mut aft_rack, tiles.iter().copied())
+                        if WRITE_LOGS {
+                            aft_rack.clone_from(cur_rack);
+                            match &play.play {
+                                movegen::Play::Exchange { tiles } => {
+                                    game_state::use_tiles(&mut aft_rack, tiles.iter().copied())
+                                        .unwrap();
+                                }
+                                movegen::Play::Place { word, .. } => {
+                                    game_state::use_tiles(
+                                        &mut aft_rack,
+                                        word.iter().filter_map(|&tile| {
+                                            if tile != 0 {
+                                                Some(tile & !((tile as i8) >> 7) as u8)
+                                            } else {
+                                                None
+                                            }
+                                        }),
+                                    )
                                     .unwrap();
+                                }
                             }
-                            movegen::Play::Place { word, .. } => {
-                                game_state::use_tiles(
-                                    &mut aft_rack,
-                                    word.iter().filter_map(|&tile| {
-                                        if tile != 0 {
-                                            Some(tile & !((tile as i8) >> 7) as u8)
-                                        } else {
-                                            None
-                                        }
-                                    }),
-                                )
-                                .unwrap();
+                            aft_rack.sort_unstable();
+                            aft_rack_ser.clear();
+                            for &tile in aft_rack.iter() {
+                                aft_rack_ser
+                                    .push_str(game_config.alphabet().of_rack(tile).unwrap());
                             }
-                        }
-                        aft_rack.sort_unstable();
-                        aft_rack_ser.clear();
-                        for &tile in aft_rack.iter() {
-                            aft_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
-                        }
 
-                        play_fmt.clear();
-                        match &play.play {
-                            movegen::Play::Exchange { tiles } => {
-                                if tiles.is_empty() {
-                                    write!(play_fmt, "(Pass)").unwrap();
-                                } else {
+                            play_fmt.clear();
+                            match &play.play {
+                                movegen::Play::Exchange { tiles } => {
+                                    if tiles.is_empty() {
+                                        write!(play_fmt, "(Pass)").unwrap();
+                                    } else {
+                                        let alphabet = game_config.alphabet();
+                                        write!(play_fmt, "(exch ").unwrap();
+                                        for &tile in tiles.iter() {
+                                            write!(play_fmt, "{}", alphabet.of_rack(tile).unwrap())
+                                                .unwrap();
+                                        }
+                                        write!(play_fmt, ")").unwrap();
+                                    }
+                                }
+                                movegen::Play::Place {
+                                    down,
+                                    lane,
+                                    idx,
+                                    word,
+                                    ..
+                                } => {
                                     let alphabet = game_config.alphabet();
-                                    write!(play_fmt, "(exch ").unwrap();
-                                    for &tile in tiles.iter() {
-                                        write!(play_fmt, "{}", alphabet.of_rack(tile).unwrap())
+                                    if *down {
+                                        write!(play_fmt, "{}{} ", display::column(*lane), idx + 1)
+                                            .unwrap();
+                                    } else {
+                                        write!(play_fmt, "{}{} ", lane + 1, display::column(*idx))
                                             .unwrap();
                                     }
-                                    write!(play_fmt, ")").unwrap();
-                                }
-                            }
-                            movegen::Play::Place {
-                                down,
-                                lane,
-                                idx,
-                                word,
-                                ..
-                            } => {
-                                let alphabet = game_config.alphabet();
-                                if *down {
-                                    write!(play_fmt, "{}{} ", display::column(*lane), idx + 1)
-                                        .unwrap();
-                                } else {
-                                    write!(play_fmt, "{}{} ", lane + 1, display::column(*idx))
-                                        .unwrap();
-                                }
-                                for &tile in word.iter() {
-                                    if tile == 0 {
-                                        write!(play_fmt, ".").unwrap();
-                                    } else {
-                                        write!(play_fmt, "{}", alphabet.of_board(tile).unwrap())
+                                    for &tile in word.iter() {
+                                        if tile == 0 {
+                                            write!(play_fmt, ".").unwrap();
+                                        } else {
+                                            write!(
+                                                play_fmt,
+                                                "{}",
+                                                alphabet.of_board(tile).unwrap()
+                                            )
                                             .unwrap();
+                                        }
                                     }
                                 }
                             }
@@ -600,22 +652,24 @@ fn generate_autoplay_logs<const SUMMARIZE: bool>(
                                 let completed_moves = completed_moves
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                batched_csv_log
-                                    .serialize((
-                                        &player_aliases[old_turn as usize],
-                                        &game_id,
-                                        num_moves,
-                                        &cur_rack_ser,
-                                        &play_fmt,
-                                        play_score,
-                                        final_scores[old_turn as usize],
-                                        tiles_played,
-                                        &aft_rack_ser,
-                                        &equity_fmt,
-                                        old_bag_len,
-                                        final_scores[new_turn as usize],
-                                    ))
-                                    .unwrap();
+                                if WRITE_LOGS {
+                                    batched_csv_log
+                                        .serialize((
+                                            &player_aliases[old_turn as usize],
+                                            &game_id,
+                                            num_moves,
+                                            &cur_rack_ser,
+                                            &play_fmt,
+                                            play_score,
+                                            final_scores[old_turn as usize],
+                                            tiles_played,
+                                            &aft_rack_ser,
+                                            &equity_fmt,
+                                            old_bag_len,
+                                            final_scores[new_turn as usize],
+                                        ))
+                                        .unwrap();
+                                }
                                 if SUMMARIZE && old_bag_len >= 1 {
                                     if let Some(v) =
                                         thread_full_rack_map.get_mut(&cur_rack_sorted[..])
@@ -656,10 +710,12 @@ fn generate_autoplay_logs<const SUMMARIZE: bool>(
                                     let elapsed_time_secs = t0.elapsed().as_secs();
                                     let tick_changed = {
                                         let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                                        mutex_guard
-                                            .csv_log_writer
-                                            .write_all(&batched_csv_log_buf)
-                                            .unwrap();
+                                        if WRITE_LOGS {
+                                            if let Some(ref mut c) = &mut mutex_guard.csv_log_writer
+                                            {
+                                                c.write_all(&batched_csv_log_buf).unwrap()
+                                            }
+                                        }
                                         mutex_guard
                                             .csv_game_writer
                                             .write_all(&batched_csv_game_buf)
@@ -682,22 +738,24 @@ fn generate_autoplay_logs<const SUMMARIZE: bool>(
                             game_state::CheckGameEnded::NotEnded => {}
                         }
 
-                        batched_csv_log
-                            .serialize((
-                                &player_aliases[old_turn as usize],
-                                &game_id,
-                                num_moves,
-                                &cur_rack_ser,
-                                &play_fmt,
-                                play_score,
-                                game_state.players[old_turn as usize].score,
-                                tiles_played,
-                                &aft_rack_ser,
-                                &equity_fmt,
-                                old_bag_len,
-                                game_state.players[new_turn as usize].score,
-                            ))
-                            .unwrap();
+                        if WRITE_LOGS {
+                            batched_csv_log
+                                .serialize((
+                                    &player_aliases[old_turn as usize],
+                                    &game_id,
+                                    num_moves,
+                                    &cur_rack_ser,
+                                    &play_fmt,
+                                    play_score,
+                                    game_state.players[old_turn as usize].score,
+                                    tiles_played,
+                                    &aft_rack_ser,
+                                    &equity_fmt,
+                                    old_bag_len,
+                                    game_state.players[new_turn as usize].score,
+                                ))
+                                .unwrap();
+                        }
                         if SUMMARIZE && old_bag_len >= 1 {
                             if let Some(v) = thread_full_rack_map.get_mut(&cur_rack_sorted[..]) {
                                 *v = Cumulate {
@@ -722,10 +780,11 @@ fn generate_autoplay_logs<const SUMMARIZE: bool>(
                 let batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
                 let batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
                 let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                mutex_guard
-                    .csv_log_writer
-                    .write_all(&batched_csv_log_buf)
-                    .unwrap();
+                if WRITE_LOGS {
+                    if let Some(ref mut c) = &mut mutex_guard.csv_log_writer {
+                        c.write_all(&batched_csv_log_buf).unwrap();
+                    }
+                }
                 mutex_guard
                     .csv_game_writer
                     .write_all(&batched_csv_game_buf)
