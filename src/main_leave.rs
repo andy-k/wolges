@@ -87,7 +87,43 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
                 };
-                generate_autoplay_logs(make_game_config(), kwg, arc_klv0, arc_klv1, num_games)?;
+                generate_autoplay_logs::<false>(
+                    make_game_config(),
+                    kwg,
+                    arc_klv0,
+                    arc_klv1,
+                    num_games,
+                )?;
+                Ok(true)
+            }
+            "-autoplay-summarize" => {
+                let args3 = if args.len() > 3 { &args[3] } else { "-" };
+                let args4 = if args.len() > 4 { &args[4] } else { "-" };
+                let num_games = if args.len() > 5 {
+                    u64::from_str(&args[5])?
+                } else {
+                    1_000_000
+                };
+                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let arc_klv0 = if args3 == "-" {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                } else {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args3)?))
+                };
+                let arc_klv1 = if args3 == args4 {
+                    std::sync::Arc::clone(&arc_klv0)
+                } else if args4 == "-" {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                } else {
+                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
+                };
+                generate_autoplay_logs::<true>(
+                    make_game_config(),
+                    kwg,
+                    arc_klv0,
+                    arc_klv1,
+                    num_games,
+                )?;
                 Ok(true)
             }
             "-summarize" => {
@@ -164,6 +200,8 @@ fn main() -> error::Returns<()> {
     (changing output filenames needs recompile.)
     if leave is \"-\" or omitted, uses no leave.
     number of games is optional.
+  english-autoplay-summarize NWL18.kwg leave0.klv leave1.klv 1000000
+    same as english-autoplay and also save summary file.
   english-summarize logfile summary.csv
     summarize logfile into summary.csv
   english-resummarize concatenated_summaries.csv summary.csv
@@ -290,7 +328,7 @@ when low disk space, note that in bash:
     }
 }
 
-fn generate_autoplay_logs(
+fn generate_autoplay_logs<const SUMMARIZE: bool>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg,
     arc_klv0: std::sync::Arc<klv::Klv>,
@@ -347,16 +385,19 @@ fn generate_autoplay_logs(
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     let t0 = std::time::Instant::now();
     let tick_periods = move_picker::Periods(0);
     struct MutexedStuffs {
         csv_game_writer: std::fs::File,
         csv_log_writer: std::fs::File,
+        full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
         tick_periods: move_picker::Periods,
     }
     let mutexed_stuffs = std::sync::Arc::new(std::sync::Mutex::new(MutexedStuffs {
         csv_game_writer,
         csv_log_writer,
+        full_rack_map,
         tick_periods,
     }));
 
@@ -378,6 +419,11 @@ fn generate_autoplay_logs(
                 let mut game_id = String::with_capacity(GAME_ID_LEN);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
+                let mut cur_rack_sorted = if SUMMARIZE {
+                    Vec::with_capacity(game_config.rack_size() as usize)
+                } else {
+                    Vec::new()
+                };
                 let mut cur_rack_ser = String::new();
                 let mut aft_rack = Vec::with_capacity(game_config.rack_size() as usize);
                 let mut aft_rack_ser = String::new();
@@ -389,6 +435,7 @@ fn generate_autoplay_logs(
                 let mut num_batched_games_here = 0;
                 let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
                 let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
+                let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
                 loop {
                     if num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                         >= num_games
@@ -436,6 +483,11 @@ fn generate_autoplay_logs(
                         cur_rack_ser.clear();
                         for &tile in cur_rack.iter() {
                             cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
+                        }
+
+                        if SUMMARIZE {
+                            cur_rack_sorted.clone_from(cur_rack);
+                            cur_rack_sorted.sort_unstable();
                         }
 
                         aft_rack.clone_from(cur_rack);
@@ -536,6 +588,11 @@ fn generate_autoplay_logs(
 
                         equity_fmt.clear();
                         write!(equity_fmt, "{:.3}", play.equity).unwrap();
+                        let rounded_equity = if SUMMARIZE {
+                            f32::from_str(&equity_fmt).unwrap() as f64
+                        } else {
+                            0.0
+                        }; // parse the rounded amount exactly
 
                         match game_state.check_game_ended(&game_config, &mut final_scores) {
                             game_state::CheckGameEnded::PlayedOut
@@ -559,6 +616,24 @@ fn generate_autoplay_logs(
                                         final_scores[new_turn as usize],
                                     ))
                                     .unwrap();
+                                if SUMMARIZE && old_bag_len >= 1 {
+                                    if let Some(v) =
+                                        thread_full_rack_map.get_mut(&cur_rack_sorted[..])
+                                    {
+                                        *v = Cumulate {
+                                            equity: v.equity + rounded_equity,
+                                            count: v.count + 1,
+                                        }
+                                    } else {
+                                        thread_full_rack_map.insert(
+                                            cur_rack_sorted[..].into(),
+                                            Cumulate {
+                                                equity: rounded_equity,
+                                                count: 1,
+                                            },
+                                        );
+                                    }
+                                }
                                 batched_csv_game
                                     .serialize((
                                         &game_id,
@@ -623,6 +698,22 @@ fn generate_autoplay_logs(
                                 game_state.players[new_turn as usize].score,
                             ))
                             .unwrap();
+                        if SUMMARIZE && old_bag_len >= 1 {
+                            if let Some(v) = thread_full_rack_map.get_mut(&cur_rack_sorted[..]) {
+                                *v = Cumulate {
+                                    equity: v.equity + rounded_equity,
+                                    count: v.count + 1,
+                                }
+                            } else {
+                                thread_full_rack_map.insert(
+                                    cur_rack_sorted[..].into(),
+                                    Cumulate {
+                                        equity: rounded_equity,
+                                        count: 1,
+                                    },
+                                );
+                            }
+                        }
                         completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         game_state.turn = new_turn;
                     }
@@ -639,6 +730,19 @@ fn generate_autoplay_logs(
                     .csv_game_writer
                     .write_all(&batched_csv_game_buf)
                     .unwrap();
+
+                if SUMMARIZE {
+                    for (k, thread_v) in thread_full_rack_map.into_iter() {
+                        if let Some(v) = mutex_guard.full_rack_map.get_mut(&k) {
+                            *v = Cumulate {
+                                equity: v.equity + thread_v.equity,
+                                count: v.count + thread_v.count,
+                            }
+                        } else {
+                            mutex_guard.full_rack_map.insert(k, thread_v);
+                        }
+                    }
+                }
             })
         }));
     }
@@ -646,6 +750,38 @@ fn generate_autoplay_logs(
     for thread in threads {
         if let Err(e) = thread.join() {
             println!("{e:?}");
+        }
+    }
+
+    if SUMMARIZE {
+        let mutex_guard = mutexed_stuffs.lock().unwrap();
+        let full_rack_map = &mutex_guard.full_rack_map;
+
+        let mut total_equity = 0.0;
+        let mut row_count = 0;
+        for x in full_rack_map.values() {
+            total_equity += x.equity;
+            row_count += x.count;
+        }
+
+        println!(
+            "{} records, {} unique racks",
+            row_count,
+            full_rack_map.len()
+        );
+
+        let mut kv = full_rack_map.iter().collect::<Vec<_>>();
+        kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
+
+        let mut csv_out = csv::Writer::from_path(format!("summary-{run_identifier}"))?;
+        let mut cur_rack_ser = String::new();
+        csv_out.serialize(("", total_equity, row_count))?;
+        for (k, fv) in kv.iter() {
+            cur_rack_ser.clear();
+            for &tile in k.iter() {
+                cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
+            }
+            csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
         }
     }
 
