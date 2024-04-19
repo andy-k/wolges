@@ -461,7 +461,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
                 let mut game_id = String::with_capacity(GAME_ID_LEN);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
-                let mut cur_rack_sorted = if SUMMARIZE {
+                let mut cur_rack_as_vec = if SUMMARIZE {
                     Vec::with_capacity(game_config.rack_size() as usize)
                 } else {
                     Vec::new()
@@ -520,7 +520,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
                             always_include_pass: false,
                         });
 
-                        let plays = &mut move_generator.plays;
+                        let plays = &move_generator.plays;
                         let play = &plays[0];
                         if WRITE_LOGS {
                             cur_rack_ser.clear();
@@ -528,14 +528,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
                                 cur_rack_ser
                                     .push_str(game_config.alphabet().of_rack(tile).unwrap());
                             }
-                        }
 
-                        if SUMMARIZE {
-                            cur_rack_sorted.clone_from(cur_rack);
-                            cur_rack_sorted.sort_unstable();
-                        }
-
-                        if WRITE_LOGS {
                             aft_rack.clone_from(cur_rack);
                             match &play.play {
                                 movegen::Play::Exchange { tiles } => {
@@ -567,15 +560,14 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
                             match &play.play {
                                 movegen::Play::Exchange { tiles } => {
                                     if tiles.is_empty() {
-                                        write!(play_fmt, "(Pass)").unwrap();
+                                        play_fmt.push_str("(Pass)");
                                     } else {
                                         let alphabet = game_config.alphabet();
-                                        write!(play_fmt, "(exch ").unwrap();
+                                        play_fmt.push_str("(exch ");
                                         for &tile in tiles.iter() {
-                                            write!(play_fmt, "{}", alphabet.of_rack(tile).unwrap())
-                                                .unwrap();
+                                            play_fmt.push_str(alphabet.of_rack(tile).unwrap());
                                         }
-                                        write!(play_fmt, ")").unwrap();
+                                        play_fmt.push(')');
                                     }
                                 }
                                 movegen::Play::Place {
@@ -595,14 +587,9 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
                                     }
                                     for &tile in word.iter() {
                                         if tile == 0 {
-                                            write!(play_fmt, ".").unwrap();
+                                            play_fmt.push('.');
                                         } else {
-                                            write!(
-                                                play_fmt,
-                                                "{}",
-                                                alphabet.of_board(tile).unwrap()
-                                            )
-                                            .unwrap();
+                                            play_fmt.push_str(alphabet.of_board(tile).unwrap());
                                         }
                                     }
                                 }
@@ -631,6 +618,9 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
                         };
 
                         let old_bag_len = game_state.bag.0.len();
+                        if SUMMARIZE && old_bag_len > 0 {
+                            cur_rack_as_vec.clone_from(&cur_rack);
+                        }
                         game_state.play(&game_config, &mut rng, &play.play).unwrap();
 
                         let old_turn = game_state.turn;
@@ -640,11 +630,20 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
 
                         equity_fmt.clear();
                         write!(equity_fmt, "{:.3}", play.equity).unwrap();
-                        let rounded_equity = if SUMMARIZE {
-                            f32::from_str(&equity_fmt).unwrap() as f64
-                        } else {
-                            0.0
-                        }; // parse the rounded amount exactly
+
+                        if SUMMARIZE && old_bag_len > 0 {
+                            let rounded_equity = f32::from_str(&equity_fmt).unwrap() as f64; // parse the rounded amount exactly
+                            thread_full_rack_map
+                                .entry(cur_rack_as_vec[..].into())
+                                .and_modify(|e| {
+                                    e.equity += rounded_equity;
+                                    e.count += 1;
+                                })
+                                .or_insert(Cumulate {
+                                    equity: rounded_equity,
+                                    count: 1,
+                                });
+                        }
 
                         match game_state.check_game_ended(&game_config, &mut final_scores) {
                             game_state::CheckGameEnded::PlayedOut
@@ -669,24 +668,6 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
                                             final_scores[new_turn as usize],
                                         ))
                                         .unwrap();
-                                }
-                                if SUMMARIZE && old_bag_len >= 1 {
-                                    if let Some(v) =
-                                        thread_full_rack_map.get_mut(&cur_rack_sorted[..])
-                                    {
-                                        *v = Cumulate {
-                                            equity: v.equity + rounded_equity,
-                                            count: v.count + 1,
-                                        }
-                                    } else {
-                                        thread_full_rack_map.insert(
-                                            cur_rack_sorted[..].into(),
-                                            Cumulate {
-                                                equity: rounded_equity,
-                                                count: 1,
-                                            },
-                                        );
-                                    }
                                 }
                                 batched_csv_game
                                     .serialize((
@@ -755,22 +736,6 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
                                     game_state.players[new_turn as usize].score,
                                 ))
                                 .unwrap();
-                        }
-                        if SUMMARIZE && old_bag_len >= 1 {
-                            if let Some(v) = thread_full_rack_map.get_mut(&cur_rack_sorted[..]) {
-                                *v = Cumulate {
-                                    equity: v.equity + rounded_equity,
-                                    count: v.count + 1,
-                                }
-                            } else {
-                                thread_full_rack_map.insert(
-                                    cur_rack_sorted[..].into(),
-                                    Cumulate {
-                                        equity: rounded_equity,
-                                        count: 1,
-                                    },
-                                );
-                            }
                         }
                         completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         game_state.turn = new_turn;
@@ -856,6 +821,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool>(
 }
 
 // handles the equivalent of '?', A-Z
+#[inline(always)]
 fn parse_rack(
     alphabet_reader: &alphabet::AlphabetReader,
     s: &str,
@@ -887,7 +853,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     for (record_num, result) in csv_reader.records().enumerate() {
         let record = result?;
         if let Err(e) = (|| -> error::Returns<()> {
-            if i16::from_str(&record[10])? >= 1 {
+            if i16::from_str(&record[10])? > 0 {
                 let equity = f32::from_str(&record[9])? as f64;
                 //let score = i16::from_str(&record[5])? as i64;
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
@@ -1253,14 +1219,10 @@ fn generate_leaves<
                                 vn += v;
                                 vd += 1;
                                 if v > 0.0 {
-                                    if v > vmax {
-                                        vmax = v;
-                                    }
+                                    vmax = vmax.max(v);
                                     vpos += 1;
                                 } else if v < 0.0 {
-                                    if v < vmin {
-                                        vmin = v;
-                                    }
+                                    vmin = vmin.min(v);
                                     vneg += 1;
                                 }
                             }
