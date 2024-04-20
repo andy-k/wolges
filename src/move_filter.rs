@@ -176,6 +176,7 @@ impl GenMoves<'_> {
         move_generator: &mut movegen::KurniaMoveGenerator,
         board_snapshot: &movegen::BoardSnapshot<'_>,
         rack: &[u8],
+        num_exchanges_by_this_player: i16,
         max_gen: usize,
     ) {
         match self {
@@ -184,6 +185,7 @@ impl GenMoves<'_> {
                     board_snapshot,
                     rack,
                     max_gen,
+                    num_exchanges_by_this_player,
                     always_include_pass: false,
                 });
             }
@@ -195,6 +197,7 @@ impl GenMoves<'_> {
                         board_snapshot,
                         rack,
                         max_gen,
+                        num_exchanges_by_this_player,
                         always_include_pass: false,
                     },
                     |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {

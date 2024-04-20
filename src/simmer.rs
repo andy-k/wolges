@@ -168,6 +168,10 @@ impl Simmer {
                         },
                         rack: &self.game_state.current_player().rack,
                         max_gen: 1,
+                        num_exchanges_by_this_player: self
+                            .game_state
+                            .current_player()
+                            .num_exchanges,
                         always_include_pass: false,
                     });
                 &self.move_generator.plays[0].play

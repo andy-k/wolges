@@ -717,6 +717,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                             board_snapshot,
                             rack: cur_rack,
                             max_gen: 1,
+                            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
                         });
 

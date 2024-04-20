@@ -2289,6 +2289,7 @@ pub struct GenMovesParams<'a> {
     pub board_snapshot: &'a BoardSnapshot<'a>,
     pub rack: &'a [u8],
     pub max_gen: usize,
+    pub num_exchanges_by_this_player: i16,
     pub always_include_pass: bool,
 }
 
@@ -2336,6 +2337,7 @@ impl KurniaMoveGenerator {
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a>,
         rack: &'a [u8],
+        num_exchanges_by_this_player: i16,
         always_include_pass: bool,
     ) {
         self.plays.clear();
@@ -2381,6 +2383,7 @@ impl KurniaMoveGenerator {
             board_snapshot,
             working_buffer,
             &multi_leaves,
+            num_exchanges_by_this_player,
             found_exchange_move,
         );
         if always_include_pass || vec_moves.borrow().is_empty() {
@@ -2514,6 +2517,7 @@ impl KurniaMoveGenerator {
             params.board_snapshot,
             working_buffer,
             &multi_leaves,
+            params.num_exchanges_by_this_player,
             found_exchange_move,
         );
         if params.always_include_pass || found_moves.borrow().is_empty() {
@@ -2643,6 +2647,7 @@ impl KurniaMoveGenerator {
             params.board_snapshot,
             working_buffer,
             &multi_leaves,
+            params.num_exchanges_by_this_player,
             found_exchange_move,
         );
         if params.always_include_pass || found_moves.borrow().is_empty() {
@@ -2684,9 +2689,12 @@ fn kurnia_gen_exchange_moves<'a, FoundExchangeMove: FnMut(&[u8], f32)>(
     board_snapshot: &'a BoardSnapshot<'a>,
     working_buffer: &mut WorkingBuffer,
     multi_leaves: &klv::MultiLeaves,
+    num_exchanges_by_this_player: i16,
     found_exchange_move: FoundExchangeMove,
 ) {
-    if working_buffer.num_tiles_in_bag >= board_snapshot.game_config.exchange_tile_limit() {
+    if working_buffer.num_tiles_in_bag >= board_snapshot.game_config.exchange_tile_limit()
+        && num_exchanges_by_this_player < board_snapshot.game_config.exchanges_allowed_per_player()
+    {
         multi_leaves.kurnia_gen_exchange_moves_unconditionally(
             found_exchange_move,
             &mut working_buffer.rack_tally,

@@ -437,6 +437,7 @@ impl<'a> EndgameSolver<'a> {
                     self.work_buffer.movegen.gen_moves_raw_all_unsorted(
                         &board_snapshot,
                         &current_ply_buffer.racks[which_player],
+                        0, // TODO: use game_state to track this
                         true,
                     );
                 } else {
@@ -447,6 +448,7 @@ impl<'a> EndgameSolver<'a> {
                             board_snapshot: &board_snapshot,
                             rack: &current_ply_buffer.racks[which_player],
                             max_gen: 1,
+                            num_exchanges_by_this_player: 0, // TODO: use game_state to track this
                             always_include_pass: false,
                         });
                 }

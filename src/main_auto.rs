@@ -186,6 +186,7 @@ fn main() -> error::Returns<()> {
             board_snapshot,
             rack: test_rack,
             max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
             always_include_pass: false,
         });
         let plays1 = move_generator.plays.clone();
@@ -197,6 +198,7 @@ fn main() -> error::Returns<()> {
             },
             rack: test_rack,
             max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
             always_include_pass: false,
         });
         let plays2 = move_generator.plays.clone();
@@ -205,6 +207,7 @@ fn main() -> error::Returns<()> {
             board_snapshot,
             rack: test_rack,
             max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
             always_include_pass: false,
         });
         let plays3 = move_generator.plays.clone();
@@ -281,6 +284,7 @@ fn main() -> error::Returns<()> {
                     board_snapshot,
                     rack: &game_state.current_player().rack,
                     max_gen: usize::MAX,
+                    num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                     always_include_pass: false,
                 });
                 // test word prune, only for classic.
@@ -313,6 +317,7 @@ fn main() -> error::Returns<()> {
                         },
                         rack: &game_state.current_player().rack,
                         max_gen: usize::MAX,
+                        num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                         always_include_pass: false,
                     });
                     plays2 = move_generator.plays.clone();
@@ -321,6 +326,7 @@ fn main() -> error::Returns<()> {
                         board_snapshot,
                         rack: &game_state.current_player().rack,
                         max_gen: usize::MAX,
+                        num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                         always_include_pass: false,
                     });
                     if plays1 != move_generator.plays {
@@ -355,6 +361,7 @@ fn main() -> error::Returns<()> {
                         board_snapshot,
                         rack: &game_state.current_player().rack,
                         max_gen: usize::MAX,
+                        num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                         always_include_pass: true,
                     },
                     |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,

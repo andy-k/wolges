@@ -112,7 +112,13 @@ impl MovePicker<'_> {
     ) {
         match self {
             MovePicker::Hasty => {
-                filtered_movegen.gen_moves(move_generator, board_snapshot, rack, 1);
+                filtered_movegen.gen_moves(
+                    move_generator,
+                    board_snapshot,
+                    rack,
+                    game_state.current_player().num_exchanges,
+                    1,
+                );
             }
             MovePicker::Simmer(simmer) => {
                 let t0 = std::time::Instant::now();
@@ -120,7 +126,13 @@ impl MovePicker<'_> {
                     tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
                     println!("3 secs have passed");
                 });
-                filtered_movegen.gen_moves(move_generator, board_snapshot, rack, 100);
+                filtered_movegen.gen_moves(
+                    move_generator,
+                    board_snapshot,
+                    rack,
+                    game_state.current_player().num_exchanges,
+                    100,
+                );
                 simmer.simmer.prepare(simmer.game_config, game_state, 2);
                 let mut candidates = simmer.take_candidates(move_generator.plays.len());
                 let num_sim_iters = 1000;

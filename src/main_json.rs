@@ -269,6 +269,7 @@ fn main() -> error::Returns<()> {
         board_snapshot,
         rack: &question.rack,
         max_gen: question.max_gen,
+        num_exchanges_by_this_player: game_state.current_player().num_exchanges,
         always_include_pass: false,
     });
     let plays = &move_generator.plays;
