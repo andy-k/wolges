@@ -41,24 +41,24 @@ fi
 
 echo "$kwg"
 
-time cargo run --release --bin leave -- "$leave_param"-autoplay "$kwg" -{,} "$num"
+time cargo run --release --bin leave -- "$leave_param"-autoplay-summarize "$kwg" -{,} "$num"
 log_file="$(ls -1td log-* | head -1)"
 echo "$log_file"
-time cargo run --release --bin leave -- "$leave_param"-summarize "$log_file" summary0.csv
+mv -fv summary-"$log_file" summary0.csv
 time cargo run --release --bin leave -- "$leave_param"-generate summary0.csv leaves-smooth1.csv
 time cargo run --release --bin buildlex -- "$buildlex_param"-klv2 leaves-smooth1.{csv,klv2}
 
-time cargo run --release --bin leave -- "$leave_param"-autoplay "$kwg" leaves-smooth1.klv2{,} "$num"
+time cargo run --release --bin leave -- "$leave_param"-autoplay-summarize "$kwg" leaves-smooth1.klv2{,} "$num"
 log_file="$(ls -1td log-* | head -1)"
 echo "$log_file"
-time cargo run --release --bin leave -- "$leave_param"-summarize "$log_file" summary1.csv
+mv -fv summary-"$log_file" summary1.csv
 time cargo run --release --bin leave -- "$leave_param"-generate summary1.csv leaves-smooth2.csv
 time cargo run --release --bin buildlex -- "$buildlex_param"-klv2 leaves-smooth2.{csv,klv2}
 
-time cargo run --release --bin leave -- "$leave_param"-autoplay "$kwg" leaves-smooth2.klv2{,} "$num"
+time cargo run --release --bin leave -- "$leave_param"-autoplay-summarize "$kwg" leaves-smooth2.klv2{,} "$num"
 log_file="$(ls -1td log-* | head -1)"
 echo "$log_file"
-time cargo run --release --bin leave -- "$leave_param"-summarize "$log_file" summary2.csv
+mv -fv summary-"$log_file" summary2.csv
 time cargo run --release --bin leave -- "$leave_param"-generate summary2.csv leaves-smooth3.csv
 time cargo run --release --bin buildlex -- "$buildlex_param"-klv2 leaves-smooth3.{csv,klv2}
 
