@@ -13,15 +13,6 @@ thread_local! {
         std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_entropy()));
 }
 
-// omits 01IOl
-static BASE57: &[u8; 57] = b"\
-23456789\
-ABCDEFGHJKLMNPQRSTUVWXYZ\
-abcdefghijkmnopqrstuvwxyz\
-";
-
-const GAME_ID_LEN: usize = 8;
-
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // support "-" to mean stdout.
@@ -509,6 +500,11 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
         tick_periods,
     }));
     let batch_size = if BREADTH { 10 } else { 100 };
+    // this is a 5-byte random value generated once per process.
+    let common_game_id_str = std::sync::Arc::new(format!(
+        "{:010x}",
+        RNG.with(|rng| rng.borrow_mut().gen_range(0..1u64 << 40))
+    ));
 
     for thread_id in 0..num_threads {
         let game_config = std::sync::Arc::clone(&game_config);
@@ -522,10 +518,11 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
         let logged_games = std::sync::Arc::clone(&logged_games);
         let completed_moves = std::sync::Arc::clone(&completed_moves);
         let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
+        let common_game_id_str = std::sync::Arc::clone(&common_game_id_str);
         threads.push(std::thread::spawn(move || {
             RNG.with(|rng| {
                 let mut rng = &mut *rng.borrow_mut();
-                let mut game_id = String::with_capacity(GAME_ID_LEN);
+                let mut game_id = String::with_capacity(24);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut cur_rack_as_vec = if SUMMARIZE {
@@ -626,9 +623,9 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                     }
                 }
                 loop {
-                    if num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        >= num_games
-                    {
+                    let num_prior_games =
+                        num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if num_prior_games >= num_games {
                         num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         break;
                     }
@@ -637,9 +634,17 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                     num_bingos.iter_mut().for_each(|m| *m = 0);
                     num_turns.iter_mut().for_each(|m| *m = 0);
                     game_id.clear();
-                    for _ in 0..GAME_ID_LEN {
-                        game_id.push(*BASE57.choose(&mut rng).unwrap() as char);
-                    }
+                    write!(
+                        game_id,
+                        "{:08x}{}{:06x}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                        &common_game_id_str,
+                        num_prior_games.wrapping_add(1)
+                    )
+                    .unwrap();
                     let went_first = rng.gen_range(0..game_config.num_players());
                     game_state.reset_and_draw_tiles(&game_config, &mut rng);
                     game_state.turn = went_first;
