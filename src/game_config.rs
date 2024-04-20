@@ -438,6 +438,8 @@ pub fn make_jumbled_norwegian_game_config() -> GameConfig {
     })
 }
 
+// http://www.pfs.org.pl/regulaminy.php
+// select the second tab.
 #[allow(dead_code)]
 pub fn make_polish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
@@ -446,7 +448,7 @@ pub fn make_polish_game_config() -> GameConfig {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
-        num_passes_to_end: 0,
+        num_passes_to_end: 4,
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
@@ -464,7 +466,7 @@ pub fn make_jumbled_polish_game_config() -> GameConfig {
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
         num_players: 2,
-        num_passes_to_end: 0,
+        num_passes_to_end: 4,
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
@@ -510,6 +512,7 @@ pub fn make_jumbled_slovene_game_config() -> GameConfig {
     })
 }
 
+// https://fisescrabble.org/reglamentos/modalidad-clasica/
 #[allow(dead_code)]
 pub fn make_spanish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
