@@ -483,6 +483,10 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
             .iter()
             .map(|x| format!("{x}_bingos"))
             .collect::<Box<_>>(),
+        player_aliases
+            .iter()
+            .map(|x| format!("{x}_turns"))
+            .collect::<Box<_>>(),
         "first",
     ))?;
     let csv_game_writer = csv_game.into_inner()?;
@@ -536,6 +540,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                 let mut equity_fmt = String::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
                 let mut num_bingos = vec![0; game_config.num_players() as usize];
+                let mut num_turns = vec![0; game_config.num_players() as usize];
                 let mut num_moves;
                 let mut num_batched_games_here = 0;
                 let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
@@ -630,6 +635,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
 
                     num_moves = 0;
                     num_bingos.iter_mut().for_each(|m| *m = 0);
+                    num_turns.iter_mut().for_each(|m| *m = 0);
                     game_id.clear();
                     for _ in 0..GAME_ID_LEN {
                         game_id.push(*BASE57.choose(&mut rng).unwrap() as char);
@@ -821,6 +827,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                         game_state.play(&game_config, &mut rng, &play.play).unwrap();
 
                         let old_turn = game_state.turn;
+                        num_turns[old_turn as usize] += 1;
                         game_state.next_turn();
                         let new_turn = game_state.turn;
                         game_state.turn = old_turn;
@@ -894,6 +901,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                                         &game_id,
                                         &final_scores,
                                         &num_bingos,
+                                        &num_turns,
                                         &player_aliases[went_first as usize],
                                     ))
                                     .unwrap();
