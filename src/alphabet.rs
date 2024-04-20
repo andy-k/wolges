@@ -318,9 +318,6 @@ pub fn make_polish_alphabet() -> Alphabet {
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Slovenian
-// the additional letters are unofficial and experimental
-// (so data files may not be stable).
-// note: Å Ä Ç Ñ Ö Q Ü W X Y are experimental.
 pub fn make_slovene_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/slovene.txt")
 }
