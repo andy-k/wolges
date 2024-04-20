@@ -434,7 +434,7 @@ impl<'a> EndgameSolver<'a> {
                 let t1 = std::time::Instant::now();
                 const DO_HASTY: bool = false;
                 if !DO_HASTY || which_player == 0 {
-                    self.work_buffer.movegen.gen_all_raw_moves_unsorted(
+                    self.work_buffer.movegen.gen_moves_raw_all_unsorted(
                         &board_snapshot,
                         &current_ply_buffer.racks[which_player],
                         true,

@@ -1298,7 +1298,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     #[inline(always)]
-    fn gen_moves_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
+    fn gen_places_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
         env: &mut Env<'_>,
         single_tile_plays: bool,
         want_raw: bool,
@@ -1345,7 +1345,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             env.anchor = leftmost - 1;
             env.leftmost = 0;
             env.rightmost = rightmost;
-            gen_moves_from(
+            gen_places_from(
                 &mut env,
                 single_tile_plays,
                 want_raw,
@@ -1366,7 +1366,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                         env.anchor = anchor;
                         env.leftmost = leftmost;
                         env.rightmost = rightmost;
-                        gen_moves_from(
+                        gen_places_from(
                             &mut env,
                             single_tile_plays,
                             want_raw,
@@ -2332,7 +2332,7 @@ impl KurniaMoveGenerator {
 
     // skip equity computation and sorting
     #[allow(dead_code)]
-    pub fn gen_all_raw_moves_unsorted<'a>(
+    pub fn gen_moves_raw_all_unsorted<'a>(
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a>,
         rack: &'a [u8],
@@ -2395,7 +2395,7 @@ impl KurniaMoveGenerator {
         let _ = std::mem::replace(&mut working_buffer.multi_leaves, multi_leaves);
     }
 
-    pub async fn async_gen_moves_filtered<
+    pub async fn gen_moves_filtered_async<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         AdjustLeaveValue: Fn(f32) -> f32,
