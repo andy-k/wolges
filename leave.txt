@@ -1,7 +1,7 @@
 (Things documented in this file are unstable.)
 
 
-GENERATING LEAVE FILES
+BASICS OF GENERATING LEAVE FILES
 
 These rudimentary tools generate somewhat usable leave files. See the options:
 
@@ -47,3 +47,31 @@ cargo run --release --bin leave -- english-autoplay NWL18.kwg leaves-smooth.klv2
 
 Specify "-" for no leave (this is default for both), but is necessary if
 player0 is using no leave and player1 is using a leave file.
+
+
+GENERATING LEAVE FILES
+
+The easier way to generate leaves is to use genleaves.sh.
+
+This script runs n1 games with no leaves, n2 games with leave1, etc.
+Run it with no parameters to see how to use it.
+
+Advanced functionalities the script demonstrates include:
+- english-autoplay-summarize to autoplay and summarize in one run.
+- english-autoplay-summarize-only to not save the logs (because they are big).
+- english-autoplay-summarize-breadth to try to sample more distinct racks.
+  (This mode is slow.)
+- english-autoplay-summarize-only-breadth for both of the above.
+- english-generate-full to generate full rack leaves instead of just up to n-1.
+- english-generate-full-no-smooth for both full and no smooth.
+- english-klv for klv1 in case that is still useful.
+- leaves for the super distribution.
+
+We used to generate leaves with
+../genleaves.sh english english 2000000 2000000 2000000
+
+That generated okay leaves in decent time.
+It is debatable what arguments will generate the best leaves.
+
+Use --breadth and --full to generate more correct leaves for pass,
+but they need many more games (minimum 5000000) and therefore time and space.
