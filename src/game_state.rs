@@ -17,6 +17,7 @@ pub fn use_tiles<II: IntoIterator<Item = u8>>(
 pub struct GamePlayer {
     pub score: i32,
     pub rack: Vec<u8>,
+    pub num_exchanges: i16, // lifetime
 }
 
 impl Clone for GamePlayer {
@@ -25,6 +26,7 @@ impl Clone for GamePlayer {
         Self {
             score: self.score,
             rack: self.rack.clone(),
+            num_exchanges: self.num_exchanges,
         }
     }
 
@@ -32,6 +34,7 @@ impl Clone for GamePlayer {
     fn clone_from(&mut self, source: &Self) {
         self.score.clone_from(&source.score);
         self.rack.clone_from(&source.rack);
+        self.num_exchanges.clone_from(&source.num_exchanges);
     }
 }
 
@@ -80,6 +83,7 @@ impl GameState {
                 .map(|_| GamePlayer {
                     score: 0,
                     rack: Vec::with_capacity(rack_size),
+                    num_exchanges: 0,
                 })
                 .collect(),
             board_tiles: vec![0u8; (dim.rows as usize) * (dim.cols as usize)].into_boxed_slice(),
@@ -95,6 +99,7 @@ impl GameState {
             player.score = 0;
             self.bag.0.extend_from_slice(&player.rack);
             player.rack.clear();
+            player.num_exchanges = 0;
         }
         for &tile in self.board_tiles.iter().filter(|&&tile| tile != 0) {
             self.bag.0.push(tile & !((tile as i8) >> 7) as u8);
@@ -166,14 +171,20 @@ impl GameState {
             movegen::Play::Exchange { tiles } => {
                 if tiles.is_empty() {
                     self.pass_turns += 1;
+                    self.zero_turns += 1;
                 } else {
                     use_tiles(&mut current_player.rack, tiles.iter().copied())?;
                     self.bag
                         .replenish(&mut current_player.rack, game_config.rack_size() as usize);
                     self.bag.put_back(&mut rng, tiles);
                     self.pass_turns = 0;
+                    current_player.num_exchanges += 1;
+                    if game_config.exchanges_are_zeros() {
+                        self.zero_turns += 1;
+                    } else {
+                        self.zero_turns = 0;
+                    }
                 }
-                self.zero_turns += 1;
             }
             movegen::Play::Place {
                 down,

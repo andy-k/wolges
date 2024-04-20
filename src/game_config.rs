@@ -14,9 +14,11 @@ pub struct StaticGameConfig {
     rack_size: u8,
     num_players: u8,
     num_passes_to_end: u8,
-    challenges_are_passes: bool,
+    challenges_are_passes: bool, // count challenge as pass turn or as zero turn
     num_zeros_to_end: u8,
     zeros_can_end_empty_board: bool,
+    exchanges_are_zeros: bool,
+    exchanges_allowed_per_player: i16,
     exchange_tile_limit: i16, // >= 1
 }
 
@@ -82,6 +84,20 @@ impl GameConfig {
     }
 
     #[inline(always)]
+    pub fn exchanges_are_zeros(&self) -> bool {
+        match self {
+            GameConfig::Static(x) => x.exchanges_are_zeros,
+        }
+    }
+
+    #[inline(always)]
+    pub fn exchanges_allowed_per_player(&self) -> i16 {
+        match self {
+            GameConfig::Static(x) => x.exchanges_allowed_per_player,
+        }
+    }
+
+    #[inline(always)]
     pub fn exchange_tile_limit(&self) -> i16 {
         match self {
             GameConfig::Static(x) => x.exchange_tile_limit,
@@ -129,6 +145,8 @@ pub fn make_catalan_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -145,6 +163,8 @@ pub fn make_jumbled_catalan_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -161,6 +181,8 @@ pub fn make_super_catalan_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -177,6 +199,8 @@ pub fn make_jumbled_super_catalan_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -192,6 +216,8 @@ pub fn make_english_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -208,6 +234,8 @@ pub fn make_jumbled_english_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -224,6 +252,8 @@ pub fn make_punctured_english_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -240,6 +270,8 @@ pub fn make_jumbled_punctured_english_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -256,6 +288,8 @@ pub fn make_hong_kong_english_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 9,
     })
 }
@@ -272,6 +306,8 @@ pub fn make_super_english_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -288,6 +324,8 @@ pub fn make_jumbled_super_english_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -304,6 +342,8 @@ pub fn make_french_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -320,6 +360,8 @@ pub fn make_jumbled_french_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -336,6 +378,8 @@ pub fn make_german_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 0,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -352,6 +396,8 @@ pub fn make_jumbled_german_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 0,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -368,6 +414,8 @@ pub fn make_norwegian_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -384,6 +432,8 @@ pub fn make_jumbled_norwegian_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -400,6 +450,8 @@ pub fn make_polish_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: false,
+        exchanges_allowed_per_player: 3,
         exchange_tile_limit: 7,
     })
 }
@@ -416,6 +468,8 @@ pub fn make_jumbled_polish_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: false,
+        exchanges_allowed_per_player: 3,
         exchange_tile_limit: 7,
     })
 }
@@ -432,6 +486,8 @@ pub fn make_slovene_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -448,6 +504,8 @@ pub fn make_jumbled_slovene_game_config() -> GameConfig {
         challenges_are_passes: false,
         num_zeros_to_end: 6,
         zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
 }
@@ -464,6 +522,8 @@ pub fn make_spanish_game_config() -> GameConfig {
         challenges_are_passes: true,
         num_zeros_to_end: 12,
         zeros_can_end_empty_board: false,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 1,
     })
 }
@@ -480,6 +540,8 @@ pub fn make_jumbled_spanish_game_config() -> GameConfig {
         challenges_are_passes: true,
         num_zeros_to_end: 12,
         zeros_can_end_empty_board: false,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 1,
     })
 }
