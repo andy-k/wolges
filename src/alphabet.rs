@@ -329,12 +329,6 @@ pub fn make_spanish_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/spanish.txt")
 }
 
-// TODO: find citeable source
-// https://discord.com/channels/741321677828522035/778469677588283403/1171937313224392704
-pub fn make_yupik_alphabet() -> Alphabet {
-    new_static_alphabet_from_file!("alphabets/yupik.txt")
-}
-
 pub struct AlphabetReader {
     supported_tiles: Box<[(u8, bites::Bites)]>,
     by_first_byte: [Option<(usize, usize)>; 256],

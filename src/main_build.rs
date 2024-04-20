@@ -348,7 +348,7 @@ fn main() -> error::Returns<()> {
     english-legacy-... for legacy (which is the former default),
     this is applicable for kwg, kwg-anything, klv/klv2)
   (english can also be catalan, french, german, norwegian, polish, slovene,
-    spanish, yupik, decimal)
+    spanish, decimal)
 input/output files can be \"-\" (not advisable for binary files)"
         );
         Ok(())
@@ -365,7 +365,6 @@ input/output files can be \"-\" (not advisable for binary files)"
             || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
             || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
-            || do_lang(&args, "yupik", alphabet::make_yupik_alphabet)?
             || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
         {
         } else {

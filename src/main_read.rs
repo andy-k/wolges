@@ -1569,7 +1569,7 @@ fn main() -> error::Returns<()> {
   english-make-q2-ort something.csv something.ort num_buckets
     generate .ort with the given num_buckets (ideally prime eg 5297687)
   (english can also be catalan, french, german, norwegian, polish, slovene,
-    spanish, yupik, decimal)
+    spanish, decimal)
   klv-kwg-extract CSW21.klv2 racks.kwg
     just copy out the kwg for further analysis.
   kwg-hitcheck CSW21.kwg cls csa ncs outfile
@@ -1605,7 +1605,6 @@ input/output files can be \"-\" (not advisable for binary files)"
             || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
             || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
-            || do_lang(&args, "yupik", alphabet::make_yupik_alphabet)?
             || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
         {
         } else if args[1] == "klv-kwg-extract" {
