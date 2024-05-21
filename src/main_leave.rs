@@ -431,7 +431,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
     let player_aliases = std::sync::Arc::new(
         (1..=game_config.num_players())
             .map(|x| format!("p{x}"))
-            .collect::<Box<_>>(),
+            .collect::<Box<[String]>>(),
     );
     let num_threads = num_cpus::get();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -475,15 +475,15 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
         player_aliases
             .iter()
             .map(|x| format!("{x}_score"))
-            .collect::<Box<_>>(),
+            .collect::<Box<[String]>>(),
         player_aliases
             .iter()
             .map(|x| format!("{x}_bingos"))
-            .collect::<Box<_>>(),
+            .collect::<Box<[String]>>(),
         player_aliases
             .iter()
             .map(|x| format!("{x}_turns"))
-            .collect::<Box<_>>(),
+            .collect::<Box<[String]>>(),
         "first",
     ))?;
     let csv_game_writer = csv_game.into_inner()?;

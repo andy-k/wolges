@@ -102,7 +102,7 @@ fn build_leaves_f32<Readable: std::io::Read>(
     build_layout: build::BuildLayout,
 ) -> error::Returns<Vec<u8>> {
     let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
-    let mut leaves_map = fash::MyHashMap::default();
+    let mut leaves_map = fash::MyHashMap::<bites::Bites, _>::default();
     let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
     let mut v = Vec::new();
     for result in csv_reader.records() {
