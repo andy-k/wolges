@@ -444,6 +444,13 @@ impl WorkingBuffer {
             self.best_leave_values[i as usize] +=
                 board_snapshot.game_config.num_played_bonus(i) as f32;
         }
+        self.used_letters_tally.clear();
+        match board_snapshot.game_config.game_rules() {
+            game_config::GameRules::Classic => {}
+            game_config::GameRules::Jumbled => {
+                self.used_letters_tally.resize(alphabet.len() as usize, 0);
+            }
+        }
         self.used_tile_scores_shadowl.clear();
         self.used_tile_scores_shadowl
             .reserve(self.num_tiles_on_rack as usize);
@@ -453,14 +460,6 @@ impl WorkingBuffer {
     }
 
     fn init_after_cross_sets(&mut self, board_snapshot: &BoardSnapshot<'_>) {
-        let alphabet = board_snapshot.game_config.alphabet();
-        self.used_letters_tally.clear();
-        match board_snapshot.game_config.game_rules() {
-            game_config::GameRules::Classic => {}
-            game_config::GameRules::Jumbled => {
-                self.used_letters_tally.resize(alphabet.len() as usize, 0);
-            }
-        }
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
         let premiums = board_layout.premiums();
