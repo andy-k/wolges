@@ -178,7 +178,6 @@ impl Question {
             game_state.set_current_rack(&v);
             let mut move_to_play = None;
             if coord_token.is_empty() {
-                #[allow(clippy::if_same_then_else)]
                 if word_token == "-" && move_score == 0 {
                     // pass
                     move_to_play = Some(movegen::Play::Exchange {

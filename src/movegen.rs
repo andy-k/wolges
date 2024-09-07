@@ -2213,7 +2213,7 @@ impl std::fmt::Display for WriteablePlay<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
-            #[allow(clippy::recursive_format_impl)]
+            #[expect(clippy::recursive_format_impl)]
             return f.pad(&format!("{self}"));
         }
         match &self.play {
@@ -2331,7 +2331,6 @@ impl KurniaMoveGenerator {
     }
 
     // skip equity computation and sorting
-    #[allow(dead_code)]
     pub fn gen_moves_raw_all_unsorted<'a>(
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a>,

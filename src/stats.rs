@@ -34,7 +34,6 @@ impl Stats {
     }
 
     // https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
-    #[allow(dead_code)]
     #[inline(always)]
     pub fn update_bulk(&mut self, other: &Stats) {
         let original_count = self.count;
@@ -48,7 +47,6 @@ impl Stats {
         }
     }
 
-    #[allow(dead_code)]
     #[inline(always)]
     pub fn count(&self) -> f64 {
         self.count
@@ -69,7 +67,6 @@ impl Stats {
         }
     }
 
-    #[allow(dead_code)]
     #[inline(always)]
     pub fn standard_deviation(&self) -> f64 {
         self.variance().sqrt()

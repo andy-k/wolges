@@ -47,7 +47,7 @@ impl std::fmt::Display for ColumnStr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
-            #[allow(clippy::recursive_format_impl)]
+            #[expect(clippy::recursive_format_impl)]
             return f.pad(&format!("{self}"));
         }
         if self.0 >= 26 {
@@ -117,7 +117,7 @@ impl std::fmt::Display for BoardPrinter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
-            #[allow(clippy::recursive_format_impl)]
+            #[expect(clippy::recursive_format_impl)]
             return f.pad(&format!("{self}"));
         }
         let ncols: i8 = self.board_layout.dim().cols;
@@ -195,7 +195,7 @@ impl std::fmt::Display for BoardFenner<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
-            #[allow(clippy::recursive_format_impl)]
+            #[expect(clippy::recursive_format_impl)]
             return f.pad(&format!("{self}"));
         }
         let mut p = 0usize;
@@ -329,7 +329,7 @@ impl std::fmt::Display for MsPrinter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
-            #[allow(clippy::recursive_format_impl)]
+            #[expect(clippy::recursive_format_impl)]
             return f.pad(&format!("{self}"));
         }
         let mut ms = self.ms;
@@ -356,7 +356,7 @@ impl std::fmt::Display for GameStatePrinter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
-            #[allow(clippy::recursive_format_impl)]
+            #[expect(clippy::recursive_format_impl)]
             return f.pad(&format!("{self}"));
         }
         writeln!(
