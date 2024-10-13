@@ -120,7 +120,7 @@ fn main() -> error::Returns<()> {
     let scores = [336, 298];
     let question = Question::from_fen(
         &game_config::make_english_game_config(),
-        "NWL20",
+        "NWL23", // actually "NWL20",
         "C14/O2TOY9/mIRADOR8/F4DAB2PUGH1/I5GOOEY3V/T4XI2MALTHA/14N/6GUM3OWN/7PEW2DOE/9EF1DOR/2KUNA1J1BEVELS/3TURRETs2S2/7A4T2/7N7/7S7",
         "EEEIILZ",
     )?;
@@ -136,19 +136,9 @@ fn main() -> error::Returns<()> {
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv2")?);
             game_config = game_config::make_english_game_config();
         }
-        "CSW19" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW19.klv2")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "NWL18" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/NWL18.klv2")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "NWL20" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL20.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/NWL20.klv2")?);
+        "NWL23" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/NWL23.klv2")?);
             game_config = game_config::make_english_game_config();
         }
         "ECWL" => {

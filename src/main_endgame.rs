@@ -427,7 +427,8 @@ fn main() -> error::Returns<()> {
     let data = [
         r#"
       {
-        "lexicon": "NWL18",
+        "actual_lexicon": "NWL18",
+        "lexicon": "NWL23",
         "rack": [ 0, 1, 5, 9, 14, 18, 21 ],
         "board": [
           [  0,  0,  0,  0,  0,  2,  5, 18,  7, 19,  0,  0,  0,  0,  0 ],
@@ -450,7 +451,8 @@ fn main() -> error::Returns<()> {
     "#,
         r#"
       {
-        "lexicon": "NWL18",
+        "actual_lexicon": "NWL18",
+        "lexicon": "NWL23",
         "source": "https://woogles.io/game/SBRtWRzo?turn=22",
         "rack": [ 5, 9, 10, 12, 13, 19, 20 ],
         "board": [
@@ -474,7 +476,8 @@ fn main() -> error::Returns<()> {
     "#,
         r#"
       {
-        "lexicon": "NWL18",
+        "actual_lexicon": "NWL18",
+        "lexicon": "NWL23",
         "source": "https://woogles.io/game/SBRtWRzo?turn=22, LIM(A)S, G(AE)",
         "rack": [ 5, 10, 20 ],
         "board": [
@@ -498,7 +501,8 @@ fn main() -> error::Returns<()> {
     "#,
         r#"
       {
-        "lexicon": "NWL18",
+        "actual_lexicon": "NWL18",
+        "lexicon": "NWL23",
         "source": "https://woogles.io/game/SBRtWRzo?turn=22, MIS",
         "rack": [ 1, 5, 9, 15, 15, 18, 20 ],
         "board": [
@@ -522,7 +526,8 @@ fn main() -> error::Returns<()> {
     "#,
         r#"
       {
-        "lexicon": "NWL20",
+        "actual_lexicon": "NWL20",
+        "lexicon": "NWL23",
         "source": "https://woogles.io/game/iUsasmWy?turn=24",
         "rack": [ 1, 5, 5, 15, 19, 23, 0 ],
         "board": [
@@ -546,7 +551,8 @@ fn main() -> error::Returns<()> {
     "#,
         r#"
       {
-        "lexicon": "NWL20",
+        "actual_lexicon": "NWL20",
+        "lexicon": "NWL23",
         "source": "https://woogles.io/game/iUsasmWy?turn=25",
         "rack": [ 1, 7, 8, 9, 14, 16, 20 ],
         "board": [
@@ -570,7 +576,8 @@ fn main() -> error::Returns<()> {
     "#,
         r#"
       {
-        "lexicon": "NWL20",
+        "actual_lexicon": "NWL20",
+        "lexicon": "NWL23",
         "source": "https://woogles.io/game/iUsasmWy?turn=26",
         "rack": [ 5, 15, 0 ],
         "board": [
@@ -594,7 +601,8 @@ fn main() -> error::Returns<()> {
     "#,
         r#"
       {
-        "lexicon": "CSW19",
+        "actual_lexicon": "CSW19",
+        "lexicon": "CSW21",
         "source": "https://woogles.io/game/mQLyde5N?turn=29",
         "rack": [ 4, 9, 12, 12, 19, 20 ],
         "board": [
@@ -618,7 +626,8 @@ fn main() -> error::Returns<()> {
     "#,
         r#"
       {
-        "lexicon": "CSW19",
+        "actual_lexicon": "CSW19",
+        "lexicon": "CSW21",
         "source": "https://woogles.io/game/mQLyde5N?turn=30",
         "rack": [ 0, 5, 9, 12, 20 ],
         "board": [
@@ -642,7 +651,8 @@ fn main() -> error::Returns<()> {
     "#,
         r#"
       {
-        "lexicon": "CSW19",
+        "actual_lexicon": "CSW19",
+        "lexicon": "CSW21",
         "source": "https://woogles.io/game/mQLyde5N?turn=28",
         "rack": [ 0, 5, 5, 9, 12, 16, 20 ],
         "board": [
@@ -670,7 +680,7 @@ fn main() -> error::Returns<()> {
     // https://github.com/domino14/macondo/issues/154
     let _question = Question::from_gcg(
         &game_config::make_polish_game_config(),
-        "OSPS44",
+        "OSPS49", // actually "OSPS44",
         r"#character-encoding UTF-8
 #player1 1 ptf1559
 #player2 2 smut3k
@@ -732,7 +742,7 @@ fn main() -> error::Returns<()> {
     )?;
     let _question = Question::from_gcg(
         &game_config::make_polish_game_config(),
-        "OSPS44",
+        "OSPS49", // actually "OSPS44",
         r"#character-encoding UTF-8
 #player1 1 ptf1559
 #player2 2 smut3k
@@ -794,7 +804,7 @@ fn main() -> error::Returns<()> {
     )?;
     let _question = Question::from_gcg(
         &game_config::make_polish_game_config(),
-        "OSPS44",
+        "OSPS49", // actually "OSPS44",
         r"#character-encoding UTF-8
 #player1 1 ptf1559
 #player2 2 smut3k
@@ -856,7 +866,7 @@ fn main() -> error::Returns<()> {
     )?;
     let _question = Question::from_gcg(
         &game_config::make_polish_game_config(),
-        "OSPS44",
+        "OSPS49", // actually "OSPS44",
         r"#character-encoding UTF-8
 #player1 1 ptf1559
 #player2 2 smut3k
@@ -1047,7 +1057,7 @@ fn main() -> error::Returns<()> {
     )?;
     let question = Question::from_fen(
         &game_config::make_english_game_config(),
-        "NWL20",
+        "NWL23", // actually "NWL20",
         "5BERGS5/4PA3U5/2QAID3R5/3BEE3F2S2/1P1ET2VIATIC2/MA1TAW3c2H2/ES3IS2E2A2/AT1FOLIA4V2/LI1L1EX1E6/1N1O1D2N2Y3/1GNU2C1JETE3/2ER2OHO2N3/2O3GOY6/1INDOW1U7/4DORR7",
         "IKLMTZ",
     )?;
@@ -1063,7 +1073,7 @@ fn main() -> error::Returns<()> {
     let _ = question;
     let question = Question::from_fen(
         &game_config::make_english_game_config(),
-        "CSW19",
+        "CSW21", // actually "CSW19",
         "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA5A1/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOA1/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 353-236: +117 "AHIILMM"
         "ADENOOO",
     )?;
@@ -1072,7 +1082,7 @@ fn main() -> error::Returns<()> {
     let _ = question;
     let question = Question::from_fen(
         &game_config::make_english_game_config(),
-        "CSW19",
+        "CSW21", // actually "CSW19",
         // "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA4HA1/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOA1/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 9M H(A): +21 -96 "AIILMM"
         // "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA4HAM/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOA1/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 9M (HA)M: +20 -76 "AIILM"
         // "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA4HAM/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOAI/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 12I (mOA)I: +18 -58 "AILM"
@@ -1135,28 +1145,16 @@ fn main() -> error::Returns<()> {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
             game_config = game_config::make_english_game_config();
         }
-        "CSW19" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "NWL18" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "NWL20" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL20.kwg")?);
+        "NWL23" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
             game_config = game_config::make_english_game_config();
         }
         "ECWL" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
             game_config = game_config::make_english_game_config();
         }
-        "OSPS42" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
-            game_config = game_config::make_polish_game_config();
-        }
-        "OSPS44" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.kwg")?);
+        "OSPS49" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS49.kwg")?);
             game_config = game_config::make_polish_game_config();
         }
         "RD28" => {

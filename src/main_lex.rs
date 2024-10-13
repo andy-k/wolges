@@ -308,15 +308,14 @@ fn test_find_embedded_words<'a>(
 
 fn main() -> error::Returns<()> {
     if false {
-        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.kwg")?);
-        print_dawg(&alphabet::make_polish_alphabet(), &kwg);
+        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
+        print_dawg(&alphabet::make_english_alphabet(), &kwg);
         return Ok(());
     }
     let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
     if true {
         let alphabet = alphabet::make_english_alphabet();
-        let nwl18_kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);
-        let twl14_kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/TWL14.kwg")?);
+        let nwl23_kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
         let known_boards = [
             &[
                 1, 1, 1, 1, //
@@ -351,11 +350,11 @@ fn main() -> error::Returns<()> {
         ];
         test_find_embedded_words(
             &alphabet,
-            &nwl18_kwg,
+            &nwl23_kwg, // actually nwl18
             ["LIASERTAPGADID##KEMA##IRAIVZQAEFEGSY"],
             Some(known_boards[3]),
         )?;
-        test_find_embedded_words(&alphabet, &twl14_kwg, ["LIASERTAIDKEMAIR"], None)?;
+        test_find_embedded_words(&alphabet, &nwl23_kwg, ["LIASERTAIDKEMAIR"], None)?; // actually twl14
         test_find_embedded_words(
             &alphabet,
             &kwg,

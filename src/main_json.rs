@@ -26,7 +26,8 @@ struct Question {
 fn main() -> error::Returns<()> {
     let data = r#"
       {
-        "lexicon": "CSW19",
+        "actual_lexicon": "CSW19",
+        "lexicon": "CSW21",
         "xrack": [ 1, 3, 10, 16, 17, 18, 19 ],
         "xboard": [
           [  0,  0,  0,  0,  0,  0,  0, 18,  0,  0,  0,  8, 15, 12,  4 ],
@@ -169,19 +170,14 @@ fn main() -> error::Returns<()> {
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/super-CSW21.klv2")?);
             game_config = game_config::make_super_english_game_config();
         }
-        "CSW19" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW19.klv2")?);
+        "NWL23" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/NWL23.klv2")?);
             game_config = game_config::make_english_game_config();
         }
-        "NWL18" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/NWL18.klv2")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "NWL20" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL20.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/NWL20.klv2")?);
+        "super-NWL23" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/super-NWL23.klv2")?);
             game_config = game_config::make_english_game_config();
         }
         "ECWL" => {
@@ -189,15 +185,10 @@ fn main() -> error::Returns<()> {
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/ECWL.klv2")?);
             game_config = game_config::make_english_game_config();
         }
-        "OSPS42" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.klv2")?);
-            game_config = game_config::make_polish_game_config();
-        }
-        "OSPS44" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.klv2")?);
-            game_config = game_config::make_polish_game_config();
+        "super-ECWL" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/super-ECWL.klv2")?);
+            game_config = game_config::make_english_game_config();
         }
         _ => {
             wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
