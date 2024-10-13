@@ -324,9 +324,9 @@ fn main() -> error::Returns<()> {
             "args:
   auto
     just to test
-  english-klv english.csv english.klv
+  english-klv CSW21.csv CSW21.klv
     generate klv file (deprecated?)
-  english-klv2 english.csv english.klv2
+  english-klv2 CSW21.csv CSW21.klv2
     generate klv2 file (preferred)
   english-kwg CSW21.txt CSW21.kwg
     generate kwg file containing gaddawg
@@ -377,82 +377,10 @@ input/output files can be \"-\" (not advisable for binary files)"
 
 fn old_main() -> error::Returns<()> {
     std::fs::write(
-        "lexbin/english.klv2",
-        build_leaves(
-            Box::new(std::fs::File::open("lexsrc/english.csv")?),
-            alphabet::make_english_alphabet(),
-            build::BuildLayout::Wolges,
-        )?,
-    )?;
-    std::fs::write(
-        "lexbin/CSW21.klv2",
-        build_leaves(
-            Box::new(std::fs::File::open("lexsrc/CSW21.csv")?),
-            alphabet::make_english_alphabet(),
-            build::BuildLayout::Wolges,
-        )?,
-    )?;
-    std::fs::write(
-        "lexbin/french.klv2",
-        build_leaves(
-            Box::new(std::fs::File::open("lexsrc/french.csv")?),
-            alphabet::make_french_alphabet(),
-            build::BuildLayout::Wolges,
-        )?,
-    )?;
-    std::fs::write(
-        "lexbin/german.klv2",
-        build_leaves(
-            Box::new(std::fs::File::open("lexsrc/german.csv")?),
-            alphabet::make_german_alphabet(),
-            build::BuildLayout::Wolges,
-        )?,
-    )?;
-    std::fs::write(
-        "lexbin/norwegian.klv2",
-        build_leaves(
-            Box::new(std::fs::File::open("lexsrc/norwegian.csv")?),
-            alphabet::make_norwegian_alphabet(),
-            build::BuildLayout::Wolges,
-        )?,
-    )?;
-    std::fs::write(
-        "lexbin/english.klv2",
-        build_leaves_f32(
-            Box::new(std::fs::File::open("lexsrc/english.csv")?),
-            alphabet::make_english_alphabet(),
-            build::BuildLayout::Wolges,
-        )?,
-    )?;
-    std::fs::write(
         "lexbin/CSW21.klv2",
         build_leaves_f32(
             Box::new(std::fs::File::open("lexsrc/CSW21.csv")?),
             alphabet::make_english_alphabet(),
-            build::BuildLayout::Wolges,
-        )?,
-    )?;
-    std::fs::write(
-        "lexbin/french.klv2",
-        build_leaves_f32(
-            Box::new(std::fs::File::open("lexsrc/french.csv")?),
-            alphabet::make_french_alphabet(),
-            build::BuildLayout::Wolges,
-        )?,
-    )?;
-    std::fs::write(
-        "lexbin/german.klv2",
-        build_leaves_f32(
-            Box::new(std::fs::File::open("lexsrc/german.csv")?),
-            alphabet::make_german_alphabet(),
-            build::BuildLayout::Wolges,
-        )?,
-    )?;
-    std::fs::write(
-        "lexbin/norwegian.klv2",
-        build_leaves_f32(
-            Box::new(std::fs::File::open("lexsrc/norwegian.csv")?),
-            alphabet::make_norwegian_alphabet(),
             build::BuildLayout::Wolges,
         )?,
     )?;
@@ -558,60 +486,6 @@ fn old_main() -> error::Returns<()> {
     if true {
         let t0 = std::time::Instant::now();
         std::fs::write(
-            "lexbin/OSPS42-dawg.kwg",
-            build::build(
-                build::BuildContent::DawgOnly,
-                build::BuildLayout::Wolges,
-                &read_machine_words(
-                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
-                    &std::fs::read_to_string("lexsrc/OSPS42.txt")?,
-                )?,
-            )?,
-        )?;
-        println!(
-            "{:?} for reading+building+writing polish dawgonly",
-            t0.elapsed()
-        );
-    }
-    if true {
-        let t0 = std::time::Instant::now();
-        std::fs::write(
-            "lexbin/OSPS42.kwg",
-            build::build(
-                build::BuildContent::Gaddawg,
-                build::BuildLayout::Wolges,
-                &read_machine_words(
-                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
-                    &std::fs::read_to_string("lexsrc/OSPS42.txt")?,
-                )?,
-            )?,
-        )?;
-        println!(
-            "{:?} for reading+building+writing polish gaddawg",
-            t0.elapsed()
-        );
-    }
-    if true {
-        let t0 = std::time::Instant::now();
-        std::fs::write(
-            "lexbin/OSPS44-dawg.kwg",
-            build::build(
-                build::BuildContent::DawgOnly,
-                build::BuildLayout::Wolges,
-                &read_machine_words(
-                    &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
-                    &std::fs::read_to_string("lexsrc/OSPS44.txt")?,
-                )?,
-            )?,
-        )?;
-        println!(
-            "{:?} for reading+building+writing polish dawgonly",
-            t0.elapsed()
-        );
-    }
-    if true {
-        let t0 = std::time::Instant::now();
-        std::fs::write(
             "lexbin/OSPS44.kwg",
             build::build(
                 build::BuildContent::Gaddawg,
@@ -627,17 +501,6 @@ fn old_main() -> error::Returns<()> {
             t0.elapsed()
         );
     }
-    std::fs::write(
-        "lexbin/TWL14.kwg",
-        build::build(
-            build::BuildContent::Gaddawg,
-            build::BuildLayout::Wolges,
-            &read_machine_words(
-                &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
-                &std::fs::read_to_string("lexsrc/TWL14.txt")?,
-            )?,
-        )?,
-    )?;
 
     if true {
         let english_alphabet = alphabet::make_english_alphabet();
@@ -763,33 +626,6 @@ fn old_main() -> error::Returns<()> {
         println!("{:?} for exporting many files", t0.elapsed());
         if true {
             let t0 = std::time::Instant::now();
-            let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
-            println!("{:?} for rereading OSPS42.kwg", t0.elapsed());
-            let t0 = std::time::Instant::now();
-            std::fs::write(
-                "lexbin/OSPS42.dawg",
-                lexport::to_macondo(
-                    &kwg,
-                    &polish_alphabet,
-                    "OSPS42",
-                    lexport::MacondoFormat::Dawg,
-                ),
-            )?;
-            println!("{:?} for exporting OSPS42 dawg", t0.elapsed());
-            let t0 = std::time::Instant::now();
-            std::fs::write(
-                "lexbin/OSPS42.gaddag",
-                lexport::to_macondo(
-                    &kwg,
-                    &polish_alphabet,
-                    "OSPS42",
-                    lexport::MacondoFormat::Gaddag,
-                ),
-            )?;
-            println!("{:?} for exporting OSPS42 gaddag", t0.elapsed());
-        }
-        if true {
-            let t0 = std::time::Instant::now();
             let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.kwg")?);
             println!("{:?} for rereading OSPS44.kwg", t0.elapsed());
             let t0 = std::time::Instant::now();
@@ -839,17 +675,12 @@ fn old_main() -> error::Returns<()> {
             &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
             &std::fs::read_to_string("lexsrc/NWL20.txt")?,
         )?;
-        let v_twl14 = read_machine_words(
-            &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
-            &std::fs::read_to_string("lexsrc/TWL14.txt")?,
-        )?;
         let mut v = Vec::<bites::Bites>::new();
         v.extend_from_slice(&v_csw21);
         v.extend_from_slice(&v_csw19);
         v.extend_from_slice(&v_ecwl);
         v.extend_from_slice(&v_nwl18);
         v.extend_from_slice(&v_nwl20);
-        v.extend_from_slice(&v_twl14);
         v.sort_unstable();
         v.dedup();
         let v = v.into_boxed_slice();
@@ -859,13 +690,11 @@ fn old_main() -> error::Returns<()> {
         let mut v_ecwl_bits = vec![0u8; v_bits_bytes];
         let mut v_nwl18_bits = vec![0u8; v_bits_bytes];
         let mut v_nwl20_bits = vec![0u8; v_bits_bytes];
-        let mut v_twl14_bits = vec![0u8; v_bits_bytes];
         let mut p_csw21 = v_csw21.len();
         let mut p_csw19 = v_csw19.len();
         let mut p_ecwl = v_ecwl.len();
         let mut p_nwl18 = v_nwl18.len();
         let mut p_nwl20 = v_nwl20.len();
-        let mut p_twl14 = v_twl14.len();
         for i in (0..v.len()).rev() {
             if p_csw21 > 0 && v[i] == v_csw21[p_csw21 - 1] {
                 v_csw21_bits[i / 8] |= 1 << (i % 8);
@@ -887,10 +716,6 @@ fn old_main() -> error::Returns<()> {
                 v_nwl20_bits[i / 8] |= 1 << (i % 8);
                 p_nwl20 -= 1;
             }
-            if p_twl14 > 0 && v[i] == v_twl14[p_twl14 - 1] {
-                v_twl14_bits[i / 8] |= 1 << (i % 8);
-                p_twl14 -= 1;
-            }
         }
         std::fs::write(
             "lexbin/allgdw.kwg",
@@ -901,7 +726,6 @@ fn old_main() -> error::Returns<()> {
         std::fs::write("lexbin/all-ECWL.kwi", v_ecwl_bits)?;
         std::fs::write("lexbin/all-NWL18.kwi", v_nwl18_bits)?;
         std::fs::write("lexbin/all-NWL20.kwi", v_nwl20_bits)?;
-        std::fs::write("lexbin/all-TWL14.kwi", v_twl14_bits)?;
 
         let english_alphabet = alphabet::make_english_alphabet();
         let mut word_prob = prob::WordProbability::new(&english_alphabet);
@@ -970,7 +794,6 @@ fn old_main() -> error::Returns<()> {
         let v_ecwl_bits = std::fs::read("lexbin/all-ECWL.kwi")?;
         let v_nwl18_bits = std::fs::read("lexbin/all-NWL18.kwi")?;
         let v_nwl20_bits = std::fs::read("lexbin/all-NWL20.kwi")?;
-        let v_twl14_bits = std::fs::read("lexbin/all-TWL14.kwi")?;
         let v_probability_indexes = std::fs::read("lexbin/all-probidx.kwp")?;
         let mut out_vec = Vec::new();
         let dawg_root = kwg[0].arc_index();
@@ -999,9 +822,6 @@ fn old_main() -> error::Returns<()> {
             }
             if v_nwl20_bits[byte_index] & bit != 0 {
                 print!(" NWL20");
-            }
-            if v_twl14_bits[byte_index] & bit != 0 {
-                print!(" TWL14");
             }
             print!(" wp={}", word_prob.count_ways(&out_vec));
             print!(

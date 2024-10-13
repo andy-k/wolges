@@ -45,55 +45,16 @@ fn main() -> error::Returns<()> {
     } else {
         kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?)
     };
-    /*
-    let _klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv2")?);
-    */
     let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv2")?);
     /*
-    let _ = kwg;
     let _ = klv;
     let klv = std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES));
-    let _ = klv;
-    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.klv2")?);
-    let kwg = if jumbled {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.kad")?)
-    } else {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/DISC2-LP.kwg")?)
-    };
     */
     let game_config = &if jumbled {
         game_config::make_jumbled_english_game_config()
     } else {
         game_config::make_english_game_config()
     };
-    /*
-    let _ = game_config;
-    let game_config = &if jumbled {
-        game_config::make_jumbled_punctured_english_game_config()
-    } else {
-        game_config::make_punctured_english_game_config()
-    };
-    let _ = game_config;
-    let game_config = &if jumbled {
-        game_config::make_jumbled_super_english_game_config()
-    } else {
-        game_config::make_super_english_game_config()
-    };
-    let _ = game_config;
-    let game_config = &if jumbled {
-        game_config::make_jumbled_catalan_game_config()
-    } else {
-        game_config::make_catalan_game_config()
-    };
-    let _ = game_config;
-    let _game_config = &if jumbled {
-        game_config::make_jumbled_super_catalan_game_config()
-    } else {
-        game_config::make_super_catalan_game_config()
-    };
-    //let _ = game_config;
-    //let game_config = &game_config::make_hong_kong_english_game_config();
-    */
     let mut fen_parser =
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);

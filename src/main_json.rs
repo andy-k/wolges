@@ -124,7 +124,7 @@ fn main() -> error::Returns<()> {
  [0, 1, 18, 0, 15, 14, 25, 0, 4, 9, 0, 8, 15, 0, 16, 8, 15, 0, 1, 20, 0]
 
           ],
-          "lexicon": "CSW21+super",
+          "lexicon": "super-CSW21",
           "count": 15
       }
     "#;
@@ -164,39 +164,39 @@ fn main() -> error::Returns<()> {
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv2")?);
             game_config = game_config::make_english_game_config();
         }
-        "CSW21+super" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/super-CSW21.kwg")?);
+        "super-CSW21" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
             klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/super-CSW21.klv2")?);
             game_config = game_config::make_super_english_game_config();
         }
         "CSW19" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW19.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv2")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW19.klv2")?);
             game_config = game_config::make_english_game_config();
         }
         "NWL18" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL18.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv2")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/NWL18.klv2")?);
             game_config = game_config::make_english_game_config();
         }
         "NWL20" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL20.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv2")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/NWL20.klv2")?);
             game_config = game_config::make_english_game_config();
         }
         "ECWL" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/english.klv2")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/ECWL.klv2")?);
             game_config = game_config::make_english_game_config();
         }
         "OSPS42" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/OSPS42.klv2")?);
             game_config = game_config::make_polish_game_config();
         }
         "OSPS44" => {
             kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/OSPS44.klv2")?);
             game_config = game_config::make_polish_game_config();
         }
         _ => {

@@ -1540,8 +1540,8 @@ fn main() -> error::Returns<()> {
     if args.len() <= 1 {
         println!(
             "args:
-  english-klv english.klv english.csv
-  english-klv english.klv2 english.csv
+  english-klv CSW21.klv CSW21.csv
+  english-klv CSW21.klv2 CSW21.csv
     read klv/klv2 file
   english-kwg CSW21.kwg CSW21.txt
   english-kwg CSW21.kad CSW21.txt
@@ -1554,9 +1554,9 @@ fn main() -> error::Returns<()> {
     read kwg file (dawg) by probability (output format subject to changes)
   english-prob word [word...]
     show raw probability
-  english-klv-anagram- english.klv2 - A?AC
-  english-klv-anagram english.klv2 - A?AC
-  english-klv-anagram+ english.klv2 - A?AC
+  english-klv-anagram- CSW21.klv2 - A?AC
+  english-klv-anagram CSW21.klv2 - A?AC
+  english-klv-anagram+ CSW21.klv2 - A?AC
     list all leaves with subanagram, anagram, or superanagram
   english-kwg-anagram- CSW21.kwg - A?AC
   english-kwg-anagram CSW21.kwg - A?AC
@@ -1580,7 +1580,7 @@ fn main() -> error::Returns<()> {
     example for i7-8700B (192 kB, 6 cores, 8-way set assoc): 64 8 64.
   kwg-hitcheck-gaddag CSW21.kwg cls csa ncs outfile
     ditto for gaddag.
-  quackle-make-superleaves english.klv superleaves
+  quackle-make-superleaves CSW21.klv superleaves
     read klv/klv2 file, save quackle superleaves (english/french)
   quackle-superleaves superleaves something.csv
     read quackle superleaves (english/french)
