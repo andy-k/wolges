@@ -1142,7 +1142,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     break;
                 }
                 let tile = matching_bits.trailing_zeros() as u8;
-                if matching_bits & (matching_bits - 1) == 0 {
+                if matching_bits.is_power_of_two() {
                     // case 1: only one tile fits.
                     // consume the square and the tile.
                     // rack_bits will turn off if the tile is depleted.
@@ -1152,7 +1152,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                         & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64)) as u64;
                     // fall-through to case 2 (assume the optimized asm does not recheck the condition).
                 }
-                if matching_bits & (matching_bits - 1) == 0
+                if matching_bits.is_power_of_two()
                     || matching_bits & env.params.alphabet.same_score_tile_bits(tile)
                         == matching_bits
                 {
@@ -1247,7 +1247,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     break;
                 }
                 let tile = matching_bits.trailing_zeros() as u8;
-                if matching_bits & (matching_bits - 1) == 0 {
+                if matching_bits.is_power_of_two() {
                     // case 1: only one tile fits.
                     // consume the square and the tile.
                     // rack_bits will turn off if the tile is depleted.
@@ -1257,7 +1257,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                         & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64)) as u64;
                     // fall-through to case 2 (assume the optimized asm does not recheck the condition).
                 }
-                if matching_bits & (matching_bits - 1) == 0
+                if matching_bits.is_power_of_two()
                     || matching_bits & env.params.alphabet.same_score_tile_bits(tile)
                         == matching_bits
                 {
@@ -2497,8 +2497,8 @@ impl KurniaMoveGenerator {
 
         let can_accept = |best_possible_equity: f32| {
             let borrowed = found_moves.borrow();
-            return !(borrowed.len() >= params.max_gen
-                && borrowed.peek().unwrap().equity >= best_possible_equity);
+            !(borrowed.len() >= params.max_gen
+                && borrowed.peek().unwrap().equity >= best_possible_equity)
         };
 
         for _ in kurnia_gen_place_moves_iter(
@@ -2629,8 +2629,8 @@ impl KurniaMoveGenerator {
 
         let can_accept = |best_possible_equity: f32| {
             let borrowed = found_moves.borrow();
-            return !(borrowed.len() >= params.max_gen
-                && borrowed.peek().unwrap().equity >= best_possible_equity);
+            !(borrowed.len() >= params.max_gen
+                && borrowed.peek().unwrap().equity >= best_possible_equity)
         };
 
         for _ in kurnia_gen_place_moves_iter(
