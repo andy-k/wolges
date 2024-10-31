@@ -1394,6 +1394,112 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?;
                 Ok(true)
             }
+            "-wmp-words" => {
+                let alphabet = make_alphabet();
+                let alphabet_label = &WolgesAlphabetLabel {
+                    alphabet: &alphabet,
+                };
+
+                // wmp: olaugh's wordmap from jvc56/MAGPIE.
+                let wmp_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if wmp_bytes.len() < 12 {
+                    return Err("out of bounds".into());
+                }
+
+                let mut ret = String::new();
+
+                let min_len = wmp_bytes[2];
+                let max_len = wmp_bytes[3];
+                let mut r = 12;
+                for len in min_len..=max_len {
+                    if wmp_bytes.len() < r + 4 {
+                        return Err("out of bounds".into());
+                    }
+                    let wmp_bylen_num_word_buckets = wmp_bytes[r] as u32
+                        | (wmp_bytes[r + 1] as u32) << 8
+                        | (wmp_bytes[r + 2] as u32) << 16
+                        | (wmp_bytes[r + 3] as u32) << 24;
+                    r += 4 * (2 + wmp_bylen_num_word_buckets as usize);
+                    if wmp_bytes.len() < r + 4 {
+                        return Err("out of bounds".into());
+                    }
+                    let wmp_bylen_num_word_entries = wmp_bytes[r] as u32
+                        | (wmp_bytes[r + 1] as u32) << 8
+                        | (wmp_bytes[r + 2] as u32) << 16
+                        | (wmp_bytes[r + 3] as u32) << 24;
+                    r += 4 + 28 * wmp_bylen_num_word_entries as usize;
+                    if wmp_bytes.len() < r + 4 {
+                        return Err("out of bounds".into());
+                    }
+                    let wmp_bylen_num_words = wmp_bytes[r] as u32
+                        | (wmp_bytes[r + 1] as u32) << 8
+                        | (wmp_bytes[r + 2] as u32) << 16
+                        | (wmp_bytes[r + 3] as u32) << 24;
+                    r += 4;
+                    for _ in 0..wmp_bylen_num_words {
+                        if wmp_bytes.len() < r + len as usize {
+                            return Err("out of bounds".into());
+                        }
+                        for _ in 0..len {
+                            alphabet_label.label(&mut ret, wmp_bytes[r])?;
+                            r += 1;
+                        }
+                        ret.push('\n');
+                    }
+
+                    if wmp_bytes.len() < r + 4 {
+                        return Err("out of bounds".into());
+                    }
+                    let wmp_bylen_num_blank_buckets = wmp_bytes[r] as u32
+                        | (wmp_bytes[r + 1] as u32) << 8
+                        | (wmp_bytes[r + 2] as u32) << 16
+                        | (wmp_bytes[r + 3] as u32) << 24;
+                    r += 4 * (2 + wmp_bylen_num_blank_buckets as usize);
+                    if wmp_bytes.len() < r + 4 {
+                        return Err("out of bounds".into());
+                    }
+                    let wmp_bylen_num_blank_entries = wmp_bytes[r] as u32
+                        | (wmp_bytes[r + 1] as u32) << 8
+                        | (wmp_bytes[r + 2] as u32) << 16
+                        | (wmp_bytes[r + 3] as u32) << 24;
+                    r += 4 + 28 * wmp_bylen_num_blank_entries as usize;
+
+                    if wmp_bytes.len() < r + 4 {
+                        return Err("out of bounds".into());
+                    }
+                    let wmp_bylen_num_double_blank_buckets = wmp_bytes[r] as u32
+                        | (wmp_bytes[r + 1] as u32) << 8
+                        | (wmp_bytes[r + 2] as u32) << 16
+                        | (wmp_bytes[r + 3] as u32) << 24;
+                    r += 4 * (2 + wmp_bylen_num_double_blank_buckets as usize);
+                    if wmp_bytes.len() < r + 4 {
+                        return Err("out of bounds".into());
+                    }
+                    let wmp_bylen_num_double_blank_entries = wmp_bytes[r] as u32
+                        | (wmp_bytes[r + 1] as u32) << 8
+                        | (wmp_bytes[r + 2] as u32) << 16
+                        | (wmp_bytes[r + 3] as u32) << 24;
+                    r += 4 + 28 * wmp_bylen_num_double_blank_entries as usize;
+                    if wmp_bytes.len() < r + 4 {
+                        return Err("out of bounds".into());
+                    }
+                    let wmp_bylen_num_blank_pairs = wmp_bytes[r] as u32
+                        | (wmp_bytes[r + 1] as u32) << 8
+                        | (wmp_bytes[r + 2] as u32) << 16
+                        | (wmp_bytes[r + 3] as u32) << 24;
+                    r += 4 + 2 * wmp_bylen_num_blank_pairs as usize;
+                }
+
+                if wmp_bytes.len() < r {
+                    return Err("out of bounds".into());
+                }
+                if wmp_bytes.len() != r {
+                    return Err("incorrect file size".into());
+                }
+
+                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                Ok(true)
+            }
             _ => Ok(false),
         },
         None => Ok(false),
@@ -1568,6 +1674,8 @@ fn main() -> error::Returns<()> {
     read .ort (format subject to change)
   english-make-q2-ort something.csv something.ort num_buckets
     generate .ort with the given num_buckets (ideally prime eg 5297687)
+  english-wmp-words something.wmp something.txt
+    read .wmp words (format subject to change)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, decimal)
   klv-kwg-extract CSW21.klv2 racks.kwg
