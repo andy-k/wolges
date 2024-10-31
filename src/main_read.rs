@@ -193,6 +193,18 @@ impl AlphabetLabel for WolgesAlphabetLabel<'_> {
     }
 }
 
+struct WolgesAlphabetLabelAllowBlank<'a> {
+    alphabet: &'a alphabet::Alphabet,
+}
+
+impl AlphabetLabel for WolgesAlphabetLabelAllowBlank<'_> {
+    #[inline(always)]
+    fn label(&self, s: &mut String, tile: u8) -> error::Returns<()> {
+        s.push_str(self.alphabet.of_rack(tile).ok_or("invalid tile")?);
+        Ok(())
+    }
+}
+
 struct LexpertAlphabetLabel {}
 
 impl AlphabetLabel for LexpertAlphabetLabel {
@@ -1394,9 +1406,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?;
                 Ok(true)
             }
-            "-wmp-words" => {
+            "-wmp" | "-wmp-words" => {
+                let words_only = args1_suffix == "-wmp-words";
                 let alphabet = make_alphabet();
                 let alphabet_label = &WolgesAlphabetLabel {
+                    alphabet: &alphabet,
+                };
+                let alphabet_label_allow_blank = &WolgesAlphabetLabelAllowBlank {
                     alphabet: &alphabet,
                 };
 
@@ -1419,7 +1435,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | (wmp_bytes[r + 1] as u32) << 8
                         | (wmp_bytes[r + 2] as u32) << 16
                         | (wmp_bytes[r + 3] as u32) << 24;
-                    r += 4 * (2 + wmp_bylen_num_word_buckets as usize);
+                    r += 4;
+                    let wmp_bylen_word_buckets_ofs = r;
+                    r += 4 * (1 + wmp_bylen_num_word_buckets as usize);
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
@@ -1427,7 +1445,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | (wmp_bytes[r + 1] as u32) << 8
                         | (wmp_bytes[r + 2] as u32) << 16
                         | (wmp_bytes[r + 3] as u32) << 24;
-                    r += 4 + 28 * wmp_bylen_num_word_entries as usize;
+                    r += 4;
+                    let wmp_bylen_word_entries_ofs = r;
+                    r += 28 * wmp_bylen_num_word_entries as usize;
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
@@ -1436,16 +1456,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | (wmp_bytes[r + 2] as u32) << 16
                         | (wmp_bytes[r + 3] as u32) << 24;
                     r += 4;
-                    for _ in 0..wmp_bylen_num_words {
-                        if wmp_bytes.len() < r + len as usize {
-                            return Err("out of bounds".into());
-                        }
-                        for _ in 0..len {
-                            alphabet_label.label(&mut ret, wmp_bytes[r])?;
-                            r += 1;
-                        }
-                        ret.push('\n');
-                    }
+                    let wmp_bylen_words_ofs = r;
+                    r += (len as u32 * wmp_bylen_num_words) as usize;
 
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
@@ -1454,7 +1466,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | (wmp_bytes[r + 1] as u32) << 8
                         | (wmp_bytes[r + 2] as u32) << 16
                         | (wmp_bytes[r + 3] as u32) << 24;
-                    r += 4 * (2 + wmp_bylen_num_blank_buckets as usize);
+                    r += 4;
+                    let wmp_bylen_blank_buckets_ofs = r;
+                    r += 4 * (1 + wmp_bylen_num_blank_buckets as usize);
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
@@ -1462,7 +1476,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | (wmp_bytes[r + 1] as u32) << 8
                         | (wmp_bytes[r + 2] as u32) << 16
                         | (wmp_bytes[r + 3] as u32) << 24;
-                    r += 4 + 28 * wmp_bylen_num_blank_entries as usize;
+                    r += 4;
+                    let wmp_bylen_blank_entries_ofs = r;
+                    r += 28 * wmp_bylen_num_blank_entries as usize;
 
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
@@ -1471,7 +1487,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | (wmp_bytes[r + 1] as u32) << 8
                         | (wmp_bytes[r + 2] as u32) << 16
                         | (wmp_bytes[r + 3] as u32) << 24;
-                    r += 4 * (2 + wmp_bylen_num_double_blank_buckets as usize);
+                    r += 4;
+                    let wmp_bylen_double_blank_buckets_ofs = r;
+                    r += 4 * (1 + wmp_bylen_num_double_blank_buckets as usize);
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
@@ -1479,7 +1497,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | (wmp_bytes[r + 1] as u32) << 8
                         | (wmp_bytes[r + 2] as u32) << 16
                         | (wmp_bytes[r + 3] as u32) << 24;
-                    r += 4 + 28 * wmp_bylen_num_double_blank_entries as usize;
+                    r += 4;
+                    let wmp_bylen_double_blank_entries_ofs = r;
+                    r += 28 * wmp_bylen_num_double_blank_entries as usize;
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
@@ -1487,12 +1507,239 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | (wmp_bytes[r + 1] as u32) << 8
                         | (wmp_bytes[r + 2] as u32) << 16
                         | (wmp_bytes[r + 3] as u32) << 24;
-                    r += 4 + 2 * wmp_bylen_num_blank_pairs as usize;
+                    r += 4;
+                    let wmp_bylen_blank_pairs_ofs = r;
+                    r += 2 * wmp_bylen_num_blank_pairs as usize;
+
+                    if wmp_bytes.len() < r {
+                        return Err("out of bounds".into());
+                    }
+                    if words_only {
+                        let mut r = wmp_bylen_words_ofs;
+                        for _ in 0..wmp_bylen_num_words {
+                            for _ in 0..len {
+                                alphabet_label.label(&mut ret, wmp_bytes[r])?;
+                                r += 1;
+                            }
+                            ret.push('\n');
+                        }
+                    } else {
+                        writeln!(ret, "\nlength: {len}")?;
+
+                        // if there are n buckets, there are n+1 indexes:
+                        // [0==s0, e0==s1, e1==s2, ..., en==num_entries].
+                        writeln!(ret, "\nword buckets: {wmp_bylen_num_word_buckets}")?;
+                        for bucket_idx in 0..wmp_bylen_num_word_buckets {
+                            let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
+                            let bucket_start_idx = wmp_bytes[p] as u32
+                                | (wmp_bytes[p + 1] as u32) << 8
+                                | (wmp_bytes[p + 2] as u32) << 16
+                                | (wmp_bytes[p + 3] as u32) << 24;
+                            p += 4;
+                            let bucket_end_idx = wmp_bytes[p] as u32
+                                | (wmp_bytes[p + 1] as u32) << 8
+                                | (wmp_bytes[p + 2] as u32) << 16
+                                | (wmp_bytes[p + 3] as u32) << 24;
+                            if bucket_start_idx != bucket_end_idx {
+                                writeln!(ret, "bucket {bucket_idx}/{wmp_bylen_num_word_buckets}:")?;
+                                for entry_idx in bucket_start_idx..bucket_end_idx {
+                                    p = wmp_bylen_word_entries_ofs + entry_idx as usize * 28 + 8;
+                                    // this is len * index, in bytes.
+                                    let initial_ofs = wmp_bytes[p] as u32
+                                        | (wmp_bytes[p + 1] as u32) << 8
+                                        | (wmp_bytes[p + 2] as u32) << 16
+                                        | (wmp_bytes[p + 3] as u32) << 24;
+                                    p += 4;
+                                    let num_elts = wmp_bytes[p] as u32
+                                        | (wmp_bytes[p + 1] as u32) << 8
+                                        | (wmp_bytes[p + 2] as u32) << 16
+                                        | (wmp_bytes[p + 3] as u32) << 24;
+                                    p += 4;
+                                    let quotient = (wmp_bytes[p] as u32
+                                        | (wmp_bytes[p + 1] as u32) << 8
+                                        | (wmp_bytes[p + 2] as u32) << 16
+                                        | (wmp_bytes[p + 3] as u32) << 24)
+                                        as u128
+                                        | ((wmp_bytes[p + 4] as u32
+                                            | (wmp_bytes[p + 5] as u32) << 8
+                                            | (wmp_bytes[p + 6] as u32) << 16
+                                            | (wmp_bytes[p + 7] as u32) << 24)
+                                            as u128)
+                                            << 32
+                                        | ((wmp_bytes[p + 8] as u32
+                                            | (wmp_bytes[p + 9] as u32) << 8
+                                            | (wmp_bytes[p + 10] as u32) << 16
+                                            | (wmp_bytes[p + 11] as u32) << 24)
+                                            as u128)
+                                            << 64;
+                                    let bit_rack = quotient * wmp_bylen_num_word_buckets as u128
+                                        + bucket_idx as u128;
+                                    write!(ret, "  {bit_rack:032x} ")?;
+                                    for i in 0..32 {
+                                        for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
+                                            alphabet_label.label(&mut ret, i)?;
+                                        }
+                                    }
+                                    ret.push_str(" =");
+                                    p = wmp_bylen_words_ofs + initial_ofs as usize;
+                                    for _ in 0..num_elts {
+                                        ret.push(' ');
+                                        for _ in 0..len {
+                                            alphabet_label.label(&mut ret, wmp_bytes[p])?;
+                                            p += 1;
+                                        }
+                                    }
+                                    ret.push('\n');
+                                }
+                            }
+                        }
+
+                        writeln!(ret, "\nblank buckets: {wmp_bylen_num_blank_buckets}")?;
+                        for bucket_idx in 0..wmp_bylen_num_blank_buckets {
+                            let mut p = wmp_bylen_blank_buckets_ofs + bucket_idx as usize * 4;
+                            let bucket_start_idx = wmp_bytes[p] as u32
+                                | (wmp_bytes[p + 1] as u32) << 8
+                                | (wmp_bytes[p + 2] as u32) << 16
+                                | (wmp_bytes[p + 3] as u32) << 24;
+                            p += 4;
+                            let bucket_end_idx = wmp_bytes[p] as u32
+                                | (wmp_bytes[p + 1] as u32) << 8
+                                | (wmp_bytes[p + 2] as u32) << 16
+                                | (wmp_bytes[p + 3] as u32) << 24;
+                            if bucket_start_idx != bucket_end_idx {
+                                writeln!(
+                                    ret,
+                                    "bucket {bucket_idx}/{wmp_bylen_num_blank_buckets}:"
+                                )?;
+                                for entry_idx in bucket_start_idx..bucket_end_idx {
+                                    p = wmp_bylen_blank_entries_ofs + entry_idx as usize * 28 + 8;
+                                    // this is 2 * index, in bytes.
+                                    let bits = (wmp_bytes[p] as u32
+                                        | (wmp_bytes[p + 1] as u32) << 8
+                                        | (wmp_bytes[p + 2] as u32) << 16
+                                        | (wmp_bytes[p + 3] as u32) << 24)
+                                        as u64
+                                        | ((wmp_bytes[p + 4] as u32
+                                            | (wmp_bytes[p + 5] as u32) << 8
+                                            | (wmp_bytes[p + 6] as u32) << 16
+                                            | (wmp_bytes[p + 7] as u32) << 24)
+                                            as u64)
+                                            << 32;
+                                    p += 8;
+                                    let quotient = (wmp_bytes[p] as u32
+                                        | (wmp_bytes[p + 1] as u32) << 8
+                                        | (wmp_bytes[p + 2] as u32) << 16
+                                        | (wmp_bytes[p + 3] as u32) << 24)
+                                        as u128
+                                        | ((wmp_bytes[p + 4] as u32
+                                            | (wmp_bytes[p + 5] as u32) << 8
+                                            | (wmp_bytes[p + 6] as u32) << 16
+                                            | (wmp_bytes[p + 7] as u32) << 24)
+                                            as u128)
+                                            << 32
+                                        | ((wmp_bytes[p + 8] as u32
+                                            | (wmp_bytes[p + 9] as u32) << 8
+                                            | (wmp_bytes[p + 10] as u32) << 16
+                                            | (wmp_bytes[p + 11] as u32) << 24)
+                                            as u128)
+                                            << 64;
+                                    let bit_rack = quotient * wmp_bylen_num_blank_buckets as u128
+                                        + bucket_idx as u128;
+                                    write!(ret, "  {bit_rack:032x} ")?;
+                                    for i in 0..32 {
+                                        for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
+                                            alphabet_label_allow_blank.label(&mut ret, i)?;
+                                        }
+                                    }
+                                    ret.push_str(" = ");
+                                    for i in 0..64 {
+                                        if bits & (1 << i) != 0 {
+                                            alphabet_label.label(&mut ret, i)?;
+                                        }
+                                    }
+                                    ret.push('\n');
+                                }
+                            }
+                        }
+
+                        writeln!(
+                            ret,
+                            "\ndouble blank buckets: {wmp_bylen_num_double_blank_buckets}"
+                        )?;
+                        for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
+                            let mut p =
+                                wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
+                            let bucket_start_idx = wmp_bytes[p] as u32
+                                | (wmp_bytes[p + 1] as u32) << 8
+                                | (wmp_bytes[p + 2] as u32) << 16
+                                | (wmp_bytes[p + 3] as u32) << 24;
+                            p += 4;
+                            let bucket_end_idx = wmp_bytes[p] as u32
+                                | (wmp_bytes[p + 1] as u32) << 8
+                                | (wmp_bytes[p + 2] as u32) << 16
+                                | (wmp_bytes[p + 3] as u32) << 24;
+                            if bucket_start_idx != bucket_end_idx {
+                                writeln!(
+                                    ret,
+                                    "bucket {bucket_idx}/{wmp_bylen_num_double_blank_buckets}:"
+                                )?;
+                                for entry_idx in bucket_start_idx..bucket_end_idx {
+                                    p = wmp_bylen_double_blank_entries_ofs
+                                        + entry_idx as usize * 28
+                                        + 8;
+                                    // this is 2 * index, in bytes.
+                                    let initial_ofs = wmp_bytes[p] as u32
+                                        | (wmp_bytes[p + 1] as u32) << 8
+                                        | (wmp_bytes[p + 2] as u32) << 16
+                                        | (wmp_bytes[p + 3] as u32) << 24;
+                                    p += 4;
+                                    let num_elts = wmp_bytes[p] as u32
+                                        | (wmp_bytes[p + 1] as u32) << 8
+                                        | (wmp_bytes[p + 2] as u32) << 16
+                                        | (wmp_bytes[p + 3] as u32) << 24;
+                                    p += 4;
+                                    let quotient = (wmp_bytes[p] as u32
+                                        | (wmp_bytes[p + 1] as u32) << 8
+                                        | (wmp_bytes[p + 2] as u32) << 16
+                                        | (wmp_bytes[p + 3] as u32) << 24)
+                                        as u128
+                                        | ((wmp_bytes[p + 4] as u32
+                                            | (wmp_bytes[p + 5] as u32) << 8
+                                            | (wmp_bytes[p + 6] as u32) << 16
+                                            | (wmp_bytes[p + 7] as u32) << 24)
+                                            as u128)
+                                            << 32
+                                        | ((wmp_bytes[p + 8] as u32
+                                            | (wmp_bytes[p + 9] as u32) << 8
+                                            | (wmp_bytes[p + 10] as u32) << 16
+                                            | (wmp_bytes[p + 11] as u32) << 24)
+                                            as u128)
+                                            << 64;
+                                    let bit_rack = quotient
+                                        * wmp_bylen_num_double_blank_buckets as u128
+                                        + bucket_idx as u128;
+                                    write!(ret, "  {bit_rack:032x} ")?;
+                                    for i in 0..32 {
+                                        for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
+                                            alphabet_label_allow_blank.label(&mut ret, i)?;
+                                        }
+                                    }
+                                    ret.push_str(" =");
+                                    p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
+                                    for _ in 0..num_elts {
+                                        ret.push(' ');
+                                        for _ in 0..2 {
+                                            alphabet_label.label(&mut ret, wmp_bytes[p])?;
+                                            p += 1;
+                                        }
+                                    }
+                                    ret.push('\n');
+                                }
+                            }
+                        }
+                    }
                 }
 
-                if wmp_bytes.len() < r {
-                    return Err("out of bounds".into());
-                }
                 if wmp_bytes.len() != r {
                     return Err("incorrect file size".into());
                 }
@@ -1676,6 +1923,8 @@ fn main() -> error::Returns<()> {
     generate .ort with the given num_buckets (ideally prime eg 5297687)
   english-wmp-words something.wmp something.txt
     read .wmp words (format subject to change)
+  english-wmp something.wmp something.txt
+    read .wmp (format subject to change)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, decimal)
   klv-kwg-extract CSW21.klv2 racks.kwg
