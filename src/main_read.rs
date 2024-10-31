@@ -1426,7 +1426,31 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
 
                 let min_len = wmp_bytes[2];
                 let max_len = wmp_bytes[3];
-                let mut r = 12;
+                let mut r = 4;
+                let max_word_lookup_results = wmp_bytes[r] as u32
+                    | (wmp_bytes[r + 1] as u32) << 8
+                    | (wmp_bytes[r + 2] as u32) << 16
+                    | (wmp_bytes[r + 3] as u32) << 24;
+                r += 4;
+                let max_blank_pair_results = wmp_bytes[r] as u32
+                    | (wmp_bytes[r + 1] as u32) << 8
+                    | (wmp_bytes[r + 2] as u32) << 16
+                    | (wmp_bytes[r + 3] as u32) << 24;
+                r += 4;
+                if !words_only {
+                    writeln!(
+                        ret,
+                        "wmp {}.{} len {}..{} max_word_lookup_results={} max_blank_pair_results={}",
+                        wmp_bytes[0],
+                        wmp_bytes[1],
+                        min_len,
+                        max_len,
+                        max_word_lookup_results,
+                        max_blank_pair_results
+                    )?;
+                }
+                let mut expected_max_word_lookup_results = 0;
+                let mut expected_max_blank_pair_results = 0;
                 for len in min_len..=max_len {
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
@@ -1725,18 +1749,98 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         }
                                     }
                                     ret.push_str(" =");
+                                    let mut this_word_lookup_results = 0u32;
                                     p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
                                     for _ in 0..num_elts {
                                         ret.push(' ');
+                                        let mut unblanked_bit_rack = bit_rack & !0xf;
                                         for _ in 0..2 {
-                                            alphabet_label.label(&mut ret, wmp_bytes[p])?;
+                                            let tile = wmp_bytes[p];
+                                            unblanked_bit_rack += 1 << (4 * tile);
+                                            alphabet_label.label(&mut ret, tile)?;
                                             p += 1;
                                         }
+
+                                        {
+                                            // shadow all the variables inside here.
+                                            let mut sought_quotient = unblanked_bit_rack
+                                                / wmp_bylen_num_word_buckets as u128;
+                                            let bucket_idx = (unblanked_bit_rack
+                                                % wmp_bylen_num_word_buckets as u128)
+                                                as u32;
+                                            // write something if ZA/ZE/ZO overflow.
+                                            if sought_quotient >> 96 != 0 {
+                                                sought_quotient &= (1u128 << 96) - 1;
+                                                write!(ret, " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])")?;
+                                            }
+                                            let mut p = wmp_bylen_word_buckets_ofs
+                                                + bucket_idx as usize * 4;
+                                            let bucket_start_idx = wmp_bytes[p] as u32
+                                                | (wmp_bytes[p + 1] as u32) << 8
+                                                | (wmp_bytes[p + 2] as u32) << 16
+                                                | (wmp_bytes[p + 3] as u32) << 24;
+                                            p += 4;
+                                            let bucket_end_idx = wmp_bytes[p] as u32
+                                                | (wmp_bytes[p + 1] as u32) << 8
+                                                | (wmp_bytes[p + 2] as u32) << 16
+                                                | (wmp_bytes[p + 3] as u32) << 24;
+                                            let mut found = false;
+                                            for entry_idx in bucket_start_idx..bucket_end_idx {
+                                                p = wmp_bylen_word_entries_ofs
+                                                    + entry_idx as usize * 28
+                                                    + 16;
+                                                let quotient = (wmp_bytes[p] as u32
+                                                    | (wmp_bytes[p + 1] as u32) << 8
+                                                    | (wmp_bytes[p + 2] as u32) << 16
+                                                    | (wmp_bytes[p + 3] as u32) << 24)
+                                                    as u128
+                                                    | ((wmp_bytes[p + 4] as u32
+                                                        | (wmp_bytes[p + 5] as u32) << 8
+                                                        | (wmp_bytes[p + 6] as u32) << 16
+                                                        | (wmp_bytes[p + 7] as u32) << 24)
+                                                        as u128)
+                                                        << 32
+                                                    | ((wmp_bytes[p + 8] as u32
+                                                        | (wmp_bytes[p + 9] as u32) << 8
+                                                        | (wmp_bytes[p + 10] as u32) << 16
+                                                        | (wmp_bytes[p + 11] as u32) << 24)
+                                                        as u128)
+                                                        << 64;
+                                                if quotient == sought_quotient {
+                                                    p -= 4;
+                                                    let num_elts = wmp_bytes[p] as u32
+                                                        | (wmp_bytes[p + 1] as u32) << 8
+                                                        | (wmp_bytes[p + 2] as u32) << 16
+                                                        | (wmp_bytes[p + 3] as u32) << 24;
+                                                    this_word_lookup_results += num_elts;
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                            if !found {
+                                                return Err("invalid double blank entry".into());
+                                            }
+                                        }
                                     }
+                                    expected_max_word_lookup_results =
+                                        expected_max_word_lookup_results
+                                            .max(len as u32 * this_word_lookup_results);
+                                    expected_max_blank_pair_results =
+                                        expected_max_blank_pair_results.max(2 * num_elts);
                                     ret.push('\n');
                                 }
                             }
                         }
+                    }
+                }
+
+                if !words_only {
+                    ret.push('\n');
+                    if expected_max_blank_pair_results != max_blank_pair_results {
+                        writeln!(ret, "max_blank_pair_results != {max_blank_pair_results} (expected {expected_max_blank_pair_results})")?;
+                    }
+                    if expected_max_word_lookup_results != max_word_lookup_results {
+                        writeln!(ret, "max_word_lookup_results != {max_word_lookup_results} (expected {expected_max_word_lookup_results})")?;
                     }
                 }
 
