@@ -1418,15 +1418,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
 
                 // wmp: olaugh's wordmap from jvc56/MAGPIE.
                 let wmp_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if wmp_bytes.len() < 12 {
+                if wmp_bytes.len() < 10 {
                     return Err("out of bounds".into());
                 }
 
                 let mut ret = String::new();
 
-                let min_len = wmp_bytes[2];
-                let max_len = wmp_bytes[3];
-                let mut r = 4;
+                let max_len = wmp_bytes[1];
+                let mut r = 2;
                 let max_word_lookup_results = wmp_bytes[r] as u32
                     | (wmp_bytes[r + 1] as u32) << 8
                     | (wmp_bytes[r + 2] as u32) << 16
@@ -1440,18 +1439,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 if !words_only {
                     writeln!(
                         ret,
-                        "wmp {}.{} len {}..{} max_word_lookup_results={} max_blank_pair_results={}",
-                        wmp_bytes[0],
-                        wmp_bytes[1],
-                        min_len,
-                        max_len,
-                        max_word_lookup_results,
-                        max_blank_pair_results
+                        "wmp {} len 2..{} max_word_lookup_results={} max_blank_pair_results={}",
+                        wmp_bytes[0], max_len, max_word_lookup_results, max_blank_pair_results
                     )?;
                 }
                 let mut expected_max_word_lookup_results = 0;
                 let mut expected_max_blank_pair_results = 0;
-                for len in min_len..=max_len {
+                for len in 2..=max_len {
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
