@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2024 Andy Kurnia.
 
-use wolges::{alphabet, error, prob};
+use wolges::{alphabet, bites, error, fash, prob};
 
 use std::fmt::Write;
 use std::str::FromStr;
@@ -345,6 +345,13 @@ fn iter_dawg<
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // support "-" to mean stdout.
+fn use_writer(filename: &str) {
+    if filename == "-" {
+        USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+// support "-" to mean stdout.
 fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
     Ok(if filename == "-" {
         USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -377,6 +384,46 @@ fn read_to_end(reader: &mut Box<dyn std::io::Read>) -> Result<Vec<u8>, std::io::
     let mut v = Vec::new();
     reader.read_to_end(&mut v)?;
     Ok(v)
+}
+
+// adjusted from main_build read_machine_words.
+fn read_machine_words_sorted_by_length(
+    alphabet_reader: &alphabet::AlphabetReader,
+    giant_string: &str,
+) -> error::Returns<Box<[bites::Bites]>> {
+    let mut machine_words = Vec::<bites::Bites>::new();
+    let mut v = Vec::new();
+    for s in giant_string.lines() {
+        if s.is_empty() {
+            continue;
+        }
+        let sb = s.as_bytes();
+        v.clear();
+        let mut ix = 0;
+        while ix < sb.len() {
+            if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                v.push(tile);
+                ix = end_ix;
+            } else if ix > 0 && *unsafe { sb.get_unchecked(ix) } <= b' ' {
+                // Safe because already checked length.
+                break;
+            } else {
+                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
+            }
+        }
+        machine_words.push(v[..].into());
+    }
+    machine_words.sort_unstable_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    machine_words.dedup();
+    Ok(machine_words.into_boxed_slice())
+}
+
+// copied from main_build.
+// slower than std::fs::read_to_string because it cannot preallocate the correct size.
+fn read_to_string(reader: &mut Box<dyn std::io::Read>) -> Result<String, std::io::Error> {
+    let mut s = String::new();
+    reader.read_to_string(&mut s)?;
+    Ok(s)
 }
 
 #[inline(always)]
@@ -1845,6 +1892,358 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
+            "-make-wmp" => {
+                let alphabet = make_alphabet();
+                let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
+                let all_words = read_machine_words_sorted_by_length(
+                    alphabet_reader,
+                    &read_to_string(&mut make_reader(&args[2])?)?,
+                )?;
+                use_writer(&args[3]); // redirect boxed_stdout_or_stderr() if appropriate.
+                let mut ret = Vec::<u8>::new();
+                let write_u32 = |ret: &mut Vec<u8>, x: u32| {
+                    ret.extend(&x.to_le_bytes());
+                };
+                ret.push(0); // version
+                let min_word_len = 2;
+                let max_word_len = all_words.last().map_or(0, |x| x.len() as u8);
+                ret.push(max_word_len);
+                write_u32(&mut ret, 0); // placeholder for max_word_lookup_results
+                write_u32(&mut ret, 0); // placeholder for max_blank_pair_results
+                let mut max_word_lookup_results = 0u32;
+                let mut max_blank_pair_results = 0u32;
+                // skip over any 1-letter words
+                let mut min_idx = all_words.iter().position(|x| x.len() >= 2).unwrap_or(0);
+                for this_len in min_word_len..=max_word_len {
+                    // not using .chunk_by to allow non-consecutive word lengths.
+                    let max_idx = min_idx + {
+                        let this_len = this_len as usize;
+                        all_words[min_idx..]
+                            .iter()
+                            .position(|x| x.len() != this_len)
+                            .unwrap_or_else(|| all_words[min_idx..].len())
+                    };
+                    let words = &all_words[min_idx..max_idx];
+                    min_idx = max_idx;
+
+                    let mut bits = [0u8; 16];
+
+                    let mut b0_vec = Vec::<([u8; 16], bites::Bites)>::with_capacity(words.len());
+                    for this_word in words {
+                        bits.iter_mut().for_each(|m| *m = 0);
+                        for &t in this_word.iter() {
+                            if t < 32 {
+                                let bit_idx = (t >> 1) as usize;
+                                if t & 1 == 0 {
+                                    if bits[bit_idx] & 0xf == 0xf {
+                                        return Err(format!(
+                                            "word {:?} has too many tile {}",
+                                            this_word, t
+                                        )
+                                        .into());
+                                    }
+                                    bits[bit_idx] += 1;
+                                } else {
+                                    if bits[bit_idx] & 0xf0 == 0xf0 {
+                                        return Err(format!(
+                                            "word {:?} has too many tile {}",
+                                            this_word, t
+                                        )
+                                        .into());
+                                    }
+                                    bits[bit_idx] += 0x10;
+                                }
+                            } else {
+                                return Err(format!("word {:?} has tile {}", this_word, t).into());
+                            }
+                        }
+                        b0_vec.push((bits, this_word.clone()));
+                    }
+                    b0_vec.sort_unstable();
+
+                    // value: (start, end) of same-alphagram words.
+                    let mut b0_bits = fash::MyHashMap::<[u8; 16], (u32, u32)>::default();
+                    for (i, (bits, _)) in (1..).zip(b0_vec.iter()) {
+                        b0_bits
+                            .entry(*bits)
+                            .and_modify(|e| e.1 = i)
+                            .or_insert_with(|| (i - 1, i));
+                    }
+
+                    // value: bits 1-31 = if adding that tile forms b0_bits.
+                    // bit 0 should always be 0.
+                    let mut b1_bits = fash::MyHashMap::<[u8; 16], u32>::default();
+                    for key_bits in b0_bits.keys() {
+                        bits.clone_from(key_bits);
+                        bits[0] += 1;
+                        for t2 in 0..16 {
+                            let b = bits[t2] & if t2 == 0 { 0xf0 } else { 0xff };
+                            if b != 0 {
+                                let mut v = 1 << (t2 * 2);
+                                if b & 0xf != 0 {
+                                    bits[t2] -= 1;
+                                    b1_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
+                                    bits[t2] += 1;
+                                }
+                                if b & 0xf0 != 0 {
+                                    v <<= 1;
+                                    bits[t2] -= 0x10;
+                                    b1_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
+                                    bits[t2] += 0x10;
+                                }
+                            }
+                        }
+                        bits[0] -= 1;
+                    }
+
+                    // value: bits 1-31 = if adding that tile forms b1_bits.
+                    // bit 0 should always be 0.
+                    let mut b2_bits = fash::MyHashMap::<[u8; 16], u32>::default();
+                    for key_bits in b1_bits.keys() {
+                        bits.clone_from(key_bits);
+                        bits[0] += 1;
+                        for t2 in 0..16 {
+                            let b = bits[t2] & if t2 == 0 { 0xf0 } else { 0xff };
+                            if b != 0 {
+                                let mut v = 1 << (t2 * 2);
+                                if b & 0xf != 0 {
+                                    bits[t2] -= 1;
+                                    b2_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
+                                    bits[t2] += 1;
+                                }
+                                if b & 0xf0 != 0 {
+                                    v <<= 1;
+                                    bits[t2] -= 0x10;
+                                    b2_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
+                                    bits[t2] += 0x10;
+                                }
+                            }
+                        }
+                        bits[0] -= 1;
+                    }
+
+                    // TODO: these are not correct and will cause overflow.
+                    let num_word_buckets = next_prime(words.len() as u32);
+                    let num_blank_buckets = next_prime(num_word_buckets * this_len as u32);
+                    let num_double_blank_buckets = num_blank_buckets;
+
+                    // 0-blank section
+                    {
+                        let mut linearized_buckets = b0_bits
+                            .keys()
+                            .map(|bits| {
+                                let bits_u128 = u128::from_le_bytes(*bits);
+                                let mut quotient = bits_u128 / (num_word_buckets as u128);
+                                let remainder = (bits_u128 % num_word_buckets as u128) as u32;
+                                if quotient >> 96 != 0 {
+                                    quotient &= (1u128 << 96) - 1;
+                                    // hopefully this does not crash
+                                    writeln!(
+                                        boxed_stdout_or_stderr(),
+                                        "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
+                                        bits_u128,
+                                        num_word_buckets,
+                                        quotient,
+                                        remainder
+                                    )
+                                    .unwrap();
+                                }
+                                (remainder, quotient, bits)
+                            })
+                            .collect::<Box<_>>();
+                        linearized_buckets.sort_unstable();
+                        write_u32(&mut ret, num_word_buckets);
+                        write_u32(&mut ret, 0);
+                        let mut bucket_min_idx = 0;
+                        for this_rem in 0..num_word_buckets {
+                            let bucket_max_idx = bucket_min_idx + {
+                                linearized_buckets[bucket_min_idx..]
+                                    .iter()
+                                    .position(|x| x.0 != this_rem)
+                                    .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
+                            };
+                            write_u32(&mut ret, bucket_max_idx as u32);
+                            bucket_min_idx = bucket_max_idx;
+                        }
+                        write_u32(&mut ret, linearized_buckets.len() as u32);
+                        // pretend it was already re-sorted according to remainder order.
+                        let mut cum_start_idx = 0;
+                        for (_remainder, quotient, bits) in linearized_buckets.iter() {
+                            let (start_idx, end_idx) = b0_bits[*bits];
+                            let num_elts = end_idx - start_idx;
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, cum_start_idx * this_len as u32);
+                            write_u32(&mut ret, num_elts);
+                            write_u32(&mut ret, *quotient as u32);
+                            write_u32(&mut ret, (quotient >> 32) as u32);
+                            write_u32(&mut ret, (quotient >> 64) as u32);
+                            cum_start_idx += num_elts;
+                        }
+                        write_u32(&mut ret, b0_vec.len() as u32);
+                        for (_remainder, _quotient, bits) in linearized_buckets.iter() {
+                            let (start_idx, end_idx) = b0_bits[*bits];
+                            for word_idx in start_idx..end_idx {
+                                ret.extend(&b0_vec[word_idx as usize].1[..]);
+                            }
+                        }
+                    }
+
+                    // 1-blank section
+                    {
+                        let mut linearized_buckets = b1_bits
+                            .keys()
+                            .map(|bits| {
+                                let bits_u128 = u128::from_le_bytes(*bits);
+                                let mut quotient = bits_u128 / (num_blank_buckets as u128);
+                                let remainder = (bits_u128 % num_blank_buckets as u128) as u32;
+                                if quotient >> 96 != 0 {
+                                    quotient &= (1u128 << 96) - 1;
+                                    // hopefully this does not crash
+                                    writeln!(
+                                        boxed_stdout_or_stderr(),
+                                        "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
+                                        bits_u128,
+                                        num_blank_buckets,
+                                        quotient,
+                                        remainder
+                                    )
+                                    .unwrap();
+                                }
+                                (remainder, quotient, bits)
+                            })
+                            .collect::<Box<_>>();
+                        linearized_buckets.sort_unstable();
+                        write_u32(&mut ret, num_blank_buckets);
+                        write_u32(&mut ret, 0);
+                        let mut bucket_min_idx = 0;
+                        for this_rem in 0..num_blank_buckets {
+                            let bucket_max_idx = bucket_min_idx + {
+                                linearized_buckets[bucket_min_idx..]
+                                    .iter()
+                                    .position(|x| x.0 != this_rem)
+                                    .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
+                            };
+                            write_u32(&mut ret, bucket_max_idx as u32);
+                            bucket_min_idx = bucket_max_idx;
+                        }
+                        write_u32(&mut ret, linearized_buckets.len() as u32);
+                        // pretend it was already re-sorted according to remainder order.
+                        for (_remainder, quotient, bits) in linearized_buckets.iter() {
+                            let blank_bits = b1_bits[*bits];
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, blank_bits);
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, *quotient as u32);
+                            write_u32(&mut ret, (quotient >> 32) as u32);
+                            write_u32(&mut ret, (quotient >> 64) as u32);
+                        }
+                    }
+
+                    // 2-blank section
+                    {
+                        let mut max_word_lookup_results_before_multiplying_len = 0u32;
+                        let mut b2_chars = Vec::<u8>::new(); // even number of elements to be interpreted in pairs.
+                        let mut linearized_buckets = b2_bits
+                            .iter()
+                            .map(|(bits_from_b2, b1)| {
+                                bits.clone_from(bits_from_b2);
+                                let bits_u128 = u128::from_le_bytes(*bits_from_b2);
+                                let mut quotient = bits_u128 / (num_double_blank_buckets as u128);
+                                let remainder =
+                                    (bits_u128 % num_double_blank_buckets as u128) as u32;
+                                if quotient >> 96 != 0 {
+                                    quotient &= (1u128 << 96) - 1;
+                                    // hopefully this does not crash
+                                    writeln!(
+                                        boxed_stdout_or_stderr(),
+                                        "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
+                                        bits_u128,
+                                        num_double_blank_buckets,
+                                        quotient,
+                                        remainder
+                                    )
+                                    .unwrap();
+                                }
+                                let start_idx = b2_chars.len() as u32;
+                                let mut num_words_here = 0u32;
+                                let mut b1 = *b1;
+                                bits[0] -= 1;
+                                while b1 != 0 {
+                                    let t1 = b1.trailing_zeros() as u8;
+                                    let bit_idx = (t1 >> 1) as usize;
+                                    bits[bit_idx] += if t1 & 1 == 0 { 1 } else { 0x10 };
+                                    let mut b0 = b1_bits[&bits] & !((1u32 << t1) - 1);
+                                    bits[0] -= 1;
+                                    while b0 != 0 {
+                                        let t0 = b0.trailing_zeros() as u8;
+                                        let bit_idx = (t0 >> 1) as usize;
+                                        bits[bit_idx] += if t0 & 1 == 0 { 1 } else { 0x10 };
+                                        let word_indexes = b0_bits[&bits];
+                                        num_words_here += word_indexes.1 - word_indexes.0;
+                                        b2_chars.push(t1);
+                                        b2_chars.push(t0);
+                                        bits[bit_idx] -= if t0 & 1 == 0 { 1 } else { 0x10 };
+                                        b0 &= b0 - 1;
+                                    }
+                                    bits[0] += 1;
+                                    bits[bit_idx] -= if t1 & 1 == 0 { 1 } else { 0x10 };
+                                    b1 &= b1 - 1;
+                                }
+                                // no need to restore bits[0]
+                                max_word_lookup_results_before_multiplying_len =
+                                    max_word_lookup_results_before_multiplying_len
+                                        .max(num_words_here);
+                                let end_idx = b2_chars.len() as u32;
+                                (remainder, quotient, start_idx, end_idx)
+                            })
+                            .collect::<Box<_>>();
+                        linearized_buckets.sort_unstable();
+                        write_u32(&mut ret, num_double_blank_buckets);
+                        write_u32(&mut ret, 0);
+                        let mut bucket_min_idx = 0;
+                        for this_rem in 0..num_double_blank_buckets {
+                            let bucket_max_idx = bucket_min_idx + {
+                                linearized_buckets[bucket_min_idx..]
+                                    .iter()
+                                    .position(|x| x.0 != this_rem)
+                                    .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
+                            };
+                            write_u32(&mut ret, bucket_max_idx as u32);
+                            bucket_min_idx = bucket_max_idx;
+                        }
+                        write_u32(&mut ret, linearized_buckets.len() as u32);
+                        // pretend it was already re-sorted according to remainder order.
+                        let mut cum_start_idx = 0;
+                        for (_remainder, quotient, start_idx, end_idx) in linearized_buckets.iter()
+                        {
+                            let num_elts = end_idx - start_idx;
+                            max_blank_pair_results = max_blank_pair_results.max(num_elts); // already * 2
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, cum_start_idx); // already * 2
+                            write_u32(&mut ret, num_elts >> 1); // here / 2
+                            write_u32(&mut ret, *quotient as u32);
+                            write_u32(&mut ret, (quotient >> 32) as u32);
+                            write_u32(&mut ret, (quotient >> 64) as u32);
+                            cum_start_idx += num_elts;
+                        }
+                        write_u32(&mut ret, b2_chars.len() as u32 >> 1); // here / 2
+                        for (_remainder, _quotient, start_idx, end_idx) in linearized_buckets.iter()
+                        {
+                            ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
+                        }
+                        max_word_lookup_results = max_word_lookup_results
+                            .max(max_word_lookup_results_before_multiplying_len * this_len as u32);
+                    }
+                }
+                ret[2..6].copy_from_slice(&max_word_lookup_results.to_le_bytes());
+                ret[6..10].copy_from_slice(&max_blank_pair_results.to_le_bytes());
+                // binary output
+                make_writer(&args[3])?.write_all(&ret)?;
+                Ok(true)
+            }
             _ => Ok(false),
         },
         None => Ok(false),
@@ -1986,6 +2385,29 @@ fn kwg_hitcheck<R: WgReader>(
     Ok(())
 }
 
+// naive algorithm.
+fn next_prime(mut x: u32) -> u32 {
+    if x <= 2 {
+        return 2;
+    }
+    if x & 1 == 0 {
+        x += 1
+    }
+    if x <= 7 {
+        return x;
+    }
+    loop {
+        let mut j = 3;
+        while x % j != 0 {
+            j += 2;
+            if j * j > x {
+                return x;
+            }
+        }
+        x += 2;
+    }
+}
+
 fn main() -> error::Returns<()> {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() <= 1 {
@@ -2023,6 +2445,8 @@ fn main() -> error::Returns<()> {
     read .wmp words (format subject to change)
   english-wmp something.wmp something.txt
     read .wmp (format subject to change)
+  english-make-wmp something.txt something.wmp
+    generate buggy .wmp with possible overflows
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, decimal)
   klv-kwg-extract CSW21.klv2 racks.kwg
