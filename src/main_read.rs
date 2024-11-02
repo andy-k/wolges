@@ -1926,6 +1926,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-make-wmp" | "-make-wmp-overflow" => {
                 let allow_overflow = args1_suffix == "-make-wmp-overflow";
+                let never_inline_b2 = allow_overflow;
                 let alphabet = make_alphabet();
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
                 let all_words = read_machine_words_sorted_by_length(
@@ -2137,23 +2138,36 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         write_u32(&mut ret, linearized_buckets.len() as u32);
                         // pretend it was already re-sorted according to remainder order.
                         let mut cum_start_idx = 0;
+                        let inline_max = 16u32 / this_len as u32;
+                        let mut uninlined_len = 0u32;
                         for (_remainder, quotient, bits) in linearized_buckets.iter() {
                             let (start_idx, end_idx) = b0_bits[*bits];
                             let num_elts = end_idx - start_idx;
-                            write_u32(&mut ret, 0);
-                            write_u32(&mut ret, 0);
-                            write_u32(&mut ret, cum_start_idx * this_len as u32);
-                            write_u32(&mut ret, num_elts);
+                            if num_elts <= inline_max {
+                                let new_size = ret.len() + 16;
+                                for word_idx in start_idx..end_idx {
+                                    ret.extend(&b0_vec[word_idx as usize].1[..]);
+                                }
+                                ret.resize(new_size, 0);
+                            } else {
+                                uninlined_len += num_elts;
+                                write_u32(&mut ret, 0);
+                                write_u32(&mut ret, 0);
+                                write_u32(&mut ret, cum_start_idx * this_len as u32);
+                                write_u32(&mut ret, num_elts);
+                                cum_start_idx += num_elts;
+                            }
                             write_u32(&mut ret, *quotient as u32);
                             write_u32(&mut ret, (quotient >> 32) as u32);
                             write_u32(&mut ret, (quotient >> 64) as u32);
-                            cum_start_idx += num_elts;
                         }
-                        write_u32(&mut ret, b0_vec.len() as u32);
+                        write_u32(&mut ret, uninlined_len);
                         for (_remainder, _quotient, bits) in linearized_buckets.iter() {
                             let (start_idx, end_idx) = b0_bits[*bits];
-                            for word_idx in start_idx..end_idx {
-                                ret.extend(&b0_vec[word_idx as usize].1[..]);
+                            if end_idx - start_idx > inline_max {
+                                for word_idx in start_idx..end_idx {
+                                    ret.extend(&b0_vec[word_idx as usize].1[..]);
+                                }
                             }
                         }
                     }
@@ -2285,23 +2299,33 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         write_u32(&mut ret, linearized_buckets.len() as u32);
                         // pretend it was already re-sorted according to remainder order.
                         let mut cum_start_idx = 0;
+                        let mut uninlined_len = 0u32;
                         for (_remainder, quotient, start_idx, end_idx) in linearized_buckets.iter()
                         {
                             let num_elts = end_idx - start_idx;
-                            max_blank_pair_results = max_blank_pair_results.max(num_elts); // already * 2
-                            write_u32(&mut ret, 0);
-                            write_u32(&mut ret, 0);
-                            write_u32(&mut ret, cum_start_idx); // already * 2
-                            write_u32(&mut ret, num_elts >> 1); // here / 2
+                            if !never_inline_b2 && num_elts <= 16 {
+                                let new_size = ret.len() + 16;
+                                ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
+                                ret.resize(new_size, 0);
+                            } else {
+                                uninlined_len += num_elts;
+                                max_blank_pair_results = max_blank_pair_results.max(num_elts); // already * 2
+                                write_u32(&mut ret, 0);
+                                write_u32(&mut ret, 0);
+                                write_u32(&mut ret, cum_start_idx); // already * 2
+                                write_u32(&mut ret, num_elts >> 1); // here / 2
+                                cum_start_idx += num_elts;
+                            }
                             write_u32(&mut ret, *quotient as u32);
                             write_u32(&mut ret, (quotient >> 32) as u32);
                             write_u32(&mut ret, (quotient >> 64) as u32);
-                            cum_start_idx += num_elts;
                         }
-                        write_u32(&mut ret, b2_chars.len() as u32 >> 1); // here / 2
+                        write_u32(&mut ret, uninlined_len >> 1); // here / 2
                         for (_remainder, _quotient, start_idx, end_idx) in linearized_buckets.iter()
                         {
-                            ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
+                            if never_inline_b2 || end_idx - start_idx > 16 {
+                                ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
+                            }
                         }
                         max_word_lookup_results = max_word_lookup_results
                             .max(max_word_lookup_results_before_multiplying_len * this_len as u32);
@@ -2516,7 +2540,7 @@ fn main() -> error::Returns<()> {
     read .wmp (format subject to change)
   english-make-wmp something.txt something.wmp
   english-make-wmp-overflow something.txt something.wmp
-    generate .wmp (use -overflow to allow overflows for compatibility)
+    generate .wmp (-overflow = allow overflows and disable 2-blank inlining)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, decimal)
   klv-kwg-extract CSW21.klv2 racks.kwg
