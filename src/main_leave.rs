@@ -5,7 +5,8 @@ use std::fmt::Write;
 use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
-    alphabet, bites, display, error, fash, game_config, game_state, klv, kwg, move_picker, movegen,
+    alphabet, bites, display, error, fash, game_config, game_state, klv, kwg, move_filter,
+    move_picker, movegen,
 };
 
 thread_local! {
@@ -271,6 +272,22 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 )?;
                 Ok(true)
             }
+            "-playability" => {
+                let args3 = if args.len() > 3 { &args[3] } else { "-" };
+                let num_games = if args.len() > 4 {
+                    u64::from_str(&args[4])?
+                } else {
+                    1_000_000
+                };
+                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let klv = if args3 == "-" {
+                    klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+                } else {
+                    klv::Klv::from_bytes_alloc(&std::fs::read(args3)?)
+                };
+                discover_playability(make_game_config(), kwg, klv, num_games)?;
+                Ok(true)
+            }
             _ => Ok(false),
         },
         None => Ok(false),
@@ -307,6 +324,9 @@ fn main() -> error::Returns<()> {
     generate leaves (no smoothing) up to rack_size
   english-generate-full summary.csv leaves.csv
     generate leaves (with smoothing) up to rack_size
+  english-playability CSW21.kwg leave.klv 1000000
+    autoplay (not saved) and record prorated found best words (at the end)
+    (run fewer number of games and use resummarize to merge to mitigate risks)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, super-english, super-catalan)
   jumbled-english-autoplay CSW21.kad leave0.klv leave1.klv 1000
@@ -1611,6 +1631,345 @@ fn generate_leaves<
         };
         */
     }
+
+    Ok(())
+}
+
+fn discover_playability(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg,
+    klv: klv::Klv,
+    num_games: u64,
+) -> error::Returns<()> {
+    let game_config = std::sync::Arc::new(game_config);
+    let kwg = std::sync::Arc::new(kwg);
+    let klv = std::sync::Arc::new(klv);
+    let num_threads = num_cpus::get();
+    let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut threads = vec![];
+
+    let epoch_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let run_identifier = std::sync::Arc::new(format!("{epoch_secs:08x}"));
+    println!("run identifier is {run_identifier}");
+    let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let full_word_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    let t0 = std::time::Instant::now();
+    let tick_periods = move_picker::Periods(0);
+    struct MutexedStuffs {
+        full_word_map: fash::MyHashMap<bites::Bites, Cumulate>,
+        tick_periods: move_picker::Periods,
+    }
+    let mutexed_stuffs = std::sync::Arc::new(std::sync::Mutex::new(MutexedStuffs {
+        full_word_map,
+        tick_periods,
+    }));
+    let batch_size = match game_config.game_rules() {
+        game_config::GameRules::Classic => 100,
+        game_config::GameRules::Jumbled => 1,
+    };
+
+    for _thread_id in 0..num_threads {
+        let game_config = std::sync::Arc::clone(&game_config);
+        let kwg = std::sync::Arc::clone(&kwg);
+        let klv = std::sync::Arc::clone(&klv);
+        let num_processed_games = std::sync::Arc::clone(&num_processed_games);
+        let run_identifier = std::sync::Arc::clone(&run_identifier);
+        let completed_games = std::sync::Arc::clone(&completed_games);
+        let logged_games = std::sync::Arc::clone(&logged_games);
+        let completed_moves = std::sync::Arc::clone(&completed_moves);
+        let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
+        threads.push(std::thread::spawn(move || {
+            RNG.with(|rng| {
+                let mut rng = &mut *rng.borrow_mut();
+                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                let mut game_state = game_state::GameState::new(&game_config);
+                let mut cur_rack_as_vec = Vec::with_capacity(game_config.rack_size() as usize);
+                let mut final_scores = vec![0; game_config.num_players() as usize];
+                let mut num_turns = vec![0; game_config.num_players() as usize];
+                let mut num_batched_games_here = 0;
+                let mut thread_full_word_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                let mut word_iter = move_filter::LimitedVocabChecker::new();
+                let mut unjumble_buf = match game_config.game_rules() {
+                    game_config::GameRules::Classic => Vec::new(),
+                    game_config::GameRules::Jumbled => Vec::with_capacity(
+                        game_config
+                            .board_layout()
+                            .dim()
+                            .rows
+                            .max(game_config.board_layout().dim().cols)
+                            as usize,
+                    ),
+                };
+                let mut tally_word =
+                    |v: &mut Vec<(bites::Bites, usize)>, num_plays: usize, w: &[u8]| {
+                        match game_config.game_rules() {
+                            game_config::GameRules::Classic => {
+                                v.push((w.into(), num_plays));
+                            }
+                            game_config::GameRules::Jumbled => {
+                                if w.windows(2).all(|x| x[0] <= x[1]) {
+                                    v.push((w.into(), num_plays));
+                                } else {
+                                    // bites::Bites does not DerefMut.
+                                    let w_len = w.len();
+                                    unjumble_buf.resize(w_len.max(unjumble_buf.len()), 0);
+                                    unjumble_buf[..w_len].clone_from_slice(w);
+                                    unjumble_buf[..w_len].sort_unstable();
+                                    v.push((unjumble_buf[..w_len].into(), num_plays));
+                                }
+                            }
+                        }
+                    };
+                loop {
+                    let num_prior_games =
+                        num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if num_prior_games >= num_games {
+                        num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+
+                    num_turns.iter_mut().for_each(|m| *m = 0);
+                    game_state.reset_and_draw_tiles(&game_config, &mut rng);
+                    loop {
+                        game_state.players[game_state.turn as usize]
+                            .rack
+                            .sort_unstable();
+                        let cur_rack = &game_state.current_player().rack;
+
+                        let old_bag_len = game_state.bag.0.len();
+                        if old_bag_len > 0 {
+                            cur_rack_as_vec.clone_from(cur_rack);
+                        }
+
+                        let board_snapshot = &movegen::BoardSnapshot {
+                            board_tiles: &game_state.board_tiles,
+                            game_config: &game_config,
+                            kwg: &kwg,
+                            klv: &klv,
+                        };
+
+                        if old_bag_len > 0 {
+                            let mut best_equity_so_far = f32::NEG_INFINITY;
+                            let mut v = Vec::<(bites::Bites, usize)>::new();
+                            let mut num_plays = 0usize;
+                            move_generator.gen_moves_filtered(
+                                &movegen::GenMovesParams {
+                                    board_snapshot,
+                                    rack: cur_rack,
+                                    max_gen: 2, // to allow finding equal-equity plays.
+                                    num_exchanges_by_this_player: game_state
+                                        .current_player()
+                                        .num_exchanges,
+                                    always_include_pass: false,
+                                },
+                                |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
+                                |leave_value: f32| leave_value,
+                                |equity: f32, play: &movegen::Play| {
+                                    match equity.partial_cmp(&best_equity_so_far) {
+                                        Some(std::cmp::Ordering::Greater) => {
+                                            best_equity_so_far = equity;
+                                            v.clear();
+                                            num_plays = 0;
+                                            match play {
+                                                movegen::Play::Exchange { .. } => {}
+                                                movegen::Play::Place {
+                                                    down,
+                                                    lane,
+                                                    idx,
+                                                    word,
+                                                    ..
+                                                } => {
+                                                    word_iter.words_placed_are_ok(
+                                                        board_snapshot,
+                                                        *down,
+                                                        *lane,
+                                                        *idx,
+                                                        &word[..],
+                                                        |w: &[u8]| {
+                                                            tally_word(&mut v, num_plays, w);
+                                                            true
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                            num_plays += 1;
+                                            true
+                                        }
+                                        Some(std::cmp::Ordering::Equal) => {
+                                            match play {
+                                                movegen::Play::Exchange { .. } => {}
+                                                movegen::Play::Place {
+                                                    down,
+                                                    lane,
+                                                    idx,
+                                                    word,
+                                                    ..
+                                                } => {
+                                                    word_iter.words_placed_are_ok(
+                                                        board_snapshot,
+                                                        *down,
+                                                        *lane,
+                                                        *idx,
+                                                        &word[..],
+                                                        |w: &[u8]| {
+                                                            tally_word(&mut v, num_plays, w);
+                                                            true
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                            num_plays += 1;
+                                            false // ensure top two have different equities.
+                                        }
+                                        Some(std::cmp::Ordering::Less) | None => false,
+                                    }
+                                },
+                            );
+                            if num_plays > 0 {
+                                v.sort_unstable();
+                                v.dedup(); // playing the same word as main+hook or hook+hook counts once.
+                                           // each move gets n/d if played in n of d equally top moves.
+                                let multiplier = (num_plays as f64).recip();
+                                for same_words in v.chunk_by(|a, b| a.0 == b.0) {
+                                    let occurrence = same_words.len() as f64 * multiplier;
+                                    // allocs for long words, but long words are rarely played.
+                                    thread_full_word_map
+                                        .entry(same_words[0].0[..].into())
+                                        .and_modify(|e| {
+                                            e.equity += occurrence;
+                                            e.count += 1;
+                                        })
+                                        .or_insert(Cumulate {
+                                            equity: occurrence,
+                                            count: 1,
+                                        });
+                                }
+                            }
+                        } else {
+                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot,
+                                rack: cur_rack,
+                                max_gen: 1,
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                always_include_pass: false,
+                            });
+                        }
+
+                        let plays = &move_generator.plays;
+                        let play = &plays[0];
+
+                        game_state.play(&game_config, &mut rng, &play.play).unwrap();
+
+                        let old_turn = game_state.turn;
+                        num_turns[old_turn as usize] += 1;
+                        game_state.next_turn();
+                        let new_turn = game_state.turn;
+                        game_state.turn = old_turn;
+
+                        match game_state.check_game_ended(&game_config, &mut final_scores) {
+                            game_state::CheckGameEnded::PlayedOut
+                            | game_state::CheckGameEnded::ZeroScores => {
+                                let completed_moves = completed_moves
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                num_batched_games_here += 1;
+                                if num_batched_games_here >= batch_size {
+                                    // nothing logged, just grab the mutex to report time less often.
+                                    let logged_games = logged_games.fetch_add(
+                                        num_batched_games_here,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    ) + num_batched_games_here;
+                                    num_batched_games_here = 0;
+                                    let elapsed_time_secs = t0.elapsed().as_secs();
+                                    let tick_changed = {
+                                        let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                        mutex_guard.tick_periods.update(elapsed_time_secs)
+                                    };
+                                    if tick_changed {
+                                        println!("After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}");
+                                    }
+                                }
+                                break;
+                            }
+                            game_state::CheckGameEnded::NotEnded => {}
+                        }
+
+                        completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        game_state.turn = new_turn;
+                    }
+                }
+
+                let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+
+                for (k, thread_v) in thread_full_word_map.into_iter() {
+                    if thread_v.count > 0 {
+                        if let Some(v) = mutex_guard.full_word_map.get_mut(&k) {
+                            *v = Cumulate {
+                                equity: v.equity + thread_v.equity,
+                                count: v.count + thread_v.count,
+                            }
+                        } else {
+                            mutex_guard.full_word_map.insert(k, thread_v);
+                        }
+                    }
+                }
+            })
+        }));
+    }
+
+    for thread in threads {
+        if let Err(e) = thread.join() {
+            println!("{e:?}");
+        }
+    }
+
+    {
+        let mutex_guard = mutexed_stuffs.lock().unwrap();
+        let full_word_map = &mutex_guard.full_word_map;
+
+        let mut total_equity = 0.0;
+        let mut row_count = 0;
+        for x in full_word_map.values() {
+            total_equity += x.equity;
+            row_count += x.count;
+        }
+
+        println!(
+            "{} records, {} unique words",
+            row_count,
+            full_word_map.len()
+        );
+
+        let mut kv = full_word_map.iter().collect::<Vec<_>>();
+        kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
+
+        let mut csv_out = csv::Writer::from_path(format!("playability-{run_identifier}"))?;
+        let mut cur_word_ser = String::new();
+        csv_out.serialize(("", total_equity, row_count))?;
+        for (k, fv) in kv.iter() {
+            cur_word_ser.clear();
+            for &tile in k.iter() {
+                // using of_board because blanks should not be possible.
+                cur_word_ser.push_str(game_config.alphabet().of_board(tile).unwrap());
+            }
+            csv_out.serialize((&cur_word_ser, fv.equity, fv.count))?;
+        }
+    }
+
+    println!(
+        "After {} seconds, have played {} games ({} moves) for {}",
+        t0.elapsed().as_secs(),
+        completed_games.load(std::sync::atomic::Ordering::Relaxed),
+        completed_moves.load(std::sync::atomic::Ordering::Relaxed),
+        run_identifier
+    );
 
     Ok(())
 }
