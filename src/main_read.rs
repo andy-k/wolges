@@ -1892,7 +1892,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
-            "-make-wmp" => {
+            "-make-wmp" | "-make-wmp-overflow" => {
+                let allow_overflow = args1_suffix == "-make-wmp-overflow";
                 let alphabet = make_alphabet();
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
                 let all_words = read_machine_words_sorted_by_length(
@@ -2022,10 +2023,46 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         bits[0] -= 1;
                     }
 
-                    // TODO: these are not correct and will cause overflow.
-                    let num_word_buckets = next_prime(words.len() as u32);
-                    let num_blank_buckets = next_prime(num_word_buckets * this_len as u32);
-                    let num_double_blank_buckets = num_blank_buckets;
+                    let num_word_buckets;
+                    let num_blank_buckets;
+                    let num_double_blank_buckets;
+                    if allow_overflow {
+                        // these are not correct and will cause overflow.
+                        num_word_buckets = next_prime(words.len() as u32);
+                        num_blank_buckets = next_prime(num_word_buckets * this_len as u32);
+                        num_double_blank_buckets = num_blank_buckets;
+                    } else {
+                        let adjust_num_word_buckets = |len: u32, biggest: u128| {
+                            let guess = next_prime(len);
+                            let target = 1u128 << 96;
+                            if biggest / (guess as u128) < target {
+                                // intentional floor division.
+                                guess
+                            } else {
+                                // intentional floor division.
+                                // this can still overflow if given 15 of everything!
+                                next_prime(((biggest / target) as u32).saturating_add(1))
+                            }
+                        };
+                        num_word_buckets = adjust_num_word_buckets(
+                            b0_bits.len() as u32,
+                            b0_bits
+                                .keys()
+                                .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
+                        );
+                        num_blank_buckets = adjust_num_word_buckets(
+                            b1_bits.len() as u32,
+                            b1_bits
+                                .keys()
+                                .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
+                        );
+                        num_double_blank_buckets = adjust_num_word_buckets(
+                            b2_bits.len() as u32,
+                            b2_bits
+                                .keys()
+                                .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
+                        );
+                    }
 
                     // 0-blank section
                     {
@@ -2446,7 +2483,8 @@ fn main() -> error::Returns<()> {
   english-wmp something.wmp something.txt
     read .wmp (format subject to change)
   english-make-wmp something.txt something.wmp
-    generate buggy .wmp with possible overflows
+  english-make-wmp-overflow something.txt something.wmp
+    generate .wmp (use -overflow to allow overflows for compatibility)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, decimal)
   klv-kwg-extract CSW21.klv2 racks.kwg
