@@ -1608,18 +1608,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             if bucket_start_idx != bucket_end_idx {
                                 writeln!(ret, "bucket {bucket_idx}/{wmp_bylen_num_word_buckets}:")?;
                                 for entry_idx in bucket_start_idx..bucket_end_idx {
-                                    p = wmp_bylen_word_entries_ofs + entry_idx as usize * 28 + 8;
-                                    // this is len * index, in bytes.
-                                    let initial_ofs = wmp_bytes[p] as u32
-                                        | (wmp_bytes[p + 1] as u32) << 8
-                                        | (wmp_bytes[p + 2] as u32) << 16
-                                        | (wmp_bytes[p + 3] as u32) << 24;
-                                    p += 4;
-                                    let num_elts = wmp_bytes[p] as u32
-                                        | (wmp_bytes[p + 1] as u32) << 8
-                                        | (wmp_bytes[p + 2] as u32) << 16
-                                        | (wmp_bytes[p + 3] as u32) << 24;
-                                    p += 4;
+                                    p = wmp_bylen_word_entries_ofs + entry_idx as usize * 28 + 16;
                                     let quotient = (wmp_bytes[p] as u32
                                         | (wmp_bytes[p + 1] as u32) << 8
                                         | (wmp_bytes[p + 2] as u32) << 16
@@ -1646,7 +1635,29 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         }
                                     }
                                     ret.push_str(" =");
-                                    p = wmp_bylen_words_ofs + initial_ofs as usize;
+                                    p -= 16;
+                                    let num_elts;
+                                    if wmp_bytes[p] == 0 {
+                                        // this is len * index, in bytes.
+                                        p += 8;
+                                        let initial_ofs = wmp_bytes[p] as u32
+                                            | (wmp_bytes[p + 1] as u32) << 8
+                                            | (wmp_bytes[p + 2] as u32) << 16
+                                            | (wmp_bytes[p + 3] as u32) << 24;
+                                        p += 4;
+                                        num_elts = wmp_bytes[p] as u32
+                                            | (wmp_bytes[p + 1] as u32) << 8
+                                            | (wmp_bytes[p + 2] as u32) << 16
+                                            | (wmp_bytes[p + 3] as u32) << 24;
+                                        p = wmp_bylen_words_ofs + initial_ofs as usize;
+                                    } else {
+                                        num_elts = (wmp_bytes[p..p + 16]
+                                            .iter()
+                                            .position(|&b| b == 0)
+                                            .unwrap_or(16)
+                                            / len as usize)
+                                            as u32;
+                                    }
                                     for _ in 0..num_elts {
                                         ret.push(' ');
                                         for _ in 0..len {
@@ -1751,18 +1762,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                 for entry_idx in bucket_start_idx..bucket_end_idx {
                                     p = wmp_bylen_double_blank_entries_ofs
                                         + entry_idx as usize * 28
-                                        + 8;
-                                    // this is 2 * index, in bytes.
-                                    let initial_ofs = wmp_bytes[p] as u32
-                                        | (wmp_bytes[p + 1] as u32) << 8
-                                        | (wmp_bytes[p + 2] as u32) << 16
-                                        | (wmp_bytes[p + 3] as u32) << 24;
-                                    p += 4;
-                                    let num_elts = wmp_bytes[p] as u32
-                                        | (wmp_bytes[p + 1] as u32) << 8
-                                        | (wmp_bytes[p + 2] as u32) << 16
-                                        | (wmp_bytes[p + 3] as u32) << 24;
-                                    p += 4;
+                                        + 16;
                                     let quotient = (wmp_bytes[p] as u32
                                         | (wmp_bytes[p + 1] as u32) << 8
                                         | (wmp_bytes[p + 2] as u32) << 16
@@ -1791,7 +1791,29 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     }
                                     ret.push_str(" =");
                                     let mut this_word_lookup_results = 0u32;
-                                    p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
+                                    p -= 16;
+                                    let num_elts;
+                                    if wmp_bytes[p] == 0 {
+                                        // this is 2 * index, in bytes.
+                                        p += 8;
+                                        let initial_ofs = wmp_bytes[p] as u32
+                                            | (wmp_bytes[p + 1] as u32) << 8
+                                            | (wmp_bytes[p + 2] as u32) << 16
+                                            | (wmp_bytes[p + 3] as u32) << 24;
+                                        p += 4;
+                                        num_elts = wmp_bytes[p] as u32
+                                            | (wmp_bytes[p + 1] as u32) << 8
+                                            | (wmp_bytes[p + 2] as u32) << 16
+                                            | (wmp_bytes[p + 3] as u32) << 24;
+                                        p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
+                                    } else {
+                                        num_elts = (wmp_bytes[p..p + 16]
+                                            .iter()
+                                            .position(|&b| b == 0)
+                                            .unwrap_or(16)
+                                            >> 1)
+                                            as u32;
+                                    }
                                     for _ in 0..num_elts {
                                         ret.push(' ');
                                         let mut unblanked_bit_rack = bit_rack & !0xf;
@@ -1848,11 +1870,21 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                         as u128)
                                                         << 64;
                                                 if quotient == sought_quotient {
-                                                    p -= 4;
-                                                    let num_elts = wmp_bytes[p] as u32
-                                                        | (wmp_bytes[p + 1] as u32) << 8
-                                                        | (wmp_bytes[p + 2] as u32) << 16
-                                                        | (wmp_bytes[p + 3] as u32) << 24;
+                                                    p -= 16;
+                                                    let num_elts = if wmp_bytes[p] == 0 {
+                                                        p += 12;
+                                                        wmp_bytes[p] as u32
+                                                            | (wmp_bytes[p + 1] as u32) << 8
+                                                            | (wmp_bytes[p + 2] as u32) << 16
+                                                            | (wmp_bytes[p + 3] as u32) << 24
+                                                    } else {
+                                                        (wmp_bytes[p..p + 16]
+                                                            .iter()
+                                                            .position(|&b| b == 0)
+                                                            .unwrap_or(16)
+                                                            / len as usize)
+                                                            as u32
+                                                    };
                                                     this_word_lookup_results += num_elts;
                                                     found = true;
                                                     break;
