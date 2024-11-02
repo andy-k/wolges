@@ -1940,7 +1940,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 };
                 ret.push(0); // version
                 let min_word_len = 2;
-                let max_word_len = all_words.last().map_or(0, |x| x.len() as u8);
+                let mut max_word_len = all_words.last().map_or(0, |x| x.len() as u8);
+                if allow_overflow {
+                    max_word_len = max_word_len.max(15);
+                }
                 ret.push(max_word_len);
                 write_u32(&mut ret, 0); // placeholder for max_word_lookup_results
                 write_u32(&mut ret, 0); // placeholder for max_blank_pair_results
