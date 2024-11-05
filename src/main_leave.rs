@@ -223,7 +223,17 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 Ok(true)
             }
             "-resummarize" => {
-                resummarize_summaries(
+                resummarize_summaries::<'a', _, _>(
+                    make_game_config(),
+                    csv::ReaderBuilder::new()
+                        .has_headers(false)
+                        .from_reader(make_reader(&args[2])?),
+                    csv::Writer::from_writer(make_writer(&args[3])?),
+                )?;
+                Ok(true)
+            }
+            "-resummarize-playability" => {
+                resummarize_summaries::<'p', _, _>(
                     make_game_config(),
                     csv::ReaderBuilder::new()
                         .has_headers(false)
@@ -329,6 +339,8 @@ fn main() -> error::Returns<()> {
   english-playability CSW21.kwg leave.klv 1000000
     autoplay (not saved) and record prorated found best words (at the end)
     (run fewer number of games and use resummarize to merge to mitigate risks)
+  english-resummarize-playability concatenated_playabilities.csv playability.csv
+    same as english-resummarize but sorts differently
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, super-english, super-catalan)
   jumbled-english-autoplay CSW21.kad leave0.klv leave1.klv 1000
@@ -1312,7 +1324,7 @@ fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
     }
 }
 
-fn resummarize_summaries<Readable: std::io::Read, W: std::io::Write>(
+fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std::io::Write>(
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
@@ -1356,7 +1368,18 @@ fn resummarize_summaries<Readable: std::io::Read, W: std::io::Write>(
     )?;
 
     let mut kv = full_rack_map.into_iter().collect::<Vec<_>>();
-    kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
+    match SORT_MODE {
+        'a' => kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0))),
+        'p' => kv.sort_unstable_by(|a, b| {
+            a.0.len().cmp(&b.0.len()).then_with(|| {
+                b.1.equity
+                    .partial_cmp(&a.1.equity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.cmp(&b.0))
+            })
+        }),
+        _ => unimplemented!(),
+    }
 
     let mut cur_rack_ser = String::new();
     csv_out.serialize(("", total_equity, row_count))?;
@@ -1946,7 +1969,14 @@ fn discover_playability(
         );
 
         let mut kv = full_word_map.iter().collect::<Vec<_>>();
-        kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
+        kv.sort_unstable_by(|a, b| {
+            a.0.len().cmp(&b.0.len()).then_with(|| {
+                b.1.equity
+                    .partial_cmp(&a.1.equity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.cmp(b.0))
+            })
+        });
 
         let mut csv_out = csv::Writer::from_path(format!("playability-{run_identifier}"))?;
         let mut cur_word_ser = String::new();
