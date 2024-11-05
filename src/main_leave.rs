@@ -294,6 +294,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
     }
 }
 
+// leave = listing extrapolated accumulated values empirically
+
 fn main() -> error::Returns<()> {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() <= 1 {
