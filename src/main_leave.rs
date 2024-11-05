@@ -1688,9 +1688,7 @@ fn discover_playability(
                 let mut rng = &mut *rng.borrow_mut();
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
-                let mut cur_rack_as_vec = Vec::with_capacity(game_config.rack_size() as usize);
                 let mut final_scores = vec![0; game_config.num_players() as usize];
-                let mut num_turns = vec![0; game_config.num_players() as usize];
                 let mut num_batched_games_here = 0;
                 let mut thread_full_word_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
                 let mut word_iter = move_filter::LimitedVocabChecker::new();
@@ -1725,6 +1723,8 @@ fn discover_playability(
                             }
                         }
                     };
+                // words played in the same turn (hooks) get the same usize.
+                let mut vec_played = Vec::<(bites::Bites, usize)>::new();
                 loop {
                     let num_prior_games =
                         num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1733,7 +1733,6 @@ fn discover_playability(
                         break;
                     }
 
-                    num_turns.iter_mut().for_each(|m| *m = 0);
                     game_state.reset_and_draw_tiles(&game_config, &mut rng);
                     loop {
                         game_state.players[game_state.turn as usize]
@@ -1742,9 +1741,6 @@ fn discover_playability(
                         let cur_rack = &game_state.current_player().rack;
 
                         let old_bag_len = game_state.bag.0.len();
-                        if old_bag_len > 0 {
-                            cur_rack_as_vec.clone_from(cur_rack);
-                        }
 
                         let board_snapshot = &movegen::BoardSnapshot {
                             board_tiles: &game_state.board_tiles,
@@ -1753,10 +1749,10 @@ fn discover_playability(
                             klv: &klv,
                         };
 
-                        if old_bag_len > 0 {
+                        let moves_made_before_ending: u64 = if old_bag_len > 0 {
                             let mut best_equity_so_far = f32::NEG_INFINITY;
-                            let mut v = Vec::<(bites::Bites, usize)>::new();
                             let mut num_plays = 0usize;
+                            vec_played.clear();
                             move_generator.gen_moves_filtered(
                                 &movegen::GenMovesParams {
                                     board_snapshot,
@@ -1773,7 +1769,7 @@ fn discover_playability(
                                     match equity.partial_cmp(&best_equity_so_far) {
                                         Some(std::cmp::Ordering::Greater) => {
                                             best_equity_so_far = equity;
-                                            v.clear();
+                                            vec_played.clear();
                                             num_plays = 0;
                                             match play {
                                                 movegen::Play::Exchange { .. } => {}
@@ -1791,7 +1787,11 @@ fn discover_playability(
                                                         *idx,
                                                         &word[..],
                                                         |w: &[u8]| {
-                                                            tally_word(&mut v, num_plays, w);
+                                                            tally_word(
+                                                                &mut vec_played,
+                                                                num_plays,
+                                                                w,
+                                                            );
                                                             true
                                                         },
                                                     );
@@ -1817,7 +1817,11 @@ fn discover_playability(
                                                         *idx,
                                                         &word[..],
                                                         |w: &[u8]| {
-                                                            tally_word(&mut v, num_plays, w);
+                                                            tally_word(
+                                                                &mut vec_played,
+                                                                num_plays,
+                                                                w,
+                                                            );
                                                             true
                                                         },
                                                     );
@@ -1830,12 +1834,13 @@ fn discover_playability(
                                     }
                                 },
                             );
+                            // num_plays == 0 means all moves were exchanges/pass.
                             if num_plays > 0 {
-                                v.sort_unstable();
-                                v.dedup(); // playing the same word as main+hook or hook+hook counts once.
-                                           // each move gets n/d if played in n of d equally top moves.
+                                vec_played.sort_unstable();
+                                vec_played.dedup(); // playing the same word as main+hook or hook+hook counts once.
+                                                    // each word gets n/d if played in n of d equally top moves.
                                 let multiplier = (num_plays as f64).recip();
-                                for same_words in v.chunk_by(|a, b| a.0 == b.0) {
+                                for same_words in vec_played.chunk_by(|a, b| a.0 == b.0) {
                                     let occurrence = same_words.len() as f64 * multiplier;
                                     // allocs for long words, but long words are rarely played.
                                     thread_full_word_map
@@ -1850,59 +1855,50 @@ fn discover_playability(
                                         });
                                 }
                             }
-                        } else {
-                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                board_snapshot,
-                                rack: cur_rack,
-                                max_gen: 1,
-                                num_exchanges_by_this_player: game_state
-                                    .current_player()
-                                    .num_exchanges,
-                                always_include_pass: false,
-                            });
-                        }
 
-                        let plays = &move_generator.plays;
-                        let play = &plays[0];
+                            let plays = &move_generator.plays;
+                            let play = &plays[0];
 
-                        game_state.play(&game_config, &mut rng, &play.play).unwrap();
+                            game_state.play(&game_config, &mut rng, &play.play).unwrap();
 
-                        let old_turn = game_state.turn;
-                        num_turns[old_turn as usize] += 1;
-                        game_state.next_turn();
-                        let new_turn = game_state.turn;
-                        game_state.turn = old_turn;
-
-                        match game_state.check_game_ended(&game_config, &mut final_scores) {
-                            game_state::CheckGameEnded::PlayedOut
-                            | game_state::CheckGameEnded::ZeroScores => {
-                                let completed_moves = completed_moves
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                num_batched_games_here += 1;
-                                if num_batched_games_here >= batch_size {
-                                    // nothing logged, just grab the mutex to report time less often.
-                                    let logged_games = logged_games.fetch_add(
-                                        num_batched_games_here,
-                                        std::sync::atomic::Ordering::Relaxed,
-                                    ) + num_batched_games_here;
-                                    num_batched_games_here = 0;
-                                    let elapsed_time_secs = t0.elapsed().as_secs();
-                                    let tick_changed = {
-                                        let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                                        mutex_guard.tick_periods.update(elapsed_time_secs)
-                                    };
-                                    if tick_changed {
-                                        println!("After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}");
-                                    }
-                                }
-                                break;
+                            match game_state.check_game_ended(&game_config, &mut final_scores) {
+                                game_state::CheckGameEnded::PlayedOut
+                                | game_state::CheckGameEnded::ZeroScores => 1,
+                                game_state::CheckGameEnded::NotEnded => !0,
                             }
-                            game_state::CheckGameEnded::NotEnded => {}
+                        } else {
+                            // bag is empty, skip the rest of the game.
+                            0
+                        };
+
+                        if moves_made_before_ending != !0 {
+                            let completed_moves = completed_moves.fetch_add(
+                                moves_made_before_ending,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            num_batched_games_here += 1;
+                            if num_batched_games_here >= batch_size {
+                                // nothing logged, just grab the mutex to report time less often.
+                                let logged_games = logged_games.fetch_add(
+                                    num_batched_games_here,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                ) + num_batched_games_here;
+                                num_batched_games_here = 0;
+                                let elapsed_time_secs = t0.elapsed().as_secs();
+                                let tick_changed = {
+                                    let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                    mutex_guard.tick_periods.update(elapsed_time_secs)
+                                };
+                                if tick_changed {
+                                    println!("After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}");
+                                }
+                            }
+                            break;
                         }
 
                         completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        game_state.turn = new_turn;
+                        game_state.next_turn();
                     }
                 }
 
