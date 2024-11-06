@@ -1728,7 +1728,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         }
                                     }
                                     ret.push_str(" = ");
-                                    for i in 0..64 {
+                                    for i in 0..32 {
                                         if bits & (1 << i) != 0 {
                                             alphabet_label.label(&mut ret, i)?;
                                         }
