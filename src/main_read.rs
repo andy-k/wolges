@@ -1938,12 +1938,29 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let write_u32 = |ret: &mut Vec<u8>, x: u32| {
                     ret.extend(&x.to_le_bytes());
                 };
-                ret.push(0); // version
+                ret.push(1); // version
                 let min_word_len = 2;
                 let mut max_word_len = all_words.last().map_or(0, |x| x.len() as u8);
                 if allow_overflow {
                     max_word_len = max_word_len.max(15);
                 }
+                let min_num_buckets = if allow_overflow {
+                    let biggest = (1..alphabet.len().min(32))
+                        .rev()
+                        .flat_map(|tile| std::iter::repeat(tile).take(alphabet.freq(tile) as usize))
+                        .take(max_word_len as usize)
+                        .fold(0u128, |acc, tile| {
+                            if acc >> (tile << 2) & 0xf < 0xf {
+                                acc + (1u128 << (tile << 2))
+                            } else {
+                                acc
+                            }
+                        });
+                    let target = 1u128 << 96;
+                    next_prime(((biggest / target) as u32).saturating_add(1))
+                } else {
+                    0 // not used
+                };
                 ret.push(max_word_len);
                 write_u32(&mut ret, 0); // placeholder for max_word_lookup_results
                 write_u32(&mut ret, 0); // placeholder for max_blank_pair_results
@@ -2063,10 +2080,24 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     let num_blank_buckets;
                     let num_double_blank_buckets;
                     if allow_overflow {
-                        // these are not correct and will cause overflow.
-                        num_word_buckets = next_prime(words.len() as u32);
-                        num_blank_buckets = next_prime(num_word_buckets * this_len as u32);
-                        num_double_blank_buckets = num_blank_buckets;
+                        if false {
+                            // not numbers of buckets in v1. not sure how to compute those.
+                            // these are still not correct and will cause overflow.
+                            // they are based on top 15 available non-letters (ZYYXWW...)
+                            // even if there is a word like PIZZAZZ.
+                            num_word_buckets =
+                                next_prime(b0_bits.len() as u32).max(min_num_buckets);
+                            num_blank_buckets =
+                                next_prime(b1_bits.len() as u32).max(min_num_buckets);
+                            num_double_blank_buckets =
+                                next_prime(b2_bits.len() as u32).max(min_num_buckets);
+                        } else {
+                            // numbers of buckets in v0.
+                            // these are not correct and will cause overflow.
+                            num_word_buckets = next_prime(words.len() as u32);
+                            num_blank_buckets = next_prime(num_word_buckets * this_len as u32);
+                            num_double_blank_buckets = num_blank_buckets;
+                        }
                     } else {
                         let adjust_num_word_buckets = |len: u32, biggest: u128| {
                             let guess = next_prime(len);
