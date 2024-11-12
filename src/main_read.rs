@@ -2176,8 +2176,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
-            "-make-wmp" | "-make-wmp-overflow" => {
-                let allow_overflow = args1_suffix == "-make-wmp-overflow";
+            "-make-wmp1" | "-make-wmp1-overflow" | "-make-wmp" | "-make-wmp-overflow" => {
+                let allow_overflow =
+                    args1_suffix == "-make-wmp-overflow" || args1_suffix == "-make-wmp1-overflow";
+                let is_v1 = args1_suffix == "-make-wmp1" || args1_suffix == "-make-wmp1-overflow";
                 let never_inline_b2 = allow_overflow;
                 let alphabet = make_alphabet();
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
@@ -2190,7 +2192,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let write_u32 = |ret: &mut Vec<u8>, x: u32| {
                     ret.extend(&x.to_le_bytes());
                 };
-                ret.push(1); // version
+                ret.push(if is_v1 { 1 } else { 2 }); // version
                 let min_word_len = 2;
                 let mut max_word_len = all_words.last().map_or(0, |x| x.len() as u8);
                 if allow_overflow {
@@ -2217,7 +2219,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 };
                 ret.push(max_word_len);
                 write_u32(&mut ret, 0); // placeholder for max_word_lookup_results
-                write_u32(&mut ret, 0); // placeholder for max_blank_pair_results
+                if is_v1 {
+                    write_u32(&mut ret, 0); // placeholder for max_blank_pair_results
+                }
                 let mut max_word_lookup_results = 0u32;
                 let mut max_blank_pair_results = 0u32;
                 // skip over any 1-letter words
@@ -2307,23 +2311,25 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     // value: bits 1-31 = if adding that tile forms b1_bits.
                     // bit 0 should always be 0.
                     let mut b2_bits = fash::MyHashMap::<[u8; 16], u32>::default();
-                    for key_bits in b1_bits.keys() {
+                    for (key_bits, val_bits) in b1_bits.iter() {
                         bits.clone_from(key_bits);
                         bits[0] += 1;
                         for t2 in 0..16 {
                             let b = bits[t2] & if t2 == 0 { 0xf0 } else { 0xff };
                             if b != 0 {
                                 let mut v = 1 << (t2 * 2);
-                                if b & 0xf != 0 {
+                                if b & 0xf != 0 && val_bits & !(v - 1) != 0 {
                                     bits[t2] -= 1;
                                     b2_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
                                     bits[t2] += 1;
                                 }
                                 if b & 0xf0 != 0 {
                                     v <<= 1;
-                                    bits[t2] -= 0x10;
-                                    b2_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
-                                    bits[t2] += 0x10;
+                                    if val_bits & !(v - 1) != 0 {
+                                        bits[t2] -= 0x10;
+                                        b2_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
+                                        bits[t2] += 0x10;
+                                    }
                                 }
                             }
                         }
@@ -2334,7 +2340,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     let num_blank_buckets;
                     let num_double_blank_buckets;
                     if allow_overflow {
-                        // numbers of buckets in v1.
+                        // numbers of buckets in v1/v2.
                         // these are still not correct and will cause overflow.
                         // they are based on top 15 available non-letters
                         // (??ZYYXWW... with the ?s being valued as Z)
@@ -2506,104 +2512,194 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     // 2-blank section
                     {
                         let mut max_word_lookup_results_before_multiplying_len = 0u32;
-                        let mut b2_chars = Vec::<u8>::new(); // even number of elements to be interpreted in pairs.
-                        let mut linearized_buckets = b2_bits
-                            .iter()
-                            .map(|(bits_from_b2, b1)| {
-                                bits.clone_from(bits_from_b2);
-                                let bits_u128 = u128::from_le_bytes(*bits_from_b2);
-                                let mut quotient = bits_u128 / (num_double_blank_buckets as u128);
-                                let remainder =
-                                    (bits_u128 % num_double_blank_buckets as u128) as u32;
-                                if quotient >> 96 != 0 {
-                                    quotient &= (1u128 << 96) - 1;
-                                    // hopefully this does not crash
-                                    writeln!(
-                                        boxed_stdout_or_stderr(),
-                                        "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
-                                        bits_u128,
-                                        num_double_blank_buckets,
-                                        quotient,
-                                        remainder
-                                    )
-                                    .unwrap();
-                                }
-                                let start_idx = b2_chars.len() as u32;
-                                let mut num_words_here = 0u32;
-                                let mut b1 = *b1;
-                                bits[0] -= 1;
-                                while b1 != 0 {
-                                    let t1 = b1.trailing_zeros() as u8;
-                                    let bit_idx = (t1 >> 1) as usize;
-                                    bits[bit_idx] += if t1 & 1 == 0 { 1 } else { 0x10 };
-                                    let mut b0 = b1_bits[&bits] & !((1u32 << t1) - 1);
-                                    bits[0] -= 1;
-                                    while b0 != 0 {
-                                        let t0 = b0.trailing_zeros() as u8;
-                                        let bit_idx = (t0 >> 1) as usize;
-                                        bits[bit_idx] += if t0 & 1 == 0 { 1 } else { 0x10 };
-                                        let word_indexes = b0_bits[&bits];
-                                        num_words_here += word_indexes.1 - word_indexes.0;
-                                        b2_chars.push(t1);
-                                        b2_chars.push(t0);
-                                        bits[bit_idx] -= if t0 & 1 == 0 { 1 } else { 0x10 };
-                                        b0 &= b0 - 1;
+                        if is_v1 {
+                            let mut b2_chars = Vec::<u8>::new(); // even number of elements to be interpreted in pairs.
+                            let mut linearized_buckets = b2_bits
+                                .iter()
+                                .map(|(bits_from_b2, b1)| {
+                                    bits.clone_from(bits_from_b2);
+                                    let bits_u128 = u128::from_le_bytes(*bits_from_b2);
+                                    let mut quotient =
+                                        bits_u128 / (num_double_blank_buckets as u128);
+                                    let remainder =
+                                        (bits_u128 % num_double_blank_buckets as u128) as u32;
+                                    if quotient >> 96 != 0 {
+                                        quotient &= (1u128 << 96) - 1;
+                                        // hopefully this does not crash
+                                        writeln!(
+                                            boxed_stdout_or_stderr(),
+                                            "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
+                                            bits_u128,
+                                            num_double_blank_buckets,
+                                            quotient,
+                                            remainder
+                                        )
+                                        .unwrap();
                                     }
-                                    bits[0] += 1;
-                                    bits[bit_idx] -= if t1 & 1 == 0 { 1 } else { 0x10 };
-                                    b1 &= b1 - 1;
-                                }
-                                // no need to restore bits[0]
-                                max_word_lookup_results_before_multiplying_len =
-                                    max_word_lookup_results_before_multiplying_len
-                                        .max(num_words_here);
-                                let end_idx = b2_chars.len() as u32;
-                                (remainder, quotient, start_idx, end_idx)
-                            })
-                            .collect::<Box<_>>();
-                        linearized_buckets.sort_unstable();
-                        write_u32(&mut ret, num_double_blank_buckets);
-                        write_u32(&mut ret, 0);
-                        let mut bucket_min_idx = 0;
-                        for this_rem in 0..num_double_blank_buckets {
-                            let bucket_max_idx = bucket_min_idx + {
-                                linearized_buckets[bucket_min_idx..]
-                                    .iter()
-                                    .position(|x| x.0 != this_rem)
-                                    .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
-                            };
-                            write_u32(&mut ret, bucket_max_idx as u32);
-                            bucket_min_idx = bucket_max_idx;
-                        }
-                        write_u32(&mut ret, linearized_buckets.len() as u32);
-                        // pretend it was already re-sorted according to remainder order.
-                        let mut cum_start_idx = 0;
-                        let mut uninlined_len = 0u32;
-                        for (_remainder, quotient, start_idx, end_idx) in linearized_buckets.iter()
-                        {
-                            let num_elts = end_idx - start_idx;
-                            if !never_inline_b2 && num_elts <= 16 {
-                                let new_size = ret.len() + 16;
-                                ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
-                                ret.resize(new_size, 0);
-                            } else {
-                                uninlined_len += num_elts;
-                                max_blank_pair_results = max_blank_pair_results.max(num_elts); // already * 2
-                                write_u32(&mut ret, 0);
-                                write_u32(&mut ret, 0);
-                                write_u32(&mut ret, cum_start_idx); // already * 2
-                                write_u32(&mut ret, num_elts >> 1); // here / 2
-                                cum_start_idx += num_elts;
+                                    let start_idx = b2_chars.len() as u32;
+                                    let mut num_words_here = 0u32;
+                                    let mut b1 = *b1;
+                                    bits[0] -= 1;
+                                    while b1 != 0 {
+                                        let t1 = b1.trailing_zeros() as u8;
+                                        let bit_idx = (t1 >> 1) as usize;
+                                        bits[bit_idx] += if t1 & 1 == 0 { 1 } else { 0x10 };
+                                        let mut b0 = b1_bits[&bits] & !((1u32 << t1) - 1);
+                                        bits[0] -= 1;
+                                        while b0 != 0 {
+                                            let t0 = b0.trailing_zeros() as u8;
+                                            let bit_idx = (t0 >> 1) as usize;
+                                            bits[bit_idx] += if t0 & 1 == 0 { 1 } else { 0x10 };
+                                            let word_indexes = b0_bits[&bits];
+                                            num_words_here += word_indexes.1 - word_indexes.0;
+                                            b2_chars.push(t1);
+                                            b2_chars.push(t0);
+                                            bits[bit_idx] -= if t0 & 1 == 0 { 1 } else { 0x10 };
+                                            b0 &= b0 - 1;
+                                        }
+                                        bits[0] += 1;
+                                        bits[bit_idx] -= if t1 & 1 == 0 { 1 } else { 0x10 };
+                                        b1 &= b1 - 1;
+                                    }
+                                    // no need to restore bits[0]
+                                    max_word_lookup_results_before_multiplying_len =
+                                        max_word_lookup_results_before_multiplying_len
+                                            .max(num_words_here);
+                                    let end_idx = b2_chars.len() as u32;
+                                    (remainder, quotient, start_idx, end_idx)
+                                })
+                                .collect::<Box<_>>();
+                            linearized_buckets.sort_unstable();
+                            write_u32(&mut ret, num_double_blank_buckets);
+                            write_u32(&mut ret, 0);
+                            let mut bucket_min_idx = 0;
+                            for this_rem in 0..num_double_blank_buckets {
+                                let bucket_max_idx = bucket_min_idx + {
+                                    linearized_buckets[bucket_min_idx..]
+                                        .iter()
+                                        .position(|x| x.0 != this_rem)
+                                        .unwrap_or_else(|| {
+                                            linearized_buckets[bucket_min_idx..].len()
+                                        })
+                                };
+                                write_u32(&mut ret, bucket_max_idx as u32);
+                                bucket_min_idx = bucket_max_idx;
                             }
-                            write_u32(&mut ret, *quotient as u32);
-                            write_u32(&mut ret, (quotient >> 32) as u32);
-                            write_u32(&mut ret, (quotient >> 64) as u32);
-                        }
-                        write_u32(&mut ret, uninlined_len >> 1); // here / 2
-                        for (_remainder, _quotient, start_idx, end_idx) in linearized_buckets.iter()
-                        {
-                            if never_inline_b2 || end_idx - start_idx > 16 {
-                                ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
+                            write_u32(&mut ret, linearized_buckets.len() as u32);
+                            // pretend it was already re-sorted according to remainder order.
+                            let mut cum_start_idx = 0;
+                            let mut uninlined_len = 0u32;
+                            for (_remainder, quotient, start_idx, end_idx) in
+                                linearized_buckets.iter()
+                            {
+                                let num_elts = end_idx - start_idx;
+                                if !never_inline_b2 && num_elts <= 16 {
+                                    let new_size = ret.len() + 16;
+                                    ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
+                                    ret.resize(new_size, 0);
+                                } else {
+                                    uninlined_len += num_elts;
+                                    max_blank_pair_results = max_blank_pair_results.max(num_elts); // already * 2
+                                    write_u32(&mut ret, 0);
+                                    write_u32(&mut ret, 0);
+                                    write_u32(&mut ret, cum_start_idx); // already * 2
+                                    write_u32(&mut ret, num_elts >> 1); // here / 2
+                                    cum_start_idx += num_elts;
+                                }
+                                write_u32(&mut ret, *quotient as u32);
+                                write_u32(&mut ret, (quotient >> 32) as u32);
+                                write_u32(&mut ret, (quotient >> 64) as u32);
+                            }
+                            write_u32(&mut ret, uninlined_len >> 1); // here / 2
+                            for (_remainder, _quotient, start_idx, end_idx) in
+                                linearized_buckets.iter()
+                            {
+                                if never_inline_b2 || end_idx - start_idx > 16 {
+                                    ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
+                                }
+                            }
+                        } else {
+                            let mut linearized_buckets = b2_bits
+                                .iter()
+                                .map(|(key_bits, val_bits)| {
+                                    let bits_u128 = u128::from_le_bytes(*key_bits);
+                                    let mut quotient =
+                                        bits_u128 / (num_double_blank_buckets as u128);
+                                    let remainder =
+                                        (bits_u128 % num_double_blank_buckets as u128) as u32;
+                                    if quotient >> 96 != 0 {
+                                        quotient &= (1u128 << 96) - 1;
+                                        // hopefully this does not crash
+                                        writeln!(
+                                            boxed_stdout_or_stderr(),
+                                            "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
+                                            bits_u128,
+                                            num_double_blank_buckets,
+                                            quotient,
+                                            remainder
+                                        )
+                                        .unwrap();
+                                    }
+
+                                    // this part is only to compute that max_word_lookup_results value.
+                                    let mut num_words_here = 0u32;
+                                    let mut b1 = *val_bits;
+                                    bits.clone_from(key_bits);
+                                    bits[0] -= 1;
+                                    while b1 != 0 {
+                                        let t1 = b1.trailing_zeros() as u8;
+                                        let bit_idx = (t1 >> 1) as usize;
+                                        bits[bit_idx] += if t1 & 1 == 0 { 1 } else { 0x10 };
+                                        let mut b0 = b1_bits[&bits] & !((1u32 << t1) - 1);
+                                        bits[0] -= 1;
+                                        while b0 != 0 {
+                                            let t0 = b0.trailing_zeros() as u8;
+                                            let bit_idx = (t0 >> 1) as usize;
+                                            bits[bit_idx] += if t0 & 1 == 0 { 1 } else { 0x10 };
+                                            let word_indexes = b0_bits[&bits];
+                                            num_words_here += word_indexes.1 - word_indexes.0;
+                                            bits[bit_idx] -= if t0 & 1 == 0 { 1 } else { 0x10 };
+                                            b0 &= b0 - 1;
+                                        }
+                                        bits[0] += 1;
+                                        bits[bit_idx] -= if t1 & 1 == 0 { 1 } else { 0x10 };
+                                        b1 &= b1 - 1;
+                                    }
+                                    // no need to restore bits[0]
+                                    max_word_lookup_results_before_multiplying_len =
+                                        max_word_lookup_results_before_multiplying_len
+                                            .max(num_words_here);
+
+                                    (remainder, quotient, key_bits)
+                                })
+                                .collect::<Box<_>>();
+                            linearized_buckets.sort_unstable();
+                            write_u32(&mut ret, num_double_blank_buckets);
+                            write_u32(&mut ret, 0);
+                            let mut bucket_min_idx = 0;
+                            for this_rem in 0..num_double_blank_buckets {
+                                let bucket_max_idx = bucket_min_idx + {
+                                    linearized_buckets[bucket_min_idx..]
+                                        .iter()
+                                        .position(|x| x.0 != this_rem)
+                                        .unwrap_or_else(|| {
+                                            linearized_buckets[bucket_min_idx..].len()
+                                        })
+                                };
+                                write_u32(&mut ret, bucket_max_idx as u32);
+                                bucket_min_idx = bucket_max_idx;
+                            }
+                            write_u32(&mut ret, linearized_buckets.len() as u32);
+                            // pretend it was already re-sorted according to remainder order.
+                            for (_remainder, quotient, bits) in linearized_buckets.iter() {
+                                let blank_bits = b2_bits[*bits];
+                                write_u32(&mut ret, 0);
+                                write_u32(&mut ret, 0);
+                                write_u32(&mut ret, blank_bits);
+                                write_u32(&mut ret, 0);
+                                write_u32(&mut ret, *quotient as u32);
+                                write_u32(&mut ret, (quotient >> 32) as u32);
+                                write_u32(&mut ret, (quotient >> 64) as u32);
                             }
                         }
                         max_word_lookup_results = max_word_lookup_results
@@ -2611,7 +2707,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     }
                 }
                 ret[2..6].copy_from_slice(&max_word_lookup_results.to_le_bytes());
-                ret[6..10].copy_from_slice(&max_blank_pair_results.to_le_bytes());
+                if is_v1 {
+                    ret[6..10].copy_from_slice(&max_blank_pair_results.to_le_bytes());
+                }
                 // binary output
                 make_writer(&args[3])?.write_all(&ret)?;
                 Ok(true)
@@ -2817,9 +2915,12 @@ fn main() -> error::Returns<()> {
     read .wmp words (format subject to change)
   english-wmp something.wmp something.txt
     read .wmp (format subject to change)
+  english-make-wmp1 something.txt something.wmp
+  english-make-wmp1-overflow something.txt something.wmp
+    generate .wmp v1 (-overflow = allow overflows, disable 2-blank inlining)
   english-make-wmp something.txt something.wmp
   english-make-wmp-overflow something.txt something.wmp
-    generate .wmp (-overflow = allow overflows and disable 2-blank inlining)
+    generate .wmp v2 (-overflow = allow overflows)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, decimal)
   klv-kwg-extract CSW21.klv2 racks.kwg
