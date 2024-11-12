@@ -11,13 +11,13 @@ H	h	2	8	0	0	0
 I	i	17	1	1	0	0
 J	j	2	8	0	0	0
 L	l	8	1	0	0	0
-L·L	l·l	1	15	0	1 W	1 w
+L·L	l·l	1	15	0	2 W [L·L]	2 w [l·l]
 M	m	7	2	0	0	0
 N	n	12	1	0	0	0
-NY	ny	2	10	0	1 Y	1 y
+NY	ny	2	10	0	2 Y [NY]	2 y [ny]
 O	o	10	1	1	0	0
 P	p	3	3	0	0	0
-QU	qu	2	8	0	1 Q	1 q
+QU	qu	2	8	0	2 Q [QU]	2 q [qu]
 R	r	16	1	0	0	0
 S	s	19	1	0	0	0
 T	t	10	1	0	0	0
