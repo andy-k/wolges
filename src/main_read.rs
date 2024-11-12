@@ -1465,12 +1465,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
 
                 // wmp: olaugh's wordmap from jvc56/MAGPIE.
                 let wmp_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if wmp_bytes.len() < 10 {
+                if wmp_bytes.len() < 6 {
                     return Err("out of bounds".into());
                 }
 
                 let mut ret = String::new();
 
+                let wmp_ver = wmp_bytes[0];
                 let max_len = wmp_bytes[1];
                 let mut r = 2;
                 let max_word_lookup_results = wmp_bytes[r] as u32
@@ -1478,17 +1479,29 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     | (wmp_bytes[r + 2] as u32) << 16
                     | (wmp_bytes[r + 3] as u32) << 24;
                 r += 4;
-                let max_blank_pair_results = wmp_bytes[r] as u32
-                    | (wmp_bytes[r + 1] as u32) << 8
-                    | (wmp_bytes[r + 2] as u32) << 16
-                    | (wmp_bytes[r + 3] as u32) << 24;
-                r += 4;
+                if wmp_bytes.len() < 10 {
+                    return Err("out of bounds".into());
+                }
+                let max_blank_pair_results;
+                if wmp_ver < 2 {
+                    max_blank_pair_results = wmp_bytes[r] as u32
+                        | (wmp_bytes[r + 1] as u32) << 8
+                        | (wmp_bytes[r + 2] as u32) << 16
+                        | (wmp_bytes[r + 3] as u32) << 24;
+                    r += 4;
+                } else {
+                    max_blank_pair_results = 0;
+                }
                 if !words_only {
-                    writeln!(
+                    write!(
                         ret,
-                        "wmp {} len 2..{} max_word_lookup_results={} max_blank_pair_results={}",
-                        wmp_bytes[0], max_len, max_word_lookup_results, max_blank_pair_results
+                        "wmp {} len 2..{} max_word_lookup_results={}",
+                        wmp_ver, max_len, max_word_lookup_results
                     )?;
+                    if wmp_ver < 2 {
+                        write!(ret, " max_blank_pair_results={}", max_blank_pair_results)?;
+                    }
+                    ret.push('\n');
                 }
                 let mut expected_max_word_lookup_results = 0;
                 let mut expected_max_blank_pair_results = 0;
@@ -1565,16 +1578,21 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     r += 4;
                     let wmp_bylen_double_blank_entries_ofs = r;
                     r += 28 * wmp_bylen_num_double_blank_entries as usize;
-                    if wmp_bytes.len() < r + 4 {
-                        return Err("out of bounds".into());
+                    let wmp_bylen_blank_pairs_ofs;
+                    if wmp_ver < 2 {
+                        if wmp_bytes.len() < r + 4 {
+                            return Err("out of bounds".into());
+                        }
+                        let wmp_bylen_num_blank_pairs = wmp_bytes[r] as u32
+                            | (wmp_bytes[r + 1] as u32) << 8
+                            | (wmp_bytes[r + 2] as u32) << 16
+                            | (wmp_bytes[r + 3] as u32) << 24;
+                        r += 4;
+                        wmp_bylen_blank_pairs_ofs = r;
+                        r += 2 * wmp_bylen_num_blank_pairs as usize;
+                    } else {
+                        wmp_bylen_blank_pairs_ofs = 0;
                     }
-                    let wmp_bylen_num_blank_pairs = wmp_bytes[r] as u32
-                        | (wmp_bytes[r + 1] as u32) << 8
-                        | (wmp_bytes[r + 2] as u32) << 16
-                        | (wmp_bytes[r + 3] as u32) << 24;
-                    r += 4;
-                    let wmp_bylen_blank_pairs_ofs = r;
-                    r += 2 * wmp_bylen_num_blank_pairs as usize;
 
                     if wmp_bytes.len() < r {
                         return Err("out of bounds".into());
@@ -1689,18 +1707,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                 )?;
                                 for entry_idx in bucket_start_idx..bucket_end_idx {
                                     p = wmp_bylen_blank_entries_ofs + entry_idx as usize * 28 + 8;
-                                    // this is 2 * index, in bytes.
-                                    let bits = (wmp_bytes[p] as u32
+                                    let bits = wmp_bytes[p] as u32
                                         | (wmp_bytes[p + 1] as u32) << 8
                                         | (wmp_bytes[p + 2] as u32) << 16
-                                        | (wmp_bytes[p + 3] as u32) << 24)
-                                        as u64
-                                        | ((wmp_bytes[p + 4] as u32
-                                            | (wmp_bytes[p + 5] as u32) << 8
-                                            | (wmp_bytes[p + 6] as u32) << 16
-                                            | (wmp_bytes[p + 7] as u32) << 24)
-                                            as u64)
-                                            << 32;
+                                        | (wmp_bytes[p + 3] as u32) << 24;
                                     p += 8;
                                     let quotient = (wmp_bytes[p] as u32
                                         | (wmp_bytes[p + 1] as u32) << 8
@@ -1742,165 +1752,407 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             ret,
                             "\ndouble blank buckets: {wmp_bylen_num_double_blank_buckets}"
                         )?;
-                        for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
-                            let mut p =
-                                wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = wmp_bytes[p] as u32
-                                | (wmp_bytes[p + 1] as u32) << 8
-                                | (wmp_bytes[p + 2] as u32) << 16
-                                | (wmp_bytes[p + 3] as u32) << 24;
-                            p += 4;
-                            let bucket_end_idx = wmp_bytes[p] as u32
-                                | (wmp_bytes[p + 1] as u32) << 8
-                                | (wmp_bytes[p + 2] as u32) << 16
-                                | (wmp_bytes[p + 3] as u32) << 24;
-                            if bucket_start_idx != bucket_end_idx {
-                                writeln!(
-                                    ret,
-                                    "bucket {bucket_idx}/{wmp_bylen_num_double_blank_buckets}:"
-                                )?;
-                                for entry_idx in bucket_start_idx..bucket_end_idx {
-                                    p = wmp_bylen_double_blank_entries_ofs
-                                        + entry_idx as usize * 28
-                                        + 16;
-                                    let quotient = (wmp_bytes[p] as u32
-                                        | (wmp_bytes[p + 1] as u32) << 8
-                                        | (wmp_bytes[p + 2] as u32) << 16
-                                        | (wmp_bytes[p + 3] as u32) << 24)
-                                        as u128
-                                        | ((wmp_bytes[p + 4] as u32
-                                            | (wmp_bytes[p + 5] as u32) << 8
-                                            | (wmp_bytes[p + 6] as u32) << 16
-                                            | (wmp_bytes[p + 7] as u32) << 24)
-                                            as u128)
-                                            << 32
-                                        | ((wmp_bytes[p + 8] as u32
-                                            | (wmp_bytes[p + 9] as u32) << 8
-                                            | (wmp_bytes[p + 10] as u32) << 16
-                                            | (wmp_bytes[p + 11] as u32) << 24)
-                                            as u128)
-                                            << 64;
-                                    let bit_rack = quotient
-                                        * wmp_bylen_num_double_blank_buckets as u128
-                                        + bucket_idx as u128;
-                                    write!(ret, "  {bit_rack:032x} ")?;
-                                    for i in 0..32 {
-                                        for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
-                                            alphabet_label_allow_blank.label(&mut ret, i)?;
-                                        }
-                                    }
-                                    ret.push_str(" =");
-                                    let mut this_word_lookup_results = 0u32;
-                                    p -= 16;
-                                    let num_elts;
-                                    if wmp_bytes[p] == 0 {
-                                        // this is 2 * index, in bytes.
-                                        p += 8;
-                                        let initial_ofs = wmp_bytes[p] as u32
+                        if wmp_ver < 2 {
+                            for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
+                                let mut p =
+                                    wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
+                                let bucket_start_idx = wmp_bytes[p] as u32
+                                    | (wmp_bytes[p + 1] as u32) << 8
+                                    | (wmp_bytes[p + 2] as u32) << 16
+                                    | (wmp_bytes[p + 3] as u32) << 24;
+                                p += 4;
+                                let bucket_end_idx = wmp_bytes[p] as u32
+                                    | (wmp_bytes[p + 1] as u32) << 8
+                                    | (wmp_bytes[p + 2] as u32) << 16
+                                    | (wmp_bytes[p + 3] as u32) << 24;
+                                if bucket_start_idx != bucket_end_idx {
+                                    writeln!(
+                                        ret,
+                                        "bucket {bucket_idx}/{wmp_bylen_num_double_blank_buckets}:"
+                                    )?;
+                                    for entry_idx in bucket_start_idx..bucket_end_idx {
+                                        p = wmp_bylen_double_blank_entries_ofs
+                                            + entry_idx as usize * 28
+                                            + 16;
+                                        let quotient = (wmp_bytes[p] as u32
                                             | (wmp_bytes[p + 1] as u32) << 8
                                             | (wmp_bytes[p + 2] as u32) << 16
-                                            | (wmp_bytes[p + 3] as u32) << 24;
-                                        p += 4;
-                                        num_elts = wmp_bytes[p] as u32
-                                            | (wmp_bytes[p + 1] as u32) << 8
-                                            | (wmp_bytes[p + 2] as u32) << 16
-                                            | (wmp_bytes[p + 3] as u32) << 24;
-                                        p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
-                                    } else {
-                                        num_elts = (wmp_bytes[p..p + 16]
-                                            .iter()
-                                            .position(|&b| b == 0)
-                                            .unwrap_or(16)
-                                            >> 1)
-                                            as u32;
-                                    }
-                                    for _ in 0..num_elts {
-                                        ret.push(' ');
-                                        let mut unblanked_bit_rack = bit_rack & !0xf;
-                                        for _ in 0..2 {
-                                            let tile = wmp_bytes[p];
-                                            unblanked_bit_rack += 1 << (4 * tile);
-                                            alphabet_label.label(&mut ret, tile)?;
-                                            p += 1;
-                                        }
-
-                                        {
-                                            // shadow all the variables inside here.
-                                            let mut sought_quotient = unblanked_bit_rack
-                                                / wmp_bylen_num_word_buckets as u128;
-                                            let bucket_idx = (unblanked_bit_rack
-                                                % wmp_bylen_num_word_buckets as u128)
-                                                as u32;
-                                            // write something if ZA/ZE/ZO overflow.
-                                            if sought_quotient >> 96 != 0 {
-                                                sought_quotient &= (1u128 << 96) - 1;
-                                                write!(ret, " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])")?;
+                                            | (wmp_bytes[p + 3] as u32) << 24)
+                                            as u128
+                                            | ((wmp_bytes[p + 4] as u32
+                                                | (wmp_bytes[p + 5] as u32) << 8
+                                                | (wmp_bytes[p + 6] as u32) << 16
+                                                | (wmp_bytes[p + 7] as u32) << 24)
+                                                as u128)
+                                                << 32
+                                            | ((wmp_bytes[p + 8] as u32
+                                                | (wmp_bytes[p + 9] as u32) << 8
+                                                | (wmp_bytes[p + 10] as u32) << 16
+                                                | (wmp_bytes[p + 11] as u32) << 24)
+                                                as u128)
+                                                << 64;
+                                        let bit_rack = quotient
+                                            * wmp_bylen_num_double_blank_buckets as u128
+                                            + bucket_idx as u128;
+                                        write!(ret, "  {bit_rack:032x} ")?;
+                                        for i in 0..32 {
+                                            for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
+                                                alphabet_label_allow_blank.label(&mut ret, i)?;
                                             }
-                                            let mut p = wmp_bylen_word_buckets_ofs
-                                                + bucket_idx as usize * 4;
-                                            let bucket_start_idx = wmp_bytes[p] as u32
+                                        }
+                                        ret.push_str(" =");
+                                        let mut this_word_lookup_results = 0u32;
+                                        p -= 16;
+                                        let num_elts;
+                                        if wmp_bytes[p] == 0 {
+                                            p += 8;
+                                            let initial_ofs = wmp_bytes[p] as u32
                                                 | (wmp_bytes[p + 1] as u32) << 8
                                                 | (wmp_bytes[p + 2] as u32) << 16
                                                 | (wmp_bytes[p + 3] as u32) << 24;
                                             p += 4;
-                                            let bucket_end_idx = wmp_bytes[p] as u32
+                                            num_elts = wmp_bytes[p] as u32
                                                 | (wmp_bytes[p + 1] as u32) << 8
                                                 | (wmp_bytes[p + 2] as u32) << 16
                                                 | (wmp_bytes[p + 3] as u32) << 24;
-                                            let mut found = false;
-                                            for entry_idx in bucket_start_idx..bucket_end_idx {
-                                                p = wmp_bylen_word_entries_ofs
-                                                    + entry_idx as usize * 28
-                                                    + 16;
-                                                let quotient = (wmp_bytes[p] as u32
+                                            p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
+                                        } else {
+                                            num_elts = (wmp_bytes[p..p + 16]
+                                                .iter()
+                                                .position(|&b| b == 0)
+                                                .unwrap_or(16)
+                                                >> 1)
+                                                as u32;
+                                        }
+                                        for _ in 0..num_elts {
+                                            ret.push(' ');
+                                            let mut unblanked_bit_rack = bit_rack & !0xf;
+                                            for _ in 0..2 {
+                                                let tile = wmp_bytes[p];
+                                                unblanked_bit_rack += 1 << (4 * tile);
+                                                alphabet_label.label(&mut ret, tile)?;
+                                                p += 1;
+                                            }
+
+                                            {
+                                                // shadow all the variables inside here.
+                                                let mut sought_quotient = unblanked_bit_rack
+                                                    / wmp_bylen_num_word_buckets as u128;
+                                                let bucket_idx = (unblanked_bit_rack
+                                                    % wmp_bylen_num_word_buckets as u128)
+                                                    as u32;
+                                                // write something if ZA/ZE/ZO overflow.
+                                                if sought_quotient >> 96 != 0 {
+                                                    sought_quotient &= (1u128 << 96) - 1;
+                                                    write!(ret, " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])")?;
+                                                }
+                                                let mut p = wmp_bylen_word_buckets_ofs
+                                                    + bucket_idx as usize * 4;
+                                                let bucket_start_idx = wmp_bytes[p] as u32
                                                     | (wmp_bytes[p + 1] as u32) << 8
                                                     | (wmp_bytes[p + 2] as u32) << 16
-                                                    | (wmp_bytes[p + 3] as u32) << 24)
-                                                    as u128
-                                                    | ((wmp_bytes[p + 4] as u32
-                                                        | (wmp_bytes[p + 5] as u32) << 8
-                                                        | (wmp_bytes[p + 6] as u32) << 16
-                                                        | (wmp_bytes[p + 7] as u32) << 24)
-                                                        as u128)
-                                                        << 32
-                                                    | ((wmp_bytes[p + 8] as u32
-                                                        | (wmp_bytes[p + 9] as u32) << 8
-                                                        | (wmp_bytes[p + 10] as u32) << 16
-                                                        | (wmp_bytes[p + 11] as u32) << 24)
-                                                        as u128)
-                                                        << 64;
-                                                if quotient == sought_quotient {
-                                                    p -= 16;
-                                                    let num_elts = if wmp_bytes[p] == 0 {
-                                                        p += 12;
-                                                        wmp_bytes[p] as u32
-                                                            | (wmp_bytes[p + 1] as u32) << 8
-                                                            | (wmp_bytes[p + 2] as u32) << 16
-                                                            | (wmp_bytes[p + 3] as u32) << 24
-                                                    } else {
-                                                        (wmp_bytes[p..p + 16]
-                                                            .iter()
-                                                            .position(|&b| b == 0)
-                                                            .unwrap_or(16)
-                                                            / len as usize)
-                                                            as u32
-                                                    };
-                                                    this_word_lookup_results += num_elts;
-                                                    found = true;
-                                                    break;
+                                                    | (wmp_bytes[p + 3] as u32) << 24;
+                                                p += 4;
+                                                let bucket_end_idx = wmp_bytes[p] as u32
+                                                    | (wmp_bytes[p + 1] as u32) << 8
+                                                    | (wmp_bytes[p + 2] as u32) << 16
+                                                    | (wmp_bytes[p + 3] as u32) << 24;
+                                                let mut found = false;
+                                                for entry_idx in bucket_start_idx..bucket_end_idx {
+                                                    p = wmp_bylen_word_entries_ofs
+                                                        + entry_idx as usize * 28
+                                                        + 16;
+                                                    let quotient = (wmp_bytes[p] as u32
+                                                        | (wmp_bytes[p + 1] as u32) << 8
+                                                        | (wmp_bytes[p + 2] as u32) << 16
+                                                        | (wmp_bytes[p + 3] as u32) << 24)
+                                                        as u128
+                                                        | ((wmp_bytes[p + 4] as u32
+                                                            | (wmp_bytes[p + 5] as u32) << 8
+                                                            | (wmp_bytes[p + 6] as u32) << 16
+                                                            | (wmp_bytes[p + 7] as u32) << 24)
+                                                            as u128)
+                                                            << 32
+                                                        | ((wmp_bytes[p + 8] as u32
+                                                            | (wmp_bytes[p + 9] as u32) << 8
+                                                            | (wmp_bytes[p + 10] as u32) << 16
+                                                            | (wmp_bytes[p + 11] as u32) << 24)
+                                                            as u128)
+                                                            << 64;
+                                                    if quotient == sought_quotient {
+                                                        p -= 16;
+                                                        let num_elts = if wmp_bytes[p] == 0 {
+                                                            p += 12;
+                                                            wmp_bytes[p] as u32
+                                                                | (wmp_bytes[p + 1] as u32) << 8
+                                                                | (wmp_bytes[p + 2] as u32) << 16
+                                                                | (wmp_bytes[p + 3] as u32) << 24
+                                                        } else {
+                                                            (wmp_bytes[p..p + 16]
+                                                                .iter()
+                                                                .position(|&b| b == 0)
+                                                                .unwrap_or(16)
+                                                                / len as usize)
+                                                                as u32
+                                                        };
+                                                        this_word_lookup_results += num_elts;
+                                                        found = true;
+                                                        break;
+                                                    }
+                                                }
+                                                if !found {
+                                                    return Err("invalid double blank entry".into());
                                                 }
                                             }
-                                            if !found {
-                                                return Err("invalid double blank entry".into());
+                                        }
+                                        expected_max_word_lookup_results =
+                                            expected_max_word_lookup_results
+                                                .max(len as u32 * this_word_lookup_results);
+                                        expected_max_blank_pair_results =
+                                            expected_max_blank_pair_results.max(2 * num_elts);
+                                        ret.push('\n');
+                                    }
+                                }
+                            }
+                        } else {
+                            for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
+                                let mut p =
+                                    wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
+                                let bucket_start_idx = wmp_bytes[p] as u32
+                                    | (wmp_bytes[p + 1] as u32) << 8
+                                    | (wmp_bytes[p + 2] as u32) << 16
+                                    | (wmp_bytes[p + 3] as u32) << 24;
+                                p += 4;
+                                let bucket_end_idx = wmp_bytes[p] as u32
+                                    | (wmp_bytes[p + 1] as u32) << 8
+                                    | (wmp_bytes[p + 2] as u32) << 16
+                                    | (wmp_bytes[p + 3] as u32) << 24;
+                                if bucket_start_idx != bucket_end_idx {
+                                    writeln!(
+                                        ret,
+                                        "bucket {bucket_idx}/{wmp_bylen_num_double_blank_buckets}:"
+                                    )?;
+                                    for entry_idx in bucket_start_idx..bucket_end_idx {
+                                        p = wmp_bylen_double_blank_entries_ofs
+                                            + entry_idx as usize * 28
+                                            + 8;
+                                        let bits = wmp_bytes[p] as u32
+                                            | (wmp_bytes[p + 1] as u32) << 8
+                                            | (wmp_bytes[p + 2] as u32) << 16
+                                            | (wmp_bytes[p + 3] as u32) << 24;
+                                        p += 8;
+                                        let quotient = (wmp_bytes[p] as u32
+                                            | (wmp_bytes[p + 1] as u32) << 8
+                                            | (wmp_bytes[p + 2] as u32) << 16
+                                            | (wmp_bytes[p + 3] as u32) << 24)
+                                            as u128
+                                            | ((wmp_bytes[p + 4] as u32
+                                                | (wmp_bytes[p + 5] as u32) << 8
+                                                | (wmp_bytes[p + 6] as u32) << 16
+                                                | (wmp_bytes[p + 7] as u32) << 24)
+                                                as u128)
+                                                << 32
+                                            | ((wmp_bytes[p + 8] as u32
+                                                | (wmp_bytes[p + 9] as u32) << 8
+                                                | (wmp_bytes[p + 10] as u32) << 16
+                                                | (wmp_bytes[p + 11] as u32) << 24)
+                                                as u128)
+                                                << 64;
+                                        let bit_rack = quotient
+                                            * wmp_bylen_num_double_blank_buckets as u128
+                                            + bucket_idx as u128;
+                                        write!(ret, "  {bit_rack:032x} ")?;
+                                        for i in 0..32 {
+                                            for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
+                                                alphabet_label_allow_blank.label(&mut ret, i)?;
                                             }
                                         }
+                                        ret.push_str(" =");
+                                        let mut this_word_lookup_results = 0u32;
+                                        for first_i in 0..32 {
+                                            if bits & (1 << first_i) != 0 {
+                                                let b1_bit_rack =
+                                                    (bit_rack - 1) + (1 << (4 * first_i));
+                                                {
+                                                    // shadow all the variables inside here.
+                                                    let mut sought_quotient = b1_bit_rack
+                                                        / wmp_bylen_num_blank_buckets as u128;
+                                                    let bucket_idx = (b1_bit_rack
+                                                        % wmp_bylen_num_blank_buckets as u128)
+                                                        as u32;
+                                                    // write something if ZA/ZE/ZO overflow.
+                                                    if sought_quotient >> 96 != 0 {
+                                                        sought_quotient &= (1u128 << 96) - 1;
+                                                        write!(ret, " _OVERFLOW(0x{b1_bit_rack:032x}.divmod({wmp_bylen_num_blank_buckets})=[0x{sought_quotient:024x},{bucket_idx}])")?;
+                                                    }
+                                                    let mut p = wmp_bylen_blank_buckets_ofs
+                                                        + bucket_idx as usize * 4;
+                                                    let bucket_start_idx = wmp_bytes[p] as u32
+                                                        | (wmp_bytes[p + 1] as u32) << 8
+                                                        | (wmp_bytes[p + 2] as u32) << 16
+                                                        | (wmp_bytes[p + 3] as u32) << 24;
+                                                    p += 4;
+                                                    let bucket_end_idx = wmp_bytes[p] as u32
+                                                        | (wmp_bytes[p + 1] as u32) << 8
+                                                        | (wmp_bytes[p + 2] as u32) << 16
+                                                        | (wmp_bytes[p + 3] as u32) << 24;
+                                                    let mut found = false;
+                                                    for entry_idx in
+                                                        bucket_start_idx..bucket_end_idx
+                                                    {
+                                                        p = wmp_bylen_blank_entries_ofs
+                                                            + entry_idx as usize * 28
+                                                            + 16;
+                                                        let quotient = (wmp_bytes[p] as u32
+                                                            | (wmp_bytes[p + 1] as u32) << 8
+                                                            | (wmp_bytes[p + 2] as u32) << 16
+                                                            | (wmp_bytes[p + 3] as u32) << 24)
+                                                            as u128
+                                                            | ((wmp_bytes[p + 4] as u32
+                                                                | (wmp_bytes[p + 5] as u32) << 8
+                                                                | (wmp_bytes[p + 6] as u32) << 16
+                                                                | (wmp_bytes[p + 7] as u32) << 24)
+                                                                as u128)
+                                                                << 32
+                                                            | ((wmp_bytes[p + 8] as u32
+                                                                | (wmp_bytes[p + 9] as u32) << 8
+                                                                | (wmp_bytes[p + 10] as u32) << 16
+                                                                | (wmp_bytes[p + 11] as u32) << 24)
+                                                                as u128)
+                                                                << 64;
+                                                        if quotient == sought_quotient {
+                                                            p -= 8;
+                                                            let b1_bits = wmp_bytes[p] as u32
+                                                                | (wmp_bytes[p + 1] as u32) << 8
+                                                                | (wmp_bytes[p + 2] as u32) << 16
+                                                                | (wmp_bytes[p + 3] as u32) << 24;
+                                                            {
+                                                                for i in first_i..32 {
+                                                                    if b1_bits & (1 << i) != 0 {
+                                                                        ret.push(' ');
+                                                                        alphabet_label.label(
+                                                                            &mut ret, first_i,
+                                                                        )?;
+                                                                        alphabet_label
+                                                                            .label(&mut ret, i)?;
+
+                                                                        let unblanked_bit_rack =
+                                                                            (b1_bit_rack & !0xf)
+                                                                                + (1 << (4 * i));
+                                                                        {
+                                                                            // shadow all the variables inside here.
+                                                                            let mut sought_quotient =
+                                                                                unblanked_bit_rack / wmp_bylen_num_word_buckets as u128;
+                                                                            let bucket_idx = (unblanked_bit_rack
+                                                                                % wmp_bylen_num_word_buckets as u128)
+                                                                                as u32;
+                                                                            // write something if ZA/ZE/ZO overflow.
+                                                                            if sought_quotient >> 96
+                                                                                != 0
+                                                                            {
+                                                                                sought_quotient &=
+                                                                                    (1u128 << 96)
+                                                                                        - 1;
+                                                                                write!(ret, " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])")?;
+                                                                            }
+                                                                            let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
+                                                                            let bucket_start_idx =
+                                                                                wmp_bytes[p] as u32
+                                                                                    | (wmp_bytes
+                                                                                        [p + 1]
+                                                                                        as u32)
+                                                                                        << 8
+                                                                                    | (wmp_bytes
+                                                                                        [p + 2]
+                                                                                        as u32)
+                                                                                        << 16
+                                                                                    | (wmp_bytes
+                                                                                        [p + 3]
+                                                                                        as u32)
+                                                                                        << 24;
+                                                                            p += 4;
+                                                                            let bucket_end_idx =
+                                                                                wmp_bytes[p] as u32
+                                                                                    | (wmp_bytes
+                                                                                        [p + 1]
+                                                                                        as u32)
+                                                                                        << 8
+                                                                                    | (wmp_bytes
+                                                                                        [p + 2]
+                                                                                        as u32)
+                                                                                        << 16
+                                                                                    | (wmp_bytes
+                                                                                        [p + 3]
+                                                                                        as u32)
+                                                                                        << 24;
+                                                                            let mut found = false;
+                                                                            for entry_idx in
+                                                                                bucket_start_idx
+                                                                                    ..bucket_end_idx
+                                                                            {
+                                                                                p = wmp_bylen_word_entries_ofs + entry_idx as usize * 28 + 16;
+                                                                                let quotient = (wmp_bytes[p] as u32
+                                                                                    | (wmp_bytes[p + 1] as u32) << 8
+                                                                                    | (wmp_bytes[p + 2] as u32) << 16
+                                                                                    | (wmp_bytes[p + 3] as u32) << 24)
+                                                                                    as u128
+                                                                                    | ((wmp_bytes[p + 4] as u32
+                                                                                        | (wmp_bytes[p + 5] as u32) << 8
+                                                                                        | (wmp_bytes[p + 6] as u32) << 16
+                                                                                        | (wmp_bytes[p + 7] as u32) << 24)
+                                                                                        as u128)
+                                                                                        << 32
+                                                                                    | ((wmp_bytes[p + 8] as u32
+                                                                                        | (wmp_bytes[p + 9] as u32) << 8
+                                                                                        | (wmp_bytes[p + 10] as u32) << 16
+                                                                                        | (wmp_bytes[p + 11] as u32) << 24)
+                                                                                        as u128)
+                                                                                        << 64;
+                                                                                if quotient == sought_quotient {
+                                                                                    p -= 16;
+                                                                                    let num_elts = if wmp_bytes[p] == 0 {
+                                                                                        p += 12;
+                                                                                        wmp_bytes[p] as u32
+                                                                                            | (wmp_bytes[p + 1] as u32) << 8
+                                                                                            | (wmp_bytes[p + 2] as u32) << 16
+                                                                                            | (wmp_bytes[p + 3] as u32) << 24
+                                                                                    } else {
+                                                                                        (wmp_bytes[p..p + 16]
+                                                                                            .iter()
+                                                                                            .position(|&b| b == 0)
+                                                                                            .unwrap_or(16)
+                                                                                            / len as usize)
+                                                                                            as u32
+                                                                                    };
+                                                                                    this_word_lookup_results += num_elts;
+                                                                                    found = true;
+                                                                                    break;
+                                                                                }
+                                                                            }
+                                                                            if !found {
+                                                                                return Err("invalid double blank entry".into());
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            found = true;
+                                                            break;
+                                                        }
+                                                    }
+                                                    if !found {
+                                                        return Err(
+                                                            "invalid double blank entry".into()
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        expected_max_word_lookup_results =
+                                            expected_max_word_lookup_results
+                                                .max(len as u32 * this_word_lookup_results);
+                                        ret.push('\n');
                                     }
-                                    expected_max_word_lookup_results =
-                                        expected_max_word_lookup_results
-                                            .max(len as u32 * this_word_lookup_results);
-                                    expected_max_blank_pair_results =
-                                        expected_max_blank_pair_results.max(2 * num_elts);
-                                    ret.push('\n');
                                 }
                             }
                         }
