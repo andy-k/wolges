@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2024 Andy Kurnia.
 
-use wolges::{alphabet, bites, error, fash, prob};
+use wolges::{alphabet, bites, error, fash, prob, stats};
 
 use std::fmt::Write;
 use std::str::FromStr;
@@ -2945,6 +2945,8 @@ fn main() -> error::Returns<()> {
     read zyzzyva dawg
   lexpert something.lxd something.txt
     read lexpert dawg
+  stats-zt
+    experimental statistics exploration showing the Z table
 input/output files can be \"-\" (not advisable for binary files)"
         );
         Ok(())
@@ -3250,6 +3252,47 @@ input/output files can be \"-\" (not advisable for binary files)"
                 &mut default_out,
             )?;
             make_writer(&args[3])?.write_all(ret.as_bytes())?;
+        } else if args[1] == "stats-zt" {
+            let mut ret = String::new();
+            for ci in [0.8f64, 0.85, 0.9, 0.95, 0.99, 0.995, 0.999] {
+                writeln!(
+                    ret,
+                    "{:4.1}% {}",
+                    ci * 100.0,
+                    stats::NormalDistribution::reverse_ci(ci)
+                )?;
+            }
+            ret.push('\n');
+            let mut cnd = stats::CumulativeNormalDensity::new();
+            let mut cumulative_normal_density = |x: f64| cnd.get(x);
+            for y in (35..=50).rev().step_by(5) {
+                let v = y as f32 * -0.1;
+                writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
+            }
+            for y in (0..=34i32).rev() {
+                write!(ret, "{:4.1}", y as f32 * -0.1)?;
+                for x in 0..=9 {
+                    let v = (y * 10 + x) as f32 * -0.01;
+                    //write!(ret, " {:5.2}", v)?;
+                    write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
+                }
+                ret.push('\n');
+            }
+            ret.push('\n');
+            for y in 0..=34i32 {
+                write!(ret, "{:4.1}", y as f32 * 0.1)?;
+                for x in 0..=9 {
+                    let v = (y * 10 + x) as f32 * 0.01;
+                    //write!(ret, " {:5.2}", v)?;
+                    write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
+                }
+                ret.push('\n');
+            }
+            for y in (35..=50).step_by(5) {
+                let v = y as f32 * 0.1;
+                writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
+            }
+            print!("{}", ret);
         } else {
             return Err("invalid argument".into());
         }
