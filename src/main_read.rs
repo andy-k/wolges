@@ -2922,7 +2922,7 @@ fn main() -> error::Returns<()> {
   english-make-wmp-overflow something.txt something.wmp
     generate .wmp v2 (-overflow = allow overflows)
   (english can also be catalan, french, german, norwegian, polish, slovene,
-    spanish, decimal)
+    spanish, decimal, hex)
   klv-kwg-extract CSW21.klv2 racks.kwg
     just copy out the kwg for further analysis.
   kwg-hitcheck CSW21.kwg cls csa ncs outfile
@@ -2961,6 +2961,7 @@ input/output files can be \"-\" (not advisable for binary files)"
             || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
             || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
+            || do_lang(&args, "hex", alphabet::make_hex_alphabet)?
             || do_lang(
                 &args,
                 "super-english",

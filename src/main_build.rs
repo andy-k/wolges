@@ -522,7 +522,7 @@ fn main() -> error::Returns<()> {
     english-legacy-... for legacy (which is the former default),
     this is applicable for kwg, kwg-anything, klv/klv2)
   (english can also be catalan, french, german, norwegian, polish, slovene,
-    spanish, decimal)
+    spanish, decimal, hex)
 input/output files can be \"-\" (not advisable for binary files)"
         );
         Ok(())
@@ -540,6 +540,7 @@ input/output files can be \"-\" (not advisable for binary files)"
             || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
             || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
+            || do_lang(&args, "hex", alphabet::make_hex_alphabet)?
         {
         } else {
             return Err("invalid argument".into());

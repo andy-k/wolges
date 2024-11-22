@@ -287,6 +287,11 @@ pub fn make_french_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/french.txt")
 }
 
+// for pass-through kwg reading/building, cannot be used for games.
+pub fn make_hex_alphabet() -> Alphabet {
+    new_static_alphabet_from_file!("alphabets/hex.txt")
+}
+
 // http://hkcrosswordclub.com/?cat=14
 pub fn make_hong_kong_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/hong_kong_english.txt")
