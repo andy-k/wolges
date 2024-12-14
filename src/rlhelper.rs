@@ -53,7 +53,12 @@ impl rustyline::highlight::Highlighter for MyHelper {
         self.highlighter.highlight(line, pos)
     }
 
-    fn highlight_char(&self, line: &str, pos: usize, forced: bool) -> bool {
+    fn highlight_char(
+        &self,
+        line: &str,
+        pos: usize,
+        forced: rustyline::highlight::CmdKind,
+    ) -> bool {
         self.highlighter.highlight_char(line, pos, forced)
     }
 }
