@@ -45,7 +45,7 @@ if [ "$#" -lt 3 ]; then
 usage 1:
   mkdir t
   cd t
-  cp -ip ../.../CSW21.kwg .
+  cp -ip ../.../CSW24.kwg .
   ../genleaves.sh [options] super-english english 2000000 2000000 2000000
 usage 2:
   mkdir t

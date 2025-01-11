@@ -41,11 +41,11 @@ fn main() -> error::Returns<()> {
     let _ = jumbled;
     let jumbled = false;
     let kwg = if jumbled {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kad")?)
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kad")?)
     } else {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?)
+        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?)
     };
-    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv2")?);
+    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?);
     /*
     let _ = klv;
     let klv = std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES));

@@ -311,16 +311,16 @@ fn main() -> error::Returns<()> {
     if args.len() <= 1 {
         println!(
             "args:
-  english-autoplay CSW21.kwg leave0.klv leave1.klv 1000000
+  english-autoplay CSW24.kwg leave0.klv leave1.klv 1000000
     autoplay 1000000 games, logs to a pair of csv.
     (changing output filenames needs recompile.)
     if leave is \"-\" or omitted, uses no leave.
     number of games is optional.
-  english-autoplay-summarize CSW21.kwg leave0.klv leave1.klv 1000000
+  english-autoplay-summarize CSW24.kwg leave0.klv leave1.klv 1000000
     same as english-autoplay and also save summary file.
-  english-autoplay-summarize-only CSW21.kwg leave0.klv leave1.klv 1000000
+  english-autoplay-summarize-only CSW24.kwg leave0.klv leave1.klv 1000000
     same as english-autoplay-summarize but do not save the log files.
-  english-autoplay-summarize-breadth CSW21.kwg leave0.klv leave1.klv 1000000
+  english-autoplay-summarize-breadth CSW24.kwg leave0.klv leave1.klv 1000000
     same as english-autoplay-summarize but allow discontinuous rack sampling.
   english-autoplay-summarize-only-breadth ...
     same as english-autoplay-summarize-only + discontinuous rack sampling.
@@ -336,14 +336,14 @@ fn main() -> error::Returns<()> {
     generate leaves (no smoothing) up to rack_size
   english-generate-full summary.csv leaves.csv
     generate leaves (with smoothing) up to rack_size
-  english-playability CSW21.kwg leave.klv 1000000
+  english-playability CSW24.kwg leave.klv 1000000
     autoplay (not saved) and record prorated found best words (at the end)
     (run fewer number of games and use resummarize to merge to mitigate risks)
   english-resummarize-playability concatenated_playabilities.csv playability.csv
     same as english-resummarize but sorts differently
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, super-english, super-catalan)
-  jumbled-english-autoplay CSW21.kad leave0.klv leave1.klv 1000
+  jumbled-english-autoplay CSW24.kad leave0.klv leave1.klv 1000
     (all also take jumbled- prefix, including jumbled-super-;
     note that jumbled autoplay requires .kad instead of .kwg)
 input/output files can be \"-\" (not advisable for binary files).

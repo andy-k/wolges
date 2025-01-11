@@ -308,11 +308,11 @@ fn test_find_embedded_words<'a>(
 
 fn main() -> error::Returns<()> {
     if false {
-        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
+        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
         print_dawg(&alphabet::make_english_alphabet(), &kwg);
         return Ok(());
     }
-    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
+    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
     if true {
         let alphabet = alphabet::make_english_alphabet();
         let nwl23_kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);

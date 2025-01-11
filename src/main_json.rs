@@ -27,7 +27,7 @@ fn main() -> error::Returns<()> {
     let data = r#"
       {
         "actual_lexicon": "CSW19",
-        "lexicon": "CSW21",
+        "lexicon": "CSW24",
         "xrack": [ 1, 3, 10, 16, 17, 18, 19 ],
         "xboard": [
           [  0,  0,  0,  0,  0,  0,  0, 18,  0,  0,  0,  8, 15, 12,  4 ],
@@ -90,8 +90,10 @@ fn main() -> error::Returns<()> {
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
           ],
-          "lexicon": "CSW21",
-          "leave": "CSW21",
+          "actual_lexicon": "CSW21",
+          "lexicon": "CSW24",
+          "actual_leave": "CSW21",
+          "leave": "CSW24",
           "rules": "CrosswordGame",
           "count": 150000
       }
@@ -125,7 +127,8 @@ fn main() -> error::Returns<()> {
  [0, 1, 18, 0, 15, 14, 25, 0, 4, 9, 0, 8, 15, 0, 16, 8, 15, 0, 1, 20, 0]
 
           ],
-          "lexicon": "super-CSW21",
+          "actual_lexicon": "super-CSW21",
+          "lexicon": "super-CSW24",
           "count": 15
       }
     "#;
@@ -160,14 +163,14 @@ fn main() -> error::Returns<()> {
 
     // of course this should be cached
     match question.lexicon.as_str() {
-        "CSW21" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW21.klv2")?);
+        "CSW24" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?);
             game_config = game_config::make_english_game_config();
         }
-        "super-CSW21" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/super-CSW21.klv2")?);
+        "super-CSW24" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/super-CSW24.klv2")?);
             game_config = game_config::make_super_english_game_config();
         }
         "NWL23" => {

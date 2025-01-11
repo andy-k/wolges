@@ -602,7 +602,7 @@ fn main() -> error::Returns<()> {
         r#"
       {
         "actual_lexicon": "CSW19",
-        "lexicon": "CSW21",
+        "lexicon": "CSW24",
         "source": "https://woogles.io/game/mQLyde5N?turn=29",
         "rack": [ 4, 9, 12, 12, 19, 20 ],
         "board": [
@@ -627,7 +627,7 @@ fn main() -> error::Returns<()> {
         r#"
       {
         "actual_lexicon": "CSW19",
-        "lexicon": "CSW21",
+        "lexicon": "CSW24",
         "source": "https://woogles.io/game/mQLyde5N?turn=30",
         "rack": [ 0, 5, 9, 12, 20 ],
         "board": [
@@ -652,7 +652,7 @@ fn main() -> error::Returns<()> {
         r#"
       {
         "actual_lexicon": "CSW19",
-        "lexicon": "CSW21",
+        "lexicon": "CSW24",
         "source": "https://woogles.io/game/mQLyde5N?turn=28",
         "rack": [ 0, 5, 5, 9, 12, 16, 20 ],
         "board": [
@@ -970,7 +970,7 @@ fn main() -> error::Returns<()> {
     // https://woogles.io/game/YDRLWKJj?turn=23
     let _question = Question::from_gcg(
         &game_config::make_english_game_config(),
-        "CSW21",
+        "CSW24", // actually "CSW21",
         r"#character-encoding UTF-8
 #description Created with Macondo
 #id io.woogles YDRLWKJj
@@ -1064,7 +1064,7 @@ fn main() -> error::Returns<()> {
     let _ = question;
     let question = Question::from_fen(
         &game_config::make_english_game_config(),
-        "CSW21",
+        "CSW24", // actually "CSW21",
         "3J1Q1CILIA3/1GLUEISH3LAP1/3S1N5OXO1/3T3E2ZO3/4BROMATEs3/5E1Y2N4/2DUIT1DE6/1DIG1A1EM6/5I2p6/5L2OF2P2/4WO2REV1U2/4AR1KITINGS1/4U3ATT1HEY/4R5A2WE/CONFS1ABOVE2NA",
         "DEEIN",
     )?;
@@ -1073,7 +1073,7 @@ fn main() -> error::Returns<()> {
     let _ = question;
     let question = Question::from_fen(
         &game_config::make_english_game_config(),
-        "CSW21", // actually "CSW19",
+        "CSW24", // actually "CSW19",
         "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA5A1/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOA1/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 353-236: +117 "AHIILMM"
         "ADENOOO",
     )?;
@@ -1082,7 +1082,7 @@ fn main() -> error::Returns<()> {
     let _ = question;
     let question = Question::from_fen(
         &game_config::make_english_game_config(),
-        "CSW21", // actually "CSW19",
+        "CSW24", // actually "CSW19",
         // "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA4HA1/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOA1/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 9M H(A): +21 -96 "AIILMM"
         // "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA4HAM/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOA1/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 9M (HA)M: +20 -76 "AIILM"
         // "14C/13QI/12FIE/10VEE1R/9KIT2G/8CIG1IDE/8UTA2AS/7ST1SYPh1/6JA4HAM/5WOLD2BOBA/3PLOT1R1NU1EX/Y1VEIN1NOR1mOAI/UT1AT1N1L2FEH1/GUR2WIRER5/SNEEZED8", // 12I (mOA)I: +18 -58 "AILM"
@@ -1095,7 +1095,7 @@ fn main() -> error::Returns<()> {
     // https://woogles.io/game/BLRma3oH?turn=20
     let _question = Question::from_gcg(
         &game_config::make_english_game_config(),
-        "CSW21",
+        "CSW24", // actually "CSW21",
         r"#character-encoding UTF-8
 #description Created with Macondo
 #id io.woogles BLRma3oH
@@ -1141,8 +1141,8 @@ fn main() -> error::Returns<()> {
 
     // of course this should be cached
     match question.lexicon.as_str() {
-        "CSW21" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW21.kwg")?);
+        "CSW24" => {
+            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
             game_config = game_config::make_english_game_config();
         }
         "NWL23" => {

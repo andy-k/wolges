@@ -2917,29 +2917,29 @@ fn main() -> error::Returns<()> {
     if args.len() <= 1 {
         println!(
             "args:
-  english-klv CSW21.klv CSW21.csv
-  english-klv CSW21.klv2 CSW21.csv
+  english-klv CSW24.klv CSW24.csv
+  english-klv CSW24.klv2 CSW24.csv
     read klv/klv2 file
-  english-kwg CSW21.kwg CSW21.txt
-  english-kwg CSW21.kad CSW21.txt
+  english-kwg CSW24.kwg CSW24.txt
+  english-kwg CSW24.kad CSW24.txt
     read kwg/kad file (dawg) (use kwg0 to allow 0, such as for klv-kwg-extract)
-  english-kwg-gaddag CSW21.kwg CSW21.txt
+  english-kwg-gaddag CSW24.kwg CSW24.txt
     read gaddawg kwg file (gaddag)
-  english-kwg-nodes CSW21.kwg CSW21.kwg.raw
+  english-kwg-nodes CSW24.kwg CSW24.kwg.raw
     read kwg file for human inspection
-  english-kwg-prob CSW21.kwg -
+  english-kwg-prob CSW24.kwg -
     read kwg file (dawg) by probability (output format subject to changes)
   english-prob word [word...]
     show raw probability
-  english-klv-anagram- CSW21.klv2 - A?AC
-  english-klv-anagram CSW21.klv2 - A?AC
-  english-klv-anagram+ CSW21.klv2 - A?AC
+  english-klv-anagram- CSW24.klv2 - A?AC
+  english-klv-anagram CSW24.klv2 - A?AC
+  english-klv-anagram+ CSW24.klv2 - A?AC
     list all leaves with subanagram, anagram, or superanagram
-  english-kwg-anagram- CSW21.kwg - A?AC
-  english-kwg-anagram CSW21.kwg - A?AC
-  english-kwg-anagram+ CSW21.kwg - A?AC
+  english-kwg-anagram- CSW24.kwg - A?AC
+  english-kwg-anagram CSW24.kwg - A?AC
+  english-kwg-anagram+ CSW24.kwg - A?AC
     list all words with subanagram, anagram, or superanagram (using dawg)
-  english-kwg-check CSW21.kwg word [word...]
+  english-kwg-check CSW24.kwg word [word...]
     checks if all words are valid (using dawg)
   english-q2-ort something.ort something.csv
     read .ort (format subject to change)
@@ -2957,17 +2957,17 @@ fn main() -> error::Returns<()> {
     generate .wmp v2 (-overflow = allow overflows)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, decimal, hex)
-  klv-kwg-extract CSW21.klv2 racks.kwg
+  klv-kwg-extract CSW24.klv2 racks.kwg
     just copy out the kwg for further analysis.
-  kwg-hitcheck CSW21.kwg cls csa ncs outfile
+  kwg-hitcheck CSW24.kwg cls csa ncs outfile
     check dawg cache hit rate.
     cls = cache line size, 64 is typical.
     csa = cache set associativity, e.g. 8 for 8-way set associativity.
     ncs = number of cache sets = L1D cache size / cores / csa / cls.
     example for i7-8700B (192 kB, 6 cores, 8-way set assoc): 64 8 64.
-  kwg-hitcheck-gaddag CSW21.kwg cls csa ncs outfile
+  kwg-hitcheck-gaddag CSW24.kwg cls csa ncs outfile
     ditto for gaddag.
-  quackle-make-superleaves CSW21.klv superleaves
+  quackle-make-superleaves CSW24.klv superleaves
     read klv/klv2 file, save quackle superleaves (english/french)
   quackle-superleaves superleaves something.csv
     read quackle superleaves (english/french)
