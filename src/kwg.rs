@@ -46,9 +46,9 @@ impl Kwg {
         for _ in 0..kwg_len {
             elts.push(Node(
                 buf[r] as u32
-                    | (buf[r + 1] as u32) << 8
-                    | (buf[r + 2] as u32) << 16
-                    | (buf[r + 3] as u32) << 24,
+                    | ((buf[r + 1] as u32) << 8)
+                    | ((buf[r + 2] as u32) << 16)
+                    | ((buf[r + 3] as u32) << 24),
             ));
             r += 4;
         }

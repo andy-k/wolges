@@ -14,23 +14,25 @@ impl Klv {
     pub fn from_bytes_alloc(buf: &[u8]) -> Klv {
         let mut r = 0;
         let kwg_bytes_len = ((buf[r] as u32
-            | (buf[r + 1] as u32) << 8
-            | (buf[r + 2] as u32) << 16
-            | (buf[r + 3] as u32) << 24) as usize)
+            | ((buf[r + 1] as u32) << 8)
+            | ((buf[r + 2] as u32) << 16)
+            | ((buf[r + 3] as u32) << 24)) as usize)
             * 4;
         r += 4;
         let kwg = kwg::Kwg::from_bytes_alloc(&buf[r..r + kwg_bytes_len]);
         r += kwg_bytes_len;
         let lv_len = buf[r] as u32
-            | (buf[r + 1] as u32) << 8
-            | (buf[r + 2] as u32) << 16
-            | (buf[r + 3] as u32) << 24;
+            | ((buf[r + 1] as u32) << 8)
+            | ((buf[r + 2] as u32) << 16)
+            | ((buf[r + 3] as u32) << 24);
         r += 4;
         let mut elts = Vec::with_capacity(lv_len as usize);
         if buf.len() < r + 4 * lv_len as usize {
             // klv uses i16
             for _ in 0..lv_len {
-                elts.push((buf[r] as u16 | (buf[r + 1] as u16) << 8) as i16 as f32 * (1.0 / 256.0));
+                elts.push(
+                    (buf[r] as u16 | ((buf[r + 1] as u16) << 8)) as i16 as f32 * (1.0 / 256.0),
+                );
                 r += 2;
             }
         } else {
@@ -38,9 +40,9 @@ impl Klv {
             for _ in 0..lv_len {
                 elts.push(f32::from_bits(
                     buf[r] as u32
-                        | (buf[r + 1] as u32) << 8
-                        | (buf[r + 2] as u32) << 16
-                        | (buf[r + 3] as u32) << 24,
+                        | ((buf[r + 1] as u32) << 8)
+                        | ((buf[r + 2] as u32) << 16)
+                        | ((buf[r + 3] as u32) << 24),
                 ));
                 r += 4;
             }

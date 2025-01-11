@@ -346,7 +346,7 @@ impl StatesDefragger<'_> {
                 // if found, use it
                 if let Some(place) = params.blocks_with_len[required_gap as usize].pop() {
                     // use | instead of + because it cannot overflow
-                    initial_num_written = place << 4 | required_gap;
+                    initial_num_written = (place << 4) | required_gap;
                     // repurpose this variable.
                     required_gap += num; // 1 <= required_gap <= 16
                     if required_gap < 16 {
