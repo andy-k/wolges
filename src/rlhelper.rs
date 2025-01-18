@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2024 Andy Kurnia.
+// Copyright (C) 2020-2025 Andy Kurnia.
 
 // https://github.com/kkawakam/rustyline/blob/master/examples/example.rs
 

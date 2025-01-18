@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2024 Andy Kurnia.
+// Copyright (C) 2020-2025 Andy Kurnia.
 
 use super::{error, game_config, game_state, move_filter, movegen};
 
