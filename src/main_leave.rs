@@ -242,6 +242,16 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 )?;
                 Ok(true)
             }
+            "-resummarize-playability-all" => {
+                resummarize_summaries::<'P', _, _>(
+                    make_game_config(),
+                    csv::ReaderBuilder::new()
+                        .has_headers(false)
+                        .from_reader(make_reader(&args[2])?),
+                    csv::Writer::from_writer(make_writer(&args[3])?),
+                )?;
+                Ok(true)
+            }
             "-generate-no-smooth" => {
                 generate_leaves::<_, _, false, false>(
                     make_game_config(),
@@ -340,7 +350,9 @@ fn main() -> error::Returns<()> {
     autoplay (not saved) and record prorated found best words (at the end)
     (run fewer number of games and use resummarize to merge to mitigate risks)
   english-resummarize-playability concatenated_playabilities.csv playability.csv
-    same as english-resummarize but sorts differently
+    same as english-resummarize but sorts differently (by length first)
+  english-resummarize-playability-all concat_playabilities.csv playability.csv
+    same as english-resummarize but sorts differently (by playability first)
   (english can also be catalan, french, german, norwegian, polish, slovene,
     spanish, super-english, super-catalan)
   jumbled-english-autoplay CSW24.kad leave0.klv leave1.klv 1000
@@ -1377,6 +1389,12 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then_with(|| a.0.cmp(&b.0))
             })
+        }),
+        'P' => kv.sort_unstable_by(|a, b| {
+            b.1.equity
+                .partial_cmp(&a.1.equity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)))
         }),
         _ => unimplemented!(),
     }
