@@ -47,7 +47,7 @@ impl Bag {
                 return;
             }
             1 => {
-                self.0.insert(rng.gen_range(0..=self.0.len()), unsafe {
+                self.0.insert(rng.random_range(0..=self.0.len()), unsafe {
                     *tiles.get_unchecked(0)
                 });
                 return;
@@ -55,7 +55,7 @@ impl Bag {
             _ => {}
         }
         let mut num_old_tiles = self.0.len();
-        let num_same_prefix = rng.gen_range(0..=num_old_tiles);
+        let num_same_prefix = rng.random_range(0..=num_old_tiles);
         if num_same_prefix == num_old_tiles {
             // old does not move
             self.0.extend_from_slice(tiles); // [old,new]
@@ -86,7 +86,7 @@ impl Bag {
             } else if num_old_tiles == 0 {
                 false
             } else {
-                rng.gen_range(0..num_old_tiles + num_new_tiles) < num_old_tiles
+                rng.random_range(0..num_old_tiles + num_new_tiles) < num_old_tiles
             } {
                 unsafe {
                     *self.0.get_unchecked_mut(wp) = *self.0.get_unchecked(p_old_tiles);

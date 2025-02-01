@@ -120,7 +120,7 @@ impl Question {
         let plays_alphabet_reader = alphabet::AlphabetReader::new_for_plays(alphabet);
         let racks_alphabet_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
         let dim = game_config.board_layout().dim();
-        let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
+        let mut rng = rand_chacha::ChaCha20Rng::from_os_rng();
         let mut game_state = game_state::GameState::new(game_config);
         game_state.reset_and_draw_tiles(game_config, &mut rng);
         let mut game_state_undo = game_state.clone();

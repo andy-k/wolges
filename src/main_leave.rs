@@ -11,7 +11,7 @@ use wolges::{
 
 thread_local! {
     static RNG: std::cell::RefCell<Box<dyn RngCore>> =
-        std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_entropy()));
+        std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_os_rng()));
 }
 
 static BASE62: &[u8; 62] = b"\
@@ -708,7 +708,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                     game_id.push(BASE62[(num_prior_games / (62 * 62) % 62) as usize] as char);
                     game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
                     game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
-                    let went_first = rng.gen_range(0..game_config.num_players());
+                    let went_first = rng.random_range(0..game_config.num_players());
                     game_state.reset_and_draw_tiles(&game_config, &mut rng);
                     game_state.turn = went_first;
                     loop {

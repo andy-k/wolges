@@ -26,7 +26,7 @@ fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen:
 
 thread_local! {
     static RNG: std::cell::RefCell<Box<dyn RngCore>> =
-        std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_entropy()));
+        std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_os_rng()));
 }
 
 // Simmer can only be reused for the same game_config and kwg.

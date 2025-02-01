@@ -22,7 +22,7 @@ fn main() -> error::Returns<()> {
         }
         println!("{:?}", v);
         for _ in 0..40 {
-            print!(" {}", rng.gen_range(0..10));
+            print!(" {}", rng.random_range(0..10));
         }
         println!();
         for _ in 0..5 {
@@ -82,7 +82,7 @@ fn main() -> error::Returns<()> {
     let mut loss_draw_win = [0i64; 3];
 
     let mut game_state = game_state::GameState::new(game_config);
-    //let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
+    //let mut rng = rand_chacha::ChaCha20Rng::from_os_rng();
     // "the seed is an array of 32 bytes".len() == 32.
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(*b"Wolges Copyright (C) Andy Kurnia");
     let mut timers = game_timers::GameTimers::new(game_config.num_players());
