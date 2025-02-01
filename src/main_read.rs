@@ -2233,10 +2233,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     max_word_len = max_word_len.max(15);
                 }
                 let min_num_buckets = if allow_overflow {
-                    let biggest = std::iter::repeat(alphabet.len().saturating_sub(1))
-                        .take(alphabet.freq(0) as usize)
+                    let biggest =
+                        std::iter::repeat_n(
+                            alphabet.len().saturating_sub(1),
+                            alphabet.freq(0) as usize,
+                        )
                         .chain((1..alphabet.len().min(32)).rev().flat_map(|tile| {
-                            std::iter::repeat(tile).take(alphabet.freq(tile) as usize)
+                            std::iter::repeat_n(tile, alphabet.freq(tile) as usize)
                         }))
                         .take(max_word_len as usize)
                         .fold(0u128, |acc, tile| {

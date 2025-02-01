@@ -757,7 +757,7 @@ fn old_main() -> error::Returns<()> {
         v.sort_unstable();
         v.dedup();
         let v = v.into_boxed_slice();
-        let v_bits_bytes = (v.len() + 7) / 8;
+        let v_bits_bytes = v.len().div_ceil(8);
         let mut v_csw24_bits = vec![0u8; v_bits_bytes];
         let mut v_nwl23_bits = vec![0u8; v_bits_bytes];
         let mut v_ecwl_bits = vec![0u8; v_bits_bytes];

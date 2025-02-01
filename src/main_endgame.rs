@@ -1251,7 +1251,7 @@ fn main() -> error::Returns<()> {
     // this allocates
     let oppo_rack = (0u8..)
         .zip(available_tally.iter())
-        .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize))
+        .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
         .collect::<Box<_>>();
     if oppo_rack.len() > game_config.rack_size() as usize {
         wolges::return_error!(format!(

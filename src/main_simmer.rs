@@ -244,7 +244,7 @@ fn main() -> error::Returns<()> {
     game_state.bag.0.extend(
         (0u8..)
             .zip(available_tally.iter())
-            .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize)),
+            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
     );
     for player in game_state.players.iter_mut() {
         game_state

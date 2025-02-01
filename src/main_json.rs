@@ -229,7 +229,7 @@ fn main() -> error::Returns<()> {
     game_state.bag.0.extend(
         (0u8..)
             .zip(kibitzer.available_tally.iter())
-            .flat_map(|(tile, &count)| std::iter::repeat(tile).take(count as usize)),
+            .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
     );
     game_state.bag.shuffle(&mut rng);
 
