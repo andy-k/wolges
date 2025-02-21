@@ -267,7 +267,7 @@ impl<'a> BoardFenParser<'a> {
         let sb = s.as_bytes();
         let mut ix = 0;
         macro_rules! fmt_error {
-            ($msg: expr_2021) => {
+            ($msg: expr) => {
                 error::new(format!("{} at position {}", $msg, ix))
             };
         }

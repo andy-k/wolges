@@ -254,7 +254,7 @@ impl std::fmt::Display for WriteableRack<'_> {
 }
 
 macro_rules! new_static_alphabet_from_file {
-    ($filename: expr_2021) => {
+    ($filename: expr) => {
         Alphabet::new_static_from_text(include_str!($filename)).unwrap()
     };
 }

@@ -135,7 +135,7 @@ impl Question {
             }
             let mut tokens = line.split_whitespace();
             macro_rules! fmt_error {
-                ($msg: expr_2021) => {
+                ($msg: expr) => {
                     error::new(format!("{} on line {} {:?}", $msg, line_number, line))
                 };
             }

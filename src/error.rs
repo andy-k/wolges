@@ -27,7 +27,7 @@ pub type Returns<T> = Result<T, BoxAnyError>;
 
 #[macro_export]
 macro_rules! return_error {
-    ($error:expr_2021) => {
+    ($error: expr) => {
         return Err($crate::error::new($error).into());
     };
 }
