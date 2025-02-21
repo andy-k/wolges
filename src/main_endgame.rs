@@ -257,7 +257,7 @@ impl Question {
                     let sb = s.as_bytes();
                     let mut ix = 0;
                     while ix < sb.len() {
-                        match plays_alphabet_reader.next_tile(sb, ix) { Some((tile, end_ix)) => {
+                        if let Some((tile, end_ix)) = plays_alphabet_reader.next_tile(sb, ix) {
                             let row = row + ((v.len() as i8) & -(coord.down as i8));
                             let col = col + ((v.len() as i8) & -(!coord.down as i8));
                             if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
@@ -284,7 +284,7 @@ impl Question {
                                 num_in_paren += (num_in_paren >= 0) as isize;
                             }
                             ix = end_ix;
-                        } _ => if sb[ix] == b'.' {
+                        } else if sb[ix] == b'.' {
                             let row = row + ((v.len() as i8) & -(coord.down as i8));
                             let col = col + ((v.len() as i8) & -(!coord.down as i8));
                             if row < 0 || col < 0 || row >= dim.rows || col >= dim.cols {
@@ -311,7 +311,7 @@ impl Question {
                             return Err(fmt_error!(format_args!(
                                 "invalid tile after {v:?} in {s:?}"
                             )));
-                        }}
+                        }
                     }
                     if num_in_paren >= 0 {
                         return Err(fmt_error!("unclosed parenthesis in tiles"));

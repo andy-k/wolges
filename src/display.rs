@@ -305,14 +305,14 @@ impl<'a> BoardFenParser<'a> {
                 }
                 c += empties as i8;
                 ix = jx;
-            } else { match self.plays_alphabet_reader.next_tile(sb, ix) { Some((tile, end_ix)) => {
+            } else if let Some((tile, end_ix)) = self.plays_alphabet_reader.next_tile(sb, ix) {
                 self.buf[p] = tile;
                 p += 1;
                 c += 1;
                 ix = end_ix;
-            } _ => {
+            } else {
                 return Err(fmt_error!("invalid char"));
-            }}}
+            }
         }
         if r != dim.rows - 1 || c != dim.cols {
             return Err(fmt_error!("incomplete board"));
