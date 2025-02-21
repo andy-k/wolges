@@ -348,7 +348,7 @@ impl WorkingBuffer {
                 self.face_value_scores_for_across_plays[idx] = 0;
             } else {
                 self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
-                                                                           //self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
+                //self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
                 self.face_value_scores_for_across_plays[idx] = alphabet.score(b);
             }
         }
@@ -368,7 +368,7 @@ impl WorkingBuffer {
                 self.face_value_scores_for_down_plays[idx] = 0;
             } else {
                 self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
-                                                                         //self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
+                //self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
                 self.face_value_scores_for_down_plays[idx] = alphabet.score(b);
             }
         }
@@ -2456,7 +2456,7 @@ impl KurniaMoveGenerator {
                     let other_adjustments = if num_tiles_on_board == 0 {
                         (idx..)
                             .zip(word)
-                            .filter(|(i, &tile)| {
+                            .filter(|&(ref i, &tile)| {
                                 tile != 0
                                     && alphabet.is_vowel(tile)
                                     && if down {
@@ -2588,7 +2588,7 @@ impl KurniaMoveGenerator {
                     let other_adjustments = if num_tiles_on_board == 0 {
                         (idx..)
                             .zip(word)
-                            .filter(|(i, &tile)| {
+                            .filter(|&(ref i, &tile)| {
                                 tile != 0
                                     && alphabet.is_vowel(tile)
                                     && if down {

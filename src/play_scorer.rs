@@ -246,7 +246,7 @@ impl PlayScorer {
     fn classic_words_checker<'a>(
         &mut self,
         board_snapshot: &'a movegen::BoardSnapshot<'_>,
-    ) -> impl FnMut(&[u8]) -> bool + 'a {
+    ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a> {
         move |word: &[u8]| {
             let mut p = 0;
             for &tile in word {
@@ -263,7 +263,7 @@ impl PlayScorer {
     fn jumbled_words_checker<'a>(
         &mut self,
         board_snapshot: &'a movegen::BoardSnapshot<'_>,
-    ) -> impl FnMut(&[u8]) -> bool + 'a {
+    ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a> {
         move |word: &[u8]| {
             // doing this the slow way, with no additional space
             let mut p = 0;
@@ -524,7 +524,7 @@ impl PlayScorer {
                         };
                         let dangerous_vowel_count = (*idx..)
                             .zip(word.iter())
-                            .filter(|(i, &tile)| {
+                            .filter(|&(ref i, &tile)| {
                                 tile != 0 && alphabet.is_vowel(tile) && {
                                     (match strider1 {
                                         Some(ref strider) => {

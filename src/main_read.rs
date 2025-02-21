@@ -676,10 +676,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?;
                 let mut vec_out = vec_out_cell.into_inner();
                 vec_out.sort_unstable_by(|a, b| {
-                    a.0 .1.cmp(&b.0 .1).then_with(|| {
-                        b.0 .2
-                            .cmp(&a.0 .2)
-                            .then_with(|| a.1 .0.cmp(&b.1 .0).then_with(|| a.1 .1.cmp(&b.1 .1)))
+                    a.0.1.cmp(&b.0.1).then_with(|| {
+                        b.0.2
+                            .cmp(&a.0.2)
+                            .then_with(|| a.1.0.cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
                     })
                 });
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
@@ -687,14 +687,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let mut num_sets = 0;
                 let mut num_in_set = 0;
                 for elt in vec_out {
-                    if last_anagram_key != elt.1 .0 {
-                        if last_anagram_key.len() != elt.1 .0.len() {
+                    if last_anagram_key != elt.1.0 {
+                        if last_anagram_key.len() != elt.1.0.len() {
                             num_sets = 1;
                         } else {
                             num_sets += 1;
                         }
                         num_in_set = 0;
-                        last_anagram_key.clone_from(&elt.1 .0);
+                        last_anagram_key.clone_from(&elt.1.0);
                     }
                     num_in_set += 1;
                     csv_out.serialize((elt.0, num_sets, num_in_set))?;
@@ -1844,7 +1844,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                 // write something if ZA/ZE/ZO overflow.
                                                 if sought_quotient >> 96 != 0 {
                                                     sought_quotient &= (1u128 << 96) - 1;
-                                                    write!(ret, " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])")?;
+                                                    write!(
+                                                        ret,
+                                                        " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
+                                                    )?;
                                                 }
                                                 let mut p = wmp_bylen_word_buckets_ofs
                                                     + bucket_idx as usize * 4;
@@ -1983,7 +1986,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                     // write something if ZA/ZE/ZO overflow.
                                                     if sought_quotient >> 96 != 0 {
                                                         sought_quotient &= (1u128 << 96) - 1;
-                                                        write!(ret, " _OVERFLOW(0x{b1_bit_rack:032x}.divmod({wmp_bylen_num_blank_buckets})=[0x{sought_quotient:024x},{bucket_idx}])")?;
+                                                        write!(
+                                                            ret,
+                                                            " _OVERFLOW(0x{b1_bit_rack:032x}.divmod({wmp_bylen_num_blank_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
+                                                        )?;
                                                     }
                                                     let mut p = wmp_bylen_blank_buckets_ofs
                                                         + bucket_idx as usize * 4;
@@ -2055,7 +2061,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                                 sought_quotient &=
                                                                                     (1u128 << 96)
                                                                                         - 1;
-                                                                                write!(ret, " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])")?;
+                                                                                write!(
+                                                                                    ret,
+                                                                                    " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
+                                                                                )?;
                                                                             }
                                                                             let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
                                                                             let bucket_start_idx =
@@ -2196,10 +2205,16 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 if !words_only {
                     ret.push('\n');
                     if expected_max_blank_pair_results != max_blank_pair_results {
-                        writeln!(ret, "max_blank_pair_results != {max_blank_pair_results} (expected {expected_max_blank_pair_results})")?;
+                        writeln!(
+                            ret,
+                            "max_blank_pair_results != {max_blank_pair_results} (expected {expected_max_blank_pair_results})"
+                        )?;
                     }
                     if expected_max_word_lookup_results != max_word_lookup_results {
-                        writeln!(ret, "max_word_lookup_results != {max_word_lookup_results} (expected {expected_max_word_lookup_results})")?;
+                        writeln!(
+                            ret,
+                            "max_word_lookup_results != {max_word_lookup_results} (expected {expected_max_word_lookup_results})"
+                        )?;
                     }
                 }
 

@@ -267,7 +267,7 @@ impl<'a> BoardFenParser<'a> {
         let sb = s.as_bytes();
         let mut ix = 0;
         macro_rules! fmt_error {
-            ($msg: expr) => {
+            ($msg: expr_2021) => {
                 error::new(format!("{} at position {}", $msg, ix))
             };
         }
@@ -305,14 +305,14 @@ impl<'a> BoardFenParser<'a> {
                 }
                 c += empties as i8;
                 ix = jx;
-            } else if let Some((tile, end_ix)) = self.plays_alphabet_reader.next_tile(sb, ix) {
+            } else { match self.plays_alphabet_reader.next_tile(sb, ix) { Some((tile, end_ix)) => {
                 self.buf[p] = tile;
                 p += 1;
                 c += 1;
                 ix = end_ix;
-            } else {
+            } _ => {
                 return Err(fmt_error!("invalid char"));
-            }
+            }}}
         }
         if r != dim.rows - 1 || c != dim.cols {
             return Err(fmt_error!("incomplete board"));

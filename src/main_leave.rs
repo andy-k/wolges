@@ -510,11 +510,11 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
             "oppscore",
         ))?;
     }
-    let csv_log_writer = if let Some(c) = csv_log {
+    let csv_log_writer = match csv_log { Some(c) => {
         Some(c.into_inner()?)
-    } else {
+    } _ => {
         None
-    };
+    }};
     let mut csv_game = csv::Writer::from_path(format!("games-{run_identifier}"))?;
     csv_game.serialize((
         "gameID",
@@ -988,7 +988,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                                     let tick_changed = {
                                         let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                                         if WRITE_LOGS {
-                                            if let Some(ref mut c) = &mut mutex_guard.csv_log_writer
+                                            if let Some(c) = &mut mutex_guard.csv_log_writer
                                             {
                                                 c.write_all(&batched_csv_log_buf).unwrap()
                                             }
@@ -1043,21 +1043,19 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                         &mut ExchangeEnv {
                             found_exchange_move: |rack_bytes: &[u8]| {
                                 if rack_idx < thread_lo {
-                                    if let std::collections::hash_map::Entry::Occupied(mut entry) =
-                                        thread_full_rack_map.entry(rack_bytes.into())
-                                    {
+                                    match thread_full_rack_map.entry(rack_bytes.into())
+                                    { std::collections::hash_map::Entry::Occupied(mut entry) => {
                                         entry.get_mut().count -= big_plus_one;
-                                    } else {
+                                    } _ => {
                                         unreachable!();
-                                    }
+                                    }}
                                 } else if rack_idx >= thread_hi {
-                                    if let std::collections::hash_map::Entry::Occupied(mut entry) =
-                                        thread_full_rack_map.entry(rack_bytes.into())
-                                    {
+                                    match thread_full_rack_map.entry(rack_bytes.into())
+                                    { std::collections::hash_map::Entry::Occupied(mut entry) => {
                                         entry.get_mut().count -= big;
-                                    } else {
+                                    } _ => {
                                         unreachable!();
-                                    }
+                                    }}
                                 }
                                 rack_idx += 1;
                             },
@@ -1074,7 +1072,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                 let batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
                 let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                 if WRITE_LOGS {
-                    if let Some(ref mut c) = &mut mutex_guard.csv_log_writer {
+                    if let Some(c) = &mut mutex_guard.csv_log_writer {
                         c.write_all(&batched_csv_log_buf).unwrap();
                     }
                 }
@@ -1086,14 +1084,14 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                 if SUMMARIZE {
                     for (k, thread_v) in thread_full_rack_map.into_iter() {
                         if thread_v.count > 0 {
-                            if let Some(v) = mutex_guard.full_rack_map.get_mut(&k) {
+                            match mutex_guard.full_rack_map.get_mut(&k) { Some(v) => {
                                 *v = Cumulate {
                                     equity: v.equity + thread_v.equity,
                                     count: v.count + thread_v.count,
                                 }
-                            } else {
+                            } _ => {
                                 mutex_guard.full_rack_map.insert(k, thread_v);
-                            }
+                            }}
                         }
                     }
                 }
@@ -1189,14 +1187,14 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
                 rack_bytes.sort_unstable();
                 row_count += 1;
-                if let Some(v) = full_rack_map.get_mut(&rack_bytes[..]) {
+                match full_rack_map.get_mut(&rack_bytes[..]) { Some(v) => {
                     *v = Cumulate {
                         equity: v.equity + equity,
                         count: v.count + 1,
                     }
-                } else {
+                } _ => {
                     full_rack_map.insert(rack_bytes[..].into(), Cumulate { equity, count: 1 });
-                }
+                }}
                 let elapsed_time_secs = t0.elapsed().as_secs();
                 if tick_periods.update(elapsed_time_secs) {
                     writeln!(
@@ -1463,12 +1461,12 @@ fn generate_leaves<
         generate_exchanges(
             &mut ExchangeEnv {
                 found_exchange_move: |subrack_bytes: &[u8]| {
-                    if let Some(v) = subrack_map.get_mut(subrack_bytes) {
+                    match subrack_map.get_mut(subrack_bytes) { Some(v) => {
                         *v = Cumulate {
                             equity: v.equity + fv.equity,
                             count: v.count + fv.count,
                         }
-                    } else {
+                    } _ => {
                         subrack_map.insert(
                             subrack_bytes.into(),
                             Cumulate {
@@ -1476,7 +1474,7 @@ fn generate_leaves<
                                 count: fv.count,
                             },
                         );
-                    }
+                    }}
                 },
                 rack_tally: &mut rack_tally,
                 min_len: 1,
@@ -1518,15 +1516,15 @@ fn generate_leaves<
     generate_exchanges(
         &mut ExchangeEnv {
             found_exchange_move: |rack_bytes: &[u8]| {
-                let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
+                let mut new_v = match subrack_map.get(rack_bytes) { Some(v) => {
                     if !DO_SMOOTHING || v.count >= threshold_count {
                         v.equity / v.count as f64 - mean_equity
                     } else {
                         f64::NAN
                     }
-                } else {
+                } _ => {
                     f64::NAN
-                };
+                }};
                 if DO_SMOOTHING && new_v.is_nan() {
                     rack_tally.iter_mut().for_each(|m| *m = 0);
                     rack_bytes
@@ -1949,14 +1947,14 @@ fn discover_playability(
 
                 for (k, thread_v) in thread_full_word_map.into_iter() {
                     if thread_v.count > 0 {
-                        if let Some(v) = mutex_guard.full_word_map.get_mut(&k) {
+                        match mutex_guard.full_word_map.get_mut(&k) { Some(v) => {
                             *v = Cumulate {
                                 equity: v.equity + thread_v.equity,
                                 count: v.count + thread_v.count,
                             }
-                        } else {
+                        } _ => {
                             mutex_guard.full_word_map.insert(k, thread_v);
-                        }
+                        }}
                     }
                 }
             })

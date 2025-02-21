@@ -349,7 +349,7 @@ impl<'a> EndgameSolver<'a> {
 
         // return and/or trim range
         let alpha_orig = alpha;
-        let state_eval = if let Some(state_eval) = self.work_buffer.state_eval.get(&state_idx) {
+        let state_eval = match self.work_buffer.state_eval.get(&state_idx) { Some(state_eval) => {
             let state_side_eval = &state_eval.best_move[player_idx as usize];
             if state_side_eval.depth >= depth {
                 match state_side_eval.equity_type {
@@ -372,7 +372,7 @@ impl<'a> EndgameSolver<'a> {
                 }
             }
             state_eval
-        } else {
+        } _ => {
             let current_ply_buffer = &mut self.work_buffer.current_ply_buffer;
             current_ply_buffer.board_tiles.clear();
             current_ply_buffer
@@ -501,7 +501,7 @@ impl<'a> EndgameSolver<'a> {
                 .state_eval
                 .entry(state_idx)
                 .or_insert(state_eval)
-        };
+        }};
 
         // sort moves by equity desc
         let low_idx = state_eval.child_play_idxs[player_idx as usize];
