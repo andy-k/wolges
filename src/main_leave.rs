@@ -988,8 +988,7 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                                     let tick_changed = {
                                         let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                                         if WRITE_LOGS {
-                                            if let Some(c) = &mut mutex_guard.csv_log_writer
-                                            {
+                                            if let Some(c) = &mut mutex_guard.csv_log_writer {
                                                 c.write_all(&batched_csv_log_buf).unwrap()
                                             }
                                         }
@@ -1000,7 +999,9 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                                         mutex_guard.tick_periods.update(elapsed_time_secs)
                                     };
                                     if tick_changed {
-                                        println!("After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves) into {run_identifier}");
+                                        println!(
+                                            "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves) into {run_identifier}"
+                                        );
                                     }
                                     batched_csv_log_buf.clear();
                                     batched_csv_log = csv::Writer::from_writer(batched_csv_log_buf);
@@ -1086,14 +1087,14 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
                 if SUMMARIZE {
                     for (k, thread_v) in thread_full_rack_map.into_iter() {
                         if thread_v.count > 0 {
-                            if let Some(v) = mutex_guard.full_rack_map.get_mut(&k) {
-                                *v = Cumulate {
-                                    equity: v.equity + thread_v.equity,
-                                    count: v.count + thread_v.count,
-                                }
-                            } else {
-                                mutex_guard.full_rack_map.insert(k, thread_v);
-                            }
+                            mutex_guard
+                                .full_rack_map
+                                .entry(k)
+                                .and_modify(|v| {
+                                    v.equity += thread_v.equity;
+                                    v.count += thread_v.count;
+                                })
+                                .or_insert(thread_v);
                         }
                     }
                 }
@@ -1189,14 +1190,13 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
                 rack_bytes.sort_unstable();
                 row_count += 1;
-                if let Some(v) = full_rack_map.get_mut(&rack_bytes[..]) {
-                    *v = Cumulate {
-                        equity: v.equity + equity,
-                        count: v.count + 1,
-                    }
-                } else {
-                    full_rack_map.insert(rack_bytes[..].into(), Cumulate { equity, count: 1 });
-                }
+                full_rack_map
+                    .entry(rack_bytes[..].into())
+                    .and_modify(|v| {
+                        v.equity += equity;
+                        v.count += 1;
+                    })
+                    .or_insert(Cumulate { equity, count: 1 });
                 let elapsed_time_secs = t0.elapsed().as_secs();
                 if tick_periods.update(elapsed_time_secs) {
                     writeln!(
@@ -1463,20 +1463,16 @@ fn generate_leaves<
         generate_exchanges(
             &mut ExchangeEnv {
                 found_exchange_move: |subrack_bytes: &[u8]| {
-                    if let Some(v) = subrack_map.get_mut(subrack_bytes) {
-                        *v = Cumulate {
-                            equity: v.equity + fv.equity,
-                            count: v.count + fv.count,
-                        }
-                    } else {
-                        subrack_map.insert(
-                            subrack_bytes.into(),
-                            Cumulate {
-                                equity: fv.equity,
-                                count: fv.count,
-                            },
-                        );
-                    }
+                    subrack_map
+                        .entry(subrack_bytes.into())
+                        .and_modify(|v| {
+                            v.equity += fv.equity;
+                            v.count += fv.count;
+                        })
+                        .or_insert(Cumulate {
+                            equity: fv.equity,
+                            count: fv.count,
+                        });
                 },
                 rack_tally: &mut rack_tally,
                 min_len: 1,
@@ -1881,7 +1877,7 @@ fn discover_playability(
                             if num_plays > 0 {
                                 vec_played.sort_unstable();
                                 vec_played.dedup(); // playing the same word as main+hook or hook+hook counts once.
-                                                    // each word gets n/d if played in n of d equally top moves.
+                                // each word gets n/d if played in n of d equally top moves.
                                 let multiplier = (num_plays as f64).recip();
                                 for same_words in vec_played.chunk_by(|a, b| a.0 == b.0) {
                                     let occurrence = same_words.len() as f64 * multiplier;
@@ -1934,7 +1930,9 @@ fn discover_playability(
                                     mutex_guard.tick_periods.update(elapsed_time_secs)
                                 };
                                 if tick_changed {
-                                    println!("After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}");
+                                    println!(
+                                        "After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}"
+                                    );
                                 }
                             }
                             break;
@@ -1949,14 +1947,14 @@ fn discover_playability(
 
                 for (k, thread_v) in thread_full_word_map.into_iter() {
                     if thread_v.count > 0 {
-                        if let Some(v) = mutex_guard.full_word_map.get_mut(&k) {
-                            *v = Cumulate {
-                                equity: v.equity + thread_v.equity,
-                                count: v.count + thread_v.count,
-                            }
-                        } else {
-                            mutex_guard.full_word_map.insert(k, thread_v);
-                        }
+                        mutex_guard
+                            .full_word_map
+                            .entry(k)
+                            .and_modify(|v| {
+                                v.equity += thread_v.equity;
+                                v.count += thread_v.count;
+                            })
+                            .or_insert(thread_v);
                     }
                 }
             })
