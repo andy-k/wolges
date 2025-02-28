@@ -1,6 +1,5 @@
 // Copyright (C) 2020-2025 Andy Kurnia.
 
-use wolges::klv;
 use wolges::{alphabet, bites, build, error, fash, kwg, lexport, prob};
 
 fn read_machine_words(
@@ -529,42 +528,6 @@ input/output files can be \"-\" (not advisable for binary files)"
         Ok(())
     } else if args[1] == "auto" {
         old_main()?;
-        Ok(())
-    } else if args[1] == "test-klv" {
-        let make_alphabet = alphabet::make_english_alphabet;
-        let klv_bytes = build_leaves_f32(
-            &b"\
-              A,1\n\
-              D,4\n\
-              AA,11\n\
-              AB,12\n\
-              AC,13\n\
-              BC,23\n\
-              ABC,123\n\
-            "[..],
-            make_alphabet(),
-            build::BuildLayout::Wolges,
-        )?;
-        println!("{:02x?}", klv_bytes);
-        let rack = [1, 1, 2, 3, 4];
-        let alphabet = make_alphabet();
-        let mut rack_tally = vec![0; alphabet.len() as usize];
-        rack_tally.iter_mut().for_each(|m| *m = 0);
-        for tile in rack {
-            rack_tally[tile as usize] += 1;
-        }
-        let klv = klv::Klv::from_bytes_alloc(&klv_bytes);
-        let mut multi_leaves = klv::MultiLeaves::new();
-        multi_leaves.init(&rack_tally, &klv, true, &|x| x);
-        let mut exchange_buffer = Vec::new();
-        multi_leaves.kurnia_gen_exchange_moves_unconditionally(
-            |x, v| {
-                println!("{:?} {}", x, v);
-            },
-            &mut rack_tally,
-            &mut exchange_buffer,
-            42,
-        );
         Ok(())
     } else {
         let t0 = std::time::Instant::now();
