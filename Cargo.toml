@@ -19,10 +19,10 @@ rand = "0.9.0"
 rand_chacha = "0.9.0"
 rustyline = "15.0.0"
 rustyline-derive = "0.11.0"
-serde = { version = "1.0.218", features = ["derive"] }
-serde_json = "1.0.139"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
 shell-words = "1.1.0"
-tokio = { version = "1.43.0", features = ["full"] }
+tokio = { version = "1.44.1", features = ["full"] }
 
 [[bin]]
 name = "auto"
