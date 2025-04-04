@@ -35,7 +35,7 @@ impl PlayScorer {
     ) -> error::Returns<Option<movegen::Play>> {
         let game_config = board_snapshot.game_config;
 
-        let ret = match play {
+        match play {
             movegen::Play::Exchange { tiles } => {
                 if tiles.is_empty() {
                     return Ok(None);
@@ -213,8 +213,7 @@ impl PlayScorer {
 
                 Ok(None)
             }
-        };
-        ret
+        }
     }
 
     pub fn words_all<Callback: FnMut(&[u8]) -> bool>(

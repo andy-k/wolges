@@ -2822,7 +2822,7 @@ fn kwg_hitcheck<R: WgReader>(
             let prev_cache_line_idx = cache_line_idx.saturating_sub(1);
             let prev_cache_set_idx = prev_cache_line_idx % self.num_cache_sets as usize; // it can only go here.
             cache_set = &mut self.cache_set_content[prev_cache_set_idx];
-            if cache_set.iter().any(|&x| x == prev_cache_line_idx) {
+            if cache_set.contains(&prev_cache_line_idx) {
                 let next_cache_line_idx = cache_line_idx.saturating_add(1);
                 let next_cache_set_idx = next_cache_line_idx % self.num_cache_sets as usize; // it can only go here.
                 cache_set = &mut self.cache_set_content[next_cache_set_idx];
