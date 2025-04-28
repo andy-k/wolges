@@ -283,6 +283,17 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     )?)?;
                     Ok(true)
                 }
+                "-kbwg" => {
+                    make_writer(&args[3])?.write_all(&build::build_big(
+                        build::BuildContent::Gaddawg,
+                        build_layout,
+                        &read_machine_words(
+                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
+                            &read_to_string(&mut make_reader(&args[2])?)?,
+                        )?,
+                    )?)?;
+                    Ok(true)
+                }
                 "-kwg-dawg" => {
                     make_writer(&args[3])?.write_all(&build::build(
                         build::BuildContent::DawgOnly,
@@ -495,7 +506,9 @@ fn main() -> error::Returns<()> {
   english-klv2 CSW24.csv CSW24.klv2
     generate klv2 file (preferred)
   english-kwg CSW24.txt CSW24.kwg
-    generate kwg file containing gaddawg
+    generate kwg file containing gaddawg (supports 4M nodes)
+  english-kbwg CSW24.txt CSW24.kbwg
+    generate kbwg file containing gaddawg (big variant supports 16M nodes)
   english-macondo CSW24.kwg CSW24 CSW24.dawg CSW24.gaddag
     read kwg file, with lexicon name save macondo dawg/gaddag
   english-lxd CSW24.kwg \"CSW24 something\" \"17 June 2021\" UKNA.lxd

@@ -486,7 +486,7 @@ impl StatesDefragger<'_> {
     // bit 23 = is_terminal
     // bits 24-31 = char
     #[inline(always)]
-    fn write_node(
+    fn write_node<const VARIANT: u8>(
         &self,
         out: &mut [u8],
         arc_index: u32,
@@ -495,22 +495,33 @@ impl StatesDefragger<'_> {
         tile: u8,
     ) {
         let defragged_arc_index = self.destination[arc_index as usize];
-        out[0] = defragged_arc_index as u8;
-        out[1] = (defragged_arc_index >> 8) as u8;
-        out[2] = (((defragged_arc_index >> 16) & 0x3f) as u8)
-            | ((is_end.0 as u8) << 6)
-            | ((accepts.0 as u8) << 7);
-        out[3] = tile;
+        match VARIANT {
+            1 => {
+                out[0] = defragged_arc_index as u8;
+                out[1] = (defragged_arc_index >> 8) as u8;
+                out[2] = (((defragged_arc_index >> 16) & 0x3f) as u8)
+                    | ((is_end.0 as u8) << 6)
+                    | ((accepts.0 as u8) << 7);
+                out[3] = tile;
+            }
+            2 => {
+                out[0] = defragged_arc_index as u8;
+                out[1] = (defragged_arc_index >> 8) as u8;
+                out[2] = (defragged_arc_index >> 16) as u8;
+                out[3] = (tile & 0x3f) | ((is_end.0 as u8) << 6) | ((accepts.0 as u8) << 7);
+            }
+            _ => unimplemented!(),
+        }
     }
 
-    fn to_vec(
+    fn to_vec<const VARIANT: u8>(
         &self,
         build_content: BuildContent,
         dawg_start_state: u32,
         gaddag_start_state: u32,
     ) -> Vec<u8> {
         let mut ret = vec![0; (self.num_written as usize) * 4];
-        self.write_node(
+        self.write_node::<VARIANT>(
             &mut ret[0..],
             dawg_start_state,
             IsEnd(true),
@@ -520,7 +531,7 @@ impl StatesDefragger<'_> {
         match build_content {
             BuildContent::DawgOnly => {}
             BuildContent::Gaddawg => {
-                self.write_node(
+                self.write_node::<VARIANT>(
                     &mut ret[4..],
                     gaddag_start_state,
                     IsEnd(true),
@@ -537,7 +548,7 @@ impl StatesDefragger<'_> {
             dp *= 4;
             loop {
                 let np = self.states[p].next_index;
-                self.write_node(
+                self.write_node::<VARIANT>(
                     &mut ret[dp..],
                     self.states[p].arc_index,
                     IsEnd(np == 0),
@@ -644,7 +655,7 @@ fn gen_top_indexes(states: &[State], head_indexes: &[u32]) -> Vec<u32> {
 }
 
 // machine_words must be sorted and unique.
-pub fn build(
+fn do_build<const VARIANT: u8>(
     build_content: BuildContent,
     build_layout: BuildLayout,
     machine_words: &[bites::Bites],
@@ -726,7 +737,13 @@ pub fn build(
     }
     states_defragger.destination[0] = 0; // useful for empty lexicon
 
-    if states_defragger.num_written > 0x400000 {
+    if states_defragger.num_written
+        > match VARIANT {
+            1 => 0x400000,
+            2 => 0x1000000,
+            _ => 0,
+        }
+    {
         // the format can only have 0x400000 elements, each has 4 bytes
         return_error!(format!(
             "this format cannot have {} nodes",
@@ -734,5 +751,26 @@ pub fn build(
         ));
     }
 
-    Ok(states_defragger.to_vec(build_content, dawg_start_state, gaddag_start_state)[..].into())
+    Ok(
+        states_defragger.to_vec::<VARIANT>(build_content, dawg_start_state, gaddag_start_state)[..]
+            .into(),
+    )
+}
+
+#[inline(always)]
+pub fn build(
+    build_content: BuildContent,
+    build_layout: BuildLayout,
+    machine_words: &[bites::Bites],
+) -> error::Returns<bites::Bites> {
+    do_build::<1>(build_content, build_layout, machine_words)
+}
+
+#[inline(always)]
+pub fn build_big(
+    build_content: BuildContent,
+    build_layout: BuildLayout,
+    machine_words: &[bites::Bites],
+) -> error::Returns<bites::Bites> {
+    do_build::<2>(build_content, build_layout, machine_words)
 }
