@@ -353,8 +353,8 @@ fn main() -> error::Returns<()> {
     same as english-resummarize but sorts differently (by length first)
   english-resummarize-playability-all concat_playabilities.csv playability.csv
     same as english-resummarize but sorts differently (by playability first)
-  (english can also be catalan, french, german, norwegian, polish, slovene,
-    spanish, super-english, super-catalan)
+  (english can also be catalan, dutch, french, german, norwegian, polish,
+    slovene, spanish, super-english, super-catalan)
   jumbled-english-autoplay CSW24.kad leave0.klv leave1.klv 1000
     (all also take jumbled- prefix, including jumbled-super-;
     note that jumbled autoplay requires .kad instead of .kwg)
@@ -415,6 +415,12 @@ when low disk space, note that in bash:
                 &args,
                 "jumbled-super-catalan",
                 game_config::make_jumbled_super_catalan_game_config,
+            )?
+            || do_lang(&args, "dutch", game_config::make_dutch_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-dutch",
+                game_config::make_jumbled_dutch_game_config,
             )?
             || do_lang(&args, "french", game_config::make_french_game_config)?
             || do_lang(

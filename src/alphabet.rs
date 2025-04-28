@@ -276,6 +276,11 @@ pub fn make_decimal_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/decimal.txt")
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Dutch
+pub fn make_dutch_alphabet() -> Alphabet {
+    new_static_alphabet_from_file!("alphabets/dutch.txt")
+}
+
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#English
 pub fn make_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/english.txt")

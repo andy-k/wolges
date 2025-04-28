@@ -2973,8 +2973,8 @@ fn main() -> error::Returns<()> {
   english-make-wmp something.txt something.wmp
   english-make-wmp-overflow something.txt something.wmp
     generate .wmp v2 (-overflow = allow overflows)
-  (english can also be catalan, french, german, norwegian, polish, slovene,
-    spanish, decimal, hex)
+  (english can also be catalan, dutch, french, german, norwegian, polish,
+    slovene, spanish, decimal, hex)
   klv-kwg-extract CSW24.klv2 racks.kwg
     just copy out the kwg for further analysis.
   kwg-hitcheck CSW24.kwg cls csa ncs outfile
@@ -3006,6 +3006,7 @@ input/output files can be \"-\" (not advisable for binary files)"
         let t0 = std::time::Instant::now();
         if do_lang(&args, "english", alphabet::make_english_alphabet)?
             || do_lang(&args, "catalan", alphabet::make_catalan_alphabet)?
+            || do_lang(&args, "dutch", alphabet::make_dutch_alphabet)?
             || do_lang(&args, "french", alphabet::make_french_alphabet)?
             || do_lang(&args, "german", alphabet::make_german_alphabet)?
             || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet)?

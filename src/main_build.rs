@@ -521,8 +521,8 @@ fn main() -> error::Returns<()> {
     english-experimental-... for experimental,
     english-legacy-... for legacy (which is the former default),
     this is applicable for kwg, kwg-anything, klv/klv2)
-  (english can also be catalan, french, german, norwegian, polish, slovene,
-    spanish, decimal, hex)
+  (english can also be catalan, dutch, french, german, norwegian, polish,
+    slovene, spanish, decimal, hex)
 input/output files can be \"-\" (not advisable for binary files)"
         );
         Ok(())
@@ -533,6 +533,7 @@ input/output files can be \"-\" (not advisable for binary files)"
         let t0 = std::time::Instant::now();
         if do_lang(&args, "english", alphabet::make_english_alphabet)?
             || do_lang(&args, "catalan", alphabet::make_catalan_alphabet)?
+            || do_lang(&args, "dutch", alphabet::make_dutch_alphabet)?
             || do_lang(&args, "french", alphabet::make_french_alphabet)?
             || do_lang(&args, "german", alphabet::make_german_alphabet)?
             || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet)?
