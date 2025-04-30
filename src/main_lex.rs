@@ -1,14 +1,15 @@
 // Copyright (C) 2020-2025 Andy Kurnia.
 
+use wolges::kwg::Node;
 use wolges::{alphabet, bites, error, fash, game_config, kwg};
 
-fn print_dawg(a: &alphabet::Alphabet, g: &kwg::Kwg) {
-    struct Env<'a> {
+fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) {
+    struct Env<'a, N: kwg::Node> {
         a: &'a alphabet::Alphabet,
-        g: &'a kwg::Kwg,
+        g: &'a kwg::Kwg<N>,
         s: &'a mut String,
     }
-    fn iter(env: &mut Env<'_>, mut p: i32) {
+    fn iter<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32) {
         let l = env.s.len();
         loop {
             let t = env.g[p].tile();
@@ -95,9 +96,9 @@ struct EmbeddedWordsFinder {
     wbuf: Vec<u8>,
 }
 
-struct FindEmbeddedWordParams<'a, M: Fn(usize) -> i8, F: FnMut(&[u8], i8)> {
+struct FindEmbeddedWordParams<'a, M: Fn(usize) -> i8, F: FnMut(&[u8], i8), N: kwg::Node> {
     board: &'a [u8],
-    kwg: &'a kwg::Kwg,
+    kwg: &'a kwg::Kwg<N>,
     get_multiplier_at: &'a M,
     record_finding: &'a mut F,
 }
@@ -122,9 +123,9 @@ impl EmbeddedWordsFinder {
         self.ubuf.resize(rows * cols, false);
     }
 
-    fn iter_embedded_words<M: Fn(usize) -> i8, F: FnMut(&[u8], i8)>(
+    fn iter_embedded_words<M: Fn(usize) -> i8, F: FnMut(&[u8], i8), N: kwg::Node>(
         &mut self,
-        params: &mut FindEmbeddedWordParams<'_, M, F>,
+        params: &mut FindEmbeddedWordParams<'_, M, F, N>,
         row: usize,
         col: usize,
         mut p: i32,
@@ -195,9 +196,9 @@ impl EmbeddedWordsFinder {
         self.ubuf[idx] = false;
     }
 
-    fn find_embedded_words<M: Fn(usize) -> i8, F: FnMut(&[u8], i8)>(
+    fn find_embedded_words<M: Fn(usize) -> i8, F: FnMut(&[u8], i8), N: kwg::Node>(
         &mut self,
-        params: &mut FindEmbeddedWordParams<'_, M, F>,
+        params: &mut FindEmbeddedWordParams<'_, M, F, N>,
     ) {
         for r in 0..self.rows {
             for c in 0..self.cols {
@@ -207,9 +208,9 @@ impl EmbeddedWordsFinder {
     }
 }
 
-fn test_find_embedded_words<'a>(
+fn test_find_embedded_words<'a, N: kwg::Node>(
     alphabet: &alphabet::Alphabet,
-    kwg: &kwg::Kwg,
+    kwg: &kwg::Kwg<N>,
     board_strs: impl IntoIterator<Item = &'a str>,
     board_muls: Option<&[i8]>,
 ) -> error::Returns<()> {
@@ -308,14 +309,15 @@ fn test_find_embedded_words<'a>(
 
 fn main() -> error::Returns<()> {
     if false {
-        let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
         print_dawg(&alphabet::make_english_alphabet(), &kwg);
         return Ok(());
     }
-    let kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
     if true {
         let alphabet = alphabet::make_english_alphabet();
-        let nwl23_kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
+        let nwl23_kwg =
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
         let known_boards = [
             &[
                 1, 1, 1, 1, //

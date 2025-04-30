@@ -146,25 +146,25 @@ pub struct FoundPlay<'a> {
 // EndgameSolver can only be reused for the same game_config and kwg.
 // (Refer to note at WorkBuffer.)
 // This is not enforced.
-pub struct EndgameSolver<'a> {
+pub struct EndgameSolver<'a, N: kwg::Node, L: kwg::Node> {
     game_config: &'a game_config::GameConfig,
-    kwg: &'a kwg::Kwg,
-    klv: Box<klv::Klv>,
+    kwg: &'a kwg::Kwg<N>,
+    klv: Box<klv::Klv<L>>,
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
     rack_scores: [i32; 2],
     work_buffer: WorkBuffer,
 }
 
-impl<'a> EndgameSolver<'a> {
-    pub fn new(game_config: &'a game_config::GameConfig, kwg: &'a kwg::Kwg) -> Self {
+impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
+    pub fn new(game_config: &'a game_config::GameConfig, kwg: &'a kwg::Kwg<N>) -> Self {
         if game_config.num_players() != 2 {
             panic!("cannot solve non-2-player endgames");
         }
         Self {
             game_config,
             kwg,
-            klv: Box::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES)),
+            klv: Box::new(klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)),
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
             rack_scores: [0, 0],

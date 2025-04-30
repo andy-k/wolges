@@ -113,8 +113,8 @@ impl Question {
         gcg: &str,
         rack: &str,
     ) -> Result<Question, error::MyError> {
-        let empty_kwg = kwg::Kwg::from_bytes_alloc(kwg::EMPTY_KWG_BYTES);
-        let empty_klv = klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let empty_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES);
+        let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut ps = play_scorer::PlayScorer::new();
         let alphabet = game_config.alphabet();
         let plays_alphabet_reader = alphabet::AlphabetReader::new_for_plays(alphabet);
@@ -1142,23 +1142,23 @@ fn main() -> error::Returns<()> {
     // of course this should be cached
     match question.lexicon.as_str() {
         "CSW24" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
             game_config = game_config::make_english_game_config();
         }
         "NWL23" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
+            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
             game_config = game_config::make_english_game_config();
         }
         "ECWL" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
+            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
             game_config = game_config::make_english_game_config();
         }
         "OSPS49" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/OSPS49.kwg")?);
+            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/OSPS49.kwg")?);
             game_config = game_config::make_polish_game_config();
         }
         "RD28" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/RD28.kwg")?);
+            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/RD28.kwg")?);
             game_config = game_config::make_german_game_config();
         }
         _ => {
@@ -1270,7 +1270,7 @@ fn main() -> error::Returns<()> {
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
-            klv: &klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
+            klv: &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
         },
         |word: &[u8]| {
             set_of_words.insert(word.into());
@@ -1285,10 +1285,11 @@ fn main() -> error::Returns<()> {
         &vec_of_words.into_boxed_slice(),
     )?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
-    let smaller_kwg = kwg::Kwg::from_bytes_alloc(&smaller_kwg_bytes);
+    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
     move_generator.reset_for_another_kwg();
 
-    let mut egs = endgame::EndgameSolver::new(&game_config, &smaller_kwg);
+    let mut egs =
+        endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(&game_config, &smaller_kwg);
     egs.init(&board_tiles, [&question.rack, &oppo_rack]);
     egs.evaluate(0);
 

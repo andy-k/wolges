@@ -75,19 +75,19 @@ struct ObservableCandidate {
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
-struct ObservableSimmer<'a> {
+struct ObservableSimmer<'a, N: kwg::Node, L: kwg::Node> {
     game_config: &'a game_config::GameConfig,
-    kwg: &'a kwg::Kwg,
-    klv: &'a klv::Klv,
+    kwg: &'a kwg::Kwg<N>,
+    klv: &'a klv::Klv<L>,
     candidates: Vec<ObservableCandidate>,
     simmer: simmer::Simmer,
 }
 
-impl<'a> ObservableSimmer<'a> {
+impl<'a, N: kwg::Node, L: kwg::Node> ObservableSimmer<'a, N, L> {
     pub fn new(
         game_config: &'a game_config::GameConfig,
-        kwg: &'a kwg::Kwg,
-        klv: &'a klv::Klv,
+        kwg: &'a kwg::Kwg<N>,
+        klv: &'a klv::Klv<L>,
     ) -> Self {
         Self {
             game_config,
@@ -132,18 +132,18 @@ fn main() -> error::Returns<()> {
     // of course this should be cached
     match question.lexicon.as_str() {
         "CSW24" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?);
+            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+            klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?);
             game_config = game_config::make_english_game_config();
         }
         "NWL23" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/NWL23.klv2")?);
+            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
+            klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.klv2")?);
             game_config = game_config::make_english_game_config();
         }
         "ECWL" => {
-            kwg = kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
-            klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/ECWL.klv2")?);
+            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
+            klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.klv2")?);
             game_config = game_config::make_english_game_config();
         }
         _ => {
@@ -278,7 +278,7 @@ fn main() -> error::Returns<()> {
         &vec_of_words.into_boxed_slice(),
     )?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
-    let smaller_kwg = kwg::Kwg::from_bytes_alloc(&smaller_kwg_bytes);
+    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
     move_generator.reset_for_another_kwg();
 
     // ok, let's sim...

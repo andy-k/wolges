@@ -139,11 +139,11 @@ impl Simmer {
 
     // true iff played out
     #[inline(always)]
-    pub fn simulate(
+    pub fn simulate<N: kwg::Node, L: kwg::Node>(
         &mut self,
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg,
-        klv: &klv::Klv,
+        kwg: &kwg::Kwg<N>,
+        klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
     ) -> bool {
         self.game_state.clone_from(&self.initial_game_state);

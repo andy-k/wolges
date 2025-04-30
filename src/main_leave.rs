@@ -72,20 +72,30 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
+                    &mut make_reader(&args[2])?,
+                )?);
                 let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args3)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
                 };
                 let arc_klv1 = if args3 == args4 {
                     std::sync::Arc::clone(&arc_klv0)
                 } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args4,
+                    )?))
                 };
-                generate_autoplay_logs::<true, false, false>(
+                generate_autoplay_logs::<true, false, false, _, _>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -102,20 +112,30 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
+                    &mut make_reader(&args[2])?,
+                )?);
                 let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args3)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
                 };
                 let arc_klv1 = if args3 == args4 {
                     std::sync::Arc::clone(&arc_klv0)
                 } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args4,
+                    )?))
                 };
-                generate_autoplay_logs::<true, true, false>(
+                generate_autoplay_logs::<true, true, false, _, _>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -132,20 +152,30 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
+                    &mut make_reader(&args[2])?,
+                )?);
                 let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args3)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
                 };
                 let arc_klv1 = if args3 == args4 {
                     std::sync::Arc::clone(&arc_klv0)
                 } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args4,
+                    )?))
                 };
-                generate_autoplay_logs::<false, true, false>(
+                generate_autoplay_logs::<false, true, false, _, _>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -162,20 +192,30 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
+                    &mut make_reader(&args[2])?,
+                )?);
                 let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args3)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
                 };
                 let arc_klv1 = if args3 == args4 {
                     std::sync::Arc::clone(&arc_klv0)
                 } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args4,
+                    )?))
                 };
-                generate_autoplay_logs::<true, true, true>(
+                generate_autoplay_logs::<true, true, true, _, _>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -192,20 +232,30 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
+                    &mut make_reader(&args[2])?,
+                )?);
                 let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args3)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
                 };
                 let arc_klv1 = if args3 == args4 {
                     std::sync::Arc::clone(&arc_klv0)
                 } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
                 } else {
-                    std::sync::Arc::new(klv::Klv::from_bytes_alloc(&std::fs::read(args4)?))
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args4,
+                    )?))
                 };
-                generate_autoplay_logs::<false, true, true>(
+                generate_autoplay_logs::<false, true, true, _, _>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -299,11 +349,13 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
+                    &mut make_reader(&args[2])?,
+                )?);
                 let klv = if args3 == "-" {
-                    klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+                    klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
                 } else {
-                    klv::Klv::from_bytes_alloc(&std::fs::read(args3)?)
+                    klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(args3)?)
                 };
                 discover_playability(make_game_config(), kwg, klv, num_games)?;
                 Ok(true)
@@ -467,11 +519,17 @@ when low disk space, note that in bash:
     }
 }
 
-fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const BREADTH: bool>(
+fn generate_autoplay_logs<
+    const WRITE_LOGS: bool,
+    const SUMMARIZE: bool,
+    const BREADTH: bool,
+    N: kwg::Node + Sync + Send,
+    L: kwg::Node + Sync + Send,
+>(
     game_config: game_config::GameConfig,
-    kwg: kwg::Kwg,
-    arc_klv0: std::sync::Arc<klv::Klv>,
-    arc_klv1: std::sync::Arc<klv::Klv>,
+    kwg: kwg::Kwg<N>,
+    arc_klv0: std::sync::Arc<klv::Klv<L>>,
+    arc_klv1: std::sync::Arc<klv::Klv<L>>,
     num_games: u64,
 ) -> error::Returns<()> {
     if BREADTH && !SUMMARIZE {
@@ -487,7 +545,6 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
     );
     let num_threads = num_cpus::get();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let mut threads = vec![];
 
     let epoch_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -559,560 +616,583 @@ fn generate_autoplay_logs<const WRITE_LOGS: bool, const SUMMARIZE: bool, const B
     }));
     let batch_size = if BREADTH { 10 } else { 100 };
 
-    for thread_id in 0..num_threads {
-        let game_config = std::sync::Arc::clone(&game_config);
-        let kwg = std::sync::Arc::clone(&kwg);
-        let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
-        let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
-        let player_aliases = std::sync::Arc::clone(&player_aliases);
-        let num_processed_games = std::sync::Arc::clone(&num_processed_games);
-        let run_identifier = std::sync::Arc::clone(&run_identifier);
-        let completed_games = std::sync::Arc::clone(&completed_games);
-        let logged_games = std::sync::Arc::clone(&logged_games);
-        let completed_moves = std::sync::Arc::clone(&completed_moves);
-        let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
-        threads.push(std::thread::spawn(move || {
-            RNG.with(|rng| {
-                let mut rng = &mut *rng.borrow_mut();
-                let mut game_id = String::with_capacity(8);
-                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-                let mut game_state = game_state::GameState::new(&game_config);
-                let mut cur_rack_as_vec = if SUMMARIZE {
-                    Vec::with_capacity(game_config.rack_size() as usize)
-                } else {
-                    Vec::new()
-                };
-                let mut cur_rack_ser = String::new();
-                let mut aft_rack = Vec::with_capacity(game_config.rack_size() as usize);
-                let mut aft_rack_ser = String::new();
-                let mut play_fmt = String::new();
-                let mut equity_fmt = String::new();
-                let mut final_scores = vec![0; game_config.num_players() as usize];
-                let mut num_bingos = vec![0; game_config.num_players() as usize];
-                let mut num_turns = vec![0; game_config.num_players() as usize];
-                let mut num_moves;
-                let mut num_batched_games_here = 0;
-                let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
-                let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
-                let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-                let mut thread_sample_count_map = std::collections::BTreeMap::<u64, usize>::new();
-                let mut exchange_buffer = if BREADTH {
-                    Vec::with_capacity(game_config.rack_size() as usize)
-                } else {
-                    Vec::new()
-                };
-                let mut alphabet_freqs = if BREADTH {
-                    (0..game_config.alphabet().len())
-                        .map(|tile| game_config.alphabet().freq(tile))
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let mut unseen_tally = if BREADTH {
-                    vec![0u8; game_config.alphabet().len() as usize]
-                } else {
-                    Vec::new()
-                };
-                let mut best_rack = if BREADTH {
-                    Vec::with_capacity(game_config.rack_size() as usize)
-                } else {
-                    Vec::new()
-                };
-                let mut thread_lo = 0;
-                let mut thread_hi = 0;
-                let big = 1u64 << 62;
-                let big_plus_one = big + 1;
-                if BREADTH {
-                    // calculate how many possible racks there are.
-                    // there is a faster formula for this, but iterating is "only" ~60ms.
-                    let mut num_racks = 0;
-                    generate_exchanges(
-                        &mut ExchangeEnv {
-                            found_exchange_move: |_rack_bytes: &[u8]| {
-                                num_racks += 1;
+    std::thread::scope(|s| {
+        let mut threads = vec![];
+
+        for thread_id in 0..num_threads {
+            let game_config = std::sync::Arc::clone(&game_config);
+            let kwg = std::sync::Arc::clone(&kwg);
+            let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
+            let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
+            let player_aliases = std::sync::Arc::clone(&player_aliases);
+            let num_processed_games = std::sync::Arc::clone(&num_processed_games);
+            let run_identifier = std::sync::Arc::clone(&run_identifier);
+            let completed_games = std::sync::Arc::clone(&completed_games);
+            let logged_games = std::sync::Arc::clone(&logged_games);
+            let completed_moves = std::sync::Arc::clone(&completed_moves);
+            let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
+            threads.push(s.spawn(move || {
+                RNG.with(|rng| {
+                    let mut rng = &mut *rng.borrow_mut();
+                    let mut game_id = String::with_capacity(8);
+                    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                    let mut game_state = game_state::GameState::new(&game_config);
+                    let mut cur_rack_as_vec = if SUMMARIZE {
+                        Vec::with_capacity(game_config.rack_size() as usize)
+                    } else {
+                        Vec::new()
+                    };
+                    let mut cur_rack_ser = String::new();
+                    let mut aft_rack = Vec::with_capacity(game_config.rack_size() as usize);
+                    let mut aft_rack_ser = String::new();
+                    let mut play_fmt = String::new();
+                    let mut equity_fmt = String::new();
+                    let mut final_scores = vec![0; game_config.num_players() as usize];
+                    let mut num_bingos = vec![0; game_config.num_players() as usize];
+                    let mut num_turns = vec![0; game_config.num_players() as usize];
+                    let mut num_moves;
+                    let mut num_batched_games_here = 0;
+                    let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
+                    let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
+                    let mut thread_full_rack_map =
+                        fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                    let mut thread_sample_count_map =
+                        std::collections::BTreeMap::<u64, usize>::new();
+                    let mut exchange_buffer = if BREADTH {
+                        Vec::with_capacity(game_config.rack_size() as usize)
+                    } else {
+                        Vec::new()
+                    };
+                    let mut alphabet_freqs = if BREADTH {
+                        (0..game_config.alphabet().len())
+                            .map(|tile| game_config.alphabet().freq(tile))
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    let mut unseen_tally = if BREADTH {
+                        vec![0u8; game_config.alphabet().len() as usize]
+                    } else {
+                        Vec::new()
+                    };
+                    let mut best_rack = if BREADTH {
+                        Vec::with_capacity(game_config.rack_size() as usize)
+                    } else {
+                        Vec::new()
+                    };
+                    let mut thread_lo = 0;
+                    let mut thread_hi = 0;
+                    let big = 1u64 << 62;
+                    let big_plus_one = big + 1;
+                    if BREADTH {
+                        // calculate how many possible racks there are.
+                        // there is a faster formula for this, but iterating is "only" ~60ms.
+                        let mut num_racks = 0;
+                        generate_exchanges(
+                            &mut ExchangeEnv {
+                                found_exchange_move: |_rack_bytes: &[u8]| {
+                                    num_racks += 1;
+                                },
+                                rack_tally: &mut alphabet_freqs,
+                                min_len: game_config.rack_size(),
+                                max_len: game_config.rack_size(),
+                                exchange_buffer: &mut exchange_buffer,
                             },
-                            rack_tally: &mut alphabet_freqs,
-                            min_len: game_config.rack_size(),
-                            max_len: game_config.rack_size(),
-                            exchange_buffer: &mut exchange_buffer,
-                        },
-                        0,
-                    );
-                    // avoid overflow by dividing first.
-                    thread_lo = num_racks / num_threads; // floor division.
-                    thread_hi = (thread_lo * (thread_id + 1))
-                        + (num_racks - thread_lo * num_threads) * (thread_id + 1) / num_threads;
-                    thread_lo = (thread_lo * thread_id)
-                        + (num_racks - thread_lo * num_threads) * thread_id / num_threads;
-                    // temporarily prefill racks as follows. (these are exclusive ranges.)
-                    // racks 0..thread_lo: big + 1.
-                    // racks thread_lo..thread_hi: 0.
-                    // racks thread_hi..num_racks: big.
-                    // this thread would focud on filling in its assigned region first.
-                    // if it's all unavailable, it would pick the next rack (wraps around).
-                    let mut rack_idx = 0;
-                    generate_exchanges(
-                        &mut ExchangeEnv {
-                            found_exchange_move: |rack_bytes: &[u8]| {
-                                if rack_idx < thread_lo {
-                                    thread_full_rack_map.insert(
-                                        rack_bytes.into(),
-                                        Cumulate {
-                                            equity: 0.0,
-                                            count: big_plus_one,
-                                        },
-                                    );
-                                } else if rack_idx >= thread_hi {
-                                    thread_full_rack_map.insert(
-                                        rack_bytes.into(),
-                                        Cumulate {
-                                            equity: 0.0,
-                                            count: big,
-                                        },
-                                    );
-                                }
-                                rack_idx += 1;
-                            },
-                            rack_tally: &mut alphabet_freqs,
-                            min_len: game_config.rack_size(),
-                            max_len: game_config.rack_size(),
-                            exchange_buffer: &mut exchange_buffer,
-                        },
-                        0,
-                    );
-                    let num_thread_hi = num_racks - thread_hi;
-                    num_racks = thread_hi - thread_lo;
-                    if thread_lo > 0 {
-                        thread_sample_count_map.insert(big_plus_one, thread_lo);
-                    }
-                    if num_racks > 0 {
-                        thread_sample_count_map.insert(0, num_racks);
-                    }
-                    if num_thread_hi > 0 {
-                        thread_sample_count_map.insert(big, num_thread_hi);
-                    }
-                }
-                loop {
-                    let mut num_prior_games =
-                        num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if num_prior_games >= num_games {
-                        num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        break;
-                    }
-
-                    num_moves = 0;
-                    num_bingos.iter_mut().for_each(|m| *m = 0);
-                    num_turns.iter_mut().for_each(|m| *m = 0);
-                    game_id.clear();
-                    // random prefix. 62 ** 4 == 14776336, hopefully enough entropy.
-                    for _ in 0..4 {
-                        game_id.push(*BASE62.choose(&mut rng).unwrap() as char);
-                    }
-                    // wrapping sequence number. 62 ** 4 == 14776336.
-                    num_prior_games = num_prior_games.wrapping_add(1);
-                    game_id.push(BASE62[(num_prior_games / (62 * 62 * 62) % 62) as usize] as char);
-                    game_id.push(BASE62[(num_prior_games / (62 * 62) % 62) as usize] as char);
-                    game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
-                    game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
-                    let went_first = rng.random_range(0..game_config.num_players());
-                    game_state.reset_and_draw_tiles(&game_config, &mut rng);
-                    game_state.turn = went_first;
-                    loop {
-                        num_moves += 1;
-
-                        game_state.players[game_state.turn as usize]
-                            .rack
-                            .sort_unstable();
-                        let mut cur_rack = &game_state.current_player().rack;
-
-                        let old_bag_len = game_state.bag.0.len();
-                        if SUMMARIZE && old_bag_len > 0 {
-                            if BREADTH {
-                                unseen_tally.clone_from_slice(&alphabet_freqs);
-                                game_state
-                                    .board_tiles
-                                    .iter()
-                                    .filter_map(|&tile| {
-                                        if tile != 0 {
-                                            Some(tile & !((tile as i8) >> 7) as u8)
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .for_each(|t| unseen_tally[t as usize] -= 1);
-                                let cur_rack_freq = thread_full_rack_map
-                                    .get(&cur_rack[..])
-                                    .map_or(0, |v| v.count);
-                                let best_freq =
-                                    *thread_sample_count_map.first_key_value().unwrap().0;
-                                if best_freq < cur_rack_freq {
-                                    best_rack.clone_from(cur_rack);
-                                    let mut best_rack_freq = cur_rack_freq;
-                                    generate_exchanges_abortable(
-                                        &mut ExchangeAbortableEnv {
-                                            found_exchange_move: |rack_bytes: &[u8]| -> bool {
-                                                if best_rack_freq <= best_freq {
-                                                    // already have (one of) the best.
-                                                    return false;
-                                                }
-                                                let rack_freq = thread_full_rack_map
-                                                    .get(rack_bytes)
-                                                    .map_or(0, |v| v.count);
-                                                if rack_freq < best_rack_freq {
-                                                    // just take any one, no need to fairly choose.
-                                                    best_rack_freq = rack_freq;
-                                                    best_rack.clear();
-                                                    best_rack.extend_from_slice(rack_bytes);
-                                                }
-                                                true
+                            0,
+                        );
+                        // avoid overflow by dividing first.
+                        thread_lo = num_racks / num_threads; // floor division.
+                        thread_hi = (thread_lo * (thread_id + 1))
+                            + (num_racks - thread_lo * num_threads) * (thread_id + 1) / num_threads;
+                        thread_lo = (thread_lo * thread_id)
+                            + (num_racks - thread_lo * num_threads) * thread_id / num_threads;
+                        // temporarily prefill racks as follows. (these are exclusive ranges.)
+                        // racks 0..thread_lo: big + 1.
+                        // racks thread_lo..thread_hi: 0.
+                        // racks thread_hi..num_racks: big.
+                        // this thread would focud on filling in its assigned region first.
+                        // if it's all unavailable, it would pick the next rack (wraps around).
+                        let mut rack_idx = 0;
+                        generate_exchanges(
+                            &mut ExchangeEnv {
+                                found_exchange_move: |rack_bytes: &[u8]| {
+                                    if rack_idx < thread_lo {
+                                        thread_full_rack_map.insert(
+                                            rack_bytes.into(),
+                                            Cumulate {
+                                                equity: 0.0,
+                                                count: big_plus_one,
                                             },
-                                            rack_tally: &mut unseen_tally,
-                                            min_len: game_config.rack_size(),
-                                            max_len: game_config.rack_size(),
-                                            exchange_buffer: &mut exchange_buffer,
-                                        },
-                                        0,
-                                    );
-                                    if best_rack_freq < cur_rack_freq {
-                                        game_state.set_current_rack(&best_rack);
-                                        cur_rack = &game_state.current_player().rack;
+                                        );
+                                    } else if rack_idx >= thread_hi {
+                                        thread_full_rack_map.insert(
+                                            rack_bytes.into(),
+                                            Cumulate {
+                                                equity: 0.0,
+                                                count: big,
+                                            },
+                                        );
                                     }
-                                }
-                            }
-                            cur_rack_as_vec.clone_from(cur_rack);
+                                    rack_idx += 1;
+                                },
+                                rack_tally: &mut alphabet_freqs,
+                                min_len: game_config.rack_size(),
+                                max_len: game_config.rack_size(),
+                                exchange_buffer: &mut exchange_buffer,
+                            },
+                            0,
+                        );
+                        let num_thread_hi = num_racks - thread_hi;
+                        num_racks = thread_hi - thread_lo;
+                        if thread_lo > 0 {
+                            thread_sample_count_map.insert(big_plus_one, thread_lo);
+                        }
+                        if num_racks > 0 {
+                            thread_sample_count_map.insert(0, num_racks);
+                        }
+                        if num_thread_hi > 0 {
+                            thread_sample_count_map.insert(big, num_thread_hi);
+                        }
+                    }
+                    loop {
+                        let mut num_prior_games =
+                            num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if num_prior_games >= num_games {
+                            num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            break;
                         }
 
-                        let board_snapshot = &movegen::BoardSnapshot {
-                            board_tiles: &game_state.board_tiles,
-                            game_config: &game_config,
-                            kwg: &kwg,
-                            klv: if game_state.turn == 0 {
-                                &arc_klv0
-                            } else {
-                                &arc_klv1
-                            },
-                        };
+                        num_moves = 0;
+                        num_bingos.iter_mut().for_each(|m| *m = 0);
+                        num_turns.iter_mut().for_each(|m| *m = 0);
+                        game_id.clear();
+                        // random prefix. 62 ** 4 == 14776336, hopefully enough entropy.
+                        for _ in 0..4 {
+                            game_id.push(*BASE62.choose(&mut rng).unwrap() as char);
+                        }
+                        // wrapping sequence number. 62 ** 4 == 14776336.
+                        num_prior_games = num_prior_games.wrapping_add(1);
+                        game_id
+                            .push(BASE62[(num_prior_games / (62 * 62 * 62) % 62) as usize] as char);
+                        game_id.push(BASE62[(num_prior_games / (62 * 62) % 62) as usize] as char);
+                        game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
+                        game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
+                        let went_first = rng.random_range(0..game_config.num_players());
+                        game_state.reset_and_draw_tiles(&game_config, &mut rng);
+                        game_state.turn = went_first;
+                        loop {
+                            num_moves += 1;
 
-                        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                            board_snapshot,
-                            rack: cur_rack,
-                            max_gen: 1,
-                            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                            always_include_pass: false,
-                        });
+                            game_state.players[game_state.turn as usize]
+                                .rack
+                                .sort_unstable();
+                            let mut cur_rack = &game_state.current_player().rack;
 
-                        let plays = &move_generator.plays;
-                        let play = &plays[0];
-                        if WRITE_LOGS {
-                            cur_rack_ser.clear();
-                            for &tile in cur_rack.iter() {
-                                cur_rack_ser
-                                    .push_str(game_config.alphabet().of_rack(tile).unwrap());
-                            }
-
-                            aft_rack.clone_from(cur_rack);
-                            match &play.play {
-                                movegen::Play::Exchange { tiles } => {
-                                    game_state::use_tiles(&mut aft_rack, tiles.iter().copied())
-                                        .unwrap();
-                                }
-                                movegen::Play::Place { word, .. } => {
-                                    game_state::use_tiles(
-                                        &mut aft_rack,
-                                        word.iter().filter_map(|&tile| {
+                            let old_bag_len = game_state.bag.0.len();
+                            if SUMMARIZE && old_bag_len > 0 {
+                                if BREADTH {
+                                    unseen_tally.clone_from_slice(&alphabet_freqs);
+                                    game_state
+                                        .board_tiles
+                                        .iter()
+                                        .filter_map(|&tile| {
                                             if tile != 0 {
                                                 Some(tile & !((tile as i8) >> 7) as u8)
                                             } else {
                                                 None
                                             }
-                                        }),
-                                    )
-                                    .unwrap();
-                                }
-                            }
-                            aft_rack.sort_unstable();
-                            aft_rack_ser.clear();
-                            for &tile in aft_rack.iter() {
-                                aft_rack_ser
-                                    .push_str(game_config.alphabet().of_rack(tile).unwrap());
-                            }
-
-                            play_fmt.clear();
-                            match &play.play {
-                                movegen::Play::Exchange { tiles } => {
-                                    if tiles.is_empty() {
-                                        play_fmt.push_str("(Pass)");
-                                    } else {
-                                        let alphabet = game_config.alphabet();
-                                        play_fmt.push_str("(exch ");
-                                        for &tile in tiles.iter() {
-                                            play_fmt.push_str(alphabet.of_rack(tile).unwrap());
-                                        }
-                                        play_fmt.push(')');
-                                    }
-                                }
-                                movegen::Play::Place {
-                                    down,
-                                    lane,
-                                    idx,
-                                    word,
-                                    ..
-                                } => {
-                                    let alphabet = game_config.alphabet();
-                                    if *down {
-                                        write!(play_fmt, "{}{} ", display::column(*lane), idx + 1)
-                                            .unwrap();
-                                    } else {
-                                        write!(play_fmt, "{}{} ", lane + 1, display::column(*idx))
-                                            .unwrap();
-                                    }
-                                    for &tile in word.iter() {
-                                        if tile == 0 {
-                                            play_fmt.push('.');
-                                        } else {
-                                            play_fmt.push_str(alphabet.of_board(tile).unwrap());
+                                        })
+                                        .for_each(|t| unseen_tally[t as usize] -= 1);
+                                    let cur_rack_freq = thread_full_rack_map
+                                        .get(&cur_rack[..])
+                                        .map_or(0, |v| v.count);
+                                    let best_freq =
+                                        *thread_sample_count_map.first_key_value().unwrap().0;
+                                    if best_freq < cur_rack_freq {
+                                        best_rack.clone_from(cur_rack);
+                                        let mut best_rack_freq = cur_rack_freq;
+                                        generate_exchanges_abortable(
+                                            &mut ExchangeAbortableEnv {
+                                                found_exchange_move: |rack_bytes: &[u8]| -> bool {
+                                                    if best_rack_freq <= best_freq {
+                                                        // already have (one of) the best.
+                                                        return false;
+                                                    }
+                                                    let rack_freq = thread_full_rack_map
+                                                        .get(rack_bytes)
+                                                        .map_or(0, |v| v.count);
+                                                    if rack_freq < best_rack_freq {
+                                                        // just take any one, no need to fairly choose.
+                                                        best_rack_freq = rack_freq;
+                                                        best_rack.clear();
+                                                        best_rack.extend_from_slice(rack_bytes);
+                                                    }
+                                                    true
+                                                },
+                                                rack_tally: &mut unseen_tally,
+                                                min_len: game_config.rack_size(),
+                                                max_len: game_config.rack_size(),
+                                                exchange_buffer: &mut exchange_buffer,
+                                            },
+                                            0,
+                                        );
+                                        if best_rack_freq < cur_rack_freq {
+                                            game_state.set_current_rack(&best_rack);
+                                            cur_rack = &game_state.current_player().rack;
                                         }
                                     }
                                 }
+                                cur_rack_as_vec.clone_from(cur_rack);
                             }
-                        }
 
-                        let play_score = match &play.play {
-                            movegen::Play::Exchange { .. } => 0,
-                            movegen::Play::Place { score, .. } => *score,
-                        };
-
-                        let tiles_played = match &play.play {
-                            movegen::Play::Exchange { tiles } => tiles.len(),
-                            movegen::Play::Place { word, .. } => {
-                                word.iter().filter(|&&tile| tile != 0).count()
-                            }
-                        };
-
-                        match &play.play {
-                            movegen::Play::Exchange { .. } => {}
-                            movegen::Play::Place { .. } => {
-                                if tiles_played >= game_config.rack_size() as usize {
-                                    num_bingos[game_state.turn as usize] += 1;
-                                }
-                            }
-                        };
-
-                        game_state.play(&game_config, &mut rng, &play.play).unwrap();
-
-                        let old_turn = game_state.turn;
-                        num_turns[old_turn as usize] += 1;
-                        game_state.next_turn();
-                        let new_turn = game_state.turn;
-                        game_state.turn = old_turn;
-
-                        if SUMMARIZE && old_bag_len > 0 {
-                            let rounded_equity = play.equity as f64; // no rounding
-                            let new_cumulate = thread_full_rack_map
-                                .entry(cur_rack_as_vec[..].into())
-                                .and_modify(|e| {
-                                    e.equity += rounded_equity;
-                                    e.count += 1;
-                                })
-                                .or_insert(Cumulate {
-                                    equity: rounded_equity,
-                                    count: 1,
-                                });
-                            if BREADTH {
-                                if let std::collections::btree_map::Entry::Occupied(mut entry) =
-                                    thread_sample_count_map.entry(new_cumulate.count - 1)
-                                {
-                                    let old_entry = entry.get_mut();
-                                    if *old_entry > 0 {
-                                        *old_entry -= 1;
-                                    } else {
-                                        entry.remove();
-                                    }
+                            let board_snapshot = &movegen::BoardSnapshot {
+                                board_tiles: &game_state.board_tiles,
+                                game_config: &game_config,
+                                kwg: &kwg,
+                                klv: if game_state.turn == 0 {
+                                    &arc_klv0
                                 } else {
-                                    unreachable!();
+                                    &arc_klv1
+                                },
+                            };
+
+                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot,
+                                rack: cur_rack,
+                                max_gen: 1,
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                always_include_pass: false,
+                            });
+
+                            let plays = &move_generator.plays;
+                            let play = &plays[0];
+                            if WRITE_LOGS {
+                                cur_rack_ser.clear();
+                                for &tile in cur_rack.iter() {
+                                    cur_rack_ser
+                                        .push_str(game_config.alphabet().of_rack(tile).unwrap());
                                 }
-                                thread_sample_count_map
-                                    .entry(new_cumulate.count)
-                                    .and_modify(|e| {
-                                        *e += 1;
-                                    })
-                                    .or_insert(1);
-                            }
-                        }
 
-                        if WRITE_LOGS {
-                            equity_fmt.clear();
-                            // no rounding, this used to be {:.3} for compatibility reasons.
-                            write!(equity_fmt, "{}", play.equity).unwrap();
-                        }
-
-                        match game_state.check_game_ended(&game_config, &mut final_scores) {
-                            game_state::CheckGameEnded::PlayedOut
-                            | game_state::CheckGameEnded::ZeroScores => {
-                                let completed_moves = completed_moves
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                if WRITE_LOGS {
-                                    batched_csv_log
-                                        .serialize((
-                                            &player_aliases[old_turn as usize],
-                                            &game_id,
-                                            num_moves,
-                                            &cur_rack_ser,
-                                            &play_fmt,
-                                            play_score,
-                                            final_scores[old_turn as usize],
-                                            tiles_played,
-                                            &aft_rack_ser,
-                                            &equity_fmt,
-                                            old_bag_len,
-                                            final_scores[new_turn as usize],
-                                        ))
+                                aft_rack.clone_from(cur_rack);
+                                match &play.play {
+                                    movegen::Play::Exchange { tiles } => {
+                                        game_state::use_tiles(&mut aft_rack, tiles.iter().copied())
+                                            .unwrap();
+                                    }
+                                    movegen::Play::Place { word, .. } => {
+                                        game_state::use_tiles(
+                                            &mut aft_rack,
+                                            word.iter().filter_map(|&tile| {
+                                                if tile != 0 {
+                                                    Some(tile & !((tile as i8) >> 7) as u8)
+                                                } else {
+                                                    None
+                                                }
+                                            }),
+                                        )
                                         .unwrap();
+                                    }
                                 }
-                                batched_csv_game
-                                    .serialize((
-                                        &game_id,
-                                        &final_scores,
-                                        &num_bingos,
-                                        &num_turns,
-                                        &player_aliases[went_first as usize],
-                                    ))
-                                    .unwrap();
-                                num_batched_games_here += 1;
-                                if num_batched_games_here >= batch_size {
-                                    let logged_games = logged_games.fetch_add(
-                                        num_batched_games_here,
-                                        std::sync::atomic::Ordering::Relaxed,
-                                    ) + num_batched_games_here;
-                                    num_batched_games_here = 0;
-                                    let mut batched_csv_log_buf =
-                                        batched_csv_log.into_inner().unwrap();
-                                    let mut batched_csv_game_buf =
-                                        batched_csv_game.into_inner().unwrap();
-                                    let elapsed_time_secs = t0.elapsed().as_secs();
-                                    let tick_changed = {
-                                        let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                                        if WRITE_LOGS {
-                                            if let Some(c) = &mut mutex_guard.csv_log_writer {
-                                                c.write_all(&batched_csv_log_buf).unwrap()
+                                aft_rack.sort_unstable();
+                                aft_rack_ser.clear();
+                                for &tile in aft_rack.iter() {
+                                    aft_rack_ser
+                                        .push_str(game_config.alphabet().of_rack(tile).unwrap());
+                                }
+
+                                play_fmt.clear();
+                                match &play.play {
+                                    movegen::Play::Exchange { tiles } => {
+                                        if tiles.is_empty() {
+                                            play_fmt.push_str("(Pass)");
+                                        } else {
+                                            let alphabet = game_config.alphabet();
+                                            play_fmt.push_str("(exch ");
+                                            for &tile in tiles.iter() {
+                                                play_fmt.push_str(alphabet.of_rack(tile).unwrap());
+                                            }
+                                            play_fmt.push(')');
+                                        }
+                                    }
+                                    movegen::Play::Place {
+                                        down,
+                                        lane,
+                                        idx,
+                                        word,
+                                        ..
+                                    } => {
+                                        let alphabet = game_config.alphabet();
+                                        if *down {
+                                            write!(
+                                                play_fmt,
+                                                "{}{} ",
+                                                display::column(*lane),
+                                                idx + 1
+                                            )
+                                            .unwrap();
+                                        } else {
+                                            write!(
+                                                play_fmt,
+                                                "{}{} ",
+                                                lane + 1,
+                                                display::column(*idx)
+                                            )
+                                            .unwrap();
+                                        }
+                                        for &tile in word.iter() {
+                                            if tile == 0 {
+                                                play_fmt.push('.');
+                                            } else {
+                                                play_fmt.push_str(alphabet.of_board(tile).unwrap());
                                             }
                                         }
-                                        mutex_guard
-                                            .csv_game_writer
-                                            .write_all(&batched_csv_game_buf)
-                                            .unwrap();
-                                        mutex_guard.tick_periods.update(elapsed_time_secs)
-                                    };
-                                    if tick_changed {
-                                        println!(
-                                            "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves) into {run_identifier}"
-                                        );
                                     }
-                                    batched_csv_log_buf.clear();
-                                    batched_csv_log = csv::Writer::from_writer(batched_csv_log_buf);
-                                    batched_csv_game_buf.clear();
-                                    batched_csv_game =
-                                        csv::Writer::from_writer(batched_csv_game_buf);
                                 }
-                                break;
                             }
-                            game_state::CheckGameEnded::NotEnded => {}
-                        }
 
-                        if WRITE_LOGS {
-                            batched_csv_log
-                                .serialize((
-                                    &player_aliases[old_turn as usize],
-                                    &game_id,
-                                    num_moves,
-                                    &cur_rack_ser,
-                                    &play_fmt,
-                                    play_score,
-                                    game_state.players[old_turn as usize].score,
-                                    tiles_played,
-                                    &aft_rack_ser,
-                                    &equity_fmt,
-                                    old_bag_len,
-                                    game_state.players[new_turn as usize].score,
-                                ))
-                                .unwrap();
-                        }
-                        completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        game_state.turn = new_turn;
-                    }
-                }
+                            let play_score = match &play.play {
+                                movegen::Play::Exchange { .. } => 0,
+                                movegen::Play::Place { score, .. } => *score,
+                            };
 
-                if BREADTH {
-                    // undo the prefill to get the real stats.
-                    let mut rack_idx = 0;
-                    generate_exchanges(
-                        &mut ExchangeEnv {
-                            found_exchange_move: |rack_bytes: &[u8]| {
-                                if rack_idx < thread_lo {
-                                    if let std::collections::hash_map::Entry::Occupied(mut entry) =
-                                        thread_full_rack_map.entry(rack_bytes.into())
-                                    {
-                                        entry.get_mut().count -= big_plus_one;
-                                    } else {
-                                        unreachable!();
-                                    }
-                                } else if rack_idx >= thread_hi {
-                                    if let std::collections::hash_map::Entry::Occupied(mut entry) =
-                                        thread_full_rack_map.entry(rack_bytes.into())
-                                    {
-                                        entry.get_mut().count -= big;
-                                    } else {
-                                        unreachable!();
+                            let tiles_played = match &play.play {
+                                movegen::Play::Exchange { tiles } => tiles.len(),
+                                movegen::Play::Place { word, .. } => {
+                                    word.iter().filter(|&&tile| tile != 0).count()
+                                }
+                            };
+
+                            match &play.play {
+                                movegen::Play::Exchange { .. } => {}
+                                movegen::Play::Place { .. } => {
+                                    if tiles_played >= game_config.rack_size() as usize {
+                                        num_bingos[game_state.turn as usize] += 1;
                                     }
                                 }
-                                rack_idx += 1;
-                            },
-                            rack_tally: &mut alphabet_freqs,
-                            min_len: game_config.rack_size(),
-                            max_len: game_config.rack_size(),
-                            exchange_buffer: &mut exchange_buffer,
-                        },
-                        0,
-                    );
-                }
+                            };
 
-                let batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
-                let batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
-                let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                if WRITE_LOGS {
-                    if let Some(c) = &mut mutex_guard.csv_log_writer {
-                        c.write_all(&batched_csv_log_buf).unwrap();
-                    }
-                }
-                mutex_guard
-                    .csv_game_writer
-                    .write_all(&batched_csv_game_buf)
-                    .unwrap();
+                            game_state.play(&game_config, &mut rng, &play.play).unwrap();
 
-                if SUMMARIZE {
-                    for (k, thread_v) in thread_full_rack_map.into_iter() {
-                        if thread_v.count > 0 {
-                            mutex_guard
-                                .full_rack_map
-                                .entry(k)
-                                .and_modify(|v| {
-                                    v.equity += thread_v.equity;
-                                    v.count += thread_v.count;
-                                })
-                                .or_insert(thread_v);
+                            let old_turn = game_state.turn;
+                            num_turns[old_turn as usize] += 1;
+                            game_state.next_turn();
+                            let new_turn = game_state.turn;
+                            game_state.turn = old_turn;
+
+                            if SUMMARIZE && old_bag_len > 0 {
+                                let rounded_equity = play.equity as f64; // no rounding
+                                let new_cumulate = thread_full_rack_map
+                                    .entry(cur_rack_as_vec[..].into())
+                                    .and_modify(|e| {
+                                        e.equity += rounded_equity;
+                                        e.count += 1;
+                                    })
+                                    .or_insert(Cumulate {
+                                        equity: rounded_equity,
+                                        count: 1,
+                                    });
+                                if BREADTH {
+                                    if let std::collections::btree_map::Entry::Occupied(mut entry) =
+                                        thread_sample_count_map.entry(new_cumulate.count - 1)
+                                    {
+                                        let old_entry = entry.get_mut();
+                                        if *old_entry > 0 {
+                                            *old_entry -= 1;
+                                        } else {
+                                            entry.remove();
+                                        }
+                                    } else {
+                                        unreachable!();
+                                    }
+                                    thread_sample_count_map
+                                        .entry(new_cumulate.count)
+                                        .and_modify(|e| {
+                                            *e += 1;
+                                        })
+                                        .or_insert(1);
+                                }
+                            }
+
+                            if WRITE_LOGS {
+                                equity_fmt.clear();
+                                // no rounding, this used to be {:.3} for compatibility reasons.
+                                write!(equity_fmt, "{}", play.equity).unwrap();
+                            }
+
+                            match game_state.check_game_ended(&game_config, &mut final_scores) {
+                                game_state::CheckGameEnded::PlayedOut
+                                | game_state::CheckGameEnded::ZeroScores => {
+                                    let completed_moves = completed_moves
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    completed_games
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    if WRITE_LOGS {
+                                        batched_csv_log
+                                            .serialize((
+                                                &player_aliases[old_turn as usize],
+                                                &game_id,
+                                                num_moves,
+                                                &cur_rack_ser,
+                                                &play_fmt,
+                                                play_score,
+                                                final_scores[old_turn as usize],
+                                                tiles_played,
+                                                &aft_rack_ser,
+                                                &equity_fmt,
+                                                old_bag_len,
+                                                final_scores[new_turn as usize],
+                                            ))
+                                            .unwrap();
+                                    }
+                                    batched_csv_game
+                                        .serialize((
+                                            &game_id,
+                                            &final_scores,
+                                            &num_bingos,
+                                            &num_turns,
+                                            &player_aliases[went_first as usize],
+                                        ))
+                                        .unwrap();
+                                    num_batched_games_here += 1;
+                                    if num_batched_games_here >= batch_size {
+                                        let logged_games = logged_games.fetch_add(
+                                            num_batched_games_here,
+                                            std::sync::atomic::Ordering::Relaxed,
+                                        ) + num_batched_games_here;
+                                        num_batched_games_here = 0;
+                                        let mut batched_csv_log_buf =
+                                            batched_csv_log.into_inner().unwrap();
+                                        let mut batched_csv_game_buf =
+                                            batched_csv_game.into_inner().unwrap();
+                                        let elapsed_time_secs = t0.elapsed().as_secs();
+                                        let tick_changed = {
+                                            let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                            if WRITE_LOGS {
+                                                if let Some(c) = &mut mutex_guard.csv_log_writer {
+                                                    c.write_all(&batched_csv_log_buf).unwrap()
+                                                }
+                                            }
+                                            mutex_guard
+                                                .csv_game_writer
+                                                .write_all(&batched_csv_game_buf)
+                                                .unwrap();
+                                            mutex_guard.tick_periods.update(elapsed_time_secs)
+                                        };
+                                        if tick_changed {
+                                            println!(
+                                                "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves) into {run_identifier}"
+                                            );
+                                        }
+                                        batched_csv_log_buf.clear();
+                                        batched_csv_log =
+                                            csv::Writer::from_writer(batched_csv_log_buf);
+                                        batched_csv_game_buf.clear();
+                                        batched_csv_game =
+                                            csv::Writer::from_writer(batched_csv_game_buf);
+                                    }
+                                    break;
+                                }
+                                game_state::CheckGameEnded::NotEnded => {}
+                            }
+
+                            if WRITE_LOGS {
+                                batched_csv_log
+                                    .serialize((
+                                        &player_aliases[old_turn as usize],
+                                        &game_id,
+                                        num_moves,
+                                        &cur_rack_ser,
+                                        &play_fmt,
+                                        play_score,
+                                        game_state.players[old_turn as usize].score,
+                                        tiles_played,
+                                        &aft_rack_ser,
+                                        &equity_fmt,
+                                        old_bag_len,
+                                        game_state.players[new_turn as usize].score,
+                                    ))
+                                    .unwrap();
+                            }
+                            completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            game_state.turn = new_turn;
                         }
                     }
-                }
-            })
-        }));
-    }
 
-    for thread in threads {
-        if let Err(e) = thread.join() {
-            println!("{e:?}");
+                    if BREADTH {
+                        // undo the prefill to get the real stats.
+                        let mut rack_idx = 0;
+                        generate_exchanges(
+                            &mut ExchangeEnv {
+                                found_exchange_move: |rack_bytes: &[u8]| {
+                                    if rack_idx < thread_lo {
+                                        if let std::collections::hash_map::Entry::Occupied(
+                                            mut entry,
+                                        ) = thread_full_rack_map.entry(rack_bytes.into())
+                                        {
+                                            entry.get_mut().count -= big_plus_one;
+                                        } else {
+                                            unreachable!();
+                                        }
+                                    } else if rack_idx >= thread_hi {
+                                        if let std::collections::hash_map::Entry::Occupied(
+                                            mut entry,
+                                        ) = thread_full_rack_map.entry(rack_bytes.into())
+                                        {
+                                            entry.get_mut().count -= big;
+                                        } else {
+                                            unreachable!();
+                                        }
+                                    }
+                                    rack_idx += 1;
+                                },
+                                rack_tally: &mut alphabet_freqs,
+                                min_len: game_config.rack_size(),
+                                max_len: game_config.rack_size(),
+                                exchange_buffer: &mut exchange_buffer,
+                            },
+                            0,
+                        );
+                    }
+
+                    let batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
+                    let batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
+                    let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                    if WRITE_LOGS {
+                        if let Some(c) = &mut mutex_guard.csv_log_writer {
+                            c.write_all(&batched_csv_log_buf).unwrap();
+                        }
+                    }
+                    mutex_guard
+                        .csv_game_writer
+                        .write_all(&batched_csv_game_buf)
+                        .unwrap();
+
+                    if SUMMARIZE {
+                        for (k, thread_v) in thread_full_rack_map.into_iter() {
+                            if thread_v.count > 0 {
+                                mutex_guard
+                                    .full_rack_map
+                                    .entry(k)
+                                    .and_modify(|v| {
+                                        v.equity += thread_v.equity;
+                                        v.count += thread_v.count;
+                                    })
+                                    .or_insert(thread_v);
+                            }
+                        }
+                    }
+                })
+            }));
         }
-    }
+
+        for thread in threads {
+            if let Err(e) = thread.join() {
+                println!("{e:?}");
+            }
+        }
+    });
 
     if SUMMARIZE {
         let mutex_guard = mutexed_stuffs.lock().unwrap();
@@ -1680,10 +1760,10 @@ fn generate_leaves<
     Ok(())
 }
 
-fn discover_playability(
+fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
-    kwg: kwg::Kwg,
-    klv: klv::Klv,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
     num_games: u64,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
@@ -1691,7 +1771,6 @@ fn discover_playability(
     let klv = std::sync::Arc::new(klv);
     let num_threads = num_cpus::get();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let mut threads = vec![];
 
     let epoch_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1718,260 +1797,269 @@ fn discover_playability(
         game_config::GameRules::Jumbled => 1,
     };
 
-    for _thread_id in 0..num_threads {
-        let game_config = std::sync::Arc::clone(&game_config);
-        let kwg = std::sync::Arc::clone(&kwg);
-        let klv = std::sync::Arc::clone(&klv);
-        let num_processed_games = std::sync::Arc::clone(&num_processed_games);
-        let run_identifier = std::sync::Arc::clone(&run_identifier);
-        let completed_games = std::sync::Arc::clone(&completed_games);
-        let logged_games = std::sync::Arc::clone(&logged_games);
-        let completed_moves = std::sync::Arc::clone(&completed_moves);
-        let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
-        threads.push(std::thread::spawn(move || {
-            RNG.with(|rng| {
-                let mut rng = &mut *rng.borrow_mut();
-                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-                let mut game_state = game_state::GameState::new(&game_config);
-                let mut final_scores = vec![0; game_config.num_players() as usize];
-                let mut num_batched_games_here = 0;
-                let mut thread_full_word_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-                let mut word_iter = move_filter::LimitedVocabChecker::new();
-                let mut unjumble_buf = match game_config.game_rules() {
-                    game_config::GameRules::Classic => Vec::new(),
-                    game_config::GameRules::Jumbled => Vec::with_capacity(
-                        game_config
-                            .board_layout()
-                            .dim()
-                            .rows
-                            .max(game_config.board_layout().dim().cols)
-                            as usize,
-                    ),
-                };
-                let mut tally_word =
-                    |v: &mut Vec<(bites::Bites, usize)>, num_plays: usize, w: &[u8]| {
-                        match game_config.game_rules() {
-                            game_config::GameRules::Classic => {
-                                v.push((w.into(), num_plays));
-                            }
-                            game_config::GameRules::Jumbled => {
-                                if w.windows(2).all(|x| x[0] <= x[1]) {
-                                    v.push((w.into(), num_plays));
-                                } else {
-                                    // bites::Bites does not DerefMut.
-                                    let w_len = w.len();
-                                    unjumble_buf.resize(w_len.max(unjumble_buf.len()), 0);
-                                    unjumble_buf[..w_len].clone_from_slice(w);
-                                    unjumble_buf[..w_len].sort_unstable();
-                                    v.push((unjumble_buf[..w_len].into(), num_plays));
-                                }
-                            }
-                        }
+    std::thread::scope(|s| {
+        let mut threads = vec![];
+
+        for _thread_id in 0..num_threads {
+            let game_config = std::sync::Arc::clone(&game_config);
+            let kwg = std::sync::Arc::clone(&kwg);
+            let klv = std::sync::Arc::clone(&klv);
+            let num_processed_games = std::sync::Arc::clone(&num_processed_games);
+            let run_identifier = std::sync::Arc::clone(&run_identifier);
+            let completed_games = std::sync::Arc::clone(&completed_games);
+            let logged_games = std::sync::Arc::clone(&logged_games);
+            let completed_moves = std::sync::Arc::clone(&completed_moves);
+            let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
+            threads.push(s.spawn(move || {
+                RNG.with(|rng| {
+                    let mut rng = &mut *rng.borrow_mut();
+                    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                    let mut game_state = game_state::GameState::new(&game_config);
+                    let mut final_scores = vec![0; game_config.num_players() as usize];
+                    let mut num_batched_games_here = 0;
+                    let mut thread_full_word_map =
+                        fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                    let mut word_iter = move_filter::LimitedVocabChecker::new();
+                    let mut unjumble_buf = match game_config.game_rules() {
+                        game_config::GameRules::Classic => Vec::new(),
+                        game_config::GameRules::Jumbled => Vec::with_capacity(
+                            game_config
+                                .board_layout()
+                                .dim()
+                                .rows
+                                .max(game_config.board_layout().dim().cols)
+                                as usize,
+                        ),
                     };
-                // words played in the same turn (hooks) get the same usize.
-                let mut vec_played = Vec::<(bites::Bites, usize)>::new();
-                loop {
-                    let num_prior_games =
-                        num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if num_prior_games >= num_games {
-                        num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        break;
-                    }
-
-                    game_state.reset_and_draw_tiles(&game_config, &mut rng);
-                    loop {
-                        game_state.players[game_state.turn as usize]
-                            .rack
-                            .sort_unstable();
-                        let cur_rack = &game_state.current_player().rack;
-
-                        let old_bag_len = game_state.bag.0.len();
-
-                        let board_snapshot = &movegen::BoardSnapshot {
-                            board_tiles: &game_state.board_tiles,
-                            game_config: &game_config,
-                            kwg: &kwg,
-                            klv: &klv,
-                        };
-
-                        let moves_made_before_ending: u64 = if old_bag_len > 0 {
-                            let mut best_equity_so_far = f32::NEG_INFINITY;
-                            let mut num_plays = 0usize;
-                            vec_played.clear();
-                            move_generator.gen_moves_filtered(
-                                &movegen::GenMovesParams {
-                                    board_snapshot,
-                                    rack: cur_rack,
-                                    max_gen: 2, // to allow finding equal-equity plays.
-                                    num_exchanges_by_this_player: game_state
-                                        .current_player()
-                                        .num_exchanges,
-                                    always_include_pass: false,
-                                },
-                                |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
-                                |leave_value: f32| leave_value,
-                                |equity: f32, play: &movegen::Play| {
-                                    match equity.partial_cmp(&best_equity_so_far) {
-                                        Some(std::cmp::Ordering::Greater) => {
-                                            best_equity_so_far = equity;
-                                            vec_played.clear();
-                                            num_plays = 0;
-                                            match play {
-                                                movegen::Play::Exchange { .. } => {}
-                                                movegen::Play::Place {
-                                                    down,
-                                                    lane,
-                                                    idx,
-                                                    word,
-                                                    ..
-                                                } => {
-                                                    word_iter.words_placed_are_ok(
-                                                        board_snapshot,
-                                                        *down,
-                                                        *lane,
-                                                        *idx,
-                                                        &word[..],
-                                                        |w: &[u8]| {
-                                                            tally_word(
-                                                                &mut vec_played,
-                                                                num_plays,
-                                                                w,
-                                                            );
-                                                            true
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            num_plays += 1;
-                                            true
-                                        }
-                                        Some(std::cmp::Ordering::Equal) => {
-                                            match play {
-                                                movegen::Play::Exchange { .. } => {}
-                                                movegen::Play::Place {
-                                                    down,
-                                                    lane,
-                                                    idx,
-                                                    word,
-                                                    ..
-                                                } => {
-                                                    word_iter.words_placed_are_ok(
-                                                        board_snapshot,
-                                                        *down,
-                                                        *lane,
-                                                        *idx,
-                                                        &word[..],
-                                                        |w: &[u8]| {
-                                                            tally_word(
-                                                                &mut vec_played,
-                                                                num_plays,
-                                                                w,
-                                                            );
-                                                            true
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            num_plays += 1;
-                                            false // ensure top two have different equities.
-                                        }
-                                        Some(std::cmp::Ordering::Less) | None => false,
+                    let mut tally_word =
+                        |v: &mut Vec<(bites::Bites, usize)>, num_plays: usize, w: &[u8]| {
+                            match game_config.game_rules() {
+                                game_config::GameRules::Classic => {
+                                    v.push((w.into(), num_plays));
+                                }
+                                game_config::GameRules::Jumbled => {
+                                    if w.windows(2).all(|x| x[0] <= x[1]) {
+                                        v.push((w.into(), num_plays));
+                                    } else {
+                                        // bites::Bites does not DerefMut.
+                                        let w_len = w.len();
+                                        unjumble_buf.resize(w_len.max(unjumble_buf.len()), 0);
+                                        unjumble_buf[..w_len].clone_from_slice(w);
+                                        unjumble_buf[..w_len].sort_unstable();
+                                        v.push((unjumble_buf[..w_len].into(), num_plays));
                                     }
-                                },
-                            );
-                            // num_plays == 0 means all moves were exchanges/pass.
-                            if num_plays > 0 {
-                                vec_played.sort_unstable();
-                                vec_played.dedup(); // playing the same word as main+hook or hook+hook counts once.
-                                // each word gets n/d if played in n of d equally top moves.
-                                let multiplier = (num_plays as f64).recip();
-                                for same_words in vec_played.chunk_by(|a, b| a.0 == b.0) {
-                                    let occurrence = same_words.len() as f64 * multiplier;
-                                    // allocs for long words, but long words are rarely played.
-                                    thread_full_word_map
-                                        .entry(same_words[0].0[..].into())
-                                        .and_modify(|e| {
-                                            e.equity += occurrence;
-                                            e.count += 1;
-                                        })
-                                        .or_insert(Cumulate {
-                                            equity: occurrence,
-                                            count: 1,
-                                        });
                                 }
                             }
-
-                            let plays = &move_generator.plays;
-                            let play = &plays[0];
-
-                            game_state.play(&game_config, &mut rng, &play.play).unwrap();
-
-                            match game_state.check_game_ended(&game_config, &mut final_scores) {
-                                game_state::CheckGameEnded::PlayedOut
-                                | game_state::CheckGameEnded::ZeroScores => 1,
-                                game_state::CheckGameEnded::NotEnded => !0,
-                            }
-                        } else {
-                            // bag is empty, skip the rest of the game.
-                            0
                         };
-
-                        if moves_made_before_ending != !0 {
-                            let completed_moves = completed_moves.fetch_add(
-                                moves_made_before_ending,
-                                std::sync::atomic::Ordering::Relaxed,
-                            );
-                            completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            num_batched_games_here += 1;
-                            if num_batched_games_here >= batch_size {
-                                // nothing logged, just grab the mutex to report time less often.
-                                let logged_games = logged_games.fetch_add(
-                                    num_batched_games_here,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                ) + num_batched_games_here;
-                                num_batched_games_here = 0;
-                                let elapsed_time_secs = t0.elapsed().as_secs();
-                                let tick_changed = {
-                                    let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                                    mutex_guard.tick_periods.update(elapsed_time_secs)
-                                };
-                                if tick_changed {
-                                    println!(
-                                        "After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}"
-                                    );
-                                }
-                            }
+                    // words played in the same turn (hooks) get the same usize.
+                    let mut vec_played = Vec::<(bites::Bites, usize)>::new();
+                    loop {
+                        let num_prior_games =
+                            num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if num_prior_games >= num_games {
+                            num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             break;
                         }
 
-                        completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        game_state.next_turn();
+                        game_state.reset_and_draw_tiles(&game_config, &mut rng);
+                        loop {
+                            game_state.players[game_state.turn as usize]
+                                .rack
+                                .sort_unstable();
+                            let cur_rack = &game_state.current_player().rack;
+
+                            let old_bag_len = game_state.bag.0.len();
+
+                            let board_snapshot = &movegen::BoardSnapshot {
+                                board_tiles: &game_state.board_tiles,
+                                game_config: &game_config,
+                                kwg: &kwg,
+                                klv: &klv,
+                            };
+
+                            let moves_made_before_ending: u64 = if old_bag_len > 0 {
+                                let mut best_equity_so_far = f32::NEG_INFINITY;
+                                let mut num_plays = 0usize;
+                                vec_played.clear();
+                                move_generator.gen_moves_filtered(
+                                    &movegen::GenMovesParams {
+                                        board_snapshot,
+                                        rack: cur_rack,
+                                        max_gen: 2, // to allow finding equal-equity plays.
+                                        num_exchanges_by_this_player: game_state
+                                            .current_player()
+                                            .num_exchanges,
+                                        always_include_pass: false,
+                                    },
+                                    |_down: bool,
+                                     _lane: i8,
+                                     _idx: i8,
+                                     _word: &[u8],
+                                     _score: i32| true,
+                                    |leave_value: f32| leave_value,
+                                    |equity: f32, play: &movegen::Play| {
+                                        match equity.partial_cmp(&best_equity_so_far) {
+                                            Some(std::cmp::Ordering::Greater) => {
+                                                best_equity_so_far = equity;
+                                                vec_played.clear();
+                                                num_plays = 0;
+                                                match play {
+                                                    movegen::Play::Exchange { .. } => {}
+                                                    movegen::Play::Place {
+                                                        down,
+                                                        lane,
+                                                        idx,
+                                                        word,
+                                                        ..
+                                                    } => {
+                                                        word_iter.words_placed_are_ok(
+                                                            board_snapshot,
+                                                            *down,
+                                                            *lane,
+                                                            *idx,
+                                                            &word[..],
+                                                            |w: &[u8]| {
+                                                                tally_word(
+                                                                    &mut vec_played,
+                                                                    num_plays,
+                                                                    w,
+                                                                );
+                                                                true
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                                num_plays += 1;
+                                                true
+                                            }
+                                            Some(std::cmp::Ordering::Equal) => {
+                                                match play {
+                                                    movegen::Play::Exchange { .. } => {}
+                                                    movegen::Play::Place {
+                                                        down,
+                                                        lane,
+                                                        idx,
+                                                        word,
+                                                        ..
+                                                    } => {
+                                                        word_iter.words_placed_are_ok(
+                                                            board_snapshot,
+                                                            *down,
+                                                            *lane,
+                                                            *idx,
+                                                            &word[..],
+                                                            |w: &[u8]| {
+                                                                tally_word(
+                                                                    &mut vec_played,
+                                                                    num_plays,
+                                                                    w,
+                                                                );
+                                                                true
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                                num_plays += 1;
+                                                false // ensure top two have different equities.
+                                            }
+                                            Some(std::cmp::Ordering::Less) | None => false,
+                                        }
+                                    },
+                                );
+                                // num_plays == 0 means all moves were exchanges/pass.
+                                if num_plays > 0 {
+                                    vec_played.sort_unstable();
+                                    vec_played.dedup(); // playing the same word as main+hook or hook+hook counts once.
+                                    // each word gets n/d if played in n of d equally top moves.
+                                    let multiplier = (num_plays as f64).recip();
+                                    for same_words in vec_played.chunk_by(|a, b| a.0 == b.0) {
+                                        let occurrence = same_words.len() as f64 * multiplier;
+                                        // allocs for long words, but long words are rarely played.
+                                        thread_full_word_map
+                                            .entry(same_words[0].0[..].into())
+                                            .and_modify(|e| {
+                                                e.equity += occurrence;
+                                                e.count += 1;
+                                            })
+                                            .or_insert(Cumulate {
+                                                equity: occurrence,
+                                                count: 1,
+                                            });
+                                    }
+                                }
+
+                                let plays = &move_generator.plays;
+                                let play = &plays[0];
+
+                                game_state.play(&game_config, &mut rng, &play.play).unwrap();
+
+                                match game_state.check_game_ended(&game_config, &mut final_scores) {
+                                    game_state::CheckGameEnded::PlayedOut
+                                    | game_state::CheckGameEnded::ZeroScores => 1,
+                                    game_state::CheckGameEnded::NotEnded => !0,
+                                }
+                            } else {
+                                // bag is empty, skip the rest of the game.
+                                0
+                            };
+
+                            if moves_made_before_ending != !0 {
+                                let completed_moves = completed_moves.fetch_add(
+                                    moves_made_before_ending,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                                completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                num_batched_games_here += 1;
+                                if num_batched_games_here >= batch_size {
+                                    // nothing logged, just grab the mutex to report time less often.
+                                    let logged_games = logged_games.fetch_add(
+                                        num_batched_games_here,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    ) + num_batched_games_here;
+                                    num_batched_games_here = 0;
+                                    let elapsed_time_secs = t0.elapsed().as_secs();
+                                    let tick_changed = {
+                                        let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                        mutex_guard.tick_periods.update(elapsed_time_secs)
+                                    };
+                                    if tick_changed {
+                                        println!(
+                                            "After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}"
+                                        );
+                                    }
+                                }
+                                break;
+                            }
+
+                            completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            game_state.next_turn();
+                        }
                     }
-                }
 
-                let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                    let mut mutex_guard = mutexed_stuffs.lock().unwrap();
 
-                for (k, thread_v) in thread_full_word_map.into_iter() {
-                    if thread_v.count > 0 {
-                        mutex_guard
-                            .full_word_map
-                            .entry(k)
-                            .and_modify(|v| {
-                                v.equity += thread_v.equity;
-                                v.count += thread_v.count;
-                            })
-                            .or_insert(thread_v);
+                    for (k, thread_v) in thread_full_word_map.into_iter() {
+                        if thread_v.count > 0 {
+                            mutex_guard
+                                .full_word_map
+                                .entry(k)
+                                .and_modify(|v| {
+                                    v.equity += thread_v.equity;
+                                    v.count += thread_v.count;
+                                })
+                                .or_insert(thread_v);
+                        }
                     }
-                }
-            })
-        }));
-    }
-
-    for thread in threads {
-        if let Err(e) = thread.join() {
-            println!("{e:?}");
+                })
+            }));
         }
-    }
+
+        for thread in threads {
+            if let Err(e) = thread.join() {
+                println!("{e:?}");
+            }
+        }
+    });
 
     {
         let mutex_guard = mutexed_stuffs.lock().unwrap();

@@ -9,8 +9,8 @@ pub enum MacondoFormat {
 
 // Macondo project is at https://github.com/domino14/macondo/.
 // This function converts a KWG into a Macondo-compatible gaddag or dawg file.
-pub fn to_macondo<'a>(
-    kwg: &'a kwg::Kwg,
+pub fn to_macondo<'a, N: kwg::Node>(
+    kwg: &'a kwg::Kwg<N>,
     alphabet: &'a alphabet::Alphabet,
     lexicon_name: &'a str,
     build_format: MacondoFormat,
@@ -50,8 +50,8 @@ pub fn to_macondo<'a>(
         tile_mapping[0] = 0x32; // Macondo represents gaddag separator as 0x32.
     }
 
-    struct Env<'a> {
-        kwg: &'a kwg::Kwg,
+    struct Env<'a, N: kwg::Node> {
+        kwg: &'a kwg::Kwg<N>,
         unicode_sorted_tiles: &'a [(u8, &'a str)],
         tile_mapping: &'a [u8],
         node_indexes: &'a mut [u32],
@@ -67,7 +67,7 @@ pub fn to_macondo<'a>(
         letter_sets: &mut letter_sets,
     };
 
-    fn iter(env: &mut Env<'_>, mut p: i32) -> u32 {
+    fn iter<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32) -> u32 {
         let mut w = env.node_indexes[p as usize];
         // The first node is at index 0, but the structure is acyclic.
         if w != 0 {
@@ -203,8 +203,8 @@ fn str_to_windows_vec_u8(s: &str, v: &mut Vec<u8>) -> Option<()> {
     Some(())
 }
 
-pub fn to_lxd<'a>(
-    kwg: &'a kwg::Kwg,
+pub fn to_lxd<'a, N: kwg::Node>(
+    kwg: &'a kwg::Kwg<N>,
     alphabet: &'a alphabet::Alphabet,
     title_str_unicode: &'a str,
     date_str_unicode: &'a str,
@@ -227,9 +227,9 @@ pub fn to_lxd<'a>(
     let mut node_indexes = vec![0u32; kwg.0.len()];
     let mut word_counts = vec![0u32; kwg.0.len()];
 
-    struct Env<'a> {
+    struct Env<'a, N: kwg::Node> {
         alphabet: &'a alphabet::Alphabet,
-        kwg: &'a kwg::Kwg,
+        kwg: &'a kwg::Kwg<N>,
         node_indexes: &'a mut [u32],
         word_counts: &'a mut [u32],
         nodes: &'a mut Vec<u32>,
@@ -242,7 +242,7 @@ pub fn to_lxd<'a>(
         node_indexes: &mut node_indexes,
     };
 
-    fn iter(env: &mut Env<'_>, mut p: i32) -> error::Returns<()> {
+    fn iter<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32) -> error::Returns<()> {
         let mut w = env.node_indexes[p as usize];
         if w != 0 {
             return Ok(());

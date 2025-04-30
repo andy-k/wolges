@@ -16,9 +16,9 @@ impl LimitedVocabChecker {
     }
 
     #[inline(always)]
-    pub fn words_placed_are_ok<WordIsOk: FnMut(&[u8]) -> bool>(
+    pub fn words_placed_are_ok<WordIsOk: FnMut(&[u8]) -> bool, N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         down: bool,
         lane: i8,
         idx: i8,
@@ -106,9 +106,9 @@ impl<'a> Tilt<'a> {
         LENGTH_IMPORTANCES
     }
 
-    pub fn new(
+    pub fn new<N: kwg::Node>(
         game_config: &game_config::GameConfig,
-        kwg: &kwg::Kwg,
+        kwg: &kwg::Kwg<N>,
         length_importances: &'a [f32],
     ) -> Self {
         let mut word_prob = prob::WordProbability::new(game_config.alphabet());
@@ -174,10 +174,10 @@ pub enum GenMoves<'a> {
 
 impl GenMoves<'_> {
     #[inline(always)]
-    pub fn gen_moves(
+    pub fn gen_moves<N: kwg::Node, L: kwg::Node>(
         &mut self,
         move_generator: &mut movegen::KurniaMoveGenerator,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         rack: &[u8],
         num_exchanges_by_this_player: i16,
         max_gen: usize,

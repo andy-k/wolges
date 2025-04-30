@@ -1,50 +1,94 @@
 // Copyright (C) 2020-2025 Andy Kurnia.
 
-#[derive(Clone, Copy)]
-pub struct Node(u32);
+pub trait Node: Copy {
+    fn new(v: u32) -> Self;
+    fn tile(&self) -> u8;
+    fn accepts(&self) -> bool;
+    fn is_end(&self) -> bool;
+    fn arc_index(&self) -> i32;
+}
 
-impl Node {
+#[derive(Clone, Copy)]
+pub struct Node22(u32);
+
+impl Node for Node22 {
     #[inline(always)]
-    pub fn tile(&self) -> u8 {
+    fn new(v: u32) -> Self {
+        Self(v)
+    }
+
+    #[inline(always)]
+    fn tile(&self) -> u8 {
         (self.0 >> 24) as u8
     }
 
     #[inline(always)]
-    pub fn accepts(&self) -> bool {
+    fn accepts(&self) -> bool {
         self.0 & 0x800000 != 0
     }
 
     #[inline(always)]
-    pub fn is_end(&self) -> bool {
+    fn is_end(&self) -> bool {
         self.0 & 0x400000 != 0
     }
 
     #[inline(always)]
-    pub fn arc_index(&self) -> i32 {
+    fn arc_index(&self) -> i32 {
         (self.0 & 0x3fffff) as i32
     }
 }
 
-pub struct Kwg(pub Box<[Node]>);
+#[derive(Clone, Copy)]
+pub struct Node24(u32);
 
-pub static EMPTY_KWG_BYTES: &[u8] = b"\x00\x00\x40\x00\x00\x00\x40\x00";
-
-impl std::ops::Index<i32> for Kwg {
-    type Output = Node;
+impl Node for Node24 {
+    #[inline(always)]
+    fn new(v: u32) -> Self {
+        Self(v)
+    }
 
     #[inline(always)]
-    fn index(&self, i: i32) -> &Node {
+    fn tile(&self) -> u8 {
+        (self.0 >> 24) as u8 & 0x3f
+    }
+
+    #[inline(always)]
+    fn accepts(&self) -> bool {
+        self.0 & 0x80000000 != 0
+    }
+
+    #[inline(always)]
+    fn is_end(&self) -> bool {
+        self.0 & 0x40000000 != 0
+    }
+
+    #[inline(always)]
+    fn arc_index(&self) -> i32 {
+        (self.0 & 0xffffff) as i32
+    }
+}
+
+pub struct Kwg<N: Node>(pub Box<[N]>);
+
+// kwg::Node22
+pub static EMPTY_KWG_BYTES: &[u8] = b"\x00\x00\x40\x00\x00\x00\x40\x00";
+
+impl<N: Node> std::ops::Index<i32> for Kwg<N> {
+    type Output = N;
+
+    #[inline(always)]
+    fn index(&self, i: i32) -> &N {
         &self.0[i as usize]
     }
 }
 
-impl Kwg {
-    pub fn from_bytes_alloc(buf: &[u8]) -> Kwg {
+impl<N: Node> Kwg<N> {
+    pub fn from_bytes_alloc(buf: &[u8]) -> Self {
         let kwg_len = buf.len() / 4;
         let mut elts = Vec::with_capacity(kwg_len);
         let mut r = 0;
         for _ in 0..kwg_len {
-            elts.push(Node(
+            elts.push(N::new(
                 buf[r] as u32
                     | ((buf[r + 1] as u32) << 8)
                     | ((buf[r + 2] as u32) << 16)
@@ -109,7 +153,7 @@ impl Kwg {
     }
 
     pub fn count_dawg_words_alloc(&self) -> Box<[u32]> {
-        fn max_from(nodes: &Kwg, vis: &mut [u8], mut p: i32) -> i32 {
+        fn max_from<N: Node>(nodes: &Kwg<N>, vis: &mut [u8], mut p: i32) -> i32 {
             let mut ret = 0;
             loop {
                 let p_byte_index = (p as usize) / 8;

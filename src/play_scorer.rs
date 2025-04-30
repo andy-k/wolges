@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2025 Andy Kurnia.
 
-use super::{error, game_config, game_state, move_filter, movegen};
+use super::{error, game_config, game_state, kwg, move_filter, movegen};
 
 pub struct PlayScorer {
     rack_tally: Vec<u8>,
@@ -27,9 +27,9 @@ impl PlayScorer {
     // Ok(None) if valid and canonical.
     // Ok(Some(canonical_play)) if valid but not canonical.
     // Err(reason) if invalid.
-    pub fn validate_play(
+    pub fn validate_play<N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         game_state: &game_state::GameState,
         play: &movegen::Play,
     ) -> error::Returns<Option<movegen::Play>> {
@@ -216,9 +216,9 @@ impl PlayScorer {
         }
     }
 
-    pub fn words_all<Callback: FnMut(&[u8]) -> bool>(
+    pub fn words_all<Callback: FnMut(&[u8]) -> bool, N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         play: &movegen::Play,
         cb: Callback,
     ) -> bool {
@@ -242,10 +242,10 @@ impl PlayScorer {
     }
 
     #[inline(always)]
-    fn classic_words_checker<'a>(
+    fn classic_words_checker<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &'a movegen::BoardSnapshot<'_>,
-    ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a> {
+        board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
+    ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a, N, L> {
         move |word: &[u8]| {
             let mut p = 0;
             for &tile in word {
@@ -259,10 +259,10 @@ impl PlayScorer {
     }
 
     #[inline(always)]
-    fn jumbled_words_checker<'a>(
+    fn jumbled_words_checker<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &'a movegen::BoardSnapshot<'_>,
-    ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a> {
+        board_snapshot: &'a movegen::BoardSnapshot<'_, N, L>,
+    ) -> impl FnMut(&[u8]) -> bool + 'a + use<'a, N, L> {
         move |word: &[u8]| {
             // doing this the slow way, with no additional space
             let mut p = 0;
@@ -283,9 +283,9 @@ impl PlayScorer {
     }
 
     #[inline(always)]
-    pub fn words_are_valid(
+    pub fn words_are_valid<N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         play: &movegen::Play,
     ) -> bool {
         match board_snapshot.game_config.game_rules() {
@@ -315,9 +315,9 @@ impl PlayScorer {
     }
 
     #[inline(always)]
-    pub fn find_invalid_words(
+    pub fn find_invalid_words<N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         play: &movegen::Play,
         save_invalid_word: impl FnMut(&[u8]),
     ) {
@@ -337,9 +337,9 @@ impl PlayScorer {
 
     // Unused &mut self for future-proofing.
     // Assume play is valid.
-    pub fn compute_score(
+    pub fn compute_score<N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         play: &movegen::Play,
     ) -> i32 {
         let game_config = board_snapshot.game_config;
@@ -439,9 +439,9 @@ impl PlayScorer {
     }
 
     // Assume recounted_score came from compute_score().
-    pub fn compute_equity(
+    pub fn compute_equity<N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         game_state: &game_state::GameState,
         play: &movegen::Play,
         leave_scale: f32,

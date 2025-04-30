@@ -2,16 +2,17 @@
 
 use super::kwg;
 
-pub struct Klv {
-    kwg: kwg::Kwg,
+pub struct Klv<L: kwg::Node> {
+    kwg: kwg::Kwg<L>,
     counts: Box<[u32]>,
     leaves: Box<[f32]>,
 }
 
+// kwg::Node22
 pub static EMPTY_KLV_BYTES: &[u8] = b"\x01\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00";
 
-impl Klv {
-    pub fn from_bytes_alloc(buf: &[u8]) -> Klv {
+impl<L: kwg::Node> Klv<L> {
+    pub fn from_bytes_alloc(buf: &[u8]) -> Self {
         let mut r = 0;
         let kwg_bytes_len = ((buf[r] as u32
             | ((buf[r + 1] as u32) << 8)
@@ -66,7 +67,7 @@ impl Klv {
     }
 
     #[inline(always)]
-    pub fn kwg(&self, i: i32) -> kwg::Node {
+    pub fn kwg(&self, i: i32) -> L {
         self.kwg[i]
     }
 
@@ -141,10 +142,10 @@ impl MultiLeaves {
     }
 
     // use_klv=false means to just use 0.0 for all leaves, this may be slightly faster.
-    pub fn init<AdjustLeaveValue: Fn(f32) -> f32>(
+    pub fn init<AdjustLeaveValue: Fn(f32) -> f32, L: kwg::Node>(
         &mut self,
         rack_tally: &[u8],
-        klv: &Klv,
+        klv: &Klv<L>,
         use_klv: bool,
         adjust_leave_value: &AdjustLeaveValue,
     ) {
@@ -173,15 +174,15 @@ impl MultiLeaves {
         self.num_playeds.resize(place_value as usize, 0xff); // all entries will be overwritten anyway
         self.num_playeds[0] = num_tiles_on_rack;
 
-        struct Env<'a> {
-            klv: &'a Klv,
+        struct Env<'a, L: kwg::Node> {
+            klv: &'a Klv<L>,
             unique_tiles: &'a [u8],
             digits: &'a mut [MultiLeavesDigit],
             leave_values: &'a mut [f32],
             num_playeds: &'a mut [u8],
         }
-        fn precompute_leaves(
-            env: &mut Env<'_>,
+        fn precompute_leaves<L: kwg::Node>(
+            env: &mut Env<'_, L>,
             mut p: i32,
             mut idx: u32,
             leave_idx_offset: u32,

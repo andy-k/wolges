@@ -302,9 +302,9 @@ impl WorkingBuffer {
         }
     }
 
-    fn init<AdjustLeaveValue: Fn(f32) -> f32>(
+    fn init<AdjustLeaveValue: Fn(f32) -> f32, N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &BoardSnapshot<'_>,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
         rack: &[u8],
         adjust_leave_value: &AdjustLeaveValue,
     ) {
@@ -459,7 +459,10 @@ impl WorkingBuffer {
             .reserve(self.num_tiles_on_rack as usize);
     }
 
-    fn init_after_cross_sets(&mut self, board_snapshot: &BoardSnapshot<'_>) {
+    fn init_after_cross_sets<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &BoardSnapshot<'_, N, L>,
+    ) {
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
         let premiums = board_layout.premiums();
@@ -507,16 +510,16 @@ impl WorkingBuffer {
 }
 
 // kwg must be Gaddawg for Classic, AlphaDawg for Jumbled.
-pub struct BoardSnapshot<'a> {
+pub struct BoardSnapshot<'a, N: kwg::Node, L: kwg::Node> {
     pub board_tiles: &'a [u8],
     pub game_config: &'a game_config::GameConfig,
-    pub kwg: &'a kwg::Kwg,
-    pub klv: &'a klv::Klv,
+    pub kwg: &'a kwg::Kwg<N>,
+    pub klv: &'a klv::Klv<L>,
 }
 
 // cached_cross_sets is just one strip, so it is transposed from cross_sets
-fn gen_classic_cross_set<'a>(
-    board_snapshot: &'a BoardSnapshot<'a>,
+fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_sets: &'a mut [CrossSet],
     output_strider: matrix::Strider,
@@ -788,8 +791,8 @@ fn gen_classic_cross_set<'a>(
     }
 }
 
-fn gen_jumbled_cross_set<'a>(
-    board_snapshot: &'a BoardSnapshot<'a>,
+fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_sets: &'a mut [CrossSet],
     output_strider: matrix::Strider,
@@ -852,8 +855,8 @@ fn gen_jumbled_cross_set<'a>(
 }
 
 #[inline(always)]
-fn gen_cross_set<'a>(
-    board_snapshot: &'a BoardSnapshot<'a>,
+fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_sets: &'a mut [CrossSet],
     output_strider: matrix::Strider,
@@ -1389,8 +1392,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 }
 
-struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32)> {
-    board_snapshot: &'a BoardSnapshot<'a>,
+struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>
+{
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
@@ -1409,12 +1413,17 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32)> {
     used_letters_tally: &'a mut [u8], // jumbled mode only
 }
 
-fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
-    params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
+fn gen_classic_place_moves<
+    'a,
+    CallbackType: FnMut(i8, &[u8], i32, f32),
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32)> {
-        params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node> {
+        params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
         idx_left: i8,
@@ -1426,8 +1435,8 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         leave_idx: u32,
     }
 
-    fn record<CallbackType: FnMut(i8, &[u8], i32, f32)>(
-        env: &mut Env<'_, CallbackType>,
+    fn record<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
         idx_left: i8,
         idx_right: i8,
@@ -1447,8 +1456,8 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         );
     }
 
-    fn play_right<CallbackType: FnMut(i8, &[u8], i32, f32)>(
-        env: &mut Env<'_, CallbackType>,
+    fn play_right<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut p: i32,
         mut idx: i8,
@@ -1561,8 +1570,8 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         }
     }
 
-    fn play_left<CallbackType: FnMut(i8, &[u8], i32, f32)>(
-        env: &mut Env<'_, CallbackType>,
+    fn play_left<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut p: i32,
         mut idx: i8,
@@ -1705,12 +1714,17 @@ fn gen_classic_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
     );
 }
 
-fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
-    params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
+fn gen_jumbled_place_moves<
+    'a,
+    CallbackType: FnMut(i8, &[u8], i32, f32),
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32)> {
-        params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node> {
+        params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
         idx_left: i8,
@@ -1722,8 +1736,8 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         leave_idx: u32,
     }
 
-    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, f32)>(
-        env: &mut Env<'_, CallbackType>,
+    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
         idx_left: i8,
         idx_right: i8,
@@ -1750,8 +1764,8 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         }
     }
 
-    fn play_right<CallbackType: FnMut(i8, &[u8], i32, f32)>(
-        env: &mut Env<'_, CallbackType>,
+    fn play_right<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut idx: i8,
         mut is_unique: bool,
@@ -1849,8 +1863,8 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
         }
     }
 
-    fn play_left<CallbackType: FnMut(i8, &[u8], i32, f32)>(
-        env: &mut Env<'_, CallbackType>,
+    fn play_left<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut idx: i8,
         mut is_unique: bool,
@@ -1980,8 +1994,8 @@ fn gen_jumbled_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
 }
 
 #[inline(always)]
-fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
-    params: &'a mut GenPlaceMovesParams<'a, CallbackType>,
+fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+    params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
     match params.board_snapshot.game_config.game_rules() {
@@ -1990,8 +2004,13 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32)>(
     }
 }
 
-fn gen_place_moves_at<'a, FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, f32)>(
-    board_snapshot: &'a BoardSnapshot<'a>,
+fn gen_place_moves_at<
+    'a,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, f32),
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &mut WorkingBuffer,
     multi_leaves: &'a klv::MultiLeaves,
     placement: &PossiblePlacement,
@@ -2204,12 +2223,12 @@ impl Ord for ValuedMove {
     }
 }
 
-pub struct WriteablePlay<'a> {
-    board_snapshot: &'a BoardSnapshot<'a>,
+pub struct WriteablePlay<'a, N: kwg::Node, L: kwg::Node> {
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
     play: &'a Play,
 }
 
-impl std::fmt::Display for WriteablePlay<'_> {
+impl<N: kwg::Node, L: kwg::Node> std::fmt::Display for WriteablePlay<'_, N, L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
@@ -2276,7 +2295,10 @@ impl std::fmt::Display for WriteablePlay<'_> {
 }
 
 impl Play {
-    pub fn fmt<'a>(&'a self, board_snapshot: &'a BoardSnapshot<'_>) -> WriteablePlay<'a> {
+    pub fn fmt<'a, N: kwg::Node, L: kwg::Node>(
+        &'a self,
+        board_snapshot: &'a BoardSnapshot<'_, N, L>,
+    ) -> WriteablePlay<'a, N, L> {
         WriteablePlay {
             board_snapshot,
             play: self,
@@ -2284,8 +2306,8 @@ impl Play {
     }
 }
 
-pub struct GenMovesParams<'a> {
-    pub board_snapshot: &'a BoardSnapshot<'a>,
+pub struct GenMovesParams<'a, N: kwg::Node, L: kwg::Node> {
+    pub board_snapshot: &'a BoardSnapshot<'a, N, L>,
     pub rack: &'a [u8],
     pub max_gen: usize,
     pub num_exchanges_by_this_player: i16,
@@ -2331,9 +2353,9 @@ impl KurniaMoveGenerator {
     }
 
     // skip equity computation and sorting
-    pub fn gen_moves_raw_all_unsorted<'a>(
+    pub fn gen_moves_raw_all_unsorted<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &'a BoardSnapshot<'a>,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
         rack: &'a [u8],
         num_exchanges_by_this_player: i16,
         always_include_pass: bool,
@@ -2402,9 +2424,11 @@ impl KurniaMoveGenerator {
         AdjustLeaveValue: Fn(f32) -> f32,
         EquityPredicate: FnMut(f32, &Play) -> bool,
         BreatheFuture: std::future::Future,
+        N: kwg::Node,
+        L: kwg::Node,
     >(
         &mut self,
-        params: &'a GenMovesParams<'a>,
+        params: &'a GenMovesParams<'a, N, L>,
         mut place_move_predicate: PlaceMovePredicate,
         adjust_leave_value: AdjustLeaveValue,
         equity_predicate: EquityPredicate,
@@ -2535,9 +2559,11 @@ impl KurniaMoveGenerator {
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         AdjustLeaveValue: Fn(f32) -> f32,
         EquityPredicate: FnMut(f32, &Play) -> bool,
+        N: kwg::Node,
+        L: kwg::Node,
     >(
         &mut self,
-        params: &'a GenMovesParams<'a>,
+        params: &'a GenMovesParams<'a, N, L>,
         mut place_move_predicate: PlaceMovePredicate,
         adjust_leave_value: AdjustLeaveValue,
         equity_predicate: EquityPredicate,
@@ -2661,7 +2687,10 @@ impl KurniaMoveGenerator {
     }
 
     #[inline(always)]
-    pub fn gen_moves_unfiltered<'a>(&mut self, params: &'a GenMovesParams<'a>) {
+    pub fn gen_moves_unfiltered<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+    ) {
         self.gen_moves_filtered(
             params,
             |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
@@ -2672,9 +2701,9 @@ impl KurniaMoveGenerator {
 
     // found_word may be called multiple times for the same word.
     #[inline(always)]
-    pub fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8])>(
+    pub fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::Node>(
         &mut self,
-        board_snapshot: &'a BoardSnapshot<'a>,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
         found_word: FoundWord,
     ) {
         let working_buffer = &mut self.working_buffer;
@@ -2683,8 +2712,13 @@ impl KurniaMoveGenerator {
     }
 }
 
-fn kurnia_gen_exchange_moves<'a, FoundExchangeMove: FnMut(&[u8], f32)>(
-    board_snapshot: &'a BoardSnapshot<'a>,
+fn kurnia_gen_exchange_moves<
+    'a,
+    FoundExchangeMove: FnMut(&[u8], f32),
+    N: kwg::Node,
+    L: kwg::Node,
+>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &mut WorkingBuffer,
     multi_leaves: &klv::MultiLeaves,
     num_exchanges_by_this_player: i16,
@@ -2706,9 +2740,11 @@ fn kurnia_gen_place_moves_iter<
     'a,
     FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, f32),
     CanAccept: 'a + Fn(f32) -> bool,
+    N: kwg::Node,
+    L: kwg::Node,
 >(
     want_raw: bool,
-    board_snapshot: &'a BoardSnapshot<'a>,
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer,
     multi_leaves: &'a klv::MultiLeaves,
     mut found_place_move: FoundPlaceMove,
@@ -2921,16 +2957,21 @@ fn kurnia_gen_place_moves_iter<
     })
 }
 
-struct GenRemainingConnectedWordsParams<'a> {
+struct GenRemainingConnectedWordsParams<'a, N: kwg::Node> {
     board_strip: &'a [u8],
     rack_tally: &'a mut [u8],
     word_strip_buffer: &'a mut [u8],
-    kwg: &'a kwg::Kwg,
+    kwg: &'a kwg::Kwg<N>,
 }
 
 // note: this basic word prune algorithm does not consider hooks yet.
-fn gen_remaining_connected_words<'a, FoundWord: 'a + FnMut(&[u8]), FoundSpace: 'a + FnMut(u8)>(
-    params: &'a mut GenRemainingConnectedWordsParams<'a>,
+fn gen_remaining_connected_words<
+    'a,
+    FoundWord: 'a + FnMut(&[u8]),
+    FoundSpace: 'a + FnMut(u8),
+    N: kwg::Node,
+>(
+    params: &'a mut GenRemainingConnectedWordsParams<'a, N>,
     found_word: FoundWord,
     mut found_space: FoundSpace,
 ) {
@@ -2940,8 +2981,8 @@ fn gen_remaining_connected_words<'a, FoundWord: 'a + FnMut(&[u8]), FoundSpace: '
         .zip(params.board_strip.iter().map(|x| x & 0x7f))
         .for_each(|(m, v)| *m = v);
 
-    struct Env<'a, FoundWord: 'a + FnMut(&[u8])> {
-        params: &'a mut GenRemainingConnectedWordsParams<'a>,
+    struct Env<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node> {
+        params: &'a mut GenRemainingConnectedWordsParams<'a, N>,
         found_word: FoundWord,
         anchor: i8,
         rightmost: i8,
@@ -2949,11 +2990,19 @@ fn gen_remaining_connected_words<'a, FoundWord: 'a + FnMut(&[u8]), FoundSpace: '
         idx_left: i8,
     }
 
-    fn record<FoundWord: FnMut(&[u8])>(env: &mut Env<'_, FoundWord>, idx_left: i8, idx_right: i8) {
+    fn record<FoundWord: FnMut(&[u8]), N: kwg::Node>(
+        env: &mut Env<'_, FoundWord, N>,
+        idx_left: i8,
+        idx_right: i8,
+    ) {
         (env.found_word)(&env.params.word_strip_buffer[idx_left as usize..idx_right as usize]);
     }
 
-    fn play_right<FoundWord: FnMut(&[u8])>(env: &mut Env<'_, FoundWord>, mut p: i32, mut idx: i8) {
+    fn play_right<FoundWord: FnMut(&[u8]), N: kwg::Node>(
+        env: &mut Env<'_, FoundWord, N>,
+        mut p: i32,
+        mut idx: i8,
+    ) {
         // tail-recurse placing current sequence of tiles
         while idx < env.rightmost {
             let b = env.params.board_strip[idx as usize];
@@ -2998,7 +3047,11 @@ fn gen_remaining_connected_words<'a, FoundWord: 'a + FnMut(&[u8]), FoundSpace: '
         }
     }
 
-    fn play_left<FoundWord: FnMut(&[u8])>(env: &mut Env<'_, FoundWord>, mut p: i32, mut idx: i8) {
+    fn play_left<FoundWord: FnMut(&[u8]), N: kwg::Node>(
+        env: &mut Env<'_, FoundWord, N>,
+        mut p: i32,
+        mut idx: i8,
+    ) {
         // tail-recurse placing current sequence of tiles
         while idx >= 0 {
             let b = env.params.board_strip[idx as usize];
@@ -3103,27 +3156,27 @@ fn gen_remaining_connected_words<'a, FoundWord: 'a + FnMut(&[u8]), FoundSpace: '
     env.params.word_strip_buffer.iter_mut().for_each(|m| *m = 0);
 }
 
-struct GenRemainingUnconnectedWordsParams<'a> {
+struct GenRemainingUnconnectedWordsParams<'a, N: kwg::Node> {
     rack_tally: &'a mut [u8],
     word_vec: &'a mut Vec<u8>,
-    kwg: &'a kwg::Kwg,
+    kwg: &'a kwg::Kwg<N>,
     max_len: usize,
 }
 
-fn gen_remaining_unconnected_words<'a, FoundWord: 'a + FnMut(&[u8])>(
-    params: &'a mut GenRemainingUnconnectedWordsParams<'a>,
+fn gen_remaining_unconnected_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node>(
+    params: &'a mut GenRemainingUnconnectedWordsParams<'a, N>,
     found_word: FoundWord,
 ) {
     params.word_vec.clear();
     params.word_vec.reserve(params.max_len);
-    struct Env<'a, FoundWord: 'a + FnMut(&[u8])> {
+    struct Env<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node> {
         rack_tally: &'a mut [u8],
         word_vec: &'a mut Vec<u8>,
-        kwg: &'a kwg::Kwg,
+        kwg: &'a kwg::Kwg<N>,
         max_len: usize,
         found_word: FoundWord,
     }
-    fn iter<FoundWord: FnMut(&[u8])>(env: &mut Env<'_, FoundWord>, mut p: i32) {
+    fn iter<FoundWord: FnMut(&[u8]), N: kwg::Node>(env: &mut Env<'_, FoundWord, N>, mut p: i32) {
         if env.word_vec.len() >= env.max_len {
             return;
         }
@@ -3174,8 +3227,8 @@ fn gen_remaining_unconnected_words<'a, FoundWord: 'a + FnMut(&[u8])>(
 }
 
 // found_word may be called multiple times for the same word.
-fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8])>(
-    board_snapshot: &'a BoardSnapshot<'a>,
+fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
     working_buffer: &'a mut WorkingBuffer,
     mut found_word: FoundWord,
 ) {

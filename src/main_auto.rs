@@ -41,14 +41,14 @@ fn main() -> error::Returns<()> {
     let _ = jumbled;
     let jumbled = false;
     let kwg = if jumbled {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kad")?)
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kad")?)
     } else {
-        kwg::Kwg::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?)
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?)
     };
-    let klv = klv::Klv::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?);
+    let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?);
     /*
     let _ = klv;
-    let klv = std::sync::Arc::new(klv::Klv::from_bytes_alloc(klv::EMPTY_KLV_BYTES));
+    let klv = std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES));
     */
     let game_config = &if jumbled {
         game_config::make_jumbled_english_game_config()
@@ -141,7 +141,7 @@ fn main() -> error::Returns<()> {
         )?;
         println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
         //std::fs::write("_word_62702.kwg", smaller_kwg_bytes)?;
-        let smaller_kwg = kwg::Kwg::from_bytes_alloc(&smaller_kwg_bytes);
+        let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
         let test_rack = &[13, 15, 15, 15, 18, 18, 20]; // MOOORRT
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot,
@@ -269,7 +269,7 @@ fn main() -> error::Returns<()> {
                         &vec_of_words.into_boxed_slice(),
                     )?;
                     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
-                    let smaller_kwg = kwg::Kwg::from_bytes_alloc(&smaller_kwg_bytes);
+                    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
                     move_generator.reset_for_another_kwg();
                     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                         board_snapshot: &movegen::BoardSnapshot {

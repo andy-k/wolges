@@ -10,19 +10,19 @@ struct Candidate {
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
-pub struct Simmer<'a> {
+pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     game_config: &'a game_config::GameConfig,
-    kwg: &'a kwg::Kwg,
-    klv: &'a klv::Klv,
+    kwg: &'a kwg::Kwg<N>,
+    klv: &'a klv::Klv<L>,
     candidates: Vec<Candidate>,
     simmer: simmer::Simmer,
 }
 
-impl<'a> Simmer<'a> {
+impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     pub fn new(
         game_config: &'a game_config::GameConfig,
-        kwg: &'a kwg::Kwg,
-        klv: &'a klv::Klv,
+        kwg: &'a kwg::Kwg<N>,
+        klv: &'a klv::Klv<L>,
     ) -> Self {
         Self {
             game_config,
@@ -72,14 +72,14 @@ impl Periods {
 }
 
 #[expect(clippy::large_enum_variant)]
-pub enum MovePicker<'a> {
+pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Hasty,
-    Simmer(Simmer<'a>),
+    Simmer(Simmer<'a, N, L>),
 }
 
-unsafe impl Send for MovePicker<'_> {}
+unsafe impl<N: kwg::Node, L: kwg::Node> Send for MovePicker<'_, N, L> {}
 
-impl MovePicker<'_> {
+impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
     #[inline(always)]
     fn limit_surviving_candidates(
         candidates: &mut Vec<Candidate>,
@@ -106,7 +106,7 @@ impl MovePicker<'_> {
         &mut self,
         filtered_movegen: &mut move_filter::GenMoves<'_>,
         move_generator: &mut movegen::KurniaMoveGenerator,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         game_state: &game_state::GameState,
         rack: &[u8],
     ) {
@@ -221,7 +221,7 @@ impl MovePicker<'_> {
         &mut self,
         filtered_movegen: &mut move_filter::GenMoves<'_>,
         move_generator: &mut movegen::KurniaMoveGenerator,
-        board_snapshot: &movegen::BoardSnapshot<'_>,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         game_state: &game_state::GameState,
         rack: &[u8],
     ) {
