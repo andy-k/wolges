@@ -481,10 +481,16 @@ impl StatesDefragger<'_> {
     }
 
     // encoding: little endian of
+    // (Node22)
     // bits 0-21 = pointer & 0x3fffff
     // bit 22 = end
     // bit 23 = is_terminal
     // bits 24-31 = char
+    // (Node24)
+    // bits 0-23 = pointer & 0xffffff
+    // bits 24-29 = char & 0x3f
+    // bit 30 = end
+    // bit 31 = is_terminal
     #[inline(always)]
     fn write_node<const VARIANT: u8>(
         &self,
