@@ -49,24 +49,24 @@ struct KbwgReader {}
 impl WgReader for KbwgReader {
     #[inline(always)]
     fn tile(&self, bytes: &[u8], idx: usize) -> u8 {
-        bytes[(idx * 4) + 3] & 0x3f
+        bytes[idx * 4] & 0x3f
     }
 
     #[inline(always)]
     fn accepts(&self, bytes: &[u8], idx: usize) -> bool {
-        bytes[(idx * 4) + 3] & 0x80 != 0
+        bytes[idx * 4] & 0x80 != 0
     }
 
     #[inline(always)]
     fn is_end(&self, bytes: &[u8], idx: usize) -> bool {
-        bytes[(idx * 4) + 3] & 0x40 != 0
+        bytes[idx * 4] & 0x40 != 0
     }
 
     #[inline(always)]
     fn arc_index(&self, bytes: &[u8], idx: usize) -> usize {
-        ((bytes[(idx * 4) + 2] as usize) << 16)
-            | ((bytes[(idx * 4) + 1] as usize) << 8)
-            | (bytes[idx * 4] as usize)
+        ((bytes[(idx * 4) + 3] as usize) << 16)
+            | ((bytes[(idx * 4) + 2] as usize) << 8)
+            | (bytes[(idx * 4) + 1] as usize)
     }
 
     #[inline(always)]

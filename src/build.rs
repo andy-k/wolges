@@ -487,10 +487,10 @@ impl StatesDefragger<'_> {
     // bit 23 = is_terminal
     // bits 24-31 = char
     // (Node24)
-    // bits 0-23 = pointer & 0xffffff
-    // bits 24-29 = char & 0x3f
-    // bit 30 = end
-    // bit 31 = is_terminal
+    // bits 0-5 = char & 0x3f
+    // bit 6 = end
+    // bit 7 = is_terminal
+    // bits 8-31 = pointer & 0xffffff
     #[inline(always)]
     fn write_node<const VARIANT: u8>(
         &self,
@@ -511,10 +511,10 @@ impl StatesDefragger<'_> {
                 out[3] = tile;
             }
             2 => {
-                out[0] = defragged_arc_index as u8;
-                out[1] = (defragged_arc_index >> 8) as u8;
-                out[2] = (defragged_arc_index >> 16) as u8;
-                out[3] = (tile & 0x3f) | ((is_end.0 as u8) << 6) | ((accepts.0 as u8) << 7);
+                out[0] = (tile & 0x3f) | ((is_end.0 as u8) << 6) | ((accepts.0 as u8) << 7);
+                out[1] = defragged_arc_index as u8;
+                out[2] = (defragged_arc_index >> 8) as u8;
+                out[3] = (defragged_arc_index >> 16) as u8;
             }
             _ => unimplemented!(),
         }

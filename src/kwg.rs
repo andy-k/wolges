@@ -49,22 +49,22 @@ impl Node for Node24 {
 
     #[inline(always)]
     fn tile(&self) -> u8 {
-        (self.0 >> 24) as u8 & 0x3f
+        (self.0 & 0x3f) as u8
     }
 
     #[inline(always)]
     fn accepts(&self) -> bool {
-        self.0 & 0x80000000 != 0
+        self.0 & 0x80 != 0
     }
 
     #[inline(always)]
     fn is_end(&self) -> bool {
-        self.0 & 0x40000000 != 0
+        self.0 & 0x40 != 0
     }
 
     #[inline(always)]
     fn arc_index(&self) -> i32 {
-        (self.0 & 0xffffff) as i32
+        (self.0 >> 8) as i32
     }
 }
 
