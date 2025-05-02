@@ -15,14 +15,14 @@ opt-level = 3
 [dependencies]
 csv = "1.3.1"
 num_cpus = "1.16.0"
-rand = "0.9.0"
+rand = "0.9.1"
 rand_chacha = "0.9.0"
 rustyline = "15.0.0"
 rustyline-derive = "0.11.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 shell-words = "1.1.0"
-tokio = { version = "1.44.1", features = ["full"] }
+tokio = { version = "1.44.2", features = ["full"] }
 
 [[bin]]
 name = "auto"
