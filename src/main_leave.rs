@@ -66,11 +66,7 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
     if args[1]
         .strip_prefix(language_name)
         .is_some_and(|x| x.starts_with("-big"))
-        && do_lang_kwg::<_, kwg::Node24>(
-            args,
-            &format!("{}-big", language_name),
-            &make_game_config,
-        )?
+        && do_lang_kwg::<_, kwg::Node24>(args, &format!("{language_name}-big"), &make_game_config)?
     {
         return Ok(true);
     }

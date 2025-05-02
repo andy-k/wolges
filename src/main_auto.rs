@@ -20,7 +20,7 @@ fn main() -> error::Returns<()> {
             bag.shuffle(&mut rng);
             println!("Pool {}: {}", bag.0.len(), alphabet.fmt_rack(&bag.0));
         }
-        println!("{:?}", v);
+        println!("{v:?}");
         for _ in 0..40 {
             print!(" {}", rng.random_range(0..10));
         }

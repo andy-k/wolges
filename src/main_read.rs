@@ -1608,8 +1608,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(&ret)?;
                 writeln!(
                     boxed_stdout_or_stderr(),
-                    "each bucket has at most {} values",
-                    max_bucket_size
+                    "each bucket has at most {max_bucket_size} values"
                 )?;
                 Ok(true)
             }
@@ -1655,11 +1654,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 if !words_only {
                     write!(
                         ret,
-                        "wmp {} len 2..{} max_word_lookup_results={}",
-                        wmp_ver, max_len, max_word_lookup_results
+                        "wmp {wmp_ver} len 2..{max_len} max_word_lookup_results={max_word_lookup_results}"
                     )?;
                     if wmp_ver < 2 {
-                        write!(ret, " max_blank_pair_results={}", max_blank_pair_results)?;
+                        write!(ret, " max_blank_pair_results={max_blank_pair_results}")?;
                     }
                     ret.push('\n');
                 }
@@ -2461,8 +2459,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                 if t & 1 == 0 {
                                     if bits[bit_idx] & 0xf == 0xf {
                                         return Err(format!(
-                                            "word {:?} has too many tile {}",
-                                            this_word, t
+                                            "word {this_word:?} has too many tile {t}"
                                         )
                                         .into());
                                     }
@@ -2470,15 +2467,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                 } else {
                                     if bits[bit_idx] & 0xf0 == 0xf0 {
                                         return Err(format!(
-                                            "word {:?} has too many tile {}",
-                                            this_word, t
+                                            "word {this_word:?} has too many tile {t}"
                                         )
                                         .into());
                                     }
                                     bits[bit_idx] += 0x10;
                                 }
                             } else {
-                                return Err(format!("word {:?} has tile {}", this_word, t).into());
+                                return Err(format!("word {this_word:?} has tile {t}").into());
                             }
                         }
                         b0_vec.push((bits, this_word.clone()));
@@ -2607,11 +2603,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     // hopefully this does not crash
                                     writeln!(
                                         boxed_stdout_or_stderr(),
-                                        "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
-                                        bits_u128,
-                                        num_word_buckets,
-                                        quotient,
-                                        remainder
+                                        "OVERFLOW: 0x{bits_u128:032x}.divmod({num_word_buckets})=[0x{quotient:024x},{remainder}]"
                                     )
                                     .unwrap();
                                 }
@@ -2682,11 +2674,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     // hopefully this does not crash
                                     writeln!(
                                         boxed_stdout_or_stderr(),
-                                        "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
-                                        bits_u128,
-                                        num_blank_buckets,
-                                        quotient,
-                                        remainder
+                                        "OVERFLOW: 0x{bits_u128:032x}.divmod({num_blank_buckets})=[0x{quotient:024x},{remainder}]"
                                     )
                                     .unwrap();
                                 }
@@ -2740,11 +2728,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         // hopefully this does not crash
                                         writeln!(
                                             boxed_stdout_or_stderr(),
-                                            "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
-                                            bits_u128,
-                                            num_double_blank_buckets,
-                                            quotient,
-                                            remainder
+                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
                                         )
                                         .unwrap();
                                     }
@@ -2844,11 +2828,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         // hopefully this does not crash
                                         writeln!(
                                             boxed_stdout_or_stderr(),
-                                            "OVERFLOW: 0x{:032x}.divmod({})=[0x{:024x},{}]",
-                                            bits_u128,
-                                            num_double_blank_buckets,
-                                            quotient,
-                                            remainder
+                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
                                         )
                                         .unwrap();
                                     }
@@ -2973,8 +2953,7 @@ fn kwg_hitcheck<R: WgReader>(
                 self.misses += 1;
                 writeln!(
                     ret,
-                    "{:7} {:6x} {:5x} {:2x} {:x?}",
-                    p, byte_idx, cache_line_idx, cache_set_idx, cache_set
+                    "{p:7} {byte_idx:6x} {cache_line_idx:5x} {cache_set_idx:2x} {cache_set:x?}"
                 )?;
             }
             // if the previous cache set contains the previous cache line,
@@ -3512,7 +3491,7 @@ input/output files can be \"-\" (not advisable for binary files)"
                 let v = y as f32 * 0.1;
                 writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
             }
-            print!("{}", ret);
+            print!("{ret}");
         } else {
             return Err("invalid argument".into());
         }
