@@ -37,30 +37,38 @@ fn main() -> error::Returns<()> {
         }
         return Ok(());
     }
-    let jumbled = true;
-    let _ = jumbled;
-    let jumbled = false;
-    let kwg = if jumbled {
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kad")?)
-    } else {
-        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?)
-    };
-    let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?);
-    /*
-    let _ = klv;
-    let klv = std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES));
-    */
-    let game_config = &if jumbled {
-        game_config::make_jumbled_english_game_config()
-    } else {
-        game_config::make_english_game_config()
-    };
+
+    match 3 {
+        1 => do_it(
+            &kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
+            &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
+            &game_config::make_english_game_config(),
+        ),
+        2 => do_it(
+            &kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kad")?),
+            &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
+            &game_config::make_jumbled_english_game_config(),
+        ),
+        3 => do_it(
+            &kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.kbwg")?),
+            &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
+            &game_config::make_dutch_game_config(),
+        ),
+        _ => unimplemented!(),
+    }
+}
+
+fn do_it<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    klv: &klv::Klv<kwg::Node22>,
+    game_config: &game_config::GameConfig,
+) -> error::Returns<()> {
     let mut fen_parser =
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
     let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {
-        tilt: move_filter::Tilt::new(game_config, &kwg, move_filter::Tilt::length_importances()),
+        tilt: move_filter::Tilt::new(game_config, kwg, move_filter::Tilt::length_importances()),
         bot_level: 1,
     };
     let mut filtered_movegen_1 = move_filter::GenMoves::Unfiltered;
@@ -70,7 +78,7 @@ fn main() -> error::Returns<()> {
 
     let mut move_picker_0 = move_picker::MovePicker::Hasty;
     let mut move_picker_1 =
-        move_picker::MovePicker::Simmer(move_picker::Simmer::new(game_config, &kwg, &klv));
+        move_picker::MovePicker::Simmer(move_picker::Simmer::new(game_config, kwg, klv));
     if true {
         move_picker_1 = move_picker::MovePicker::Hasty;
     }
@@ -121,8 +129,8 @@ fn main() -> error::Returns<()> {
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config,
-            kwg: &kwg,
-            klv: &klv,
+            kwg,
+            klv,
         };
         let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
         move_generator.gen_remaining_words(board_snapshot, |word: &[u8]| {
@@ -141,7 +149,7 @@ fn main() -> error::Returns<()> {
         )?;
         println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
         //std::fs::write("_word_62702.kwg", smaller_kwg_bytes)?;
-        let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
+        let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes);
         let test_rack = &[13, 15, 15, 15, 18, 18, 20]; // MOOORRT
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot,
@@ -236,8 +244,8 @@ fn main() -> error::Returns<()> {
             let board_snapshot = &movegen::BoardSnapshot {
                 board_tiles: &game_state.board_tiles,
                 game_config,
-                kwg: &kwg,
-                klv: &klv,
+                kwg,
+                klv,
             };
 
             if false {
@@ -269,7 +277,7 @@ fn main() -> error::Returns<()> {
                         &vec_of_words.into_boxed_slice(),
                     )?;
                     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
-                    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
+                    let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes);
                     move_generator.reset_for_another_kwg();
                     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                         board_snapshot: &movegen::BoardSnapshot {
