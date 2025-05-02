@@ -38,7 +38,7 @@ fn main() -> error::Returns<()> {
         return Ok(());
     }
 
-    match 3 {
+    match 4 {
         1 => do_it(
             &kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
             &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
@@ -52,6 +52,11 @@ fn main() -> error::Returns<()> {
         3 => do_it(
             &kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.kbwg")?),
             &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
+            &game_config::make_dutch_game_config(),
+        ),
+        4 => do_it(
+            &kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.kbwg")?),
+            &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.klv2")?),
             &game_config::make_dutch_game_config(),
         ),
         _ => unimplemented!(),
