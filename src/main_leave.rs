@@ -62,6 +62,26 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
     language_name: &str,
     make_game_config: GameConfigMaker,
 ) -> error::Returns<bool> {
+    // dutch-big-autoplay
+    if args[1]
+        .strip_prefix(language_name)
+        .is_some_and(|x| x.starts_with("-big"))
+        && do_lang_kwg::<_, kwg::Node24>(
+            args,
+            &format!("{}-big", language_name),
+            &make_game_config,
+        )?
+    {
+        return Ok(true);
+    }
+    do_lang_kwg::<_, kwg::Node22>(args, language_name, &make_game_config)
+}
+
+fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + Sync + Send>(
+    args: &[String],
+    language_name: &str,
+    make_game_config: GameConfigMaker,
+) -> error::Returns<bool> {
     match args[1].strip_prefix(language_name) {
         Some(args1_suffix) => match args1_suffix {
             "-autoplay" => {
@@ -72,9 +92,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
-                    &mut make_reader(&args[2])?,
-                )?);
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -112,9 +131,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
-                    &mut make_reader(&args[2])?,
-                )?);
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -152,9 +170,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
-                    &mut make_reader(&args[2])?,
-                )?);
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -192,9 +209,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
-                    &mut make_reader(&args[2])?,
-                )?);
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -232,9 +248,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
-                    &mut make_reader(&args[2])?,
-                )?);
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -349,9 +364,8 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
                 } else {
                     1_000_000
                 };
-                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&read_to_end(
-                    &mut make_reader(&args[2])?,
-                )?);
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let klv = if args3 == "-" {
                     klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
                 } else {
@@ -407,6 +421,7 @@ fn main() -> error::Returns<()> {
     same as english-resummarize but sorts differently (by playability first)
   (english can also be catalan, dutch, french, german, norwegian, polish,
     slovene, spanish, super-english, super-catalan)
+  (add -big after language, such as dutch-big-autoplay, to use kbwg)
   jumbled-english-autoplay CSW24.kad leave0.klv leave1.klv 1000
     (all also take jumbled- prefix, including jumbled-super-;
     note that jumbled autoplay requires .kad instead of .kwg)

@@ -56,11 +56,17 @@ usage 3: (same as usage 2 but sample different number of games)
   ../genleaves.sh [options] norwegian norwegian 1000000 2000000 3000000
 usage 4: (number of number of games does not have to be 3, minimum is 1)
   ../genleaves.sh [options] norwegian norwegian 100 300 600 1000
+usage 2b: (same as usage 2, just use a .kbwg file instead of .kwg)
+  mkdir t
+  cd t
+  cp -ip ../.../DSW25.kbwg .
+  ../genleaves.sh [options] dutch dutch 2000000 2000000 2000000
 bash allows this syntax:
   ../genleaves.sh [options] {super-,}english 2000000{,,}
   ../genleaves.sh [options] {,}norwegian 2000000{,,}
   ../genleaves.sh [options] {,}norwegian {1..3}000000
   ../genleaves.sh [options] {,}norwegian {1,3,6,10}00
+  ../genleaves.sh [options] {,}dutch 2000000{,,}
 options:
   --breadth     gather diverse samples by allowing free midgame exchanges
                 (this is slow and may need many more than 2000000 samples)
@@ -76,7 +82,7 @@ leave_param="$1"
 buildlex_param="$2"
 
 kwg=""
-for x in *.kwg; do
+for x in *.kwg *.kbwg; do
   if [ ! -f "$x" ]; then
     :
   elif [ ! "$kwg" ]; then
@@ -91,6 +97,11 @@ if [ ! "$kwg" ]; then
   exit 1
 fi
 
+kbwg_modifier=""
+if [ "$kwg" != "${kwg%.kbwg}" ]; then
+  kbwg_modifier="-big"
+fi
+
 echo "$kwg"
 
 let i=3
@@ -102,7 +113,7 @@ while [ "${!i:-}" != "" ]; do
   let i=i+1
 done
 
-autoplay_subcommand="${leave_param}-autoplay-summarize"
+autoplay_subcommand="${leave_param}${kbwg_modifier}-autoplay-summarize"
 generate_subcommand="${leave_param}-generate"
 buildlex_subcommand="${buildlex_param}-klv2"
 leave_name="leaves-smooth"
