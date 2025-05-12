@@ -666,6 +666,72 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
+            "-kwg-prob" => {
+                // output format not guaranteed to be stable.
+                let alphabet = make_alphabet();
+                let reader = &KwgReader {};
+                let mut word_prob = prob::WordProbability::new(&alphabet);
+                let word_cell = std::cell::RefCell::new(Vec::new());
+                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                let vec_out_cell = std::cell::RefCell::new(Vec::new());
+                iter_dawg(
+                    &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    reader,
+                    kwg_bytes,
+                    reader.arc_index(kwg_bytes, 0),
+                    None,
+                    &mut |s: &str| {
+                        let word = word_cell.borrow();
+                        let this_wp = word_prob.count_ways(&word);
+                        let mut vec_out = vec_out_cell.borrow_mut();
+                        let vec_len = vec_out.len();
+                        let mut anagram_key = word.clone();
+                        anagram_key.sort_unstable();
+                        vec_out
+                            .push(((s.to_string(), word.len(), this_wp), (anagram_key, vec_len)));
+                        Ok(())
+                    },
+                    &mut |b: u8| {
+                        word_cell.borrow_mut().push(b);
+                        Ok(Some(b))
+                    },
+                    &mut |_b: u8| {
+                        word_cell.borrow_mut().pop();
+                        Ok(())
+                    },
+                )?;
+                let mut vec_out = vec_out_cell.into_inner();
+                vec_out.sort_unstable_by(|a, b| {
+                    a.0.1.cmp(&b.0.1).then_with(|| {
+                        b.0.2
+                            .cmp(&a.0.2)
+                            .then_with(|| a.1.0.cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
+                    })
+                });
+                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+                let mut last_anagram_key = Vec::new();
+                let mut num_sets = 0;
+                let mut num_in_set = 0;
+                for elt in vec_out {
+                    if last_anagram_key != elt.1.0 {
+                        if last_anagram_key.len() != elt.1.0.len() {
+                            num_sets = 1;
+                        } else {
+                            num_sets += 1;
+                        }
+                        num_in_set = 0;
+                        last_anagram_key.clone_from(&elt.1.0);
+                    }
+                    num_in_set += 1;
+                    csv_out.serialize((elt.0, num_sets, num_in_set))?;
+                }
+                Ok(true)
+            }
 
             // begin copy-paste kwg code adapted to kbwg
             "-kbwg" => {
@@ -792,13 +858,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
-
-            // end copy-paste kwg code adapted to kbwg
-            //
-            "-kwg-prob" => {
+            "-kbwg-prob" => {
                 // output format not guaranteed to be stable.
                 let alphabet = make_alphabet();
-                let reader = &KwgReader {};
+                let reader = &KbwgReader {};
                 let mut word_prob = prob::WordProbability::new(&alphabet);
                 let word_cell = std::cell::RefCell::new(Vec::new());
                 let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
@@ -861,6 +924,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 Ok(true)
             }
+
+            // end copy-paste kwg code adapted to kbwg
+            //
             "-prob" => {
                 if args.len() < 3 {
                     return Err("need more argument".into());
