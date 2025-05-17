@@ -1549,20 +1549,18 @@ fn generate_leaves<
         .ok_or("input file does not include totals line")?;
     // that is just sum of all the equity and count, without weights.
     // adjust for weights.
+    // compute the weighted total_equity and row_count.
+    let mut total_equity = 0.0;
+    let mut row_count = 0;
     {
         let mut word_prob = prob::WordProbability::new(game_config.alphabet());
         for (k, v) in full_rack_map.iter_mut() {
             let ways = word_prob.count_ways(k);
             v.equity *= ways as f64;
+            total_equity += v.equity;
             v.count *= ways;
+            row_count += v.count;
         }
-    }
-    // compute the weighted total_equity and row_count.
-    let mut total_equity = 0.0;
-    let mut row_count = 0;
-    for x in full_rack_map.values() {
-        total_equity += x.equity;
-        row_count += x.count;
     }
 
     let leave_size = game_config.rack_size() - 1 + IS_FULL_RACK as u8;
