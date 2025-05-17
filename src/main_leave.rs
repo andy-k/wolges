@@ -1718,7 +1718,8 @@ fn generate_leaves<
                             }
                         }
                     };
-                    // process each distinct subrack one tile fewer.
+                    // process each subrack one tile fewer.
+                    // on duplicate tiles, count it that many times.
                     subrack_bytes.clear();
                     subrack_bytes.extend_from_slice(rack_bytes);
                     let mut v = *ev_map
@@ -1734,8 +1735,8 @@ fn generate_leaves<
                             v = *ev_map
                                 .get(&subrack_bytes[..len_minus_one])
                                 .unwrap_or(&f64::NAN);
-                            process_subrack(v);
                         }
+                        process_subrack(v);
                     }
                     if vd > 0 {
                         // if more +ve than -ve pick max.
