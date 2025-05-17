@@ -118,4 +118,26 @@ impl WordProbability {
         v.clear();
         self.get_max_probs_by_len_iter(kwg, &mut Vec::new(), v, kwg[0].arc_index());
     }
+
+    #[inline(always)]
+    pub fn combination(&mut self, n: usize, r: usize) -> u64 {
+        *self.pascal.row(n).get(r).unwrap_or(&0)
+    }
+
+    // may crash if racks did not come from alphabet.
+    pub fn count_ways_for_leave_completion(
+        &mut self,
+        full_rack_tally: &[u8],
+        subrack_tally: &[u8],
+    ) -> u64 {
+        let mut v = 1;
+        for c in 0..self.alphabet_freqs.len() {
+            let n_c_in_completion = full_rack_tally[c] as isize - subrack_tally[c] as isize;
+            if n_c_in_completion != 0 {
+                let n_c_in_bag = self.alphabet_freqs[c] as isize - subrack_tally[c] as isize;
+                v *= self.combination(n_c_in_bag as usize, n_c_in_completion as usize);
+            }
+        }
+        v
+    }
 }

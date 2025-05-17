@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
     alphabet, bites, display, error, fash, game_config, game_state, klv, kwg, move_filter,
-    move_picker, movegen,
+    move_picker, movegen, prob,
 };
 
 thread_local! {
@@ -1557,36 +1557,48 @@ fn generate_leaves<
 
     // subrack_map[subrack] = sum(full_rack_map[subrack + completion]).
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-    for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
-        rack_tally.iter_mut().for_each(|m| *m = 0);
-        k.iter().for_each(|&tile| rack_tally[tile as usize] += 1);
-        generate_exchanges(&mut ExchangeEnv {
-            found_exchange_move: |subrack_bytes: &[u8]| {
-                subrack_map
-                    .entry(subrack_bytes.into())
-                    .and_modify(|v| {
-                        v.equity += fv.equity;
-                        v.count += fv.count;
-                    })
-                    .or_insert(Cumulate {
-                        equity: fv.equity,
-                        count: fv.count,
-                    });
-            },
-            rack_tally: &mut rack_tally,
-            min_len: 0,
-            max_len: leave_size,
-            exchange_buffer: &mut exchange_buffer,
-        });
-        let elapsed_time_secs = t0.elapsed().as_secs();
-        if tick_periods.update(elapsed_time_secs) {
-            writeln!(
-                stdout_or_stderr,
-                "After {} seconds, have processed {} racks into {} unique subracks",
-                elapsed_time_secs,
-                idx + 1,
-                subrack_map.len(),
-            )?;
+    {
+        let mut word_prob = prob::WordProbability::new(game_config.alphabet());
+        let mut full_rack_tally = vec![0u8; rack_tally.len()];
+        let mut subrack_tally = vec![0u8; rack_tally.len()];
+        for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
+            rack_tally.iter_mut().for_each(|m| *m = 0);
+            k.iter().for_each(|&tile| rack_tally[tile as usize] += 1);
+            full_rack_tally.clone_from(&rack_tally);
+            generate_exchanges(&mut ExchangeEnv {
+                found_exchange_move: |subrack_bytes: &[u8]| {
+                    subrack_tally.iter_mut().for_each(|m| *m = 0);
+                    subrack_bytes
+                        .iter()
+                        .for_each(|&tile| subrack_tally[tile as usize] += 1);
+                    let w =
+                        word_prob.count_ways_for_leave_completion(&full_rack_tally, &subrack_tally);
+                    subrack_map
+                        .entry(subrack_bytes.into())
+                        .and_modify(|v| {
+                            v.equity += fv.equity * w as f64;
+                            v.count += fv.count * w;
+                        })
+                        .or_insert_with(|| Cumulate {
+                            equity: fv.equity * w as f64,
+                            count: fv.count * w,
+                        });
+                },
+                rack_tally: &mut rack_tally,
+                min_len: 0,
+                max_len: leave_size,
+                exchange_buffer: &mut exchange_buffer,
+            });
+            let elapsed_time_secs = t0.elapsed().as_secs();
+            if tick_periods.update(elapsed_time_secs) {
+                writeln!(
+                    stdout_or_stderr,
+                    "After {} seconds, have processed {} racks into {} unique subracks",
+                    elapsed_time_secs,
+                    idx + 1,
+                    subrack_map.len(),
+                )?;
+            }
         }
     }
     writeln!(stdout_or_stderr, "{} unique subracks", subrack_map.len())?;
