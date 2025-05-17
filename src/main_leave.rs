@@ -1701,21 +1701,10 @@ fn generate_leaves<
                 if ev_map.get(rack_bytes).unwrap_or(&f64::NAN).is_nan() {
                     let mut vn = 0.0f64;
                     let mut vd = 0i64;
-                    let mut vmax = 0.0f64;
-                    let mut vpos = 0i64;
-                    let mut vmin = 0.0f64;
-                    let mut vneg = 0i64;
                     let mut process_subrack = |v: f64| {
                         if !v.is_nan() {
                             vn += v;
                             vd += 1;
-                            if v > 0.0 {
-                                vmax = vmax.max(v);
-                                vpos += 1;
-                            } else if v < 0.0 {
-                                vmin = vmin.min(v);
-                                vneg += 1;
-                            }
                         }
                     };
                     // process each subrack one tile fewer.
@@ -1739,18 +1728,8 @@ fn generate_leaves<
                         process_subrack(v);
                     }
                     if vd > 0 {
-                        // if more +ve than -ve pick max.
-                        // if more -ve than +ve pick min.
-                        // if same +ve and -ve do average.
-                        // this is too handwavy.
-                        ev_map.insert(
-                            rack_bytes.into(),
-                            match vpos.cmp(&vneg) {
-                                std::cmp::Ordering::Greater => vmax,
-                                std::cmp::Ordering::Equal => vn / vd as f64,
-                                std::cmp::Ordering::Less => vmin,
-                            },
-                        );
+                        // just use straight average.
+                        ev_map.insert(rack_bytes.into(), vn / vd as f64);
                         num_filled_in += 1;
                     } else {
                         writeln!(
