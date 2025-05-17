@@ -1544,10 +1544,7 @@ fn generate_leaves<
     }
     drop(csv_in);
     // ("", total_equity, row_count) must exist.
-    let Cumulate {
-        equity: total_equity,
-        count: row_count,
-    } = full_rack_map
+    full_rack_map
         .remove([][..].into())
         .ok_or("input file does not include totals line")?;
 
@@ -1572,7 +1569,7 @@ fn generate_leaves<
                         });
                 },
                 rack_tally: &mut rack_tally,
-                min_len: 1,
+                min_len: 0,
                 max_len: leave_size,
                 exchange_buffer: &mut exchange_buffer,
             },
@@ -1590,6 +1587,12 @@ fn generate_leaves<
         }
     }
     writeln!(stdout_or_stderr, "{} unique subracks", subrack_map.len())?;
+    let Cumulate {
+        equity: total_equity,
+        count: row_count,
+    } = subrack_map
+        .remove([][..].into())
+        .ok_or("empty-rack entry should not be missing")?;
 
     let threshold_count = if DO_SMOOTHING {
         let total_count = subrack_map.values().fold(0, |a, x| a + x.count);
