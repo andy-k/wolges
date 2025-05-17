@@ -1671,6 +1671,7 @@ fn generate_leaves<
         max_len: leave_size,
         exchange_buffer: &mut exchange_buffer,
     });
+    drop(neighbor_buffer);
     writeln!(
         stdout_or_stderr,
         "After {} seconds, have processed {} subracks and smoothed {}",
