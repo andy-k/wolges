@@ -1597,7 +1597,6 @@ fn generate_leaves<
     } else {
         0
     };
-    let mean_equity = total_equity / row_count as f64;
     let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
     let mut alphabet_freqs = (0..game_config.alphabet().len())
         .map(|tile| game_config.alphabet().freq(tile))
@@ -1613,7 +1612,7 @@ fn generate_leaves<
             found_exchange_move: |rack_bytes: &[u8]| {
                 let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
                     if !DO_SMOOTHING || v.count >= threshold_count {
-                        v.equity / v.count as f64 - mean_equity
+                        v.equity / v.count as f64
                     } else {
                         f64::NAN
                     }
@@ -1641,7 +1640,7 @@ fn generate_leaves<
                         },
                     );
                     if count > 0 {
-                        new_v = equity / count as f64 - mean_equity;
+                        new_v = equity / count as f64;
                         num_smoothed += 1;
                     }
                 }
@@ -1672,6 +1671,12 @@ fn generate_leaves<
         ev_map.len(),
         num_smoothed,
     )?;
+    {
+        let mean_equity = total_equity / row_count as f64;
+        for v in ev_map.values_mut() {
+            *v -= mean_equity;
+        }
+    }
     let mut num_filled_in = 0u64;
 
     let mut subrack_bytes = Vec::with_capacity(leave_size as usize);
