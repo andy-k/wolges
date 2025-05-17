@@ -709,7 +709,6 @@ fn generate_autoplay_logs<
                                 max_len: game_config.rack_size(),
                                 exchange_buffer: &mut exchange_buffer,
                             },
-                            0,
                         );
                         // avoid overflow by dividing first.
                         thread_lo = num_racks / num_threads; // floor division.
@@ -751,7 +750,6 @@ fn generate_autoplay_logs<
                                 max_len: game_config.rack_size(),
                                 exchange_buffer: &mut exchange_buffer,
                             },
-                            0,
                         );
                         let num_thread_hi = num_racks - thread_hi;
                         num_racks = thread_hi - thread_lo;
@@ -1163,7 +1161,6 @@ fn generate_autoplay_logs<
                                 max_len: game_config.rack_size(),
                                 exchange_buffer: &mut exchange_buffer,
                             },
-                            0,
                         );
                     }
 
@@ -1380,24 +1377,30 @@ struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
     exchange_buffer: &'a mut Vec<u8>,
 }
 
+#[inline(always)]
 fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
     env: &mut ExchangeEnv<'_, FoundExchangeMove>,
-    idx: u8,
 ) {
-    if env.exchange_buffer.len() >= env.min_len as usize {
-        (env.found_exchange_move)(env.exchange_buffer);
-    }
-    if env.exchange_buffer.len() < env.max_len as usize {
-        for i in idx as usize..env.rack_tally.len() {
-            if env.rack_tally[i] > 0 {
-                env.rack_tally[i] -= 1;
-                env.exchange_buffer.push(i as u8);
-                generate_exchanges(env, i as u8);
-                env.exchange_buffer.pop();
-                env.rack_tally[i] += 1;
+    fn generate_exchanges_inner<FoundExchangeMove: FnMut(&[u8])>(
+        env: &mut ExchangeEnv<'_, FoundExchangeMove>,
+        idx: u8,
+    ) {
+        if env.exchange_buffer.len() >= env.min_len as usize {
+            (env.found_exchange_move)(env.exchange_buffer);
+        }
+        if env.exchange_buffer.len() < env.max_len as usize {
+            for i in idx as usize..env.rack_tally.len() {
+                if env.rack_tally[i] > 0 {
+                    env.rack_tally[i] -= 1;
+                    env.exchange_buffer.push(i as u8);
+                    generate_exchanges_inner(env, i as u8);
+                    env.exchange_buffer.pop();
+                    env.rack_tally[i] += 1;
+                }
             }
         }
     }
+    generate_exchanges_inner(env, 0);
 }
 
 fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
@@ -1554,27 +1557,24 @@ fn generate_leaves<
     for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
         rack_tally.iter_mut().for_each(|m| *m = 0);
         k.iter().for_each(|&tile| rack_tally[tile as usize] += 1);
-        generate_exchanges(
-            &mut ExchangeEnv {
-                found_exchange_move: |subrack_bytes: &[u8]| {
-                    subrack_map
-                        .entry(subrack_bytes.into())
-                        .and_modify(|v| {
-                            v.equity += fv.equity;
-                            v.count += fv.count;
-                        })
-                        .or_insert(Cumulate {
-                            equity: fv.equity,
-                            count: fv.count,
-                        });
-                },
-                rack_tally: &mut rack_tally,
-                min_len: 0,
-                max_len: leave_size,
-                exchange_buffer: &mut exchange_buffer,
+        generate_exchanges(&mut ExchangeEnv {
+            found_exchange_move: |subrack_bytes: &[u8]| {
+                subrack_map
+                    .entry(subrack_bytes.into())
+                    .and_modify(|v| {
+                        v.equity += fv.equity;
+                        v.count += fv.count;
+                    })
+                    .or_insert(Cumulate {
+                        equity: fv.equity,
+                        count: fv.count,
+                    });
             },
-            0,
-        );
+            rack_tally: &mut rack_tally,
+            min_len: 0,
+            max_len: leave_size,
+            exchange_buffer: &mut exchange_buffer,
+        });
         let elapsed_time_secs = t0.elapsed().as_secs();
         if tick_periods.update(elapsed_time_secs) {
             writeln!(
@@ -1610,63 +1610,60 @@ fn generate_leaves<
         Vec::new()
     };
     let mut num_smoothed = 0u64;
-    generate_exchanges(
-        &mut ExchangeEnv {
-            found_exchange_move: |rack_bytes: &[u8]| {
-                let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
-                    if !DO_SMOOTHING || v.count >= threshold_count {
-                        v.equity / v.count as f64
-                    } else {
-                        f64::NAN
-                    }
+    generate_exchanges(&mut ExchangeEnv {
+        found_exchange_move: |rack_bytes: &[u8]| {
+            let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
+                if !DO_SMOOTHING || v.count >= threshold_count {
+                    v.equity / v.count as f64
                 } else {
                     f64::NAN
-                };
-                if DO_SMOOTHING && new_v.is_nan() {
-                    rack_tally.iter_mut().for_each(|m| *m = 0);
-                    rack_bytes
-                        .iter()
-                        .for_each(|&tile| rack_tally[tile as usize] += 1);
-                    let mut equity = 0.0f64;
-                    let mut count = 0u64;
-                    generate_neighbors(
-                        &rack_tally,
-                        0,
-                        false,
-                        false,
-                        &mut neighbor_buffer,
-                        &mut |neighbor_bytes: &[u8]| {
-                            if let Some(v) = subrack_map.get(neighbor_bytes) {
-                                equity += v.equity;
-                                count += v.count;
-                            }
-                        },
-                    );
-                    if count > 0 {
-                        new_v = equity / count as f64;
-                        num_smoothed += 1;
-                    }
                 }
-                ev_map.insert(rack_bytes.into(), new_v);
-                let elapsed_time_secs = t0.elapsed().as_secs();
-                if tick_periods.update(elapsed_time_secs) {
-                    writeln!(
-                        stdout_or_stderr,
-                        "After {} seconds, have processed {} subracks and smoothed {}",
-                        elapsed_time_secs,
-                        ev_map.len(),
-                        num_smoothed,
-                    )
-                    .unwrap();
+            } else {
+                f64::NAN
+            };
+            if DO_SMOOTHING && new_v.is_nan() {
+                rack_tally.iter_mut().for_each(|m| *m = 0);
+                rack_bytes
+                    .iter()
+                    .for_each(|&tile| rack_tally[tile as usize] += 1);
+                let mut equity = 0.0f64;
+                let mut count = 0u64;
+                generate_neighbors(
+                    &rack_tally,
+                    0,
+                    false,
+                    false,
+                    &mut neighbor_buffer,
+                    &mut |neighbor_bytes: &[u8]| {
+                        if let Some(v) = subrack_map.get(neighbor_bytes) {
+                            equity += v.equity;
+                            count += v.count;
+                        }
+                    },
+                );
+                if count > 0 {
+                    new_v = equity / count as f64;
+                    num_smoothed += 1;
                 }
-            },
-            rack_tally: &mut alphabet_freqs,
-            min_len: 1,
-            max_len: leave_size,
-            exchange_buffer: &mut exchange_buffer,
+            }
+            ev_map.insert(rack_bytes.into(), new_v);
+            let elapsed_time_secs = t0.elapsed().as_secs();
+            if tick_periods.update(elapsed_time_secs) {
+                writeln!(
+                    stdout_or_stderr,
+                    "After {} seconds, have processed {} subracks and smoothed {}",
+                    elapsed_time_secs,
+                    ev_map.len(),
+                    num_smoothed,
+                )
+                .unwrap();
+            }
         },
-        0,
-    );
+        rack_tally: &mut alphabet_freqs,
+        min_len: 1,
+        max_len: leave_size,
+        exchange_buffer: &mut exchange_buffer,
+    });
     writeln!(
         stdout_or_stderr,
         "After {} seconds, have processed {} subracks and smoothed {}",
@@ -1685,68 +1682,65 @@ fn generate_leaves<
     let mut subrack_bytes = Vec::with_capacity(leave_size as usize);
     for len_to_complete in 2..=leave_size {
         let len_minus_one = len_to_complete as usize - 1;
-        generate_exchanges(
-            &mut ExchangeEnv {
-                found_exchange_move: |rack_bytes: &[u8]| {
-                    if ev_map.get(rack_bytes).unwrap_or(&f64::NAN).is_nan() {
-                        let mut vn = 0.0f64;
-                        let mut vd = 0i64;
-                        let mut vmax = 0.0f64;
-                        let mut vpos = 0i64;
-                        let mut vmin = 0.0f64;
-                        let mut vneg = 0i64;
-                        let mut process_subrack = |subrack_bytes: &[u8]| {
-                            let v = *ev_map.get(subrack_bytes).unwrap_or(&f64::NAN);
-                            if !v.is_nan() {
-                                vn += v;
-                                vd += 1;
-                                if v > 0.0 {
-                                    vmax = vmax.max(v);
-                                    vpos += 1;
-                                } else if v < 0.0 {
-                                    vmin = vmin.min(v);
-                                    vneg += 1;
-                                }
-                            }
-                        };
-                        subrack_bytes.clear();
-                        subrack_bytes.extend_from_slice(rack_bytes);
-                        process_subrack(&subrack_bytes[..len_minus_one]);
-                        for which_tile in (0..len_minus_one).rev() {
-                            let c1 = subrack_bytes[which_tile];
-                            let c2 = subrack_bytes[len_minus_one];
-                            if c1 != c2 {
-                                subrack_bytes[which_tile] = c2;
-                                subrack_bytes[len_minus_one] = c1;
-                                process_subrack(&subrack_bytes[..len_minus_one]);
+        generate_exchanges(&mut ExchangeEnv {
+            found_exchange_move: |rack_bytes: &[u8]| {
+                if ev_map.get(rack_bytes).unwrap_or(&f64::NAN).is_nan() {
+                    let mut vn = 0.0f64;
+                    let mut vd = 0i64;
+                    let mut vmax = 0.0f64;
+                    let mut vpos = 0i64;
+                    let mut vmin = 0.0f64;
+                    let mut vneg = 0i64;
+                    let mut process_subrack = |subrack_bytes: &[u8]| {
+                        let v = *ev_map.get(subrack_bytes).unwrap_or(&f64::NAN);
+                        if !v.is_nan() {
+                            vn += v;
+                            vd += 1;
+                            if v > 0.0 {
+                                vmax = vmax.max(v);
+                                vpos += 1;
+                            } else if v < 0.0 {
+                                vmin = vmin.min(v);
+                                vneg += 1;
                             }
                         }
-                        if vd > 0 {
-                            ev_map.insert(
-                                rack_bytes.into(),
-                                match vpos.cmp(&vneg) {
-                                    std::cmp::Ordering::Greater => vmax,
-                                    std::cmp::Ordering::Equal => vn / vd as f64,
-                                    std::cmp::Ordering::Less => vmin,
-                                },
-                            );
-                            num_filled_in += 1;
-                        } else {
-                            writeln!(
-                                stdout_or_stderr,
-                                "not enough samples to derive {rack_bytes:?}"
-                            )
-                            .unwrap();
+                    };
+                    subrack_bytes.clear();
+                    subrack_bytes.extend_from_slice(rack_bytes);
+                    process_subrack(&subrack_bytes[..len_minus_one]);
+                    for which_tile in (0..len_minus_one).rev() {
+                        let c1 = subrack_bytes[which_tile];
+                        let c2 = subrack_bytes[len_minus_one];
+                        if c1 != c2 {
+                            subrack_bytes[which_tile] = c2;
+                            subrack_bytes[len_minus_one] = c1;
+                            process_subrack(&subrack_bytes[..len_minus_one]);
                         }
                     }
-                },
-                rack_tally: &mut alphabet_freqs,
-                min_len: len_to_complete,
-                max_len: len_to_complete,
-                exchange_buffer: &mut exchange_buffer,
+                    if vd > 0 {
+                        ev_map.insert(
+                            rack_bytes.into(),
+                            match vpos.cmp(&vneg) {
+                                std::cmp::Ordering::Greater => vmax,
+                                std::cmp::Ordering::Equal => vn / vd as f64,
+                                std::cmp::Ordering::Less => vmin,
+                            },
+                        );
+                        num_filled_in += 1;
+                    } else {
+                        writeln!(
+                            stdout_or_stderr,
+                            "not enough samples to derive {rack_bytes:?}"
+                        )
+                        .unwrap();
+                    }
+                }
             },
-            0,
-        );
+            rack_tally: &mut alphabet_freqs,
+            min_len: len_to_complete,
+            max_len: len_to_complete,
+            exchange_buffer: &mut exchange_buffer,
+        });
     }
     writeln!(
         stdout_or_stderr,
