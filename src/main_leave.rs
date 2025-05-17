@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
     alphabet, bites, display, error, fash, game_config, game_state, klv, kwg, move_filter,
-    move_picker, movegen,
+    move_picker, movegen, prob,
 };
 
 thread_local! {
@@ -1544,12 +1544,22 @@ fn generate_leaves<
     }
     drop(csv_in);
     // ("", total_equity, row_count) must exist.
-    let Cumulate {
-        equity: total_equity,
-        count: row_count,
-    } = full_rack_map
+    full_rack_map
         .remove([][..].into())
         .ok_or("input file does not include totals line")?;
+    // that is just sum of all the equity and count, without weights.
+    // adjust for weights.
+    {
+        let mut word_prob = prob::WordProbability::new(game_config.alphabet());
+        for (k, v) in full_rack_map.iter_mut() {
+            let ways = word_prob.count_ways(k);
+            v.equity *= ways as f64;
+            v.count *= ways;
+        }
+    }
+    // compute the weighted total_equity and row_count.
+    let total_equity = full_rack_map.values().fold(0.0, |a, x| a + x.equity);
+    let row_count = full_rack_map.values().fold(0, |a, x| a + x.count);
 
     let leave_size = game_config.rack_size() - 1 + IS_FULL_RACK as u8;
 
