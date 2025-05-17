@@ -1403,6 +1403,8 @@ fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
     generate_exchanges_inner(env, 0);
 }
 
+// generates neighbors of same length, same number of blanks,
+// and max of one insertion and one deletion.
 fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
     freqs: &[u8],
     idx: u8,
@@ -1553,6 +1555,7 @@ fn generate_leaves<
 
     let leave_size = game_config.rack_size() - 1 + IS_FULL_RACK as u8;
 
+    // subrack_map[subrack] = sum(full_rack_map[subrack + completion]).
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
         rack_tally.iter_mut().for_each(|m| *m = 0);
@@ -1587,6 +1590,7 @@ fn generate_leaves<
         }
     }
     writeln!(stdout_or_stderr, "{} unique subracks", subrack_map.len())?;
+    // take out subrack_map[""] now before it gets smoothed.
     let Cumulate {
         equity: total_equity,
         count: row_count,
@@ -1616,6 +1620,7 @@ fn generate_leaves<
                 if !DO_SMOOTHING || v.count >= threshold_count {
                     v.equity / v.count as f64
                 } else {
+                    // perform smoothing if there are too few samples.
                     f64::NAN
                 }
             } else {
@@ -1628,6 +1633,8 @@ fn generate_leaves<
                     .for_each(|&tile| rack_tally[tile as usize] += 1);
                 let mut equity = 0.0f64;
                 let mut count = 0u64;
+                // combine distinct neighbors with the few samples of self.
+                // each rack is weighted only by sample count, not probability.
                 generate_neighbors(
                     &rack_tally,
                     0,
@@ -1672,6 +1679,10 @@ fn generate_leaves<
         num_smoothed,
     )?;
     {
+        // make expected values relative to value of empty rack.
+        // however, that is before smoothing.
+        // no after-smoothing value, because of chicken-and-egg issue.
+        // therefore value of empty rack might not be zero after all.
         let mean_equity = total_equity / row_count as f64;
         for v in ev_map.values_mut() {
             *v -= mean_equity;
@@ -1682,6 +1693,8 @@ fn generate_leaves<
     let mut subrack_bytes = Vec::with_capacity(leave_size as usize);
     for len_to_complete in 2..=leave_size {
         let len_minus_one = len_to_complete as usize - 1;
+        // ensure every subrack of each length has samples.
+        // if not, fill it in based on subracks one tile fewer.
         generate_exchanges(&mut ExchangeEnv {
             found_exchange_move: |rack_bytes: &[u8]| {
                 if ev_map.get(rack_bytes).unwrap_or(&f64::NAN).is_nan() {
@@ -1705,6 +1718,7 @@ fn generate_leaves<
                             }
                         }
                     };
+                    // process each distinct subrack one tile fewer.
                     subrack_bytes.clear();
                     subrack_bytes.extend_from_slice(rack_bytes);
                     process_subrack(&subrack_bytes[..len_minus_one]);
@@ -1718,6 +1732,10 @@ fn generate_leaves<
                         }
                     }
                     if vd > 0 {
+                        // if more +ve than -ve pick max.
+                        // if more -ve than +ve pick min.
+                        // if same +ve and -ve do average.
+                        // this is too handwavy.
                         ev_map.insert(
                             rack_bytes.into(),
                             match vpos.cmp(&vneg) {
