@@ -1705,8 +1705,7 @@ fn generate_leaves<
                     let mut vpos = 0i64;
                     let mut vmin = 0.0f64;
                     let mut vneg = 0i64;
-                    let mut process_subrack = |subrack_bytes: &[u8]| {
-                        let v = *ev_map.get(subrack_bytes).unwrap_or(&f64::NAN);
+                    let mut process_subrack = |v: f64| {
                         if !v.is_nan() {
                             vn += v;
                             vd += 1;
@@ -1722,14 +1721,20 @@ fn generate_leaves<
                     // process each distinct subrack one tile fewer.
                     subrack_bytes.clear();
                     subrack_bytes.extend_from_slice(rack_bytes);
-                    process_subrack(&subrack_bytes[..len_minus_one]);
+                    let mut v = *ev_map
+                        .get(&subrack_bytes[..len_minus_one])
+                        .unwrap_or(&f64::NAN);
+                    process_subrack(v);
                     for which_tile in (0..len_minus_one).rev() {
                         let c1 = subrack_bytes[which_tile];
                         let c2 = subrack_bytes[len_minus_one];
                         if c1 != c2 {
                             subrack_bytes[which_tile] = c2;
                             subrack_bytes[len_minus_one] = c1;
-                            process_subrack(&subrack_bytes[..len_minus_one]);
+                            v = *ev_map
+                                .get(&subrack_bytes[..len_minus_one])
+                                .unwrap_or(&f64::NAN);
+                            process_subrack(v);
                         }
                     }
                     if vd > 0 {
