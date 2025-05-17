@@ -1558,8 +1558,12 @@ fn generate_leaves<
         }
     }
     // compute the weighted total_equity and row_count.
-    let total_equity = full_rack_map.values().fold(0.0, |a, x| a + x.equity);
-    let row_count = full_rack_map.values().fold(0, |a, x| a + x.count);
+    let mut total_equity = 0.0;
+    let mut row_count = 0;
+    for x in full_rack_map.values() {
+        total_equity += x.equity;
+        row_count += x.count;
+    }
 
     let leave_size = game_config.rack_size() - 1 + IS_FULL_RACK as u8;
 
