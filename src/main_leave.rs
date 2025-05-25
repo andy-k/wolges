@@ -564,6 +564,9 @@ fn generate_autoplay_logs<
     // countdown that may reset itself. needs to be signed.
     let undersampling_remediation_countdown =
         std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    // generation id.
+    let undersampling_remediation_generation_id =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let undersampling_comment = String::new();
 
     let t0 = std::time::Instant::now();
@@ -606,6 +609,8 @@ fn generate_autoplay_logs<
                 std::sync::Arc::clone(&undersampling_remediation_submission);
             let undersampling_remediation_countdown =
                 std::sync::Arc::clone(&undersampling_remediation_countdown);
+            let undersampling_remediation_generation_id =
+                std::sync::Arc::clone(&undersampling_remediation_generation_id);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             threads.push(s.spawn(move || {
                 RNG.with(|rng| {
@@ -650,6 +655,7 @@ fn generate_autoplay_logs<
                         Vec::new()
                     };
                     let mut undersampled_thread_racks = Vec::<bites::Bites>::new();
+                    let mut undersampling_remediation_thread_generation_id = 0;
                     let mut undersampling_remediation_thread_begun = false;
                     loop {
                         let mut num_prior_games =
@@ -938,7 +944,22 @@ fn generate_autoplay_logs<
                                         // bounce back. this is why it needs to be signed (i64 not u64).
                                         undersampling_remediation_countdown
                                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        // force a global reset.
+                                        undersampling_remediation_generation_id
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     }
+                                }
+
+                                let current_undersampling_remediation_generation_id =
+                                    undersampling_remediation_generation_id
+                                        .load(std::sync::atomic::Ordering::Relaxed);
+                                if undersampling_remediation_thread_generation_id
+                                    != current_undersampling_remediation_generation_id
+                                {
+                                    undersampling_remediation_thread_generation_id =
+                                        current_undersampling_remediation_generation_id;
+                                    // reassess which racks are still undersampled after multiple threads worked on them.
+                                    undersampled_thread_racks.clear();
                                 }
                             }
 
