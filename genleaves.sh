@@ -142,6 +142,19 @@ fi
 num_processed=0
 last_leave="-"
 
+# continue from previous run if found
+while :; do
+  if [ -e "leaves-smooth$[num_processed + 1].${klv_ext}" ]; then
+    last_leave="leaves-smooth$[num_processed + 1].${klv_ext}"
+    let num_processed=num_processed+1
+  elif [ -e "leaves$[num_processed + 1].${klv_ext}" ]; then
+    last_leave="leaves$[num_processed + 1].${klv_ext}"
+    let num_processed=num_processed+1
+  else
+    break
+  fi
+done
+
 let i=3
 while [ "${!i:-}" != "" ]; do
   full_arg="${!i}"
