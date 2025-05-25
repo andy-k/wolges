@@ -868,7 +868,7 @@ fn generate_autoplay_logs<
                             };
 
                             // supplement the undersampled thread racks.
-                            if SUMMARIZE && old_bag_len > 0 && undersampled_thread_racks.len() > 0 {
+                            if SUMMARIZE && old_bag_len > 0 && !undersampled_thread_racks.is_empty() {
                                 let chosen_undersampled_thread_rack_index =
                                     rng.random_range(0..undersampled_thread_racks.len());
                                 move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -1108,19 +1108,19 @@ fn generate_autoplay_logs<
                                 write!(equity_fmt, "{}", play.equity).unwrap();
                             }
 
-                            match {
+                            let res = {
                                 let game_ended =
                                     game_state.check_game_ended(&game_config, &mut final_scores);
                                 // do not play out the game unnecessarily. this impacts stats.
                                 match game_ended {
                                     game_state::CheckGameEnded::NotEnded
-                                        if !WRITE_LOGS && old_bag_len <= 0 =>
+                                        if !WRITE_LOGS && old_bag_len == 0 =>
                                     {
                                         game_state::CheckGameEnded::PlayedOut
                                     }
                                     _ => game_ended,
                                 }
-                            } {
+                            }; match res {
                                 game_state::CheckGameEnded::PlayedOut
                                 | game_state::CheckGameEnded::ZeroScores => {
                                     let completed_moves = completed_moves
