@@ -88,6 +88,11 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 } else {
                     1_000_000
                 };
+                let min_samples_per_rack = if args.len() > 6 {
+                    u64::from_str(&args[6])?
+                } else {
+                    0
+                };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let arc_klv0 = if args3 == "-" {
@@ -116,6 +121,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     arc_klv0,
                     arc_klv1,
                     num_games,
+                    min_samples_per_rack,
                 )?;
                 Ok(true)
             }
@@ -126,6 +132,11 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     u64::from_str(&args[5])?
                 } else {
                     1_000_000
+                };
+                let min_samples_per_rack = if args.len() > 6 {
+                    u64::from_str(&args[6])?
+                } else {
+                    0
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
@@ -155,6 +166,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     arc_klv0,
                     arc_klv1,
                     num_games,
+                    min_samples_per_rack,
                 )?;
                 Ok(true)
             }
@@ -165,6 +177,11 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     u64::from_str(&args[5])?
                 } else {
                     1_000_000
+                };
+                let min_samples_per_rack = if args.len() > 6 {
+                    u64::from_str(&args[6])?
+                } else {
+                    0
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
@@ -194,6 +211,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     arc_klv0,
                     arc_klv1,
                     num_games,
+                    min_samples_per_rack,
                 )?;
                 Ok(true)
             }
@@ -305,14 +323,15 @@ fn main() -> error::Returns<()> {
     if args.len() <= 1 {
         println!(
             "args:
-  english-autoplay CSW24.kwg leave0.klv leave1.klv 1000000
+  english-autoplay CSW24.kwg leave0.klv leave1.klv 1000000 0
     autoplay 1000000 games, logs to a pair of csv.
     (changing output filenames needs recompile.)
     if leave is \"-\" or omitted, uses no leave.
     number of games is optional.
-  english-autoplay-summarize CSW24.kwg leave0.klv leave1.klv 1000000
+    min samples per rack is optional, but must be 0 for non-summarize.
+  english-autoplay-summarize CSW24.kwg leave0.klv leave1.klv 1000000 0
     same as english-autoplay and also save summary file.
-  english-autoplay-summarize-only CSW24.kwg leave0.klv leave1.klv 1000000
+  english-autoplay-summarize-only CSW24.kwg leave0.klv leave1.klv 1000000 0
     same as english-autoplay-summarize but do not save the log files.
   english-summarize logfile summary.csv
     summarize logfile into summary.csv
@@ -459,7 +478,12 @@ fn generate_autoplay_logs<
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
     num_games: u64,
+    min_samples_per_rack: u64,
 ) -> error::Returns<()> {
+    if !SUMMARIZE && min_samples_per_rack != 0 {
+        return Err("min_samples_per_rack requires summarize".into());
+    }
+
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let player_aliases = std::sync::Arc::new(
@@ -524,18 +548,40 @@ fn generate_autoplay_logs<
     let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+
+    // 0 = threads are collaboratively accumulating first num_games games.
+    // 1 = one thread is determining which racks are undersampled after the
+    //     first num_games games.
+    // 2 = threads are playing more games to accumulate at least
+    //     min_samples_per_rack samples per rack.
+    // u64 is overkill. noted. so be it.
+    let undersampling_remediation_state = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // number of threads that have submitted their samples.
+    let undersampling_remediation_submission =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // unique and in any order.
+    let undersampled_racks = Vec::<bites::Bites>::new();
+    // countdown that may reset itself. needs to be signed.
+    let undersampling_remediation_countdown =
+        std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let undersampling_comment = String::new();
+
     let t0 = std::time::Instant::now();
     let tick_periods = move_picker::Periods(0);
     struct MutexedStuffs {
         csv_game_writer: std::fs::File,
         csv_log_writer: Option<std::fs::File>,
         full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
+        undersampled_racks: Vec<bites::Bites>,
+        undersampling_comment: String,
         tick_periods: move_picker::Periods,
     }
     let mutexed_stuffs = std::sync::Arc::new(std::sync::Mutex::new(MutexedStuffs {
         csv_game_writer,
         csv_log_writer,
         full_rack_map,
+        undersampled_racks,
+        undersampling_comment,
         tick_periods,
     }));
     let batch_size = 100;
@@ -554,6 +600,12 @@ fn generate_autoplay_logs<
             let completed_games = std::sync::Arc::clone(&completed_games);
             let logged_games = std::sync::Arc::clone(&logged_games);
             let completed_moves = std::sync::Arc::clone(&completed_moves);
+            let undersampling_remediation_state =
+                std::sync::Arc::clone(&undersampling_remediation_state);
+            let undersampling_remediation_submission =
+                std::sync::Arc::clone(&undersampling_remediation_submission);
+            let undersampling_remediation_countdown =
+                std::sync::Arc::clone(&undersampling_remediation_countdown);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             threads.push(s.spawn(move || {
                 RNG.with(|rng| {
@@ -580,12 +632,193 @@ fn generate_autoplay_logs<
                     let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
                     let mut thread_full_rack_map =
                         fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                    let mut exchange_buffer = if SUMMARIZE && min_samples_per_rack != 0 {
+                        Vec::with_capacity(game_config.rack_size() as usize)
+                    } else {
+                        Vec::new()
+                    };
+                    let mut alphabet_freqs = if SUMMARIZE && min_samples_per_rack != 0 {
+                        (0..game_config.alphabet().len())
+                            .map(|tile| game_config.alphabet().freq(tile))
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    let mut unseen_tally = if SUMMARIZE && min_samples_per_rack != 0 {
+                        vec![0u8; game_config.alphabet().len() as usize]
+                    } else {
+                        Vec::new()
+                    };
+                    let mut undersampled_thread_racks = Vec::<bites::Bites>::new();
+                    let mut undersampling_remediation_thread_begun = false;
+                    let min_tiles_on_board_before_undersampling_remediation =
+                        game_config.rack_size() as usize * 2; // handwavy
                     loop {
                         let mut num_prior_games =
                             num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if num_prior_games >= num_games {
-                            num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                            break;
+                            if !undersampling_remediation_thread_begun {
+                                // first time this thread transitions past the first num_games games.
+                                {
+                                    let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                    for (k, thread_v) in thread_full_rack_map.iter() {
+                                        if thread_v.count > 0 {
+                                            mutex_guard
+                                                .full_rack_map
+                                                .entry(k[..].into())
+                                                .and_modify(|v| {
+                                                    v.equity += thread_v.equity;
+                                                    v.count += thread_v.count;
+                                                })
+                                                .or_insert(thread_v.clone());
+                                        }
+                                    }
+                                    thread_full_rack_map.clear();
+                                }
+                                undersampling_remediation_submission
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                // wait until all threads rendezvous here.
+                                while undersampling_remediation_submission
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                    != num_threads as u64
+                                {}
+                                match undersampling_remediation_state.compare_exchange(
+                                    0,
+                                    1,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                ) {
+                                    Ok(_) => {
+                                        // this thread is responsible to iterate the possible racks.
+                                        {
+                                            let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                            std::mem::swap(
+                                                &mut thread_full_rack_map,
+                                                &mut mutex_guard.full_rack_map,
+                                            );
+                                            generate_exchanges(&mut ExchangeEnv {
+                                                found_exchange_move: |rack_bytes: &[u8]| {
+                                                    let rack_freq = thread_full_rack_map
+                                                        .get(rack_bytes)
+                                                        .map_or(0, |v| v.count);
+                                                    if rack_freq < min_samples_per_rack {
+                                                        mutex_guard
+                                                            .undersampled_racks
+                                                            .push(rack_bytes.into());
+                                                    }
+                                                },
+                                                rack_tally: &mut alphabet_freqs,
+                                                min_len: game_config.rack_size(),
+                                                max_len: game_config.rack_size(),
+                                                exchange_buffer: &mut exchange_buffer,
+                                            });
+                                            std::mem::swap(
+                                                &mut thread_full_rack_map,
+                                                &mut mutex_guard.full_rack_map,
+                                            );
+                                        }
+                                        undersampling_remediation_state
+                                            .compare_exchange(
+                                                1,
+                                                2,
+                                                std::sync::atomic::Ordering::Relaxed,
+                                                std::sync::atomic::Ordering::Relaxed,
+                                            )
+                                            .unwrap();
+                                    }
+                                    Err(_) => {
+                                        // another thread is contemporaneously iterating the possible racks.
+                                        while undersampling_remediation_state
+                                            .load(std::sync::atomic::Ordering::Relaxed)
+                                            <= 1
+                                        {}
+                                    }
+                                }
+                                undersampling_remediation_thread_begun = true;
+                            }
+                            if undersampled_thread_racks.is_empty() {
+                                let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                for (k, thread_v) in thread_full_rack_map.iter() {
+                                    if thread_v.count > 0 {
+                                        mutex_guard
+                                            .full_rack_map
+                                            .entry(k[..].into())
+                                            .and_modify(|v| {
+                                                v.equity += thread_v.equity;
+                                                v.count += thread_v.count;
+                                            })
+                                            .or_insert(thread_v.clone());
+                                    }
+                                }
+                                thread_full_rack_map.clear();
+                                // this part does not take into account work already done by other threads.
+                                let mut num_moves_to_force = 0u64;
+                                std::mem::swap(
+                                    &mut thread_full_rack_map,
+                                    &mut mutex_guard.full_rack_map,
+                                );
+                                mutex_guard.undersampled_racks.retain(
+                                    |rack_bytes: &bites::Bites| {
+                                        let rack_freq = thread_full_rack_map
+                                            .get(rack_bytes)
+                                            .map_or(0, |v| v.count);
+                                        if rack_freq < min_samples_per_rack {
+                                            num_moves_to_force += min_samples_per_rack - rack_freq;
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    },
+                                );
+                                std::mem::swap(
+                                    &mut thread_full_rack_map,
+                                    &mut mutex_guard.full_rack_map,
+                                );
+                                undersampled_thread_racks
+                                    .clone_from(&mutex_guard.undersampled_racks);
+                                mutex_guard.undersampling_comment.clear();
+                                if num_moves_to_force != 0 {
+                                    let num_undersampled_racks =
+                                        mutex_guard.undersampled_racks.len();
+                                    write!(
+                                        mutex_guard.undersampling_comment,
+                                        " (need to force {} racks over {} moves)",
+                                        num_undersampled_racks, num_moves_to_force
+                                    )
+                                    .unwrap();
+                                }
+                                undersampling_remediation_countdown.store(
+                                    num_moves_to_force as i64,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+
+                                if undersampled_thread_racks.is_empty() {
+                                    // really done. this thread need not play more games.
+                                    num_processed_games
+                                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                                    break;
+                                }
+
+                                // if there are too few unique racks, repeat them.
+                                // oversampling is better than locking up mutex.
+                                // use floor division to find the ideal number.
+                                let ideal_number_of_undersampled_thread_racks = (num_threads * 32)
+                                    / undersampled_thread_racks.len()
+                                    * undersampled_thread_racks.len();
+
+                                // if there are too many unique racks, this no-ops.
+                                // the ideal number would be zero but this is fine.
+                                while undersampled_thread_racks.len()
+                                    < ideal_number_of_undersampled_thread_racks
+                                {
+                                    undersampled_thread_racks.extend_from_within(
+                                        ..undersampled_thread_racks.len().min(
+                                            ideal_number_of_undersampled_thread_racks
+                                                - undersampled_thread_racks.len(),
+                                        ),
+                                    );
+                                }
+                            }
                         }
 
                         num_moves = 0;
@@ -606,6 +839,7 @@ fn generate_autoplay_logs<
                         let went_first = rng.random_range(0..game_config.num_players());
                         game_state.reset_and_draw_tiles(&game_config, &mut rng);
                         game_state.turn = went_first;
+                        let full_bag_len = game_state.bag.0.len(); // after drawing initial tiles, i.e. 86.
                         loop {
                             num_moves += 1;
 
@@ -629,6 +863,92 @@ fn generate_autoplay_logs<
                                     &arc_klv1
                                 },
                             };
+
+                            // supplement the undersampled thread racks if there are enough tiles on board to avoid oversampling empty board situation.
+                            if SUMMARIZE
+                                && old_bag_len > 0
+                                && full_bag_len - old_bag_len
+                                    >= min_tiles_on_board_before_undersampling_remediation
+                                && undersampled_thread_racks.len() > 0
+                            {
+                                let chosen_undersampled_thread_rack_index =
+                                    rng.random_range(0..undersampled_thread_racks.len());
+                                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                    board_snapshot,
+                                    rack: &undersampled_thread_racks
+                                        [chosen_undersampled_thread_rack_index],
+                                    max_gen: 1,
+                                    num_exchanges_by_this_player: game_state
+                                        .current_player()
+                                        .num_exchanges,
+                                    always_include_pass: false,
+                                });
+                                let plays = &move_generator.plays;
+                                let play = &plays[0];
+
+                                // opponent calls director if two Q's on board.
+                                let is_possible = match &play.play {
+                                    movegen::Play::Exchange { .. } => true,
+                                    movegen::Play::Place { word, .. } => {
+                                        unseen_tally.clone_from_slice(&alphabet_freqs);
+                                        game_state
+                                            .board_tiles
+                                            .iter()
+                                            .filter_map(|&tile| {
+                                                if tile != 0 {
+                                                    Some(tile & !((tile as i8) >> 7) as u8)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .for_each(|t| unseen_tally[t as usize] -= 1);
+                                        word.iter()
+                                            .filter_map(|&tile| {
+                                                if tile != 0 {
+                                                    Some(tile & !((tile as i8) >> 7) as u8)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .all(|t| {
+                                                if unseen_tally[t as usize] > 0 {
+                                                    unseen_tally[t as usize] -= 1;
+                                                    true
+                                                } else {
+                                                    false
+                                                }
+                                            })
+                                    }
+                                };
+
+                                if is_possible {
+                                    let rounded_equity = play.equity as f64; // no rounding
+                                    thread_full_rack_map
+                                        .entry(
+                                            undersampled_thread_racks
+                                                [chosen_undersampled_thread_rack_index][..]
+                                                .into(),
+                                        )
+                                        .and_modify(|e| {
+                                            e.equity += rounded_equity;
+                                            e.count += 1;
+                                        })
+                                        .or_insert(Cumulate {
+                                            equity: rounded_equity,
+                                            count: 1,
+                                        });
+                                    undersampled_thread_racks
+                                        .swap_remove(chosen_undersampled_thread_rack_index);
+                                    if undersampling_remediation_countdown
+                                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                                        <= 0
+                                    {
+                                        // bounce back. this is why it needs to be signed (i64 not u64).
+                                        undersampling_remediation_countdown
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
+                            }
 
                             move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                                 board_snapshot,
@@ -821,7 +1141,7 @@ fn generate_autoplay_logs<
                                         let mut batched_csv_game_buf =
                                             batched_csv_game.into_inner().unwrap();
                                         let elapsed_time_secs = t0.elapsed().as_secs();
-                                        let tick_changed = {
+                                        {
                                             let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                                             if WRITE_LOGS {
                                                 if let Some(c) = &mut mutex_guard.csv_log_writer {
@@ -832,12 +1152,22 @@ fn generate_autoplay_logs<
                                                 .csv_game_writer
                                                 .write_all(&batched_csv_game_buf)
                                                 .unwrap();
-                                            mutex_guard.tick_periods.update(elapsed_time_secs)
-                                        };
-                                        if tick_changed {
-                                            println!(
-                                                "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves) into {run_identifier}"
-                                            );
+                                            if mutex_guard.tick_periods.update(elapsed_time_secs) {
+                                                print!(
+                                                    "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves)"
+                                                );
+                                                if !mutex_guard.undersampling_comment.is_empty() {
+                                                    print!("{}", mutex_guard.undersampling_comment);
+                                                    let num_todo =
+                                                        undersampling_remediation_countdown.load(
+                                                            std::sync::atomic::Ordering::Relaxed,
+                                                        );
+                                                    if num_todo > 0 {
+                                                        print!(" (to do: {})", num_todo);
+                                                    }
+                                                }
+                                                println!(" into {run_identifier}");
+                                            }
                                         }
                                         batched_csv_log_buf.clear();
                                         batched_csv_log =
@@ -965,6 +1295,7 @@ fn parse_rack(
     alphabet_reader.set_word(s, v)
 }
 
+#[derive(Clone)]
 struct Cumulate {
     equity: f64,
     count: u64,

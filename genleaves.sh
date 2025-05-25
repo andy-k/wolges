@@ -55,17 +55,20 @@ usage 2b: (same as usage 2, just use a .kbwg file instead of .kwg)
   cd t
   cp -ip ../.../DSW25.kbwg .
   ../genleaves.sh [options] dutch dutch 2000000 2000000 2000000
+usage 2c:
+  ../genleaves.sh [options] norwegian norwegian 2000000:100 2000000:500 2000000:1000
 bash allows this syntax:
   ../genleaves.sh [options] {super-,}english 2000000{,,}
   ../genleaves.sh [options] {,}norwegian 2000000{,,}
   ../genleaves.sh [options] {,}norwegian {1..3}000000
   ../genleaves.sh [options] {,}norwegian {1,3,6,10}00
   ../genleaves.sh [options] {,}dutch 2000000{,,}
+  ../genleaves.sh [options] {,}norwegian 2000000:{100,500,1000}
 options:
   --full        generate full-rack leaves
   --klv1        use klv1 instead of klv2 (not recommended)
   --no-logs     do not log the games (not recommended unless disk space is low)
-  --no-smooth   disable smoothing (not recommended)
+  --no-smooth   disable smoothing (recommended with :min_samples_per_rack)
 EOF
   exit 2
 fi
@@ -98,9 +101,18 @@ echo "$kwg"
 
 let i=3
 while [ "${!i:-}" != "" ]; do
-  if [ "${!i}" != "$[${!i} + 0]" ]; then
-    echo "invalid number: ${!i}" >&2
+  full_arg="${!i}"
+  before_colon="${full_arg%%:*}"
+  if [ "${before_colon}" != "$[${before_colon} + 0]" ]; then
+    echo "invalid number: ${before_colon}" >&2
     exit 1
+  fi
+  if [ "${full_arg}" != "${before_colon}" ]; then
+    after_colon="${full_arg#*:}"
+    if [ "${after_colon}" != "$[${after_colon} + 0]" ]; then
+      echo "invalid number: ${after_colon}" >&2
+      exit 1
+    fi
   fi
   let i=i+1
 done
@@ -131,9 +143,16 @@ last_leave="-"
 
 let i=3
 while [ "${!i:-}" != "" ]; do
-  num="${!i:-}"
+  full_arg="${!i}"
+  before_colon="${full_arg%%:*}"
+  if [ "${full_arg}" != "${before_colon}" ]; then
+    after_colon="${full_arg#*:}"
+  else
+    # default
+    after_colon="0"
+  fi
 
-  time cargo run --release --bin leave -- "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$num"
+  time cargo run --release --bin leave -- "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
   log_file="$(ls -1td games-log-* | head -1 | cut -f2- -d-)"
   echo "$log_file"
   mv -fv "summary-${log_file}" "summary${num_processed}.csv"
