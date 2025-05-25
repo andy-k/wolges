@@ -1087,7 +1087,19 @@ fn generate_autoplay_logs<
                                 write!(equity_fmt, "{}", play.equity).unwrap();
                             }
 
-                            match game_state.check_game_ended(&game_config, &mut final_scores) {
+                            match {
+                                let game_ended =
+                                    game_state.check_game_ended(&game_config, &mut final_scores);
+                                // do not play out the game unnecessarily. this impacts stats.
+                                match game_ended {
+                                    game_state::CheckGameEnded::NotEnded
+                                        if !WRITE_LOGS && old_bag_len <= 0 =>
+                                    {
+                                        game_state::CheckGameEnded::PlayedOut
+                                    }
+                                    _ => game_ended,
+                                }
+                            } {
                                 game_state::CheckGameEnded::PlayedOut
                                 | game_state::CheckGameEnded::ZeroScores => {
                                     let completed_moves = completed_moves
