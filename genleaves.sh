@@ -4,8 +4,8 @@ set -euo pipefail
 
 full_mode=""
 klv1_mode=""
-no_logs_mode=""
-no_smooth_mode=""
+logs_mode=""
+smooth_mode=""
 while :; do
   if [ "${1:-}" = "--" ]; then
     shift
@@ -21,13 +21,13 @@ while :; do
     shift
     continue
   fi
-  if [ "${1:-}" = "--no-logs" ]; then
-    no_logs_mode=1
+  if [ "${1:-}" = "--logs" ]; then
+    logs_mode=1
     shift
     continue
   fi
-  if [ "${1:-}" = "--no-smooth" ]; then
-    no_smooth_mode=1
+  if [ "${1:-}" = "--smooth" ]; then
+    smooth_mode=1
     shift
     continue
   fi
@@ -67,8 +67,8 @@ bash allows this syntax:
 options:
   --full        generate full-rack leaves
   --klv1        use klv1 instead of klv2 (not recommended)
-  --no-logs     do not log the games (not recommended unless disk space is low)
-  --no-smooth   disable smoothing (recommended with :min_samples_per_rack)
+  --logs        log complete games (not recommended if not needed)
+  --smooth      enable smoothing (not recommended anymore)
 EOF
   exit 2
 fi
@@ -122,13 +122,13 @@ generate_subcommand="${leave_param}-generate"
 buildlex_subcommand="${buildlex_param}-klv2"
 leave_name="leaves-smooth"
 klv_ext="klv2"
-if [ "$no_logs_mode" ]; then
+if [ ! "$logs_mode" ]; then
   autoplay_subcommand="${autoplay_subcommand}-only"
 fi
 if [ "$full_mode" ]; then
   generate_subcommand="${generate_subcommand}-full"
 fi
-if [ "$no_smooth_mode" ]; then
+if [ ! "$smooth_mode" ]; then
   # this must come after full_mode
   generate_subcommand="${generate_subcommand}-no-smooth"
   leave_name="leaves"
@@ -148,8 +148,8 @@ while [ "${!i:-}" != "" ]; do
   if [ "${full_arg}" != "${before_colon}" ]; then
     after_colon="${full_arg#*:}"
   else
-    # default
-    after_colon="0"
+    # default, note that this takes a long time.
+    after_colon="1000"
   fi
 
   time cargo run --release --bin leave -- "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
