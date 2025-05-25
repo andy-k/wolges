@@ -2,7 +2,6 @@
 
 set -euo pipefail
 
-breadth_mode=""
 full_mode=""
 klv1_mode=""
 no_logs_mode=""
@@ -11,11 +10,6 @@ while :; do
   if [ "${1:-}" = "--" ]; then
     shift
     break
-  fi
-  if [ "${1:-}" = "--breadth" ]; then
-    breadth_mode=1
-    shift
-    continue
   fi
   if [ "${1:-}" = "--full" ]; then
     full_mode=1
@@ -68,9 +62,7 @@ bash allows this syntax:
   ../genleaves.sh [options] {,}norwegian {1,3,6,10}00
   ../genleaves.sh [options] {,}dutch 2000000{,,}
 options:
-  --breadth     gather diverse samples by allowing free midgame exchanges
-                (this is slow and may need many more than 2000000 samples)
-  --full        generate full-rack leaves (typically used with --breadth)
+  --full        generate full-rack leaves
   --klv1        use klv1 instead of klv2 (not recommended)
   --no-logs     do not log the games (not recommended unless disk space is low)
   --no-smooth   disable smoothing (not recommended)
@@ -120,10 +112,6 @@ leave_name="leaves-smooth"
 klv_ext="klv2"
 if [ "$no_logs_mode" ]; then
   autoplay_subcommand="${autoplay_subcommand}-only"
-fi
-if [ "$breadth_mode" ]; then
-  # this must come after no_logs_mode
-  autoplay_subcommand="${autoplay_subcommand}-breadth"
 fi
 if [ "$full_mode" ]; then
   generate_subcommand="${generate_subcommand}-full"

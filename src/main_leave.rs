@@ -110,7 +110,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         args4,
                     )?))
                 };
-                generate_autoplay_logs::<true, false, false, _, _>(
+                generate_autoplay_logs::<true, false, _, _>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -149,7 +149,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         args4,
                     )?))
                 };
-                generate_autoplay_logs::<true, true, false, _, _>(
+                generate_autoplay_logs::<true, true, _, _>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -188,85 +188,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         args4,
                     )?))
                 };
-                generate_autoplay_logs::<false, true, false, _, _>(
-                    make_game_config(),
-                    kwg,
-                    arc_klv0,
-                    arc_klv1,
-                    num_games,
-                )?;
-                Ok(true)
-            }
-            "-autoplay-summarize-breadth" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let args4 = if args.len() > 4 { &args[4] } else { "-" };
-                let num_games = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1_000_000
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                let arc_klv1 = if args3 == args4 {
-                    std::sync::Arc::clone(&arc_klv0)
-                } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args4,
-                    )?))
-                };
-                generate_autoplay_logs::<true, true, true, _, _>(
-                    make_game_config(),
-                    kwg,
-                    arc_klv0,
-                    arc_klv1,
-                    num_games,
-                )?;
-                Ok(true)
-            }
-            "-autoplay-summarize-only-breadth" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let args4 = if args.len() > 4 { &args[4] } else { "-" };
-                let num_games = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1_000_000
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                let arc_klv1 = if args3 == args4 {
-                    std::sync::Arc::clone(&arc_klv0)
-                } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args4,
-                    )?))
-                };
-                generate_autoplay_logs::<false, true, true, _, _>(
+                generate_autoplay_logs::<false, true, _, _>(
                     make_game_config(),
                     kwg,
                     arc_klv0,
@@ -392,10 +314,6 @@ fn main() -> error::Returns<()> {
     same as english-autoplay and also save summary file.
   english-autoplay-summarize-only CSW24.kwg leave0.klv leave1.klv 1000000
     same as english-autoplay-summarize but do not save the log files.
-  english-autoplay-summarize-breadth CSW24.kwg leave0.klv leave1.klv 1000000
-    same as english-autoplay-summarize but allow discontinuous rack sampling.
-  english-autoplay-summarize-only-breadth ...
-    same as english-autoplay-summarize-only + discontinuous rack sampling.
   english-summarize logfile summary.csv
     summarize logfile into summary.csv
   english-resummarize concatenated_summaries.csv summary.csv
@@ -533,7 +451,6 @@ when low disk space, note that in bash:
 fn generate_autoplay_logs<
     const WRITE_LOGS: bool,
     const SUMMARIZE: bool,
-    const BREADTH: bool,
     N: kwg::Node + Sync + Send,
     L: kwg::Node + Sync + Send,
 >(
@@ -543,10 +460,6 @@ fn generate_autoplay_logs<
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
     num_games: u64,
 ) -> error::Returns<()> {
-    if BREADTH && !SUMMARIZE {
-        return Err("breadth requires summarize".into());
-    }
-
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let player_aliases = std::sync::Arc::new(
@@ -625,12 +538,12 @@ fn generate_autoplay_logs<
         full_rack_map,
         tick_periods,
     }));
-    let batch_size = if BREADTH { 10 } else { 100 };
+    let batch_size = 100;
 
     std::thread::scope(|s| {
         let mut threads = vec![];
 
-        for thread_id in 0..num_threads {
+        for _ in 0..num_threads {
             let game_config = std::sync::Arc::clone(&game_config);
             let kwg = std::sync::Arc::clone(&kwg);
             let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
@@ -667,102 +580,6 @@ fn generate_autoplay_logs<
                     let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
                     let mut thread_full_rack_map =
                         fash::MyHashMap::<bites::Bites, Cumulate>::default();
-                    let mut thread_sample_count_map =
-                        std::collections::BTreeMap::<u64, usize>::new();
-                    let mut exchange_buffer = if BREADTH {
-                        Vec::with_capacity(game_config.rack_size() as usize)
-                    } else {
-                        Vec::new()
-                    };
-                    let mut alphabet_freqs = if BREADTH {
-                        (0..game_config.alphabet().len())
-                            .map(|tile| game_config.alphabet().freq(tile))
-                            .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    };
-                    let mut unseen_tally = if BREADTH {
-                        vec![0u8; game_config.alphabet().len() as usize]
-                    } else {
-                        Vec::new()
-                    };
-                    let mut best_rack = if BREADTH {
-                        Vec::with_capacity(game_config.rack_size() as usize)
-                    } else {
-                        Vec::new()
-                    };
-                    let mut thread_lo = 0;
-                    let mut thread_hi = 0;
-                    let big = 1u64 << 62;
-                    let big_plus_one = big + 1;
-                    if BREADTH {
-                        // calculate how many possible racks there are.
-                        // there is a faster formula for this, but iterating is "only" ~60ms.
-                        let mut num_racks = 0;
-                        generate_exchanges(
-                            &mut ExchangeEnv {
-                                found_exchange_move: |_rack_bytes: &[u8]| {
-                                    num_racks += 1;
-                                },
-                                rack_tally: &mut alphabet_freqs,
-                                min_len: game_config.rack_size(),
-                                max_len: game_config.rack_size(),
-                                exchange_buffer: &mut exchange_buffer,
-                            },
-                        );
-                        // avoid overflow by dividing first.
-                        thread_lo = num_racks / num_threads; // floor division.
-                        thread_hi = (thread_lo * (thread_id + 1))
-                            + (num_racks - thread_lo * num_threads) * (thread_id + 1) / num_threads;
-                        thread_lo = (thread_lo * thread_id)
-                            + (num_racks - thread_lo * num_threads) * thread_id / num_threads;
-                        // temporarily prefill racks as follows. (these are exclusive ranges.)
-                        // racks 0..thread_lo: big + 1.
-                        // racks thread_lo..thread_hi: 0.
-                        // racks thread_hi..num_racks: big.
-                        // this thread would focud on filling in its assigned region first.
-                        // if it's all unavailable, it would pick the next rack (wraps around).
-                        let mut rack_idx = 0;
-                        generate_exchanges(
-                            &mut ExchangeEnv {
-                                found_exchange_move: |rack_bytes: &[u8]| {
-                                    if rack_idx < thread_lo {
-                                        thread_full_rack_map.insert(
-                                            rack_bytes.into(),
-                                            Cumulate {
-                                                equity: 0.0,
-                                                count: big_plus_one,
-                                            },
-                                        );
-                                    } else if rack_idx >= thread_hi {
-                                        thread_full_rack_map.insert(
-                                            rack_bytes.into(),
-                                            Cumulate {
-                                                equity: 0.0,
-                                                count: big,
-                                            },
-                                        );
-                                    }
-                                    rack_idx += 1;
-                                },
-                                rack_tally: &mut alphabet_freqs,
-                                min_len: game_config.rack_size(),
-                                max_len: game_config.rack_size(),
-                                exchange_buffer: &mut exchange_buffer,
-                            },
-                        );
-                        let num_thread_hi = num_racks - thread_hi;
-                        num_racks = thread_hi - thread_lo;
-                        if thread_lo > 0 {
-                            thread_sample_count_map.insert(big_plus_one, thread_lo);
-                        }
-                        if num_racks > 0 {
-                            thread_sample_count_map.insert(0, num_racks);
-                        }
-                        if num_thread_hi > 0 {
-                            thread_sample_count_map.insert(big, num_thread_hi);
-                        }
-                    }
                     loop {
                         let mut num_prior_games =
                             num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -795,62 +612,10 @@ fn generate_autoplay_logs<
                             game_state.players[game_state.turn as usize]
                                 .rack
                                 .sort_unstable();
-                            let mut cur_rack = &game_state.current_player().rack;
+                            let cur_rack = &game_state.current_player().rack;
 
                             let old_bag_len = game_state.bag.0.len();
                             if SUMMARIZE && old_bag_len > 0 {
-                                if BREADTH {
-                                    unseen_tally.clone_from_slice(&alphabet_freqs);
-                                    game_state
-                                        .board_tiles
-                                        .iter()
-                                        .filter_map(|&tile| {
-                                            if tile != 0 {
-                                                Some(tile & !((tile as i8) >> 7) as u8)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .for_each(|t| unseen_tally[t as usize] -= 1);
-                                    let cur_rack_freq = thread_full_rack_map
-                                        .get(&cur_rack[..])
-                                        .map_or(0, |v| v.count);
-                                    let best_freq =
-                                        *thread_sample_count_map.first_key_value().unwrap().0;
-                                    if best_freq < cur_rack_freq {
-                                        best_rack.clone_from(cur_rack);
-                                        let mut best_rack_freq = cur_rack_freq;
-                                        generate_exchanges_abortable(
-                                            &mut ExchangeAbortableEnv {
-                                                found_exchange_move: |rack_bytes: &[u8]| -> bool {
-                                                    if best_rack_freq <= best_freq {
-                                                        // already have (one of) the best.
-                                                        return false;
-                                                    }
-                                                    let rack_freq = thread_full_rack_map
-                                                        .get(rack_bytes)
-                                                        .map_or(0, |v| v.count);
-                                                    if rack_freq < best_rack_freq {
-                                                        // just take any one, no need to fairly choose.
-                                                        best_rack_freq = rack_freq;
-                                                        best_rack.clear();
-                                                        best_rack.extend_from_slice(rack_bytes);
-                                                    }
-                                                    true
-                                                },
-                                                rack_tally: &mut unseen_tally,
-                                                min_len: game_config.rack_size(),
-                                                max_len: game_config.rack_size(),
-                                                exchange_buffer: &mut exchange_buffer,
-                                            },
-                                            0,
-                                        );
-                                        if best_rack_freq < cur_rack_freq {
-                                            game_state.set_current_rack(&best_rack);
-                                            cur_rack = &game_state.current_player().rack;
-                                        }
-                                    }
-                                }
                                 cur_rack_as_vec.clone_from(cur_rack);
                             }
 
@@ -992,7 +757,7 @@ fn generate_autoplay_logs<
 
                             if SUMMARIZE && old_bag_len > 0 {
                                 let rounded_equity = play.equity as f64; // no rounding
-                                let new_cumulate = thread_full_rack_map
+                                thread_full_rack_map
                                     .entry(cur_rack_as_vec[..].into())
                                     .and_modify(|e| {
                                         e.equity += rounded_equity;
@@ -1002,26 +767,6 @@ fn generate_autoplay_logs<
                                         equity: rounded_equity,
                                         count: 1,
                                     });
-                                if BREADTH {
-                                    if let std::collections::btree_map::Entry::Occupied(mut entry) =
-                                        thread_sample_count_map.entry(new_cumulate.count - 1)
-                                    {
-                                        let old_entry = entry.get_mut();
-                                        if *old_entry > 0 {
-                                            *old_entry -= 1;
-                                        } else {
-                                            entry.remove();
-                                        }
-                                    } else {
-                                        unreachable!();
-                                    }
-                                    thread_sample_count_map
-                                        .entry(new_cumulate.count)
-                                        .and_modify(|e| {
-                                            *e += 1;
-                                        })
-                                        .or_insert(1);
-                                }
                             }
 
                             if WRITE_LOGS {
@@ -1127,41 +872,6 @@ fn generate_autoplay_logs<
                             completed_moves.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             game_state.turn = new_turn;
                         }
-                    }
-
-                    if BREADTH {
-                        // undo the prefill to get the real stats.
-                        let mut rack_idx = 0;
-                        generate_exchanges(
-                            &mut ExchangeEnv {
-                                found_exchange_move: |rack_bytes: &[u8]| {
-                                    if rack_idx < thread_lo {
-                                        if let std::collections::hash_map::Entry::Occupied(
-                                            mut entry,
-                                        ) = thread_full_rack_map.entry(rack_bytes.into())
-                                        {
-                                            entry.get_mut().count -= big_plus_one;
-                                        } else {
-                                            unreachable!();
-                                        }
-                                    } else if rack_idx >= thread_hi {
-                                        if let std::collections::hash_map::Entry::Occupied(
-                                            mut entry,
-                                        ) = thread_full_rack_map.entry(rack_bytes.into())
-                                        {
-                                            entry.get_mut().count -= big;
-                                        } else {
-                                            unreachable!();
-                                        }
-                                    }
-                                    rack_idx += 1;
-                                },
-                                rack_tally: &mut alphabet_freqs,
-                                min_len: game_config.rack_size(),
-                                max_len: game_config.rack_size(),
-                                exchange_buffer: &mut exchange_buffer,
-                            },
-                        );
                     }
 
                     let batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
@@ -1333,40 +1043,6 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     }
 
     Ok(())
-}
-
-struct ExchangeAbortableEnv<'a, FoundExchangeMove: FnMut(&[u8]) -> bool> {
-    found_exchange_move: FoundExchangeMove,
-    rack_tally: &'a mut [u8],
-    min_len: u8,
-    max_len: u8,
-    exchange_buffer: &'a mut Vec<u8>,
-}
-
-fn generate_exchanges_abortable<FoundExchangeMove: FnMut(&[u8]) -> bool>(
-    env: &mut ExchangeAbortableEnv<'_, FoundExchangeMove>,
-    idx: u8,
-) -> bool {
-    if env.exchange_buffer.len() >= env.min_len as usize
-        && !(env.found_exchange_move)(env.exchange_buffer)
-    {
-        return false;
-    }
-    if env.exchange_buffer.len() < env.max_len as usize {
-        for i in idx as usize..env.rack_tally.len() {
-            if env.rack_tally[i] > 0 {
-                env.rack_tally[i] -= 1;
-                env.exchange_buffer.push(i as u8);
-                let want_more = generate_exchanges_abortable(env, i as u8);
-                env.exchange_buffer.pop();
-                env.rack_tally[i] += 1;
-                if !want_more {
-                    return false;
-                }
-            }
-        }
-    }
-    true
 }
 
 struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8])> {
