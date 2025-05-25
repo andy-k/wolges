@@ -651,8 +651,6 @@ fn generate_autoplay_logs<
                     };
                     let mut undersampled_thread_racks = Vec::<bites::Bites>::new();
                     let mut undersampling_remediation_thread_begun = false;
-                    let min_tiles_on_board_before_undersampling_remediation =
-                        game_config.rack_size() as usize * 2; // handwavy
                     loop {
                         let mut num_prior_games =
                             num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -839,7 +837,6 @@ fn generate_autoplay_logs<
                         let went_first = rng.random_range(0..game_config.num_players());
                         game_state.reset_and_draw_tiles(&game_config, &mut rng);
                         game_state.turn = went_first;
-                        let full_bag_len = game_state.bag.0.len(); // after drawing initial tiles, i.e. 86.
                         loop {
                             num_moves += 1;
 
@@ -864,13 +861,8 @@ fn generate_autoplay_logs<
                                 },
                             };
 
-                            // supplement the undersampled thread racks if there are enough tiles on board to avoid oversampling empty board situation.
-                            if SUMMARIZE
-                                && old_bag_len > 0
-                                && full_bag_len - old_bag_len
-                                    >= min_tiles_on_board_before_undersampling_remediation
-                                && undersampled_thread_racks.len() > 0
-                            {
+                            // supplement the undersampled thread racks.
+                            if SUMMARIZE && old_bag_len > 0 && undersampled_thread_racks.len() > 0 {
                                 let chosen_undersampled_thread_rack_index =
                                     rng.random_range(0..undersampled_thread_racks.len());
                                 move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
