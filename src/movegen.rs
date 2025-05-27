@@ -2415,7 +2415,7 @@ impl KurniaMoveGenerator {
 
         self.plays = vec_moves.into_inner();
 
-        let _ = std::mem::replace(&mut working_buffer.multi_leaves, multi_leaves);
+        working_buffer.multi_leaves = multi_leaves;
     }
 
     pub async fn gen_moves_filtered_async<
@@ -2551,7 +2551,7 @@ impl KurniaMoveGenerator {
 
         self.plays = found_moves.into_inner().into_sorted_vec();
 
-        let _ = std::mem::replace(&mut working_buffer.multi_leaves, multi_leaves);
+        working_buffer.multi_leaves = multi_leaves;
     }
 
     pub fn gen_moves_filtered<
@@ -2683,7 +2683,7 @@ impl KurniaMoveGenerator {
 
         self.plays = found_moves.into_inner().into_sorted_vec();
 
-        let _ = std::mem::replace(&mut working_buffer.multi_leaves, multi_leaves);
+        working_buffer.multi_leaves = multi_leaves;
     }
 
     #[inline(always)]
