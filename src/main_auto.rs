@@ -38,7 +38,7 @@ fn main() -> error::Returns<()> {
         return Ok(());
     }
 
-    match 4 {
+    match 1 {
         1 => do_it(
             &kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
             &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
