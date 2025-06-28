@@ -182,33 +182,32 @@ impl PlayScorer {
                     return_error!("word is detached from existing tiles".into());
                 }
 
-                if num_played == 1 {
-                    if let Some(i) = transpose_idx {
-                        // force single-tile plays to be in preferred direction
-                        let perpendicular_strider = dim.lane(!*down, i);
-                        let mut j = *lane;
-                        while j > 0
-                            && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
-                        {
-                            j -= 1;
-                        }
-                        let perpendicular_strider_len = perpendicular_strider.len();
-                        let mut k = *lane + 1;
-                        while k < perpendicular_strider_len
-                            && board_snapshot.board_tiles[perpendicular_strider.at(k)] != 0
-                        {
-                            k += 1;
-                        }
-                        let mut transposed_word = vec![0u8; (k - j) as usize];
-                        transposed_word[(*lane - j) as usize] = word[(i - *idx) as usize];
-                        return Ok(Some(movegen::Play::Place {
-                            down: !*down,
-                            lane: i,
-                            idx: j,
-                            word: transposed_word[..].into(),
-                            score: *score,
-                        }));
+                if num_played == 1
+                    && let Some(i) = transpose_idx
+                {
+                    // force single-tile plays to be in preferred direction
+                    let perpendicular_strider = dim.lane(!*down, i);
+                    let mut j = *lane;
+                    while j > 0 && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0
+                    {
+                        j -= 1;
                     }
+                    let perpendicular_strider_len = perpendicular_strider.len();
+                    let mut k = *lane + 1;
+                    while k < perpendicular_strider_len
+                        && board_snapshot.board_tiles[perpendicular_strider.at(k)] != 0
+                    {
+                        k += 1;
+                    }
+                    let mut transposed_word = vec![0u8; (k - j) as usize];
+                    transposed_word[(*lane - j) as usize] = word[(i - *idx) as usize];
+                    return Ok(Some(movegen::Play::Place {
+                        down: !*down,
+                        lane: i,
+                        idx: j,
+                        word: transposed_word[..].into(),
+                        score: *score,
+                    }));
                 }
 
                 Ok(None)

@@ -167,26 +167,26 @@ impl EmbeddedWordsFinder {
                 }
             }
         }
-        if matches!(self.q_tile, Some(q_tile) if q_tile == tile) {
-            if let Some(u_tile) = self.u_tile {
-                p = params.kwg.seek(p, u_tile);
-                if p > 0 {
-                    self.wbuf.push(u_tile);
-                    let node = params.kwg[p];
-                    if node.accepts() {
-                        (params.record_finding)(&self.wbuf, multiplier);
-                    }
-                    if node.arc_index() != 0 {
-                        for dr in -1..=1 {
-                            for dc in -1..=1 {
-                                self.iter_embedded_words(
-                                    params,
-                                    (row as isize + dr) as usize,
-                                    (col as isize + dc) as usize,
-                                    p,
-                                    multiplier,
-                                );
-                            }
+        if matches!(self.q_tile, Some(q_tile) if q_tile == tile)
+            && let Some(u_tile) = self.u_tile
+        {
+            p = params.kwg.seek(p, u_tile);
+            if p > 0 {
+                self.wbuf.push(u_tile);
+                let node = params.kwg[p];
+                if node.accepts() {
+                    (params.record_finding)(&self.wbuf, multiplier);
+                }
+                if node.arc_index() != 0 {
+                    for dr in -1..=1 {
+                        for dc in -1..=1 {
+                            self.iter_embedded_words(
+                                params,
+                                (row as isize + dr) as usize,
+                                (col as isize + dc) as usize,
+                                p,
+                                multiplier,
+                            );
                         }
                     }
                 }

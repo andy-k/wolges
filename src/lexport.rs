@@ -184,10 +184,11 @@ pub fn to_macondo<'a, N: kwg::Node>(
 
 fn str1_to_windows_u8(s: &str) -> Option<u8> {
     let mut chars = s.chars();
-    if let Some(first_char) = chars.next() {
-        if first_char as u32 <= 0xff && chars.next().is_none() {
-            return Some(first_char as u8); // pretend iso-8859-1 is very similar to unicode.
-        }
+    if let Some(first_char) = chars.next()
+        && first_char as u32 <= 0xff
+        && chars.next().is_none()
+    {
+        return Some(first_char as u8); // pretend iso-8859-1 is very similar to unicode.
     }
     None
 }

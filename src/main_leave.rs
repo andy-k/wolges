@@ -1167,11 +1167,10 @@ fn generate_autoplay_logs<
                                         let elapsed_time_secs = t0.elapsed().as_secs();
                                         {
                                             let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                                            if WRITE_LOGS {
-                                                if let Some(c) = &mut mutex_guard.csv_log_writer {
+                                            if WRITE_LOGS
+                                                && let Some(c) = &mut mutex_guard.csv_log_writer {
                                                     c.write_all(&batched_csv_log_buf).unwrap()
                                                 }
-                                            }
                                             mutex_guard
                                                 .csv_game_writer
                                                 .write_all(&batched_csv_game_buf)
@@ -1231,11 +1230,10 @@ fn generate_autoplay_logs<
                     let batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
                     let batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
                     let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                    if WRITE_LOGS {
-                        if let Some(c) = &mut mutex_guard.csv_log_writer {
+                    if WRITE_LOGS
+                        && let Some(c) = &mut mutex_guard.csv_log_writer {
                             c.write_all(&batched_csv_log_buf).unwrap();
                         }
-                    }
                     mutex_guard
                         .csv_game_writer
                         .write_all(&batched_csv_game_buf)
