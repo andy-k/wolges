@@ -17,6 +17,9 @@ jobs:
     - uses: actions/checkout@v4
     - name: Version
       run: cargo version
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Version
+      run: cargo version
     - name: Clippy
       run: cargo clippy --release --verbose
     - name: Build
