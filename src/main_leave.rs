@@ -786,8 +786,7 @@ fn generate_autoplay_logs<
                                         mutex_guard.undersampled_racks.len();
                                     write!(
                                         mutex_guard.undersampling_comment,
-                                        " (need to force {} racks over {} moves)",
-                                        num_undersampled_racks, num_moves_to_force
+                                        " (need to force {num_undersampled_racks} racks over {num_moves_to_force} moves)"
                                     )
                                     .unwrap();
                                 }
@@ -1188,7 +1187,7 @@ fn generate_autoplay_logs<
                                                             std::sync::atomic::Ordering::Relaxed,
                                                         );
                                                     if num_todo > 0 {
-                                                        print!(" (to do: {})", num_todo);
+                                                        print!(" (to do: {num_todo})");
                                                     }
                                                 }
                                                 println!(" into {run_identifier}");
