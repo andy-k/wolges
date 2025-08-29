@@ -3125,7 +3125,7 @@ fn next_prime(mut x: u32) -> u32 {
     }
     loop {
         let mut j = 3;
-        while x % j != 0 {
+        while !x.is_multiple_of(j) {
             j += 2;
             if j * j > x {
                 return x;
