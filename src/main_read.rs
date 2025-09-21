@@ -1822,13 +1822,52 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         return Err("out of bounds".into());
                     }
                     if words_only {
-                        let mut r = wmp_bylen_words_ofs;
-                        for _ in 0..wmp_bylen_num_words {
-                            for _ in 0..len {
-                                alphabet_label.label(&mut ret, wmp_bytes[r])?;
-                                r += 1;
+                        // inlined words
+                        for bucket_idx in 0..wmp_bylen_num_word_buckets {
+                            let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
+                            let bucket_start_idx = wmp_bytes[p] as u32
+                                | ((wmp_bytes[p + 1] as u32) << 8)
+                                | ((wmp_bytes[p + 2] as u32) << 16)
+                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            p += 4;
+                            let bucket_end_idx = wmp_bytes[p] as u32
+                                | ((wmp_bytes[p + 1] as u32) << 8)
+                                | ((wmp_bytes[p + 2] as u32) << 16)
+                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            for entry_idx in bucket_start_idx..bucket_end_idx {
+                                p = wmp_bylen_word_entries_ofs + entry_idx as usize * 28;
+                                let num_elts;
+                                if wmp_bytes[p] == 0 {
+                                    // uninlined words
+                                    // this is len * index, in bytes.
+                                    p += 8;
+                                    let initial_ofs = wmp_bytes[p] as u32
+                                        | ((wmp_bytes[p + 1] as u32) << 8)
+                                        | ((wmp_bytes[p + 2] as u32) << 16)
+                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                    p += 4;
+                                    num_elts = wmp_bytes[p] as u32
+                                        | ((wmp_bytes[p + 1] as u32) << 8)
+                                        | ((wmp_bytes[p + 2] as u32) << 16)
+                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                    p = wmp_bylen_words_ofs + initial_ofs as usize;
+                                } else {
+                                    // inlined words
+                                    num_elts = (wmp_bytes[p..p + 16]
+                                        .iter()
+                                        .position(|&b| b == 0)
+                                        .unwrap_or(16)
+                                        / len as usize)
+                                        as u32;
+                                }
+                                for _ in 0..num_elts {
+                                    for _ in 0..len {
+                                        alphabet_label.label(&mut ret, wmp_bytes[p])?;
+                                        p += 1;
+                                    }
+                                    ret.push('\n');
+                                }
                             }
-                            ret.push('\n');
                         }
                     } else {
                         writeln!(ret, "\nlength: {len}")?;
@@ -1880,6 +1919,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     p -= 16;
                                     let num_elts;
                                     if wmp_bytes[p] == 0 {
+                                        // uninlined words
                                         // this is len * index, in bytes.
                                         p += 8;
                                         let initial_ofs = wmp_bytes[p] as u32
@@ -1893,6 +1933,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                             | ((wmp_bytes[p + 3] as u32) << 24);
                                         p = wmp_bylen_words_ofs + initial_ofs as usize;
                                     } else {
+                                        // inlined words
                                         num_elts = (wmp_bytes[p..p + 16]
                                             .iter()
                                             .position(|&b| b == 0)
