@@ -2756,10 +2756,17 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
-            "-make-wmp1" | "-make-wmp1-overflow" | "-make-wmp" | "-make-wmp-overflow" => {
+            "-make-wmp1"
+            | "-make-wmp1-overflow"
+            | "-make-wmp2"
+            | "-make-wmp2-overflow"
+            | "-make-wmp" => {
                 let allow_overflow =
-                    args1_suffix == "-make-wmp-overflow" || args1_suffix == "-make-wmp1-overflow";
+                    args1_suffix == "-make-wmp2-overflow" || args1_suffix == "-make-wmp1-overflow";
                 let is_v1 = args1_suffix == "-make-wmp1" || args1_suffix == "-make-wmp1-overflow";
+                let is_v2 = !is_v1
+                    && (args1_suffix == "-make-wmp2" || args1_suffix == "-make-wmp2-overflow");
+                let is_v3_plus = !is_v1 && !is_v2;
                 let never_inline_b2 = allow_overflow;
                 let alphabet = make_alphabet();
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
@@ -2772,7 +2779,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let write_u32 = |ret: &mut Vec<u8>, x: u32| {
                     ret.extend(&x.to_le_bytes());
                 };
-                ret.push(if is_v1 { 1 } else { 2 }); // version
+                ret.push(if is_v1 {
+                    1
+                } else if is_v2 {
+                    2
+                } else {
+                    3
+                }); // version
                 let min_word_len = 2;
                 let mut max_word_len = all_words.last().map_or(0, |x| x.len() as u8);
                 if allow_overflow {
@@ -2920,7 +2933,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     let num_word_buckets;
                     let num_blank_buckets;
                     let num_double_blank_buckets;
-                    if allow_overflow {
+                    if is_v3_plus {
+                        num_word_buckets = (b0_bits.len() as u32).next_power_of_two();
+                        num_blank_buckets = (b1_bits.len() as u32).next_power_of_two();
+                        num_double_blank_buckets = (b2_bits.len() as u32).next_power_of_two();
+                    } else if allow_overflow {
                         // numbers of buckets in v1/v2.
                         // these are still not correct and will cause overflow.
                         // they are based on top 15 available non-letters
@@ -2969,6 +2986,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             .keys()
                             .map(|bits| {
                                 let bits_u128 = u128::from_le_bytes(*bits);
+                                if is_v3_plus {
+                                ( wmp3_hash(bits_u128) % num_word_buckets, bits_u128, bits)
+                                } else {
                                 let mut quotient = bits_u128 / (num_word_buckets as u128);
                                 let remainder = (bits_u128 % num_word_buckets as u128) as u32;
                                 if quotient >> 96 != 0 {
@@ -2981,6 +3001,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     .unwrap();
                                 }
                                 (remainder, quotient, bits)
+                                }
                             })
                             .collect::<Box<_>>();
                         linearized_buckets.sort_unstable();
@@ -3022,6 +3043,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             write_u32(&mut ret, *quotient as u32);
                             write_u32(&mut ret, (quotient >> 32) as u32);
                             write_u32(&mut ret, (quotient >> 64) as u32);
+                            if is_v3_plus {
+                                write_u32(&mut ret, (quotient >> 96) as u32);
+                            }
                         }
                         write_u32(&mut ret, uninlined_len);
                         for (_remainder, _quotient, bits) in linearized_buckets.iter() {
@@ -3040,18 +3064,26 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             .keys()
                             .map(|bits| {
                                 let bits_u128 = u128::from_le_bytes(*bits);
-                                let mut quotient = bits_u128 / (num_blank_buckets as u128);
-                                let remainder = (bits_u128 % num_blank_buckets as u128) as u32;
-                                if quotient >> 96 != 0 {
-                                    quotient &= (1u128 << 96) - 1;
-                                    // hopefully this does not crash
-                                    writeln!(
-                                        boxed_stdout_or_stderr(),
-                                        "OVERFLOW: 0x{bits_u128:032x}.divmod({num_blank_buckets})=[0x{quotient:024x},{remainder}]"
+                                if is_v3_plus {
+                                    (
+                                        wmp3_hash(bits_u128) % num_blank_buckets,
+                                        bits_u128,
+                                        bits,
                                     )
-                                    .unwrap();
+                                } else {
+                                    let mut quotient = bits_u128 / (num_blank_buckets as u128);
+                                    let remainder = (bits_u128 % num_blank_buckets as u128) as u32;
+                                    if quotient >> 96 != 0 {
+                                        quotient &= (1u128 << 96) - 1;
+                                        // hopefully this does not crash
+                                        writeln!(
+                                            boxed_stdout_or_stderr(),
+                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_blank_buckets})=[0x{quotient:024x},{remainder}]"
+                                        )
+                                        .unwrap();
+                                    }
+                                    (remainder, quotient, bits)
                                 }
-                                (remainder, quotient, bits)
                             })
                             .collect::<Box<_>>();
                         linearized_buckets.sort_unstable();
@@ -3079,6 +3111,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             write_u32(&mut ret, *quotient as u32);
                             write_u32(&mut ret, (quotient >> 32) as u32);
                             write_u32(&mut ret, (quotient >> 64) as u32);
+                            if is_v3_plus {
+                                write_u32(&mut ret, (quotient >> 96) as u32);
+                            }
                         }
                     }
 
@@ -3191,21 +3226,6 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             let mut linearized_buckets = b2_bits
                                 .iter()
                                 .map(|(key_bits, val_bits)| {
-                                    let bits_u128 = u128::from_le_bytes(*key_bits);
-                                    let mut quotient =
-                                        bits_u128 / (num_double_blank_buckets as u128);
-                                    let remainder =
-                                        (bits_u128 % num_double_blank_buckets as u128) as u32;
-                                    if quotient >> 96 != 0 {
-                                        quotient &= (1u128 << 96) - 1;
-                                        // hopefully this does not crash
-                                        writeln!(
-                                            boxed_stdout_or_stderr(),
-                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
-                                        )
-                                        .unwrap();
-                                    }
-
                                     // this part is only to compute that max_word_lookup_results value.
                                     let mut num_words_here = 0u32;
                                     let mut b1 = *val_bits;
@@ -3235,7 +3255,30 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         max_word_lookup_results_before_multiplying_len
                                             .max(num_words_here);
 
-                                    (remainder, quotient, key_bits)
+                                    // now compute the thing
+                                    let bits_u128 = u128::from_le_bytes(*key_bits);
+                                    if is_v3_plus {
+                                        (
+                                            wmp3_hash(bits_u128) % num_double_blank_buckets,
+                                            bits_u128,
+                                            key_bits,
+                                        )
+                                    } else {
+                                        let mut quotient =
+                                            bits_u128 / (num_double_blank_buckets as u128);
+                                        let remainder =
+                                            (bits_u128 % num_double_blank_buckets as u128) as u32;
+                                        if quotient >> 96 != 0 {
+                                            quotient &= (1u128 << 96) - 1;
+                                            // hopefully this does not crash
+                                            writeln!(
+                                                boxed_stdout_or_stderr(),
+                                                "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
+                                            )
+                                            .unwrap();
+                                        }
+                                        (remainder, quotient, key_bits)
+                                    }
                                 })
                                 .collect::<Box<_>>();
                             linearized_buckets.sort_unstable();
@@ -3265,6 +3308,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                 write_u32(&mut ret, *quotient as u32);
                                 write_u32(&mut ret, (quotient >> 32) as u32);
                                 write_u32(&mut ret, (quotient >> 64) as u32);
+                                if is_v3_plus {
+                                    write_u32(&mut ret, (quotient >> 96) as u32);
+                                }
                             }
                         }
                         max_word_lookup_results = max_word_lookup_results
@@ -3488,9 +3534,11 @@ fn main() -> error::Returns<()> {
   english-make-wmp1 something.txt something.wmp
   english-make-wmp1-overflow something.txt something.wmp
     generate .wmp v1 (-overflow = allow overflows, disable 2-blank inlining)
-  english-make-wmp something.txt something.wmp
-  english-make-wmp-overflow something.txt something.wmp
+  english-make-wmp2 something.txt something.wmp
+  english-make-wmp2-overflow something.txt something.wmp
     generate .wmp v2 (-overflow = allow overflows)
+  english-make-wmp something.txt something.wmp
+    generate .wmp v3
   (english can also be catalan, dutch, french, german, norwegian, polish,
     slovene, spanish, decimal, hex)
   klv-kwg-extract CSW24.klv2 racks.kwg
