@@ -467,6 +467,20 @@ fn default_out(_b: u8) -> error::Returns<()> {
     Ok(())
 }
 
+// https://github.com/aappleby/smhasher/blob/0ff96f7835817a27d0487325b6c16033e2992eb5/src/MurmurHash3.cpp#L83-L87
+#[inline(always)]
+fn wmp3_hash(bit_rack: u128) -> u32 {
+    let mut k = (bit_rack >> 64) as u64;
+    k ^= k.rotate_left(17);
+    k ^= bit_rack as u64;
+    k ^= k >> 33;
+    k *= 0xff51afd7ed558ccd;
+    k ^= k >> 33;
+    k *= 0xc4ceb9fe1a85ec53;
+    k ^= k >> 33;
+    k as u32
+}
+
 fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     args: &[String],
     language_name: &str,
@@ -1697,6 +1711,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let mut ret = String::new();
 
                 let wmp_ver = wmp_bytes[0];
+                let wmp_entry_size: usize = if wmp_ver < 3 { 28 } else { 32 };
                 let max_len = wmp_bytes[1];
                 let mut r = 2;
                 let max_word_lookup_results = wmp_bytes[r] as u32
@@ -1737,6 +1752,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | ((wmp_bytes[r + 1] as u32) << 8)
                         | ((wmp_bytes[r + 2] as u32) << 16)
                         | ((wmp_bytes[r + 3] as u32) << 24);
+                    if wmp_ver >= 3 && !wmp_bylen_num_word_buckets.is_power_of_two() {
+                        return Err("unsupported bucket size".into());
+                    }
                     r += 4;
                     let wmp_bylen_word_buckets_ofs = r;
                     r += 4 * (1 + wmp_bylen_num_word_buckets as usize);
@@ -1749,7 +1767,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | ((wmp_bytes[r + 3] as u32) << 24);
                     r += 4;
                     let wmp_bylen_word_entries_ofs = r;
-                    r += 28 * wmp_bylen_num_word_entries as usize;
+                    r += wmp_entry_size * wmp_bylen_num_word_entries as usize;
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
@@ -1768,6 +1786,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | ((wmp_bytes[r + 1] as u32) << 8)
                         | ((wmp_bytes[r + 2] as u32) << 16)
                         | ((wmp_bytes[r + 3] as u32) << 24);
+                    if wmp_ver >= 3 && !wmp_bylen_num_blank_buckets.is_power_of_two() {
+                        return Err("unsupported bucket size".into());
+                    }
                     r += 4;
                     let wmp_bylen_blank_buckets_ofs = r;
                     r += 4 * (1 + wmp_bylen_num_blank_buckets as usize);
@@ -1780,7 +1801,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | ((wmp_bytes[r + 3] as u32) << 24);
                     r += 4;
                     let wmp_bylen_blank_entries_ofs = r;
-                    r += 28 * wmp_bylen_num_blank_entries as usize;
+                    r += wmp_entry_size * wmp_bylen_num_blank_entries as usize;
 
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
@@ -1789,6 +1810,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | ((wmp_bytes[r + 1] as u32) << 8)
                         | ((wmp_bytes[r + 2] as u32) << 16)
                         | ((wmp_bytes[r + 3] as u32) << 24);
+                    if wmp_ver >= 3 && !wmp_bylen_num_double_blank_buckets.is_power_of_two() {
+                        return Err("unsupported bucket size".into());
+                    }
                     r += 4;
                     let wmp_bylen_double_blank_buckets_ofs = r;
                     r += 4 * (1 + wmp_bylen_num_double_blank_buckets as usize);
@@ -1801,7 +1825,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         | ((wmp_bytes[r + 3] as u32) << 24);
                     r += 4;
                     let wmp_bylen_double_blank_entries_ofs = r;
-                    r += 28 * wmp_bylen_num_double_blank_entries as usize;
+                    r += wmp_entry_size * wmp_bylen_num_double_blank_entries as usize;
                     let wmp_bylen_blank_pairs_ofs;
                     if wmp_ver < 2 {
                         if wmp_bytes.len() < r + 4 {
@@ -1835,7 +1859,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                 | ((wmp_bytes[p + 2] as u32) << 16)
                                 | ((wmp_bytes[p + 3] as u32) << 24);
                             for entry_idx in bucket_start_idx..bucket_end_idx {
-                                p = wmp_bylen_word_entries_ofs + entry_idx as usize * 28;
+                                p = wmp_bylen_word_entries_ofs
+                                    + entry_idx as usize * wmp_entry_size;
                                 let num_elts;
                                 if wmp_bytes[p] == 0 {
                                     // uninlined words
@@ -1889,26 +1914,60 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             if bucket_start_idx != bucket_end_idx {
                                 writeln!(ret, "bucket {bucket_idx}/{wmp_bylen_num_word_buckets}:")?;
                                 for entry_idx in bucket_start_idx..bucket_end_idx {
-                                    p = wmp_bylen_word_entries_ofs + entry_idx as usize * 28 + 16;
-                                    let quotient = (wmp_bytes[p] as u32
-                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                        | ((wmp_bytes[p + 3] as u32) << 24))
-                                        as u128
-                                        | (((wmp_bytes[p + 4] as u32
-                                            | ((wmp_bytes[p + 5] as u32) << 8)
-                                            | ((wmp_bytes[p + 6] as u32) << 16)
-                                            | ((wmp_bytes[p + 7] as u32) << 24))
-                                            as u128)
-                                            << 32)
-                                        | (((wmp_bytes[p + 8] as u32
-                                            | ((wmp_bytes[p + 9] as u32) << 8)
-                                            | ((wmp_bytes[p + 10] as u32) << 16)
-                                            | ((wmp_bytes[p + 11] as u32) << 24))
-                                            as u128)
-                                            << 64);
-                                    let bit_rack = quotient * wmp_bylen_num_word_buckets as u128
-                                        + bucket_idx as u128;
+                                    p = wmp_bylen_word_entries_ofs
+                                        + entry_idx as usize * wmp_entry_size
+                                        + 16;
+                                    let bit_rack = if wmp_ver < 3 {
+                                        let quotient = (wmp_bytes[p] as u32
+                                            | ((wmp_bytes[p + 1] as u32) << 8)
+                                            | ((wmp_bytes[p + 2] as u32) << 16)
+                                            | ((wmp_bytes[p + 3] as u32) << 24))
+                                            as u128
+                                            | (((wmp_bytes[p + 4] as u32
+                                                | ((wmp_bytes[p + 5] as u32) << 8)
+                                                | ((wmp_bytes[p + 6] as u32) << 16)
+                                                | ((wmp_bytes[p + 7] as u32) << 24))
+                                                as u128)
+                                                << 32)
+                                            | (((wmp_bytes[p + 8] as u32
+                                                | ((wmp_bytes[p + 9] as u32) << 8)
+                                                | ((wmp_bytes[p + 10] as u32) << 16)
+                                                | ((wmp_bytes[p + 11] as u32) << 24))
+                                                as u128)
+                                                << 64);
+                                        quotient * wmp_bylen_num_word_buckets as u128
+                                            + bucket_idx as u128
+                                    } else {
+                                        (wmp_bytes[p] as u32
+                                            | ((wmp_bytes[p + 1] as u32) << 8)
+                                            | ((wmp_bytes[p + 2] as u32) << 16)
+                                            | ((wmp_bytes[p + 3] as u32) << 24))
+                                            as u128
+                                            | (((wmp_bytes[p + 4] as u32
+                                                | ((wmp_bytes[p + 5] as u32) << 8)
+                                                | ((wmp_bytes[p + 6] as u32) << 16)
+                                                | ((wmp_bytes[p + 7] as u32) << 24))
+                                                as u128)
+                                                << 32)
+                                            | (((wmp_bytes[p + 8] as u32
+                                                | ((wmp_bytes[p + 9] as u32) << 8)
+                                                | ((wmp_bytes[p + 10] as u32) << 16)
+                                                | ((wmp_bytes[p + 11] as u32) << 24))
+                                                as u128)
+                                                << 64)
+                                            | (((wmp_bytes[p + 12] as u32
+                                                | ((wmp_bytes[p + 13] as u32) << 8)
+                                                | ((wmp_bytes[p + 14] as u32) << 16)
+                                                | ((wmp_bytes[p + 15] as u32) << 24))
+                                                as u128)
+                                                << 96)
+                                    };
+                                    if wmp_ver >= 3
+                                        && bucket_idx
+                                            != wmp3_hash(bit_rack) % wmp_bylen_num_word_buckets
+                                    {
+                                        return Err("mishashed entry".into());
+                                    }
                                     write!(ret, "  {bit_rack:032x} ")?;
                                     for i in 0..32 {
                                         for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
@@ -1971,31 +2030,65 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     "bucket {bucket_idx}/{wmp_bylen_num_blank_buckets}:"
                                 )?;
                                 for entry_idx in bucket_start_idx..bucket_end_idx {
-                                    p = wmp_bylen_blank_entries_ofs + entry_idx as usize * 28 + 8;
+                                    p = wmp_bylen_blank_entries_ofs
+                                        + entry_idx as usize * wmp_entry_size
+                                        + 8;
                                     let bits = wmp_bytes[p] as u32
                                         | ((wmp_bytes[p + 1] as u32) << 8)
                                         | ((wmp_bytes[p + 2] as u32) << 16)
                                         | ((wmp_bytes[p + 3] as u32) << 24);
                                     p += 8;
-                                    let quotient = (wmp_bytes[p] as u32
-                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                        | ((wmp_bytes[p + 3] as u32) << 24))
-                                        as u128
-                                        | (((wmp_bytes[p + 4] as u32
-                                            | ((wmp_bytes[p + 5] as u32) << 8)
-                                            | ((wmp_bytes[p + 6] as u32) << 16)
-                                            | ((wmp_bytes[p + 7] as u32) << 24))
-                                            as u128)
-                                            << 32)
-                                        | (((wmp_bytes[p + 8] as u32
-                                            | ((wmp_bytes[p + 9] as u32) << 8)
-                                            | ((wmp_bytes[p + 10] as u32) << 16)
-                                            | ((wmp_bytes[p + 11] as u32) << 24))
-                                            as u128)
-                                            << 64);
-                                    let bit_rack = quotient * wmp_bylen_num_blank_buckets as u128
-                                        + bucket_idx as u128;
+                                    let bit_rack = if wmp_ver < 3 {
+                                        let quotient = (wmp_bytes[p] as u32
+                                            | ((wmp_bytes[p + 1] as u32) << 8)
+                                            | ((wmp_bytes[p + 2] as u32) << 16)
+                                            | ((wmp_bytes[p + 3] as u32) << 24))
+                                            as u128
+                                            | (((wmp_bytes[p + 4] as u32
+                                                | ((wmp_bytes[p + 5] as u32) << 8)
+                                                | ((wmp_bytes[p + 6] as u32) << 16)
+                                                | ((wmp_bytes[p + 7] as u32) << 24))
+                                                as u128)
+                                                << 32)
+                                            | (((wmp_bytes[p + 8] as u32
+                                                | ((wmp_bytes[p + 9] as u32) << 8)
+                                                | ((wmp_bytes[p + 10] as u32) << 16)
+                                                | ((wmp_bytes[p + 11] as u32) << 24))
+                                                as u128)
+                                                << 64);
+                                        quotient * wmp_bylen_num_blank_buckets as u128
+                                            + bucket_idx as u128
+                                    } else {
+                                        (wmp_bytes[p] as u32
+                                            | ((wmp_bytes[p + 1] as u32) << 8)
+                                            | ((wmp_bytes[p + 2] as u32) << 16)
+                                            | ((wmp_bytes[p + 3] as u32) << 24))
+                                            as u128
+                                            | (((wmp_bytes[p + 4] as u32
+                                                | ((wmp_bytes[p + 5] as u32) << 8)
+                                                | ((wmp_bytes[p + 6] as u32) << 16)
+                                                | ((wmp_bytes[p + 7] as u32) << 24))
+                                                as u128)
+                                                << 32)
+                                            | (((wmp_bytes[p + 8] as u32
+                                                | ((wmp_bytes[p + 9] as u32) << 8)
+                                                | ((wmp_bytes[p + 10] as u32) << 16)
+                                                | ((wmp_bytes[p + 11] as u32) << 24))
+                                                as u128)
+                                                << 64)
+                                            | (((wmp_bytes[p + 12] as u32
+                                                | ((wmp_bytes[p + 13] as u32) << 8)
+                                                | ((wmp_bytes[p + 14] as u32) << 16)
+                                                | ((wmp_bytes[p + 15] as u32) << 24))
+                                                as u128)
+                                                << 96)
+                                    };
+                                    if wmp_ver >= 3
+                                        && bucket_idx
+                                            != wmp3_hash(bit_rack) % wmp_bylen_num_blank_buckets
+                                    {
+                                        return Err("mishashed entry".into());
+                                    }
                                     write!(ret, "  {bit_rack:032x} ")?;
                                     for i in 0..32 {
                                         for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
@@ -2037,7 +2130,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     )?;
                                     for entry_idx in bucket_start_idx..bucket_end_idx {
                                         p = wmp_bylen_double_blank_entries_ofs
-                                            + entry_idx as usize * 28
+                                            + entry_idx as usize * wmp_entry_size
                                             + 16;
                                         let quotient = (wmp_bytes[p] as u32
                                             | ((wmp_bytes[p + 1] as u32) << 8)
@@ -2128,7 +2221,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                 let mut found = false;
                                                 for entry_idx in bucket_start_idx..bucket_end_idx {
                                                     p = wmp_bylen_word_entries_ofs
-                                                        + entry_idx as usize * 28
+                                                        + entry_idx as usize * wmp_entry_size
                                                         + 16;
                                                     let quotient = (wmp_bytes[p] as u32
                                                         | ((wmp_bytes[p + 1] as u32) << 8)
@@ -2202,33 +2295,65 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     )?;
                                     for entry_idx in bucket_start_idx..bucket_end_idx {
                                         p = wmp_bylen_double_blank_entries_ofs
-                                            + entry_idx as usize * 28
+                                            + entry_idx as usize * wmp_entry_size
                                             + 8;
                                         let bits = wmp_bytes[p] as u32
                                             | ((wmp_bytes[p + 1] as u32) << 8)
                                             | ((wmp_bytes[p + 2] as u32) << 16)
                                             | ((wmp_bytes[p + 3] as u32) << 24);
                                         p += 8;
-                                        let quotient = (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64);
-                                        let bit_rack = quotient
-                                            * wmp_bylen_num_double_blank_buckets as u128
-                                            + bucket_idx as u128;
+                                        let bit_rack = if wmp_ver < 3 {
+                                            let quotient = (wmp_bytes[p] as u32
+                                                | ((wmp_bytes[p + 1] as u32) << 8)
+                                                | ((wmp_bytes[p + 2] as u32) << 16)
+                                                | ((wmp_bytes[p + 3] as u32) << 24))
+                                                as u128
+                                                | (((wmp_bytes[p + 4] as u32
+                                                    | ((wmp_bytes[p + 5] as u32) << 8)
+                                                    | ((wmp_bytes[p + 6] as u32) << 16)
+                                                    | ((wmp_bytes[p + 7] as u32) << 24))
+                                                    as u128)
+                                                    << 32)
+                                                | (((wmp_bytes[p + 8] as u32
+                                                    | ((wmp_bytes[p + 9] as u32) << 8)
+                                                    | ((wmp_bytes[p + 10] as u32) << 16)
+                                                    | ((wmp_bytes[p + 11] as u32) << 24))
+                                                    as u128)
+                                                    << 64);
+                                            quotient * wmp_bylen_num_double_blank_buckets as u128
+                                                + bucket_idx as u128
+                                        } else {
+                                            (wmp_bytes[p] as u32
+                                                | ((wmp_bytes[p + 1] as u32) << 8)
+                                                | ((wmp_bytes[p + 2] as u32) << 16)
+                                                | ((wmp_bytes[p + 3] as u32) << 24))
+                                                as u128
+                                                | (((wmp_bytes[p + 4] as u32
+                                                    | ((wmp_bytes[p + 5] as u32) << 8)
+                                                    | ((wmp_bytes[p + 6] as u32) << 16)
+                                                    | ((wmp_bytes[p + 7] as u32) << 24))
+                                                    as u128)
+                                                    << 32)
+                                                | (((wmp_bytes[p + 8] as u32
+                                                    | ((wmp_bytes[p + 9] as u32) << 8)
+                                                    | ((wmp_bytes[p + 10] as u32) << 16)
+                                                    | ((wmp_bytes[p + 11] as u32) << 24))
+                                                    as u128)
+                                                    << 64)
+                                                | (((wmp_bytes[p + 12] as u32
+                                                    | ((wmp_bytes[p + 13] as u32) << 8)
+                                                    | ((wmp_bytes[p + 14] as u32) << 16)
+                                                    | ((wmp_bytes[p + 15] as u32) << 24))
+                                                    as u128)
+                                                    << 96)
+                                        };
+                                        if wmp_ver >= 3
+                                            && bucket_idx
+                                                != wmp3_hash(bit_rack)
+                                                    % wmp_bylen_num_double_blank_buckets
+                                        {
+                                            return Err("mishashed entry".into());
+                                        }
                                         write!(ret, "  {bit_rack:032x} ")?;
                                         for i in 0..32 {
                                             for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
@@ -2243,18 +2368,25 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                     (bit_rack - 1) + (1 << (4 * first_i));
                                                 {
                                                     // shadow all the variables inside here.
-                                                    let mut sought_quotient = b1_bit_rack
-                                                        / wmp_bylen_num_blank_buckets as u128;
-                                                    let bucket_idx = (b1_bit_rack
-                                                        % wmp_bylen_num_blank_buckets as u128)
-                                                        as u32;
-                                                    // write something if ZA/ZE/ZO overflow.
-                                                    if sought_quotient >> 96 != 0 {
-                                                        sought_quotient &= (1u128 << 96) - 1;
-                                                        write!(
-                                                            ret,
-                                                            " _OVERFLOW(0x{b1_bit_rack:032x}.divmod({wmp_bylen_num_blank_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
-                                                        )?;
+                                                    let mut sought_quotient = 0;
+                                                    let bucket_idx;
+                                                    if wmp_ver < 3 {
+                                                        sought_quotient = b1_bit_rack
+                                                            / wmp_bylen_num_blank_buckets as u128;
+                                                        bucket_idx = (b1_bit_rack
+                                                            % wmp_bylen_num_blank_buckets as u128)
+                                                            as u32;
+                                                        // write something if ZA/ZE/ZO overflow.
+                                                        if sought_quotient >> 96 != 0 {
+                                                            sought_quotient &= (1u128 << 96) - 1;
+                                                            write!(
+                                                                ret,
+                                                                " _OVERFLOW(0x{b1_bit_rack:032x}.divmod({wmp_bylen_num_blank_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
+                                                            )?;
+                                                        }
+                                                    } else {
+                                                        bucket_idx = wmp3_hash(b1_bit_rack)
+                                                            % wmp_bylen_num_blank_buckets;
                                                     }
                                                     let mut p = wmp_bylen_blank_buckets_ofs
                                                         + bucket_idx as usize * 4;
@@ -2272,28 +2404,70 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                         bucket_start_idx..bucket_end_idx
                                                     {
                                                         p = wmp_bylen_blank_entries_ofs
-                                                            + entry_idx as usize * 28
+                                                            + entry_idx as usize * wmp_entry_size
                                                             + 16;
-                                                        let quotient = (wmp_bytes[p] as u32
-                                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                                            as u128
-                                                            | (((wmp_bytes[p + 4] as u32
-                                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                                as u128)
-                                                                << 32)
-                                                            | (((wmp_bytes[p + 8] as u32
-                                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                                | ((wmp_bytes[p + 10] as u32)
-                                                                    << 16)
-                                                                | ((wmp_bytes[p + 11] as u32)
-                                                                    << 24))
-                                                                as u128)
-                                                                << 64);
-                                                        if quotient == sought_quotient {
+                                                        let key_check = if wmp_ver < 3 {
+                                                            let quotient = (wmp_bytes[p] as u32
+                                                                | ((wmp_bytes[p + 1] as u32) << 8)
+                                                                | ((wmp_bytes[p + 2] as u32) << 16)
+                                                                | ((wmp_bytes[p + 3] as u32) << 24))
+                                                                as u128
+                                                                | (((wmp_bytes[p + 4] as u32
+                                                                    | ((wmp_bytes[p + 5] as u32)
+                                                                        << 8)
+                                                                    | ((wmp_bytes[p + 6] as u32)
+                                                                        << 16)
+                                                                    | ((wmp_bytes[p + 7] as u32)
+                                                                        << 24))
+                                                                    as u128)
+                                                                    << 32)
+                                                                | (((wmp_bytes[p + 8] as u32
+                                                                    | ((wmp_bytes[p + 9] as u32)
+                                                                        << 8)
+                                                                    | ((wmp_bytes[p + 10] as u32)
+                                                                        << 16)
+                                                                    | ((wmp_bytes[p + 11] as u32)
+                                                                        << 24))
+                                                                    as u128)
+                                                                    << 64);
+                                                            quotient == sought_quotient
+                                                        } else {
+                                                            let this_bit_rack = (wmp_bytes[p]
+                                                                as u32
+                                                                | ((wmp_bytes[p + 1] as u32) << 8)
+                                                                | ((wmp_bytes[p + 2] as u32) << 16)
+                                                                | ((wmp_bytes[p + 3] as u32) << 24))
+                                                                as u128
+                                                                | (((wmp_bytes[p + 4] as u32
+                                                                    | ((wmp_bytes[p + 5] as u32)
+                                                                        << 8)
+                                                                    | ((wmp_bytes[p + 6] as u32)
+                                                                        << 16)
+                                                                    | ((wmp_bytes[p + 7] as u32)
+                                                                        << 24))
+                                                                    as u128)
+                                                                    << 32)
+                                                                | (((wmp_bytes[p + 8] as u32
+                                                                    | ((wmp_bytes[p + 9] as u32)
+                                                                        << 8)
+                                                                    | ((wmp_bytes[p + 10] as u32)
+                                                                        << 16)
+                                                                    | ((wmp_bytes[p + 11] as u32)
+                                                                        << 24))
+                                                                    as u128)
+                                                                    << 64)
+                                                                | (((wmp_bytes[p + 12] as u32
+                                                                    | ((wmp_bytes[p + 13] as u32)
+                                                                        << 8)
+                                                                    | ((wmp_bytes[p + 14] as u32)
+                                                                        << 16)
+                                                                    | ((wmp_bytes[p + 15] as u32)
+                                                                        << 24))
+                                                                    as u128)
+                                                                    << 96);
+                                                            this_bit_rack == b1_bit_rack
+                                                        };
+                                                        if key_check {
                                                             p -= 8;
                                                             let b1_bits = wmp_bytes[p] as u32
                                                                 | ((wmp_bytes[p + 1] as u32) << 8)
@@ -2315,23 +2489,37 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                         {
                                                                             // shadow all the variables inside here.
                                                                             let mut sought_quotient =
-                                                                                unblanked_bit_rack / wmp_bylen_num_word_buckets as u128;
-                                                                            let bucket_idx = (unblanked_bit_rack
-                                                                                % wmp_bylen_num_word_buckets as u128)
-                                                                                as u32;
-                                                                            // write something if ZA/ZE/ZO overflow.
-                                                                            if sought_quotient >> 96
-                                                                                != 0
-                                                                            {
-                                                                                sought_quotient &=
+                                                                                0;
+                                                                            let bucket_idx;
+                                                                            if wmp_ver < 3 {
+                                                                                sought_quotient =
+                                                                    unblanked_bit_rack
+                                                                        / wmp_bylen_num_word_buckets
+                                                                            as u128;
+                                                                                bucket_idx = (unblanked_bit_rack
+                                                                        % wmp_bylen_num_word_buckets
+                                                                            as u128)
+                                                                        as u32;
+                                                                                // write something if ZA/ZE/ZO overflow.
+                                                                                if sought_quotient
+                                                                                    >> 96
+                                                                                    != 0
+                                                                                {
+                                                                                    sought_quotient &=
                                                                                     (1u128 << 96)
                                                                                         - 1;
-                                                                                write!(
-                                                                                    ret,
-                                                                                    " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
-                                                                                )?;
+                                                                                    write!(
+                                                                                        ret,
+                                                                                        " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
+                                                                                    )?;
+                                                                                }
+                                                                            } else {
+                                                                                bucket_idx = wmp3_hash(unblanked_bit_rack) % wmp_bylen_num_word_buckets;
                                                                             }
-                                                                            let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
+                                                                            let mut p =
+                                                                        wmp_bylen_word_buckets_ofs
+                                                                            + bucket_idx as usize
+                                                                                * 4;
                                                                             let bucket_start_idx =
                                                                                 wmp_bytes[p] as u32
                                                                                     | ((wmp_bytes
@@ -2366,73 +2554,151 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                                 bucket_start_idx
                                                                                     ..bucket_end_idx
                                                                             {
-                                                                                p = wmp_bylen_word_entries_ofs + entry_idx as usize * 28 + 16;
-                                                                                let quotient = (wmp_bytes[p]
+                                                                                p = wmp_bylen_word_entries_ofs
+                                                                        + entry_idx as usize
+                                                                            * wmp_entry_size
+                                                                        + 16;
+                                                                                let key_check =
+                                                                                    if wmp_ver < 3 {
+                                                                                        let quotient = (wmp_bytes[p]
+                                                                            as u32
+                                                                            | ((wmp_bytes[p + 1]
+                                                                                as u32)
+                                                                                << 8)
+                                                                            | ((wmp_bytes[p + 2]
+                                                                                as u32)
+                                                                                << 16)
+                                                                            | ((wmp_bytes[p + 3]
+                                                                                as u32)
+                                                                                << 24))
+                                                                            as u128
+                                                                            | (((wmp_bytes[p + 4]
+                                                                                as u32
+                                                                                | ((wmp_bytes[p + 5]
+                                                                                    as u32)
+                                                                                    << 8)
+                                                                                | ((wmp_bytes[p + 6]
+                                                                                    as u32)
+                                                                                    << 16)
+                                                                                | ((wmp_bytes[p + 7]
+                                                                                    as u32)
+                                                                                    << 24))
+                                                                                as u128)
+                                                                                << 32)
+                                                                            | (((wmp_bytes[p + 8]
+                                                                                as u32
+                                                                                | ((wmp_bytes[p + 9]
+                                                                                    as u32)
+                                                                                    << 8)
+                                                                                | ((wmp_bytes
+                                                                                    [p + 10]
+                                                                                    as u32)
+                                                                                    << 16)
+                                                                                | ((wmp_bytes
+                                                                                    [p + 11]
+                                                                                    as u32)
+                                                                                    << 24))
+                                                                                as u128)
+                                                                                << 64);
+                                                                                        quotient
+                                                                                == sought_quotient
+                                                                                    } else {
+                                                                                        let this_bit_rack =
+                                                                            (wmp_bytes[p] as u32
+                                                                                | ((wmp_bytes[p + 1]
+                                                                                    as u32)
+                                                                                    << 8)
+                                                                                | ((wmp_bytes[p + 2]
+                                                                                    as u32)
+                                                                                    << 16)
+                                                                                | ((wmp_bytes[p + 3]
+                                                                                    as u32)
+                                                                                    << 24))
+                                                                                as u128
+                                                                                | (((wmp_bytes
+                                                                                    [p + 4]
                                                                                     as u32
-                                                                                    | ((wmp_bytes[p + 1]
+                                                                                    | ((wmp_bytes
+                                                                                        [p + 5]
                                                                                         as u32)
                                                                                         << 8)
-                                                                                    | ((wmp_bytes[p + 2]
+                                                                                    | ((wmp_bytes
+                                                                                        [p + 6]
                                                                                         as u32)
                                                                                         << 16)
-                                                                                    | ((wmp_bytes[p + 3]
+                                                                                    | ((wmp_bytes
+                                                                                        [p + 7]
                                                                                         as u32)
                                                                                         << 24))
-                                                                                    as u128
-                                                                                    | (((wmp_bytes[p + 4]
-                                                                                        as u32
-                                                                                        | ((wmp_bytes[p + 5]
-                                                                                            as u32)
-                                                                                            << 8)
-                                                                                        | ((wmp_bytes[p + 6]
-                                                                                            as u32)
-                                                                                            << 16)
-                                                                                        | ((wmp_bytes[p + 7]
-                                                                                            as u32)
-                                                                                            << 24))
-                                                                                        as u128)
-                                                                                        << 32)
-                                                                                    | (((wmp_bytes[p + 8]
-                                                                                        as u32
-                                                                                        | ((wmp_bytes[p + 9]
-                                                                                            as u32)
-                                                                                            << 8)
-                                                                                        | ((wmp_bytes
-                                                                                            [p + 10]
-                                                                                            as u32)
-                                                                                            << 16)
-                                                                                        | ((wmp_bytes
-                                                                                            [p + 11]
-                                                                                            as u32)
-                                                                                            << 24))
-                                                                                        as u128)
-                                                                                        << 64);
-                                                                                if quotient == sought_quotient {
-                                                                                    p -= 16;
-                                                                                    let num_elts = if wmp_bytes[p] == 0 {
-                                                                                        p += 12;
-                                                                                        wmp_bytes[p] as u32
-                                                                                            | ((wmp_bytes
-                                                                                                [p + 1]
-                                                                                                as u32)
-                                                                                                << 8)
-                                                                                            | ((wmp_bytes
-                                                                                                [p + 2]
-                                                                                                as u32)
-                                                                                                << 16)
-                                                                                            | ((wmp_bytes
-                                                                                                [p + 3]
-                                                                                                as u32)
-                                                                                                << 24)
-                                                                                    } else {
-                                                                                        (wmp_bytes[p..p + 16]
-                                                                                            .iter()
-                                                                                            .position(|&b| b == 0)
-                                                                                            .unwrap_or(16)
-                                                                                            / len as usize)
-                                                                                            as u32
+                                                                                    as u128)
+                                                                                    << 32)
+                                                                                | (((wmp_bytes
+                                                                                    [p + 8]
+                                                                                    as u32
+                                                                                    | ((wmp_bytes
+                                                                                        [p + 9]
+                                                                                        as u32)
+                                                                                        << 8)
+                                                                                    | ((wmp_bytes
+                                                                                        [p + 10]
+                                                                                        as u32)
+                                                                                        << 16)
+                                                                                    | ((wmp_bytes
+                                                                                        [p + 11]
+                                                                                        as u32)
+                                                                                        << 24))
+                                                                                    as u128)
+                                                                                    << 64)
+                                                                                | (((wmp_bytes
+                                                                                    [p + 12]
+                                                                                    as u32
+                                                                                    | ((wmp_bytes
+                                                                                        [p + 13]
+                                                                                        as u32)
+                                                                                        << 8)
+                                                                                    | ((wmp_bytes
+                                                                                        [p + 14]
+                                                                                        as u32)
+                                                                                        << 16)
+                                                                                    | ((wmp_bytes
+                                                                                        [p + 15]
+                                                                                        as u32)
+                                                                                        << 24))
+                                                                                    as u128)
+                                                                                    << 96);
+                                                                                        this_bit_rack
+                                                                            == unblanked_bit_rack
                                                                                     };
-                                                                                    this_word_lookup_results += num_elts;
+                                                                                if key_check {
+                                                                                    p -= 16;
+                                                                                    let num_elts =
+                                                                                        if wmp_bytes
+                                                                                            [p]
+                                                                                            == 0
+                                                                                        {
+                                                                                            p += 12;
+                                                                                            wmp_bytes[p] as u32
+                                                                                | ((wmp_bytes[p + 1]
+                                                                                    as u32)
+                                                                                    << 8)
+                                                                                | ((wmp_bytes[p + 2]
+                                                                                    as u32)
+                                                                                    << 16)
+                                                                                | ((wmp_bytes[p + 3]
+                                                                                    as u32)
+                                                                                    << 24)
+                                                                                        } else {
+                                                                                            (wmp_bytes[p..p + 16]
+                                                                                .iter()
+                                                                                .position(|&b| {
+                                                                                    b == 0
+                                                                                })
+                                                                                .unwrap_or(16)
+                                                                                / len as usize)
+                                                                                as u32
+                                                                                        };
+                                                                                    this_word_lookup_results +=
+                                                                            num_elts;
                                                                                     found = true;
                                                                                     break;
                                                                                 }
