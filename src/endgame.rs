@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2025 Andy Kurnia.
+// Copyright (C) 2020-2026 Andy Kurnia.
 
 // note: this module is very slow and may need a lot of space
 // and it still has many bugs

@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2025 Andy Kurnia.
+// Copyright (C) 2020-2026 Andy Kurnia.
 
 use wolges::{
     alphabet, bites, build, display, error, fash, game_config, game_state, klv, kwg, movegen,
