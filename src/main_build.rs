@@ -176,6 +176,68 @@ fn build_leaves_f32<Readable: std::io::Read>(
     Ok(bin)
 }
 
+// same as build_leaves() but scales by 8.0 instead of 256.0.
+fn build_leaves_i16<Readable: std::io::Read>(
+    f: Readable,
+    alph: alphabet::Alphabet,
+    build_layout: build::BuildLayout,
+) -> error::Returns<Vec<u8>> {
+    let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
+    let mut leaves_map: fash::MyHashMap<bites::Bites, _> = fash::MyHashMap::default();
+    let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
+    let mut v = Vec::new();
+    for result in csv_reader.records() {
+        let record = result?;
+        alphabet_reader.set_word(&record[0], &mut v)?;
+        v.sort_unstable();
+        let rounded_leave = (f32::from_str(&record[1])? * 8.0).round();
+        let int_leave = rounded_leave as i16;
+        assert!(
+            (int_leave as f32 - rounded_leave).abs() == 0.0,
+            "for {}: {} (f32) {} (*8) {} (round) {} (int) {} (float) {} (-) {} (abs) {}",
+            &record[0],
+            &record[1],
+            f32::from_str(&record[1])?,
+            f32::from_str(&record[1])? * 8.0,
+            rounded_leave,
+            int_leave,
+            int_leave as f32,
+            int_leave as f32 - rounded_leave,
+            (int_leave as f32 - rounded_leave).abs(),
+        );
+        if leaves_map.insert(v[..].into(), int_leave).is_some() {
+            wolges::return_error!(format!("duplicate record {}", &record[0]));
+        }
+    }
+    let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
+    sorted_machine_words.sort_unstable();
+    let leaves_kwg = build::build(
+        build::BuildContent::DawgOnly,
+        build_layout,
+        &sorted_machine_words,
+    )?;
+    let leave_values = sorted_machine_words
+        .iter()
+        .map(|s| leaves_map[s])
+        .collect::<Box<_>>();
+    drop(sorted_machine_words);
+    drop(leaves_map);
+    let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 2];
+    let mut w = 0;
+    bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+    w += 4;
+    bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
+    w += leaves_kwg.len();
+    bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
+    w += 4;
+    for v in &leave_values[..] {
+        bin[w..w + 2].copy_from_slice(&v.to_le_bytes());
+        w += 2;
+    }
+    assert_eq!(w, bin.len());
+    Ok(bin)
+}
+
 fn read_leaves_f32<Readable: std::io::Read>(
     f: Readable,
     alph: &alphabet::Alphabet,
@@ -267,6 +329,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 "-klv2" => {
                     make_writer(&args[3])?.write_all(&build_leaves_f32(
+                        &mut make_reader(&args[2])?,
+                        make_alphabet(),
+                        build_layout,
+                    )?)?;
+                    Ok(true)
+                }
+                "-klv16" => {
+                    make_writer(&args[3])?.write_all(&build_leaves_i16(
                         &mut make_reader(&args[2])?,
                         make_alphabet(),
                         build_layout,
@@ -506,6 +576,8 @@ fn main() -> error::Returns<()> {
     generate klv file (deprecated?)
   english-klv2 CSW24.csv CSW24.klv2
     generate klv2 file (preferred)
+  english-klv16 CSW24.csv CSW24.klv16
+    generate klv16 file (magpie-retro)
   english-kwg CSW24.txt CSW24.kwg
     generate kwg file containing gaddawg (supports 4M nodes)
   english-kbwg CSW24.txt CSW24.kbwg
