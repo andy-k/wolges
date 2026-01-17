@@ -561,6 +561,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-klv16" => {
                 // klv16: same as klv1, but scales by 8.0 instead of 256.0.
+                // for use with olaugh/magpie-retro.
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
