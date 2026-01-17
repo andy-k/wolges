@@ -559,6 +559,68 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 Ok(true)
             }
+            "-klv16" => {
+                let alphabet = make_alphabet();
+                let reader = &KwgReader {};
+                let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                if klv_bytes.len() < 4 {
+                    return Err("out of bounds".into());
+                }
+                let mut r = 0;
+                let kwg_bytes_len = ((klv_bytes[r] as u32
+                    | ((klv_bytes[r + 1] as u32) << 8)
+                    | ((klv_bytes[r + 2] as u32) << 16)
+                    | ((klv_bytes[r + 3] as u32) << 24))
+                    as usize)
+                    * 4;
+                r += 4;
+                if klv_bytes.len() < r + kwg_bytes_len + 4 {
+                    return Err("out of bounds".into());
+                }
+                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
+                r += kwg_bytes_len;
+                let lv_len = (klv_bytes[r] as u32
+                    | ((klv_bytes[r + 1] as u32) << 8)
+                    | ((klv_bytes[r + 2] as u32) << 16)
+                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
+                r += 4;
+                if r + lv_len * 2 != klv_bytes.len() {
+                    return Err("incorrect number of leave values".into());
+                }
+                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+                iter_dawg(
+                    &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    reader,
+                    kwg_bytes,
+                    reader.arc_index(kwg_bytes, 0),
+                    alphabet.of_rack(0),
+                    &mut |s: &str| {
+                        csv_out.serialize((
+                            s,
+                            if klv_bytes.len() >= r + 2 {
+                                r += 2;
+                                ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8))
+                                    as i16) as f32
+                                    * (1.0 / 8.0)
+                            } else {
+                                return Err("missing leaves".into());
+                            },
+                        ))?;
+                        Ok(())
+                    },
+                    &mut default_in,
+                    &mut default_out,
+                )?;
+                if r != klv_bytes.len() {
+                    return Err("too many leaves".into());
+                }
+                Ok(true)
+            }
             "-kwg" => {
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
@@ -3499,6 +3561,8 @@ fn main() -> error::Returns<()> {
   english-klv CSW24.klv CSW24.csv
   english-klv CSW24.klv2 CSW24.csv
     read klv/klv2 file
+  english-klv16 CSW24.klv16 CSW24.csv
+    read klv16 file
   english-kwg CSW24.kwg CSW24.txt
   english-kwg CSW24.kad CSW24.txt
     read kwg/kad file (dawg) (use kwg0 to allow 0, such as for klv-kwg-extract)
