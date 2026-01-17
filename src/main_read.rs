@@ -507,6 +507,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+                if 0 == reader.len(kwg_bytes) {
+                    return Err("out of bounds".into());
+                }
                 r += kwg_bytes_len;
                 let lv_len = (klv_bytes[r] as u32
                     | ((klv_bytes[r + 1] as u32) << 8)
@@ -514,8 +517,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     | ((klv_bytes[r + 3] as u32) << 24)) as usize;
                 r += 4;
                 let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
+                if r + lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
+                    return Err("incorrect number of leave values".into());
                 }
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                 iter_dawg(
