@@ -204,7 +204,7 @@ fn main() -> error::Returns<()> {
         }
     };
 
-    let mut rng = rand_chacha::ChaCha20Rng::from_os_rng();
+    let mut rng = rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng)?;
     let mut game_state = game_state::GameState::new(&game_config);
     // temp hardcode
     game_state.players[0].score = 16;

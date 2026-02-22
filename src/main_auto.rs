@@ -8,14 +8,13 @@ use wolges::{
 
 fn main() -> error::Returns<()> {
     if false {
-        let mut rng = rand_chacha::ChaCha20Rng::from_seed(*b"the seed is an array of 32 bytes");
+        let mut rng = rand::rngs::ChaCha20Rng::from_seed(*b"the seed is an array of 32 bytes");
         println!("{:?}", rng.get_seed());
         let alphabet = alphabet::make_english_alphabet();
         let mut bag;
         let mut v = Vec::new();
         for _ in 0..5 {
-            //v.push((rng.get_seed(), rng.get_stream(), rng.get_word_pos()));
-            v.push(rng.clone());
+            v.push((rng.get_seed(), rng.get_stream(), rng.get_word_pos()));
             bag = bag::Bag::new(&alphabet);
             bag.shuffle(&mut rng);
             println!("Pool {}: {}", bag.0.len(), alphabet.fmt_rack(&bag.0));
@@ -26,12 +25,11 @@ fn main() -> error::Returns<()> {
         }
         println!();
         for _ in 0..5 {
-            //let (seed, stream, word_pos) = v.pop().unwrap();
+            let (seed, stream, word_pos) = v.pop().unwrap();
             bag = bag::Bag::new(&alphabet);
-            rng = v.pop().unwrap();
-            //rng = rand_chacha::ChaCha20Rng::from_seed(seed);
-            //rng.set_stream(stream);
-            //rng.set_word_pos(word_pos);
+            rng = rand::rngs::ChaCha20Rng::from_seed(seed);
+            rng.set_stream(stream);
+            rng.set_word_pos(word_pos);
             bag.shuffle(&mut rng);
             println!("Pool {}: {}", bag.0.len(), alphabet.fmt_rack(&bag.0));
         }
@@ -95,9 +93,9 @@ fn do_it<N: kwg::Node>(
     let mut loss_draw_win = [0i64; 3];
 
     let mut game_state = game_state::GameState::new(game_config);
-    //let mut rng = rand_chacha::ChaCha20Rng::from_os_rng();
+    //let mut rng = rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng)?;
     // "the seed is an array of 32 bytes".len() == 32.
-    let mut rng = rand_chacha::ChaCha20Rng::from_seed(*b"Wolges Copyright (C) Andy Kurnia");
+    let mut rng = rand::rngs::ChaCha20Rng::from_seed(*b"Wolges Copyright (C) Andy Kurnia");
     let mut timers = game_timers::GameTimers::new(game_config.num_players());
     if false {
         // https://discord.com/channels/741321677828522035/1157118170398724176/1193946371129094154

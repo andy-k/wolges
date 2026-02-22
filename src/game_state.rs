@@ -113,7 +113,7 @@ impl GameState {
     pub fn reset_and_draw_tiles(
         &mut self,
         game_config: &game_config::GameConfig,
-        mut rng: &mut dyn RngCore,
+        mut rng: &mut dyn Rng,
     ) {
         self.reset();
         self.bag.shuffle(&mut rng);
@@ -163,7 +163,7 @@ impl GameState {
     pub fn play(
         &mut self,
         game_config: &game_config::GameConfig,
-        mut rng: &mut dyn RngCore,
+        mut rng: &mut dyn Rng,
         play: &movegen::Play,
     ) -> error::Returns<()> {
         let current_player = &mut self.players[self.turn as usize];

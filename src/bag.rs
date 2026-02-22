@@ -20,11 +20,11 @@ impl Bag {
         Bag(bag)
     }
 
-    pub fn shuffle(&mut self, mut rng: &mut dyn RngCore) {
+    pub fn shuffle(&mut self, mut rng: &mut dyn Rng) {
         self.0.shuffle(&mut rng);
     }
 
-    pub fn shuffle_n(&mut self, mut rng: &mut dyn RngCore, amount: usize) {
+    pub fn shuffle_n(&mut self, mut rng: &mut dyn Rng, amount: usize) {
         // this "correctly" puts the shuffled amount at the end
         self.0.partial_shuffle(&mut rng, amount);
     }
@@ -40,7 +40,7 @@ impl Bag {
     }
 
     // put back the tiles in random order. keep the rest of the bag in the same order.
-    pub fn put_back(&mut self, mut rng: &mut dyn RngCore, tiles: &[u8]) {
+    pub fn put_back(&mut self, mut rng: &mut dyn Rng, tiles: &[u8]) {
         let mut num_new_tiles = tiles.len();
         match num_new_tiles {
             0 => {

@@ -1,7 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{game_config, game_state, klv, kwg, movegen};
-use rand::prelude::*;
+use rand::SeedableRng;
 
 fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen::Play) {
     rack_tally.iter_mut().for_each(|m| *m = 0);
@@ -25,8 +25,9 @@ fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen:
 }
 
 thread_local! {
-    static RNG: std::cell::RefCell<Box<dyn RngCore>> =
-        std::cell::RefCell::new(Box::new(rand_chacha::ChaCha20Rng::from_os_rng()));
+    static RNG: std::cell::RefCell<Box<dyn rand::Rng>> = std::cell::RefCell::new(Box::new(
+        rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
+    ));
 }
 
 // Simmer can only be reused for the same game_config and kwg.

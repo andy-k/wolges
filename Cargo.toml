@@ -15,8 +15,7 @@ opt-level = 3
 [dependencies]
 csv = "1.4.0"
 num_cpus = "1.17.0"
-rand = "0.9.2"
-rand_chacha = "0.9.0"
+rand = { version = "0.10.0", features = ["chacha"] }
 rustyline = "17.0.2"
 rustyline-derive = "0.11.1"
 serde = { version = "1.0.228", features = ["derive"] }
