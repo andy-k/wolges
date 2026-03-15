@@ -1876,16 +1876,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         + entry_idx as usize * wmp_entry_size
                                         + 16;
                                     let bit_rack = if wmp_ver < 3 {
-                                        let quotient = read_le_u32(wmp_bytes, p) as u128
-                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
-                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64);
+                                        let quotient = read_le_u96(wmp_bytes, p);
                                         quotient * wmp_bylen_num_word_buckets as u128
                                             + bucket_idx as u128
                                     } else {
-                                        read_le_u32(wmp_bytes, p) as u128
-                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
-                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64)
-                                            | ((read_le_u32(wmp_bytes, p + 12) as u128) << 96)
+                                        read_le_u128_full(wmp_bytes, p)
                                     };
                                     if wmp_ver >= 3
                                         && bucket_idx
@@ -1949,16 +1944,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     let bits = read_le_u32(wmp_bytes, p);
                                     p += 8;
                                     let bit_rack = if wmp_ver < 3 {
-                                        let quotient = read_le_u32(wmp_bytes, p) as u128
-                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
-                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64);
+                                        let quotient = read_le_u96(wmp_bytes, p);
                                         quotient * wmp_bylen_num_blank_buckets as u128
                                             + bucket_idx as u128
                                     } else {
-                                        read_le_u32(wmp_bytes, p) as u128
-                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
-                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64)
-                                            | ((read_le_u32(wmp_bytes, p + 12) as u128) << 96)
+                                        read_le_u128_full(wmp_bytes, p)
                                     };
                                     if wmp_ver >= 3
                                         && bucket_idx
@@ -2003,9 +1993,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         p = wmp_bylen_double_blank_entries_ofs
                                             + entry_idx as usize * wmp_entry_size
                                             + 16;
-                                        let quotient = read_le_u32(wmp_bytes, p) as u128
-                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
-                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64);
+                                        let quotient = read_le_u96(wmp_bytes, p);
                                         let bit_rack = quotient
                                             * wmp_bylen_num_double_blank_buckets as u128
                                             + bucket_idx as u128;
@@ -2068,12 +2056,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                     p = wmp_bylen_word_entries_ofs
                                                         + entry_idx as usize * wmp_entry_size
                                                         + 16;
-                                                    let quotient = read_le_u32(wmp_bytes, p)
-                                                        as u128
-                                                        | ((read_le_u32(wmp_bytes, p + 4) as u128)
-                                                            << 32)
-                                                        | ((read_le_u32(wmp_bytes, p + 8) as u128)
-                                                            << 64);
+                                                    let quotient = read_le_u96(wmp_bytes, p);
                                                     if quotient == sought_quotient {
                                                         p -= 16;
                                                         let num_elts = if wmp_bytes[p] == 0 {
@@ -2125,16 +2108,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         let bits = read_le_u32(wmp_bytes, p);
                                         p += 8;
                                         let bit_rack = if wmp_ver < 3 {
-                                            let quotient = read_le_u32(wmp_bytes, p) as u128
-                                                | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
-                                                | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64);
+                                            let quotient = read_le_u96(wmp_bytes, p);
                                             quotient * wmp_bylen_num_double_blank_buckets as u128
                                                 + bucket_idx as u128
                                         } else {
-                                            read_le_u32(wmp_bytes, p) as u128
-                                                | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
-                                                | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64)
-                                                | ((read_le_u32(wmp_bytes, p + 12) as u128) << 96)
+                                            read_le_u128_full(wmp_bytes, p)
                                         };
                                         if wmp_ver >= 3
                                             && bucket_idx
@@ -2191,14 +2169,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                             + entry_idx as usize * wmp_entry_size
                                                             + 16;
                                                         let key_check = if wmp_ver < 3 {
-                                                            let quotient = read_le_u32(wmp_bytes, p)
-                                                                as u128
-                                                                | ((read_le_u32(wmp_bytes, p + 4)
-                                                                    as u128)
-                                                                    << 32)
-                                                                | ((read_le_u32(wmp_bytes, p + 8)
-                                                                    as u128)
-                                                                    << 64);
+                                                            let quotient =
+                                                                read_le_u96(wmp_bytes, p);
                                                             quotient == sought_quotient
                                                         } else {
                                                             let this_bit_rack =
