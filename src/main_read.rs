@@ -707,23 +707,23 @@ fn do_wg_anagram<R: WgReader>(
     Ok(())
 }
 
-fn do_wg_dawg<R: WgReader>(
+fn dump_dawg<R: WgReader, A: AlphabetLabel>(
     args: &[String],
-    alphabet: &alphabet::Alphabet,
+    label: &A,
     reader: &R,
-    initial_node_idx: usize,
+    bytes: &[u8],
+    initial_idx: usize,
     blank_str: Option<&str>,
 ) -> error::Returns<()> {
-    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-    if initial_node_idx >= reader.len(kwg_bytes) {
+    if initial_idx >= reader.len(bytes) {
         return Err("out of bounds".into());
     }
     let mut ret = String::new();
     iter_dawg(
-        &WolgesAlphabetLabel { alphabet },
+        label,
         reader,
-        kwg_bytes,
-        reader.arc_index(kwg_bytes, initial_node_idx),
+        bytes,
+        reader.arc_index(bytes, initial_idx),
         blank_str,
         &mut |s: &str| {
             ret.push_str(s);
@@ -735,6 +735,24 @@ fn do_wg_dawg<R: WgReader>(
     )?;
     make_writer(&args[3])?.write_all(ret.as_bytes())?;
     Ok(())
+}
+
+fn do_wg_dawg<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+    initial_node_idx: usize,
+    blank_str: Option<&str>,
+) -> error::Returns<()> {
+    let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    dump_dawg(
+        args,
+        &WolgesAlphabetLabel { alphabet },
+        reader,
+        bytes,
+        initial_node_idx,
+        blank_str,
+    )
 }
 
 // output format not guaranteed to be stable.
@@ -887,26 +905,14 @@ fn do_quackle<R: WgReader>(
         }
     }
     let reader = make_reader_fn(p);
-    if 1 > reader.len(quackle_bytes) {
-        return Err("out of bounds".into());
-    }
-    let mut ret = String::new();
-    iter_dawg(
+    dump_dawg(
+        args,
         &QuackleAlphabetLabel { alpha: &alpha },
         &reader,
         quackle_bytes,
         1,
         None,
-        &mut |s: &str| {
-            ret.push_str(s);
-            ret.push('\n');
-            Ok(())
-        },
-        &mut default_in,
-        &mut default_out,
-    )?;
-    make_writer(&args[3])?.write_all(ret.as_bytes())?;
-    Ok(())
+    )
 }
 
 fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
@@ -3184,49 +3190,28 @@ input/output files can be \"-\" (not advisable for binary files)"
         } else if args[1] == "quackle-small" {
             do_quackle(&args, |p| QuackleSmallReader { offset: p })?;
         } else if args[1] == "zyzzyva" {
-            let reader = &ZyzzyvaReader {};
-            let zyzzyva_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 0x8 > zyzzyva_bytes.len() {
-                return Err("out of bounds".into());
-            }
-            let mut ret = String::new();
-            iter_dawg(
+            let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+            dump_dawg(
+                &args,
                 &LexpertAlphabetLabel {},
-                reader,
-                zyzzyva_bytes,
+                &ZyzzyvaReader {},
+                bytes,
                 1,
                 None,
-                &mut |s: &str| {
-                    ret.push_str(s);
-                    ret.push('\n');
-                    Ok(())
-                },
-                &mut default_in,
-                &mut default_out,
             )?;
-            make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "lexpert" {
-            let reader = &LexpertReader {};
-            let lexpert_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 0x4c > lexpert_bytes.len() {
+            let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+            if 0x4c > bytes.len() {
                 return Err("out of bounds".into());
             }
-            let mut ret = String::new();
-            iter_dawg(
+            dump_dawg(
+                &args,
                 &LexpertAlphabetLabel {},
-                reader,
-                lexpert_bytes,
+                &LexpertReader {},
+                bytes,
                 2,
                 None,
-                &mut |s: &str| {
-                    ret.push_str(s);
-                    ret.push('\n');
-                    Ok(())
-                },
-                &mut default_in,
-                &mut default_out,
             )?;
-            make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "stats-zt" {
             let mut ret = String::new();
             for ci in [0.8f64, 0.85, 0.9, 0.95, 0.99, 0.995, 0.999] {
