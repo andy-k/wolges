@@ -1060,55 +1060,50 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 Ok(true)
             }
-            "-kwg" => {
+            "-kwg" | "-kbwg" => {
                 let alphabet = make_alphabet();
-                do_wg_dawg(args, &alphabet, &KwgReader {}, 0, None)?;
+                let is_kbwg = args1_suffix == "-kbwg";
+                if is_kbwg {
+                    do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, None)?;
+                } else {
+                    do_wg_dawg(args, &alphabet, &KwgReader {}, 0, None)?;
+                }
                 Ok(true)
             }
-            "-kwg0" => {
+            "-kwg0" | "-kbwg0" => {
                 let alphabet = make_alphabet();
-                do_wg_dawg(args, &alphabet, &KwgReader {}, 0, alphabet.of_rack(0))?;
+                if args1_suffix == "-kbwg0" {
+                    do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, alphabet.of_rack(0))?;
+                } else {
+                    do_wg_dawg(args, &alphabet, &KwgReader {}, 0, alphabet.of_rack(0))?;
+                }
                 Ok(true)
             }
-            "-kwg-gaddag" => {
+            "-kwg-gaddag" | "-kbwg-gaddag" => {
                 let alphabet = make_alphabet();
-                do_wg_dawg(args, &alphabet, &KwgReader {}, 1, Some("@"))?;
+                if args1_suffix == "-kbwg-gaddag" {
+                    do_wg_dawg(args, &alphabet, &KbwgReader {}, 1, Some("@"))?;
+                } else {
+                    do_wg_dawg(args, &alphabet, &KwgReader {}, 1, Some("@"))?;
+                }
                 Ok(true)
             }
-            "-kwg-nodes" => {
+            "-kwg-nodes" | "-kbwg-nodes" => {
                 let alphabet = make_alphabet();
-                do_wg_nodes(args, &alphabet, &KwgReader {})?;
+                if args1_suffix == "-kbwg-nodes" {
+                    do_wg_nodes(args, &alphabet, &KbwgReader {})?;
+                } else {
+                    do_wg_nodes(args, &alphabet, &KwgReader {})?;
+                }
                 Ok(true)
             }
-            "-kwg-prob" => {
+            "-kwg-prob" | "-kbwg-prob" => {
                 let alphabet = make_alphabet();
-                do_wg_prob(args, &alphabet, &KwgReader {})?;
-                Ok(true)
-            }
-
-            "-kbwg" => {
-                let alphabet = make_alphabet();
-                do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, None)?;
-                Ok(true)
-            }
-            "-kbwg0" => {
-                let alphabet = make_alphabet();
-                do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, alphabet.of_rack(0))?;
-                Ok(true)
-            }
-            "-kbwg-gaddag" => {
-                let alphabet = make_alphabet();
-                do_wg_dawg(args, &alphabet, &KbwgReader {}, 1, Some("@"))?;
-                Ok(true)
-            }
-            "-kbwg-nodes" => {
-                let alphabet = make_alphabet();
-                do_wg_nodes(args, &alphabet, &KbwgReader {})?;
-                Ok(true)
-            }
-            "-kbwg-prob" => {
-                let alphabet = make_alphabet();
-                do_wg_prob(args, &alphabet, &KbwgReader {})?;
+                if args1_suffix == "-kbwg-prob" {
+                    do_wg_prob(args, &alphabet, &KbwgReader {})?;
+                } else {
+                    do_wg_prob(args, &alphabet, &KwgReader {})?;
+                }
                 Ok(true)
             }
             "-prob" => {
@@ -1165,44 +1160,40 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?;
                 Ok(true)
             }
-            "-kwg-anagram-" => {
+            "-kwg-anagram-" | "-kbwg-anagram-" => {
                 let alphabet = make_alphabet();
-                do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Sub)?;
+                if args1_suffix.starts_with("-kbwg") {
+                    do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Sub)?;
+                } else {
+                    do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Sub)?;
+                }
                 Ok(true)
             }
-            "-kwg-anagram" => {
+            "-kwg-anagram" | "-kbwg-anagram" => {
                 let alphabet = make_alphabet();
-                do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Exact)?;
+                if args1_suffix.starts_with("-kbwg") {
+                    do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Exact)?;
+                } else {
+                    do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Exact)?;
+                }
                 Ok(true)
             }
-            "-kwg-anagram+" => {
+            "-kwg-anagram+" | "-kbwg-anagram+" => {
                 let alphabet = make_alphabet();
-                do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Super)?;
+                if args1_suffix.starts_with("-kbwg") {
+                    do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Super)?;
+                } else {
+                    do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Super)?;
+                }
                 Ok(true)
             }
-            "-kwg-check" => {
+            "-kwg-check" | "-kbwg-check" => {
                 let alphabet = make_alphabet();
-                do_wg_check(args, &alphabet, &KwgReader {})?;
-                Ok(true)
-            }
-            "-kbwg-check" => {
-                let alphabet = make_alphabet();
-                do_wg_check(args, &alphabet, &KbwgReader {})?;
-                Ok(true)
-            }
-            "-kbwg-anagram-" => {
-                let alphabet = make_alphabet();
-                do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Sub)?;
-                Ok(true)
-            }
-            "-kbwg-anagram" => {
-                let alphabet = make_alphabet();
-                do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Exact)?;
-                Ok(true)
-            }
-            "-kbwg-anagram+" => {
-                let alphabet = make_alphabet();
-                do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Super)?;
+                if args1_suffix == "-kbwg-check" {
+                    do_wg_check(args, &alphabet, &KbwgReader {})?;
+                } else {
+                    do_wg_check(args, &alphabet, &KwgReader {})?;
+                }
                 Ok(true)
             }
             "-q2-ort" => {
