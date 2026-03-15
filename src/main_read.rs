@@ -535,6 +535,160 @@ fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Re
     }
 }
 
+fn do_wg_check<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+) -> error::Returns<()> {
+    if args.len() < 4 {
+        return Err("need more argument".into());
+    }
+    let alphabet_reader = &alphabet::AlphabetReader::new_for_words(alphabet);
+    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if 0 == reader.len(kwg_bytes) {
+        return Err("out of bounds".into());
+    }
+    let mut not_found = false;
+    for word in &args[3..] {
+        let sb = &word.as_bytes();
+        let mut p = 0;
+        let mut ix = 0;
+        while ix < sb.len() {
+            if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                if !not_found {
+                    p = reader.arc_index(kwg_bytes, p);
+                    if p > 0 {
+                        loop {
+                            if reader.tile(kwg_bytes, p) == tile {
+                                break;
+                            }
+                            if reader.is_end(kwg_bytes, p) {
+                                not_found = true;
+                                break;
+                            }
+                            p += 1;
+                        }
+                    } else {
+                        not_found = true;
+                    }
+                }
+                ix = end_ix;
+            } else {
+                return Err("invalid tile".into());
+            }
+        }
+        if !not_found && (ix == 0 || (p != 0 && !reader.accepts(kwg_bytes, p))) {
+            not_found = true;
+        }
+    }
+    println!(
+        "{}",
+        if not_found {
+            "Play is NOT acceptable"
+        } else {
+            "Play is Acceptable"
+        }
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum AnagramMode {
+    Sub,
+    Exact,
+    Super,
+}
+
+fn do_wg_anagram<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+    mode: AnagramMode,
+) -> error::Returns<()> {
+    let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
+    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if 0 == reader.len(kwg_bytes) {
+        return Err("out of bounds".into());
+    }
+    let mut rack = vec![0; alphabet.len().into()];
+    let mut given_num_tiles = 0usize;
+    let sb = &args[4].as_bytes();
+    let mut ix = 0;
+    while ix < sb.len() {
+        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+            rack[tile as usize] += 1;
+            given_num_tiles += 1;
+            ix = end_ix;
+        } else {
+            return Err("invalid tile".into());
+        }
+    }
+    let rack_cell = std::cell::RefCell::new(rack);
+    let num_tiles = std::sync::atomic::AtomicUsize::new(0);
+    let mut ret = String::new();
+    iter_dawg(
+        &WolgesAlphabetLabel { alphabet },
+        reader,
+        kwg_bytes,
+        reader.arc_index(kwg_bytes, 0),
+        None,
+        &mut |s: &str| {
+            let dominated = match mode {
+                AnagramMode::Sub => false,
+                AnagramMode::Exact | AnagramMode::Super => {
+                    num_tiles.load(std::sync::atomic::Ordering::Relaxed) != given_num_tiles
+                }
+            };
+            if !dominated {
+                ret.push_str(s);
+                ret.push('\n');
+            }
+            Ok(())
+        },
+        &mut |b: u8| {
+            let mut rack = rack_cell.borrow_mut();
+            if rack[b as usize] > 0 {
+                rack[b as usize] -= 1;
+                if !matches!(mode, AnagramMode::Sub) {
+                    num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(Some(b))
+            } else if rack[0] > 0 {
+                rack[0] -= 1;
+                if !matches!(mode, AnagramMode::Sub) {
+                    num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(Some(0))
+            } else {
+                match mode {
+                    AnagramMode::Sub | AnagramMode::Exact => Ok(None),
+                    AnagramMode::Super => Ok(Some(0xff)),
+                }
+            }
+        },
+        &mut |b: u8| {
+            match mode {
+                AnagramMode::Sub => {
+                    rack_cell.borrow_mut()[b as usize] += 1;
+                }
+                AnagramMode::Exact => {
+                    rack_cell.borrow_mut()[b as usize] += 1;
+                    num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                AnagramMode::Super => {
+                    if b != 0xff {
+                        rack_cell.borrow_mut()[b as usize] += 1;
+                        num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+            Ok(())
+        },
+    )?;
+    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    Ok(())
+}
+
 fn do_wg_dawg<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
@@ -1056,239 +1210,42 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg-anagram-" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut rack = vec![0; alphabet.len().into()];
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            Ok(Some(b))
-                        } else if rack[0] > 0 {
-                            rack[0] -= 1;
-                            Ok(Some(0))
-                        } else {
-                            Ok(None)
-                        }
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        rack[b as usize] += 1;
-                        Ok(())
-                    },
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Sub)?;
                 Ok(true)
             }
             "-kwg-anagram" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut rack = vec![0; alphabet.len().into()];
-                let mut given_num_tiles = 0usize;
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        given_num_tiles += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
-                            ret.push_str(s);
-                            ret.push('\n');
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(b))
-                        } else if rack[0] > 0 {
-                            rack[0] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(0))
-                        } else {
-                            Ok(None)
-                        }
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        rack[b as usize] += 1;
-                        num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        Ok(())
-                    },
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Exact)?;
                 Ok(true)
             }
             "-kwg-anagram+" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut rack = vec![0; alphabet.len().into()];
-                let mut given_num_tiles = 0usize;
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        given_num_tiles += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
-                            ret.push_str(s);
-                            ret.push('\n');
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(b))
-                        } else if rack[0] > 0 {
-                            rack[0] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(0))
-                        } else {
-                            Ok(Some(0xff))
-                        }
-                    },
-                    &mut |b: u8| {
-                        if b != 0xff {
-                            let mut rack = rack_cell.borrow_mut();
-                            rack[b as usize] += 1;
-                            num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Ok(())
-                    },
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Super)?;
                 Ok(true)
             }
             "-kwg-check" => {
-                if args.len() < 4 {
-                    return Err("need more argument".into());
-                }
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut not_found = false;
-                for word in &args[3..] {
-                    let sb = &word.as_bytes();
-                    let mut p = 0;
-                    let mut ix = 0;
-                    while ix < sb.len() {
-                        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                            if !not_found {
-                                p = reader.arc_index(kwg_bytes, p);
-                                if p > 0 {
-                                    loop {
-                                        if reader.tile(kwg_bytes, p) == tile {
-                                            break;
-                                        }
-                                        if reader.is_end(kwg_bytes, p) {
-                                            not_found = true;
-                                            break;
-                                        }
-                                        p += 1;
-                                    }
-                                } else {
-                                    not_found = true;
-                                }
-                            }
-                            ix = end_ix;
-                        } else {
-                            return Err("invalid tile".into());
-                        }
-                    }
-                    if !not_found && (ix == 0 || (p != 0 && !reader.accepts(kwg_bytes, p))) {
-                        not_found = true;
-                    }
-                }
-                println!(
-                    "{}",
-                    if not_found {
-                        "Play is NOT acceptable"
-                    } else {
-                        "Play is Acceptable"
-                    }
-                );
+                do_wg_check(args, &alphabet, &KwgReader {})?;
+                Ok(true)
+            }
+            "-kbwg-check" => {
+                let alphabet = make_alphabet();
+                do_wg_check(args, &alphabet, &KbwgReader {})?;
+                Ok(true)
+            }
+            "-kbwg-anagram-" => {
+                let alphabet = make_alphabet();
+                do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Sub)?;
+                Ok(true)
+            }
+            "-kbwg-anagram" => {
+                let alphabet = make_alphabet();
+                do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Exact)?;
+                Ok(true)
+            }
+            "-kbwg-anagram+" => {
+                let alphabet = make_alphabet();
+                do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Super)?;
                 Ok(true)
             }
             "-q2-ort" => {
@@ -2971,8 +2928,12 @@ fn main() -> error::Returns<()> {
   english-kwg-anagram- CSW24.kwg - A?AC
   english-kwg-anagram CSW24.kwg - A?AC
   english-kwg-anagram+ CSW24.kwg - A?AC
+  english-kbwg-anagram- CSW24.kbwg - A?AC
+  english-kbwg-anagram CSW24.kbwg - A?AC
+  english-kbwg-anagram+ CSW24.kbwg - A?AC
     list all words with subanagram, anagram, or superanagram (using dawg)
   english-kwg-check CSW24.kwg word [word...]
+  english-kbwg-check CSW24.kbwg word [word...]
     checks if all words are valid (using dawg)
   english-q2-ort something.ort something.csv
     read .ort (format subject to change)
