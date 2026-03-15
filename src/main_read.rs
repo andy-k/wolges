@@ -1011,7 +1011,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
 ) -> error::Returns<bool> {
     match args[1].strip_prefix(language_name) {
         Some(args1_suffix) => match args1_suffix {
-            "-klv" => {
+            "-klv" | "-klv16" => {
+                // klv16: same as klv1, but scales by 8.0 instead of 256.0.
+                // for use with olaugh/magpie-retro.
+                let is_klv16 = args1_suffix == "-klv16";
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
@@ -1021,10 +1024,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 let mut r = parts.r;
-                let is_klv2 = parts.is_klv2;
+                let is_klv2 = !is_klv16 && parts.is_klv2;
                 if r + parts.lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
                     return Err("incorrect number of leave values".into());
                 }
+                let scale = if is_klv16 { 1.0 / 8.0 } else { 1.0 / 256.0 };
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                 iter_dawg(
                     &WolgesAlphabetLabel {
@@ -1035,51 +1039,17 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     reader.arc_index(kwg_bytes, 0),
                     alphabet.of_rack(0),
                     &mut |s: &str| {
-                        csv_out.serialize((s, read_leave_value(klv_bytes, &mut r, is_klv2)?))?;
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                if r != klv_bytes.len() {
-                    return Err("too many leaves".into());
-                }
-                Ok(true)
-            }
-            "-klv16" => {
-                // klv16: same as klv1, but scales by 8.0 instead of 256.0.
-                // for use with olaugh/magpie-retro.
-                let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                let parts = parse_klv(klv_bytes)?;
-                let kwg_bytes = parts.kwg_bytes;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut r = parts.r;
-                if r + parts.lv_len * 2 != klv_bytes.len() {
-                    return Err("incorrect number of leave values".into());
-                }
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        csv_out.serialize((
-                            s,
-                            if klv_bytes.len() >= r + 2 {
-                                r += 2;
-                                ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 8.0)
-                            } else {
-                                return Err("missing leaves".into());
-                            },
-                        ))?;
+                        let v = if is_klv2 {
+                            let v = f32::from_bits(read_le_u32(klv_bytes, r));
+                            r += 4;
+                            v
+                        } else if klv_bytes.len() >= r + 2 {
+                            r += 2;
+                            (read_le_u16(klv_bytes, r - 2) as i16) as f32 * scale
+                        } else {
+                            return Err("missing leaves".into());
+                        };
+                        csv_out.serialize((s, v))?;
                         Ok(())
                     },
                     &mut default_in,
