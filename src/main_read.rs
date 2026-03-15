@@ -535,6 +535,144 @@ fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Re
     }
 }
 
+fn do_wg_dawg<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+    initial_node_idx: usize,
+    blank_str: Option<&str>,
+) -> error::Returns<()> {
+    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if initial_node_idx >= reader.len(kwg_bytes) {
+        return Err("out of bounds".into());
+    }
+    let mut ret = String::new();
+    iter_dawg(
+        &WolgesAlphabetLabel { alphabet },
+        reader,
+        kwg_bytes,
+        reader.arc_index(kwg_bytes, initial_node_idx),
+        blank_str,
+        &mut |s: &str| {
+            ret.push_str(s);
+            ret.push('\n');
+            Ok(())
+        },
+        &mut default_in,
+        &mut default_out,
+    )?;
+    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    Ok(())
+}
+
+fn do_wg_nodes<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+) -> error::Returns<()> {
+    let alphabet_label = &WolgesAlphabetLabel { alphabet };
+    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    let kwg_len = reader.len(kwg_bytes);
+    let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
+    let mut kwg_pointed_to = vec![false; kwg_len];
+    for p in 0..kwg_len {
+        kwg_pointed_to[reader.arc_index(kwg_bytes, p)] = true;
+    }
+    let mut ret = String::new();
+    for (p, &p_pointed_to) in kwg_pointed_to.iter().enumerate().take(kwg_len) {
+        if p_pointed_to {
+            write!(ret, "{p:kwg_len_width$}")?;
+        } else {
+            write!(ret, "{:kwg_len_width$}", "")?;
+        }
+        ret.push(' ');
+        let t = reader.tile(kwg_bytes, p);
+        if t == 0 {
+            ret.push('@');
+        } else {
+            alphabet_label.label(&mut ret, t)?;
+        }
+        if reader.accepts(kwg_bytes, p) {
+            ret.push('*');
+        }
+        let arc_index = reader.arc_index(kwg_bytes, p);
+        if arc_index != 0 {
+            write!(ret, " {arc_index}")?;
+        }
+        if reader.is_end(kwg_bytes, p) {
+            ret.push_str(" ends");
+        }
+        ret.push('\n');
+    }
+    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    Ok(())
+}
+
+fn do_wg_prob<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+) -> error::Returns<()> {
+    let mut word_prob = prob::WordProbability::new(alphabet);
+    let word_cell = std::cell::RefCell::new(Vec::new());
+    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if 0 == reader.len(kwg_bytes) {
+        return Err("out of bounds".into());
+    }
+    let vec_out_cell = std::cell::RefCell::new(Vec::new());
+    iter_dawg(
+        &WolgesAlphabetLabel { alphabet },
+        reader,
+        kwg_bytes,
+        reader.arc_index(kwg_bytes, 0),
+        None,
+        &mut |s: &str| {
+            let word = word_cell.borrow();
+            let this_wp = word_prob.count_ways(&word);
+            let mut vec_out = vec_out_cell.borrow_mut();
+            let vec_len = vec_out.len();
+            let mut anagram_key = word.clone();
+            anagram_key.sort_unstable();
+            vec_out.push(((s.to_string(), word.len(), this_wp), (anagram_key, vec_len)));
+            Ok(())
+        },
+        &mut |b: u8| {
+            word_cell.borrow_mut().push(b);
+            Ok(Some(b))
+        },
+        &mut |_b: u8| {
+            word_cell.borrow_mut().pop();
+            Ok(())
+        },
+    )?;
+    let mut vec_out = vec_out_cell.into_inner();
+    vec_out.sort_unstable_by(|a, b| {
+        a.0.1.cmp(&b.0.1).then_with(|| {
+            b.0.2
+                .cmp(&a.0.2)
+                .then_with(|| a.1.0.cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
+        })
+    });
+    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+    let mut last_anagram_key = Vec::new();
+    let mut num_sets = 0;
+    let mut num_in_set = 0;
+    for elt in vec_out {
+        if last_anagram_key != elt.1.0 {
+            if last_anagram_key.len() != elt.1.0.len() {
+                num_sets = 1;
+            } else {
+                num_sets += 1;
+            }
+            num_in_set = 0;
+            last_anagram_key.clone_from(&elt.1.0);
+        }
+        num_in_set += 1;
+        csv_out.serialize((elt.0, num_sets, num_in_set))?;
+    }
+    Ok(())
+}
+
 // https://github.com/aappleby/smhasher/blob/0ff96f7835817a27d0487325b6c16033e2992eb5/src/MurmurHash3.cpp#L83-L87
 #[inline(always)]
 fn wmp3_hash(bit_rack: u128) -> u32 {
@@ -637,389 +775,55 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-kwg" => {
                 let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_dawg(args, &alphabet, &KwgReader {}, 0, None)?;
                 Ok(true)
             }
             "-kwg0" => {
                 let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_dawg(args, &alphabet, &KwgReader {}, 0, alphabet.of_rack(0))?;
                 Ok(true)
             }
             "-kwg-gaddag" => {
                 let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 1 >= reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 1),
-                    Some("@"),
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_dawg(args, &alphabet, &KwgReader {}, 1, Some("@"))?;
                 Ok(true)
             }
             "-kwg-nodes" => {
-                // output format not guaranteed to be stable.
                 let alphabet = make_alphabet();
-                let alphabet_label = &WolgesAlphabetLabel {
-                    alphabet: &alphabet,
-                };
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                let kwg_len = reader.len(kwg_bytes);
-                let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
-                let mut kwg_pointed_to = vec![false; kwg_len];
-                for p in 0..kwg_len {
-                    kwg_pointed_to[reader.arc_index(kwg_bytes, p)] = true;
-                }
-                let mut ret = String::new();
-                for (p, &p_pointed_to) in kwg_pointed_to.iter().enumerate().take(kwg_len) {
-                    if p_pointed_to {
-                        write!(ret, "{p:kwg_len_width$}")?;
-                    } else {
-                        write!(ret, "{:kwg_len_width$}", "")?;
-                    }
-                    ret.push(' ');
-                    let t = reader.tile(kwg_bytes, p);
-                    if t == 0 {
-                        ret.push('@');
-                    } else {
-                        alphabet_label.label(&mut ret, t)?;
-                    }
-                    if reader.accepts(kwg_bytes, p) {
-                        ret.push('*');
-                    }
-                    let arc_index = reader.arc_index(kwg_bytes, p);
-                    if arc_index != 0 {
-                        write!(ret, " {arc_index}")?;
-                    }
-                    if reader.is_end(kwg_bytes, p) {
-                        ret.push_str(" ends");
-                    }
-                    ret.push('\n');
-                }
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_nodes(args, &alphabet, &KwgReader {})?;
                 Ok(true)
             }
             "-kwg-prob" => {
-                // output format not guaranteed to be stable.
                 let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let mut word_prob = prob::WordProbability::new(&alphabet);
-                let word_cell = std::cell::RefCell::new(Vec::new());
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let vec_out_cell = std::cell::RefCell::new(Vec::new());
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        let word = word_cell.borrow();
-                        let this_wp = word_prob.count_ways(&word);
-                        let mut vec_out = vec_out_cell.borrow_mut();
-                        let vec_len = vec_out.len();
-                        let mut anagram_key = word.clone();
-                        anagram_key.sort_unstable();
-                        vec_out
-                            .push(((s.to_string(), word.len(), this_wp), (anagram_key, vec_len)));
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        word_cell.borrow_mut().push(b);
-                        Ok(Some(b))
-                    },
-                    &mut |_b: u8| {
-                        word_cell.borrow_mut().pop();
-                        Ok(())
-                    },
-                )?;
-                let mut vec_out = vec_out_cell.into_inner();
-                vec_out.sort_unstable_by(|a, b| {
-                    a.0.1.cmp(&b.0.1).then_with(|| {
-                        b.0.2
-                            .cmp(&a.0.2)
-                            .then_with(|| a.1.0.cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
-                    })
-                });
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                let mut last_anagram_key = Vec::new();
-                let mut num_sets = 0;
-                let mut num_in_set = 0;
-                for elt in vec_out {
-                    if last_anagram_key != elt.1.0 {
-                        if last_anagram_key.len() != elt.1.0.len() {
-                            num_sets = 1;
-                        } else {
-                            num_sets += 1;
-                        }
-                        num_in_set = 0;
-                        last_anagram_key.clone_from(&elt.1.0);
-                    }
-                    num_in_set += 1;
-                    csv_out.serialize((elt.0, num_sets, num_in_set))?;
-                }
+                do_wg_prob(args, &alphabet, &KwgReader {})?;
                 Ok(true)
             }
 
-            // begin copy-paste kwg code adapted to kbwg
             "-kbwg" => {
                 let alphabet = make_alphabet();
-                let reader = &KbwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, None)?;
                 Ok(true)
             }
             "-kbwg0" => {
                 let alphabet = make_alphabet();
-                let reader = &KbwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, alphabet.of_rack(0))?;
                 Ok(true)
             }
             "-kbwg-gaddag" => {
                 let alphabet = make_alphabet();
-                let reader = &KbwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 1 >= reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 1),
-                    Some("@"),
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_dawg(args, &alphabet, &KbwgReader {}, 1, Some("@"))?;
                 Ok(true)
             }
             "-kbwg-nodes" => {
-                // output format not guaranteed to be stable.
                 let alphabet = make_alphabet();
-                let alphabet_label = &WolgesAlphabetLabel {
-                    alphabet: &alphabet,
-                };
-                let reader = &KbwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                let kwg_len = reader.len(kwg_bytes);
-                let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
-                let mut kwg_pointed_to = vec![false; kwg_len];
-                for p in 0..kwg_len {
-                    kwg_pointed_to[reader.arc_index(kwg_bytes, p)] = true;
-                }
-                let mut ret = String::new();
-                for (p, &p_pointed_to) in kwg_pointed_to.iter().enumerate().take(kwg_len) {
-                    if p_pointed_to {
-                        write!(ret, "{p:kwg_len_width$}")?;
-                    } else {
-                        write!(ret, "{:kwg_len_width$}", "")?;
-                    }
-                    ret.push(' ');
-                    let t = reader.tile(kwg_bytes, p);
-                    if t == 0 {
-                        ret.push('@');
-                    } else {
-                        alphabet_label.label(&mut ret, t)?;
-                    }
-                    if reader.accepts(kwg_bytes, p) {
-                        ret.push('*');
-                    }
-                    let arc_index = reader.arc_index(kwg_bytes, p);
-                    if arc_index != 0 {
-                        write!(ret, " {arc_index}")?;
-                    }
-                    if reader.is_end(kwg_bytes, p) {
-                        ret.push_str(" ends");
-                    }
-                    ret.push('\n');
-                }
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
+                do_wg_nodes(args, &alphabet, &KbwgReader {})?;
                 Ok(true)
             }
             "-kbwg-prob" => {
-                // output format not guaranteed to be stable.
                 let alphabet = make_alphabet();
-                let reader = &KbwgReader {};
-                let mut word_prob = prob::WordProbability::new(&alphabet);
-                let word_cell = std::cell::RefCell::new(Vec::new());
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let vec_out_cell = std::cell::RefCell::new(Vec::new());
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        let word = word_cell.borrow();
-                        let this_wp = word_prob.count_ways(&word);
-                        let mut vec_out = vec_out_cell.borrow_mut();
-                        let vec_len = vec_out.len();
-                        let mut anagram_key = word.clone();
-                        anagram_key.sort_unstable();
-                        vec_out
-                            .push(((s.to_string(), word.len(), this_wp), (anagram_key, vec_len)));
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        word_cell.borrow_mut().push(b);
-                        Ok(Some(b))
-                    },
-                    &mut |_b: u8| {
-                        word_cell.borrow_mut().pop();
-                        Ok(())
-                    },
-                )?;
-                let mut vec_out = vec_out_cell.into_inner();
-                vec_out.sort_unstable_by(|a, b| {
-                    a.0.1.cmp(&b.0.1).then_with(|| {
-                        b.0.2
-                            .cmp(&a.0.2)
-                            .then_with(|| a.1.0.cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
-                    })
-                });
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                let mut last_anagram_key = Vec::new();
-                let mut num_sets = 0;
-                let mut num_in_set = 0;
-                for elt in vec_out {
-                    if last_anagram_key != elt.1.0 {
-                        if last_anagram_key.len() != elt.1.0.len() {
-                            num_sets = 1;
-                        } else {
-                            num_sets += 1;
-                        }
-                        num_in_set = 0;
-                        last_anagram_key.clone_from(&elt.1.0);
-                    }
-                    num_in_set += 1;
-                    csv_out.serialize((elt.0, num_sets, num_in_set))?;
-                }
+                do_wg_prob(args, &alphabet, &KbwgReader {})?;
                 Ok(true)
             }
-
-            // end copy-paste kwg code adapted to kbwg
-            //
             "-prob" => {
                 if args.len() < 3 {
                     return Err("need more argument".into());
