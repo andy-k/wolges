@@ -106,37 +106,6 @@ impl WgReader for LexpertReader {
     }
 }
 
-struct ZyzzyvaReader {}
-
-impl WgReader for ZyzzyvaReader {
-    #[inline(always)]
-    fn tile(&self, bytes: &[u8], idx: usize) -> u8 {
-        bytes[(idx * 4) + 3]
-    }
-
-    #[inline(always)]
-    fn accepts(&self, bytes: &[u8], idx: usize) -> bool {
-        bytes[(idx * 4) + 2] & 0x80 != 0
-    }
-
-    #[inline(always)]
-    fn is_end(&self, bytes: &[u8], idx: usize) -> bool {
-        bytes[(idx * 4) + 2] & 0x40 != 0
-    }
-
-    #[inline(always)]
-    fn arc_index(&self, bytes: &[u8], idx: usize) -> usize {
-        (((bytes[(idx * 4) + 2] & 0x3f) as usize) << 16)
-            | ((bytes[(idx * 4) + 1] as usize) << 8)
-            | (bytes[idx * 4] as usize)
-    }
-
-    #[inline(always)]
-    fn len(&self, bytes: &[u8]) -> usize {
-        bytes.len() / 4
-    }
-}
-
 struct QuackleReader {
     offset: usize,
 }
@@ -3068,7 +3037,7 @@ input/output files can be \"-\" (not advisable for binary files)"
             dump_dawg(
                 &args,
                 &LexpertAlphabetLabel {},
-                &ZyzzyvaReader {},
+                &KwgReader {},
                 bytes,
                 1,
                 None,
