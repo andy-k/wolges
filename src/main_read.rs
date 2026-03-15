@@ -467,6 +467,31 @@ fn default_out(_b: u8) -> error::Returns<()> {
     Ok(())
 }
 
+#[inline(always)]
+fn read_le_u16(bytes: &[u8], p: usize) -> u16 {
+    bytes[p] as u16 | ((bytes[p + 1] as u16) << 8)
+}
+
+#[inline(always)]
+fn read_le_u32(bytes: &[u8], p: usize) -> u32 {
+    bytes[p] as u32
+        | ((bytes[p + 1] as u32) << 8)
+        | ((bytes[p + 2] as u32) << 16)
+        | ((bytes[p + 3] as u32) << 24)
+}
+
+#[inline(always)]
+fn read_le_u96(bytes: &[u8], p: usize) -> u128 {
+    read_le_u32(bytes, p) as u128
+        | ((read_le_u32(bytes, p + 4) as u128) << 32)
+        | ((read_le_u32(bytes, p + 8) as u128) << 64)
+}
+
+#[inline(always)]
+fn read_le_u128_full(bytes: &[u8], p: usize) -> u128 {
+    read_le_u96(bytes, p) | ((read_le_u32(bytes, p + 12) as u128) << 96)
+}
+
 // https://github.com/aappleby/smhasher/blob/0ff96f7835817a27d0487325b6c16033e2992eb5/src/MurmurHash3.cpp#L83-L87
 #[inline(always)]
 fn wmp3_hash(bit_rack: u128) -> u32 {
@@ -496,12 +521,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
+                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
                 r += 4;
                 if klv_bytes.len() < r + kwg_bytes_len + 4 {
                     return Err("out of bounds".into());
@@ -511,10 +531,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
+                let lv_len = read_le_u32(klv_bytes, r) as usize;
                 r += 4;
                 let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
                 if r + lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
@@ -534,17 +551,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             s,
                             if is_klv2 && klv_bytes.len() >= r + 4 {
                                 r += 4;
-                                f32::from_bits(
-                                    klv_bytes[r - 4] as u32
-                                        | ((klv_bytes[r - 3] as u32) << 8)
-                                        | ((klv_bytes[r - 2] as u32) << 16)
-                                        | ((klv_bytes[r - 1] as u32) << 24),
-                                )
+                                f32::from_bits(read_le_u32(klv_bytes, r - 4))
                             } else if !is_klv2 && klv_bytes.len() >= r + 2 {
                                 r += 2;
-                                ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8))
-                                    as i16) as f32
-                                    * (1.0 / 256.0)
+                                ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
                             } else {
                                 return Err("missing leaves".into());
                             },
@@ -569,12 +579,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
+                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
                 r += 4;
                 if klv_bytes.len() < r + kwg_bytes_len + 4 {
                     return Err("out of bounds".into());
@@ -584,10 +589,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
+                let lv_len = read_le_u32(klv_bytes, r) as usize;
                 r += 4;
                 if r + lv_len * 2 != klv_bytes.len() {
                     return Err("incorrect number of leave values".into());
@@ -606,9 +608,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             s,
                             if klv_bytes.len() >= r + 2 {
                                 r += 2;
-                                ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8))
-                                    as i16) as f32
-                                    * (1.0 / 8.0)
+                                ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 8.0)
                             } else {
                                 return Err("missing leaves".into());
                             },
@@ -1041,22 +1041,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
+                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
                 r += 4;
                 if klv_bytes.len() < r + kwg_bytes_len + 4 {
                     return Err("out of bounds".into());
                 }
                 let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
                 r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
+                let lv_len = read_le_u32(klv_bytes, r) as usize;
                 r += 4;
                 let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
                 if 0 == reader.len(kwg_bytes) {
@@ -1087,17 +1079,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     &mut |s: &str| {
                         let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
                             r += 4;
-                            f32::from_bits(
-                                klv_bytes[r - 4] as u32
-                                    | ((klv_bytes[r - 3] as u32) << 8)
-                                    | ((klv_bytes[r - 2] as u32) << 16)
-                                    | ((klv_bytes[r - 1] as u32) << 24),
-                            )
+                            f32::from_bits(read_le_u32(klv_bytes, r - 4))
                         } else if !is_klv2 && klv_bytes.len() >= r + 2 {
                             r += 2;
-                            ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8)) as i16)
-                                as f32
-                                * (1.0 / 256.0)
+                            ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
                         } else {
                             return Err("missing leaves".into());
                         };
@@ -1140,22 +1125,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
+                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
                 r += 4;
                 if klv_bytes.len() < r + kwg_bytes_len + 4 {
                     return Err("out of bounds".into());
                 }
                 let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
                 r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
+                let lv_len = read_le_u32(klv_bytes, r) as usize;
                 r += 4;
                 let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
                 if 0 == reader.len(kwg_bytes) {
@@ -1189,17 +1166,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     &mut |s: &str| {
                         let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
                             r += 4;
-                            f32::from_bits(
-                                klv_bytes[r - 4] as u32
-                                    | ((klv_bytes[r - 3] as u32) << 8)
-                                    | ((klv_bytes[r - 2] as u32) << 16)
-                                    | ((klv_bytes[r - 1] as u32) << 24),
-                            )
+                            f32::from_bits(read_le_u32(klv_bytes, r - 4))
                         } else if !is_klv2 && klv_bytes.len() >= r + 2 {
                             r += 2;
-                            ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8)) as i16)
-                                as f32
-                                * (1.0 / 256.0)
+                            ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
                         } else {
                             return Err("missing leaves".into());
                         };
@@ -1246,22 +1216,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
+                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
                 r += 4;
                 if klv_bytes.len() < r + kwg_bytes_len + 4 {
                     return Err("out of bounds".into());
                 }
                 let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
                 r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
+                let lv_len = read_le_u32(klv_bytes, r) as usize;
                 r += 4;
                 let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
                 if 0 == reader.len(kwg_bytes) {
@@ -1294,17 +1256,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     &mut |s: &str| {
                         let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
                             r += 4;
-                            f32::from_bits(
-                                klv_bytes[r - 4] as u32
-                                    | ((klv_bytes[r - 3] as u32) << 8)
-                                    | ((klv_bytes[r - 2] as u32) << 16)
-                                    | ((klv_bytes[r - 1] as u32) << 24),
-                            )
+                            f32::from_bits(read_le_u32(klv_bytes, r - 4))
                         } else if !is_klv2 && klv_bytes.len() >= r + 2 {
                             r += 2;
-                            ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8)) as i16)
-                                as f32
-                                * (1.0 / 256.0)
+                            ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
                         } else {
                             return Err("missing leaves".into());
                         };
@@ -1584,37 +1539,21 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 let mut r = 0;
-                let ort_num_buckets = ort_bytes[r] as u32
-                    | ((ort_bytes[r + 1] as u32) << 8)
-                    | ((ort_bytes[r + 2] as u32) << 16)
-                    | ((ort_bytes[r + 3] as u32) << 24);
+                let ort_num_buckets = read_le_u32(ort_bytes, r);
                 r += 4;
-                let ort_num_values = ort_bytes[r] as u32
-                    | ((ort_bytes[r + 1] as u32) << 8)
-                    | ((ort_bytes[r + 2] as u32) << 16)
-                    | ((ort_bytes[r + 3] as u32) << 24);
+                let ort_num_values = read_le_u32(ort_bytes, r);
                 r += 4;
                 if ort_bytes.len() < r + ((ort_num_buckets + 1 + ort_num_values) * 4) as usize {
                     return Err("out of bounds".into());
                 }
                 let mut ort_buckets = Vec::with_capacity(ort_num_buckets as usize + 1);
                 for _ in 0..=ort_num_buckets {
-                    ort_buckets.push(
-                        ort_bytes[r] as u32
-                            | ((ort_bytes[r + 1] as u32) << 8)
-                            | ((ort_bytes[r + 2] as u32) << 16)
-                            | ((ort_bytes[r + 3] as u32) << 24),
-                    );
+                    ort_buckets.push(read_le_u32(ort_bytes, r));
                     r += 4;
                 }
                 let mut ort_values = Vec::with_capacity(ort_num_values as usize);
                 for _ in 0..ort_num_values {
-                    ort_values.push(
-                        ort_bytes[r] as u32
-                            | ((ort_bytes[r + 1] as u32) << 8)
-                            | ((ort_bytes[r + 2] as u32) << 16)
-                            | ((ort_bytes[r + 3] as u32) << 24),
-                    );
+                    ort_values.push(read_le_u32(ort_bytes, r));
                     r += 4;
                 }
                 if r != ort_bytes.len() {
@@ -1781,20 +1720,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let wmp_entry_size: usize = if wmp_ver < 3 { 28 } else { 32 };
                 let max_len = wmp_bytes[1];
                 let mut r = 2;
-                let max_word_lookup_results = wmp_bytes[r] as u32
-                    | ((wmp_bytes[r + 1] as u32) << 8)
-                    | ((wmp_bytes[r + 2] as u32) << 16)
-                    | ((wmp_bytes[r + 3] as u32) << 24);
+                let max_word_lookup_results = read_le_u32(wmp_bytes, r);
                 r += 4;
                 if wmp_bytes.len() < 10 {
                     return Err("out of bounds".into());
                 }
                 let max_blank_pair_results;
                 if wmp_ver < 2 {
-                    max_blank_pair_results = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    max_blank_pair_results = read_le_u32(wmp_bytes, r);
                     r += 4;
                 } else {
                     max_blank_pair_results = 0;
@@ -1815,10 +1748,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_word_buckets = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_word_buckets = read_le_u32(wmp_bytes, r);
                     if wmp_ver >= 3 && !wmp_bylen_num_word_buckets.is_power_of_two() {
                         return Err("unsupported bucket size".into());
                     }
@@ -1828,20 +1758,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_word_entries = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_word_entries = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_word_entries_ofs = r;
                     r += wmp_entry_size * wmp_bylen_num_word_entries as usize;
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_words = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_words = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_words_ofs = r;
                     r += (len as u32 * wmp_bylen_num_words) as usize;
@@ -1849,10 +1773,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_blank_buckets = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_blank_buckets = read_le_u32(wmp_bytes, r);
                     if wmp_ver >= 3 && !wmp_bylen_num_blank_buckets.is_power_of_two() {
                         return Err("unsupported bucket size".into());
                     }
@@ -1862,10 +1783,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_blank_entries = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_blank_entries = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_blank_entries_ofs = r;
                     r += wmp_entry_size * wmp_bylen_num_blank_entries as usize;
@@ -1873,10 +1791,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_double_blank_buckets = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_double_blank_buckets = read_le_u32(wmp_bytes, r);
                     if wmp_ver >= 3 && !wmp_bylen_num_double_blank_buckets.is_power_of_two() {
                         return Err("unsupported bucket size".into());
                     }
@@ -1886,10 +1801,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_double_blank_entries = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_double_blank_entries = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_double_blank_entries_ofs = r;
                     r += wmp_entry_size * wmp_bylen_num_double_blank_entries as usize;
@@ -1898,10 +1810,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         if wmp_bytes.len() < r + 4 {
                             return Err("out of bounds".into());
                         }
-                        let wmp_bylen_num_blank_pairs = wmp_bytes[r] as u32
-                            | ((wmp_bytes[r + 1] as u32) << 8)
-                            | ((wmp_bytes[r + 2] as u32) << 16)
-                            | ((wmp_bytes[r + 3] as u32) << 24);
+                        let wmp_bylen_num_blank_pairs = read_le_u32(wmp_bytes, r);
                         r += 4;
                         wmp_bylen_blank_pairs_ofs = r;
                         r += 2 * wmp_bylen_num_blank_pairs as usize;
@@ -1916,15 +1825,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         // inlined words
                         for bucket_idx in 0..wmp_bylen_num_word_buckets {
                             let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_start_idx = read_le_u32(wmp_bytes, p);
                             p += 4;
-                            let bucket_end_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_end_idx = read_le_u32(wmp_bytes, p);
                             for entry_idx in bucket_start_idx..bucket_end_idx {
                                 p = wmp_bylen_word_entries_ofs
                                     + entry_idx as usize * wmp_entry_size;
@@ -1933,15 +1836,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     // uninlined words
                                     // this is len * index, in bytes.
                                     p += 8;
-                                    let initial_ofs = wmp_bytes[p] as u32
-                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                    let initial_ofs = read_le_u32(wmp_bytes, p);
                                     p += 4;
-                                    num_elts = wmp_bytes[p] as u32
-                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                    num_elts = read_le_u32(wmp_bytes, p);
                                     p = wmp_bylen_words_ofs + initial_ofs as usize;
                                 } else {
                                     // inlined words
@@ -1969,15 +1866,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         writeln!(ret, "\nword buckets: {wmp_bylen_num_word_buckets}")?;
                         for bucket_idx in 0..wmp_bylen_num_word_buckets {
                             let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_start_idx = read_le_u32(wmp_bytes, p);
                             p += 4;
-                            let bucket_end_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_end_idx = read_le_u32(wmp_bytes, p);
                             if bucket_start_idx != bucket_end_idx {
                                 writeln!(ret, "bucket {bucket_idx}/{wmp_bylen_num_word_buckets}:")?;
                                 for entry_idx in bucket_start_idx..bucket_end_idx {
@@ -1985,49 +1876,16 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         + entry_idx as usize * wmp_entry_size
                                         + 16;
                                     let bit_rack = if wmp_ver < 3 {
-                                        let quotient = (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64);
+                                        let quotient = read_le_u32(wmp_bytes, p) as u128
+                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
+                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64);
                                         quotient * wmp_bylen_num_word_buckets as u128
                                             + bucket_idx as u128
                                     } else {
-                                        (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64)
-                                            | (((wmp_bytes[p + 12] as u32
-                                                | ((wmp_bytes[p + 13] as u32) << 8)
-                                                | ((wmp_bytes[p + 14] as u32) << 16)
-                                                | ((wmp_bytes[p + 15] as u32) << 24))
-                                                as u128)
-                                                << 96)
+                                        read_le_u32(wmp_bytes, p) as u128
+                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
+                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64)
+                                            | ((read_le_u32(wmp_bytes, p + 12) as u128) << 96)
                                     };
                                     if wmp_ver >= 3
                                         && bucket_idx
@@ -2048,15 +1906,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         // uninlined words
                                         // this is len * index, in bytes.
                                         p += 8;
-                                        let initial_ofs = wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24);
+                                        let initial_ofs = read_le_u32(wmp_bytes, p);
                                         p += 4;
-                                        num_elts = wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24);
+                                        num_elts = read_le_u32(wmp_bytes, p);
                                         p = wmp_bylen_words_ofs + initial_ofs as usize;
                                     } else {
                                         // inlined words
@@ -2082,15 +1934,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         writeln!(ret, "\nblank buckets: {wmp_bylen_num_blank_buckets}")?;
                         for bucket_idx in 0..wmp_bylen_num_blank_buckets {
                             let mut p = wmp_bylen_blank_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_start_idx = read_le_u32(wmp_bytes, p);
                             p += 4;
-                            let bucket_end_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_end_idx = read_le_u32(wmp_bytes, p);
                             if bucket_start_idx != bucket_end_idx {
                                 writeln!(
                                     ret,
@@ -2100,55 +1946,19 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     p = wmp_bylen_blank_entries_ofs
                                         + entry_idx as usize * wmp_entry_size
                                         + 8;
-                                    let bits = wmp_bytes[p] as u32
-                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                    let bits = read_le_u32(wmp_bytes, p);
                                     p += 8;
                                     let bit_rack = if wmp_ver < 3 {
-                                        let quotient = (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64);
+                                        let quotient = read_le_u32(wmp_bytes, p) as u128
+                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
+                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64);
                                         quotient * wmp_bylen_num_blank_buckets as u128
                                             + bucket_idx as u128
                                     } else {
-                                        (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64)
-                                            | (((wmp_bytes[p + 12] as u32
-                                                | ((wmp_bytes[p + 13] as u32) << 8)
-                                                | ((wmp_bytes[p + 14] as u32) << 16)
-                                                | ((wmp_bytes[p + 15] as u32) << 24))
-                                                as u128)
-                                                << 96)
+                                        read_le_u32(wmp_bytes, p) as u128
+                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
+                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64)
+                                            | ((read_le_u32(wmp_bytes, p + 12) as u128) << 96)
                                     };
                                     if wmp_ver >= 3
                                         && bucket_idx
@@ -2181,15 +1991,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
                                 let mut p =
                                     wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
-                                let bucket_start_idx = wmp_bytes[p] as u32
-                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                let bucket_start_idx = read_le_u32(wmp_bytes, p);
                                 p += 4;
-                                let bucket_end_idx = wmp_bytes[p] as u32
-                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                let bucket_end_idx = read_le_u32(wmp_bytes, p);
                                 if bucket_start_idx != bucket_end_idx {
                                     writeln!(
                                         ret,
@@ -2199,23 +2003,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         p = wmp_bylen_double_blank_entries_ofs
                                             + entry_idx as usize * wmp_entry_size
                                             + 16;
-                                        let quotient = (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64);
+                                        let quotient = read_le_u32(wmp_bytes, p) as u128
+                                            | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
+                                            | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64);
                                         let bit_rack = quotient
                                             * wmp_bylen_num_double_blank_buckets as u128
                                             + bucket_idx as u128;
@@ -2231,15 +2021,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         let num_elts;
                                         if wmp_bytes[p] == 0 {
                                             p += 8;
-                                            let initial_ofs = wmp_bytes[p] as u32
-                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                | ((wmp_bytes[p + 3] as u32) << 24);
+                                            let initial_ofs = read_le_u32(wmp_bytes, p);
                                             p += 4;
-                                            num_elts = wmp_bytes[p] as u32
-                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                | ((wmp_bytes[p + 3] as u32) << 24);
+                                            num_elts = read_le_u32(wmp_bytes, p);
                                             p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
                                         } else {
                                             num_elts = (wmp_bytes[p..p + 16]
@@ -2276,45 +2060,25 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                 }
                                                 let mut p = wmp_bylen_word_buckets_ofs
                                                     + bucket_idx as usize * 4;
-                                                let bucket_start_idx = wmp_bytes[p] as u32
-                                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                                let bucket_start_idx = read_le_u32(wmp_bytes, p);
                                                 p += 4;
-                                                let bucket_end_idx = wmp_bytes[p] as u32
-                                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                                let bucket_end_idx = read_le_u32(wmp_bytes, p);
                                                 let mut found = false;
                                                 for entry_idx in bucket_start_idx..bucket_end_idx {
                                                     p = wmp_bylen_word_entries_ofs
                                                         + entry_idx as usize * wmp_entry_size
                                                         + 16;
-                                                    let quotient = (wmp_bytes[p] as u32
-                                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                                        | ((wmp_bytes[p + 3] as u32) << 24))
+                                                    let quotient = read_le_u32(wmp_bytes, p)
                                                         as u128
-                                                        | (((wmp_bytes[p + 4] as u32
-                                                            | ((wmp_bytes[p + 5] as u32) << 8)
-                                                            | ((wmp_bytes[p + 6] as u32) << 16)
-                                                            | ((wmp_bytes[p + 7] as u32) << 24))
-                                                            as u128)
+                                                        | ((read_le_u32(wmp_bytes, p + 4) as u128)
                                                             << 32)
-                                                        | (((wmp_bytes[p + 8] as u32
-                                                            | ((wmp_bytes[p + 9] as u32) << 8)
-                                                            | ((wmp_bytes[p + 10] as u32) << 16)
-                                                            | ((wmp_bytes[p + 11] as u32) << 24))
-                                                            as u128)
+                                                        | ((read_le_u32(wmp_bytes, p + 8) as u128)
                                                             << 64);
                                                     if quotient == sought_quotient {
                                                         p -= 16;
                                                         let num_elts = if wmp_bytes[p] == 0 {
                                                             p += 12;
-                                                            wmp_bytes[p] as u32
-                                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                                | ((wmp_bytes[p + 3] as u32) << 24)
+                                                            read_le_u32(wmp_bytes, p)
                                                         } else {
                                                             (wmp_bytes[p..p + 16]
                                                                 .iter()
@@ -2346,15 +2110,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
                                 let mut p =
                                     wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
-                                let bucket_start_idx = wmp_bytes[p] as u32
-                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                let bucket_start_idx = read_le_u32(wmp_bytes, p);
                                 p += 4;
-                                let bucket_end_idx = wmp_bytes[p] as u32
-                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                let bucket_end_idx = read_le_u32(wmp_bytes, p);
                                 if bucket_start_idx != bucket_end_idx {
                                     writeln!(
                                         ret,
@@ -2364,55 +2122,19 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         p = wmp_bylen_double_blank_entries_ofs
                                             + entry_idx as usize * wmp_entry_size
                                             + 8;
-                                        let bits = wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24);
+                                        let bits = read_le_u32(wmp_bytes, p);
                                         p += 8;
                                         let bit_rack = if wmp_ver < 3 {
-                                            let quotient = (wmp_bytes[p] as u32
-                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                | ((wmp_bytes[p + 3] as u32) << 24))
-                                                as u128
-                                                | (((wmp_bytes[p + 4] as u32
-                                                    | ((wmp_bytes[p + 5] as u32) << 8)
-                                                    | ((wmp_bytes[p + 6] as u32) << 16)
-                                                    | ((wmp_bytes[p + 7] as u32) << 24))
-                                                    as u128)
-                                                    << 32)
-                                                | (((wmp_bytes[p + 8] as u32
-                                                    | ((wmp_bytes[p + 9] as u32) << 8)
-                                                    | ((wmp_bytes[p + 10] as u32) << 16)
-                                                    | ((wmp_bytes[p + 11] as u32) << 24))
-                                                    as u128)
-                                                    << 64);
+                                            let quotient = read_le_u32(wmp_bytes, p) as u128
+                                                | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
+                                                | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64);
                                             quotient * wmp_bylen_num_double_blank_buckets as u128
                                                 + bucket_idx as u128
                                         } else {
-                                            (wmp_bytes[p] as u32
-                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                | ((wmp_bytes[p + 3] as u32) << 24))
-                                                as u128
-                                                | (((wmp_bytes[p + 4] as u32
-                                                    | ((wmp_bytes[p + 5] as u32) << 8)
-                                                    | ((wmp_bytes[p + 6] as u32) << 16)
-                                                    | ((wmp_bytes[p + 7] as u32) << 24))
-                                                    as u128)
-                                                    << 32)
-                                                | (((wmp_bytes[p + 8] as u32
-                                                    | ((wmp_bytes[p + 9] as u32) << 8)
-                                                    | ((wmp_bytes[p + 10] as u32) << 16)
-                                                    | ((wmp_bytes[p + 11] as u32) << 24))
-                                                    as u128)
-                                                    << 64)
-                                                | (((wmp_bytes[p + 12] as u32
-                                                    | ((wmp_bytes[p + 13] as u32) << 8)
-                                                    | ((wmp_bytes[p + 14] as u32) << 16)
-                                                    | ((wmp_bytes[p + 15] as u32) << 24))
-                                                    as u128)
-                                                    << 96)
+                                            read_le_u32(wmp_bytes, p) as u128
+                                                | ((read_le_u32(wmp_bytes, p + 4) as u128) << 32)
+                                                | ((read_le_u32(wmp_bytes, p + 8) as u128) << 64)
+                                                | ((read_le_u32(wmp_bytes, p + 12) as u128) << 96)
                                         };
                                         if wmp_ver >= 3
                                             && bucket_idx
@@ -2457,15 +2179,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                     }
                                                     let mut p = wmp_bylen_blank_buckets_ofs
                                                         + bucket_idx as usize * 4;
-                                                    let bucket_start_idx = wmp_bytes[p] as u32
-                                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                                    let bucket_start_idx =
+                                                        read_le_u32(wmp_bytes, p);
                                                     p += 4;
-                                                    let bucket_end_idx = wmp_bytes[p] as u32
-                                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                                    let bucket_end_idx = read_le_u32(wmp_bytes, p);
                                                     let mut found = false;
                                                     for entry_idx in
                                                         bucket_start_idx..bucket_end_idx
@@ -2474,72 +2191,41 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                             + entry_idx as usize * wmp_entry_size
                                                             + 16;
                                                         let key_check = if wmp_ver < 3 {
-                                                            let quotient = (wmp_bytes[p] as u32
-                                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                                | ((wmp_bytes[p + 3] as u32) << 24))
+                                                            let quotient = read_le_u32(wmp_bytes, p)
                                                                 as u128
-                                                                | (((wmp_bytes[p + 4] as u32
-                                                                    | ((wmp_bytes[p + 5] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 6] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 7] as u32)
-                                                                        << 24))
+                                                                | ((read_le_u32(wmp_bytes, p + 4)
                                                                     as u128)
                                                                     << 32)
-                                                                | (((wmp_bytes[p + 8] as u32
-                                                                    | ((wmp_bytes[p + 9] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 10] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 11] as u32)
-                                                                        << 24))
+                                                                | ((read_le_u32(wmp_bytes, p + 8)
                                                                     as u128)
                                                                     << 64);
                                                             quotient == sought_quotient
                                                         } else {
-                                                            let this_bit_rack = (wmp_bytes[p]
-                                                                as u32
-                                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                                | ((wmp_bytes[p + 3] as u32) << 24))
-                                                                as u128
-                                                                | (((wmp_bytes[p + 4] as u32
-                                                                    | ((wmp_bytes[p + 5] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 6] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 7] as u32)
-                                                                        << 24))
-                                                                    as u128)
-                                                                    << 32)
-                                                                | (((wmp_bytes[p + 8] as u32
-                                                                    | ((wmp_bytes[p + 9] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 10] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 11] as u32)
-                                                                        << 24))
-                                                                    as u128)
-                                                                    << 64)
-                                                                | (((wmp_bytes[p + 12] as u32
-                                                                    | ((wmp_bytes[p + 13] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 14] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 15] as u32)
-                                                                        << 24))
-                                                                    as u128)
-                                                                    << 96);
+                                                            let this_bit_rack =
+                                                                read_le_u32(wmp_bytes, p) as u128
+                                                                    | ((read_le_u32(
+                                                                        wmp_bytes,
+                                                                        p + 4,
+                                                                    )
+                                                                        as u128)
+                                                                        << 32)
+                                                                    | ((read_le_u32(
+                                                                        wmp_bytes,
+                                                                        p + 8,
+                                                                    )
+                                                                        as u128)
+                                                                        << 64)
+                                                                    | ((read_le_u32(
+                                                                        wmp_bytes,
+                                                                        p + 12,
+                                                                    )
+                                                                        as u128)
+                                                                        << 96);
                                                             this_bit_rack == b1_bit_rack
                                                         };
                                                         if key_check {
                                                             p -= 8;
-                                                            let b1_bits = wmp_bytes[p] as u32
-                                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                                | ((wmp_bytes[p + 3] as u32) << 24);
+                                                            let b1_bits = read_le_u32(wmp_bytes, p);
                                                             {
                                                                 for i in first_i..32 {
                                                                     if b1_bits & (1 << i) != 0 {
@@ -2627,29 +2313,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                         + 16;
                                                                                 let key_check =
                                                                                     if wmp_ver < 3 {
-                                                                                        let quotient = (wmp_bytes[p]
-                                                                            as u32
-                                                                            | ((wmp_bytes[p + 1]
-                                                                                as u32)
-                                                                                << 8)
-                                                                            | ((wmp_bytes[p + 2]
-                                                                                as u32)
-                                                                                << 16)
-                                                                            | ((wmp_bytes[p + 3]
-                                                                                as u32)
-                                                                                << 24))
+                                                                                        let quotient = read_le_u32(wmp_bytes, p)
                                                                             as u128
-                                                                            | (((wmp_bytes[p + 4]
-                                                                                as u32
-                                                                                | ((wmp_bytes[p + 5]
-                                                                                    as u32)
-                                                                                    << 8)
-                                                                                | ((wmp_bytes[p + 6]
-                                                                                    as u32)
-                                                                                    << 16)
-                                                                                | ((wmp_bytes[p + 7]
-                                                                                    as u32)
-                                                                                    << 24))
+                                                                            | ((read_le_u32(wmp_bytes, p + 4)
                                                                                 as u128)
                                                                                 << 32)
                                                                             | (((wmp_bytes[p + 8]
@@ -2671,16 +2337,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                                 == sought_quotient
                                                                                     } else {
                                                                                         let this_bit_rack =
-                                                                            (wmp_bytes[p] as u32
-                                                                                | ((wmp_bytes[p + 1]
-                                                                                    as u32)
-                                                                                    << 8)
-                                                                                | ((wmp_bytes[p + 2]
-                                                                                    as u32)
-                                                                                    << 16)
-                                                                                | ((wmp_bytes[p + 3]
-                                                                                    as u32)
-                                                                                    << 24))
+                                                                            read_le_u32(wmp_bytes, p)
                                                                                 as u128
                                                                                 | (((wmp_bytes
                                                                                     [p + 4]
@@ -2744,16 +2401,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                                             == 0
                                                                                         {
                                                                                             p += 12;
-                                                                                            wmp_bytes[p] as u32
-                                                                                | ((wmp_bytes[p + 1]
-                                                                                    as u32)
-                                                                                    << 8)
-                                                                                | ((wmp_bytes[p + 2]
-                                                                                    as u32)
-                                                                                    << 16)
-                                                                                | ((wmp_bytes[p + 3]
-                                                                                    as u32)
-                                                                                    << 24)
+                                                                                            read_le_u32(wmp_bytes, p)
                                                                                         } else {
                                                                                             (wmp_bytes[p..p + 16]
                                                                                 .iter()
@@ -3672,11 +3320,7 @@ input/output files can be \"-\" (not advisable for binary files)"
                 return Err("out of bounds".into());
             }
             let mut r = 0;
-            let kwg_bytes_len = ((klv_bytes[r] as u32
-                | ((klv_bytes[r + 1] as u32) << 8)
-                | ((klv_bytes[r + 2] as u32) << 16)
-                | ((klv_bytes[r + 3] as u32) << 24)) as usize)
-                * 4;
+            let kwg_bytes_len = (read_le_u32(klv_bytes, r) as usize) * 4;
             r += 4;
             if klv_bytes.len() < r + kwg_bytes_len + 4 {
                 return Err("out of bounds".into());
@@ -3725,21 +3369,14 @@ input/output files can be \"-\" (not advisable for binary files)"
                 return Err("out of bounds".into());
             }
             let mut r = 0;
-            let kwg_bytes_len = ((klv_bytes[r] as u32
-                | ((klv_bytes[r + 1] as u32) << 8)
-                | ((klv_bytes[r + 2] as u32) << 16)
-                | ((klv_bytes[r + 3] as u32) << 24)) as usize)
-                * 4;
+            let kwg_bytes_len = (read_le_u32(klv_bytes, r) as usize) * 4;
             r += 4;
             if klv_bytes.len() < r + kwg_bytes_len + 4 {
                 return Err("out of bounds".into());
             }
             let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
             r += kwg_bytes_len;
-            let lv_len = (klv_bytes[r] as u32
-                | ((klv_bytes[r + 1] as u32) << 8)
-                | ((klv_bytes[r + 2] as u32) << 16)
-                | ((klv_bytes[r + 3] as u32) << 24)) as usize;
+            let lv_len = read_le_u32(klv_bytes, r) as usize;
             r += 4;
             let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
             if 0 == reader.len(kwg_bytes) {
@@ -3755,16 +3392,10 @@ input/output files can be \"-\" (not advisable for binary files)"
                 &mut |s: &str| {
                     let float_leave = if is_klv2 && klv_bytes.len() >= r + 4 {
                         r += 4;
-                        f32::from_bits(
-                            klv_bytes[r - 4] as u32
-                                | ((klv_bytes[r - 3] as u32) << 8)
-                                | ((klv_bytes[r - 2] as u32) << 16)
-                                | ((klv_bytes[r - 1] as u32) << 24),
-                        )
+                        f32::from_bits(read_le_u32(klv_bytes, r - 4))
                     } else if !is_klv2 && klv_bytes.len() >= r + 2 {
                         r += 2;
-                        ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8)) as i16) as f32
-                            * (1.0 / 256.0)
+                        ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
                     } else {
                         return Err("missing leaves".into());
                     };
@@ -3809,8 +3440,7 @@ input/output files can be \"-\" (not advisable for binary files)"
                 i += l + 3;
                 csv_out.serialize((
                     &s,
-                    (bytes[i - 2] as u16 | ((bytes[i - 1] as u16) << 8)) as f32 * (1.0 / 256.0)
-                        - 128.0,
+                    (read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0,
                 ))?;
             }
         } else if args[1] == "quackle" {
