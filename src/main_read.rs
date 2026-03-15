@@ -841,6 +841,54 @@ fn wmp3_hash(bit_rack: u128) -> u32 {
     k as u32
 }
 
+fn do_quackle<R: WgReader>(
+    args: &[String],
+    make_reader_fn: impl FnOnce(usize) -> R,
+) -> error::Returns<()> {
+    let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if 20 > quackle_bytes.len() {
+        return Err("out of bounds".into());
+    }
+    let alpha_size = quackle_bytes[20] as usize;
+    let mut alpha = Vec::with_capacity(alpha_size);
+    let mut p = 21;
+    for _ in 0..alpha_size {
+        let p0 = p;
+        loop {
+            if p > quackle_bytes.len() {
+                return Err("out of bounds".into());
+            }
+            if quackle_bytes[p] == b' ' {
+                alpha.push(std::str::from_utf8(&quackle_bytes[p0..p])?);
+                p += 1;
+                break;
+            }
+            p += 1;
+        }
+    }
+    let reader = make_reader_fn(p);
+    if 1 > reader.len(quackle_bytes) {
+        return Err("out of bounds".into());
+    }
+    let mut ret = String::new();
+    iter_dawg(
+        &QuackleAlphabetLabel { alpha: &alpha },
+        &reader,
+        quackle_bytes,
+        1,
+        None,
+        &mut |s: &str| {
+            ret.push_str(s);
+            ret.push('\n');
+            Ok(())
+        },
+        &mut default_in,
+        &mut default_out,
+    )?;
+    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    Ok(())
+}
+
 fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     args: &[String],
     language_name: &str,
@@ -3112,89 +3160,9 @@ input/output files can be \"-\" (not advisable for binary files)"
                 ))?;
             }
         } else if args[1] == "quackle" {
-            let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 20 > quackle_bytes.len() {
-                return Err("out of bounds".into());
-            }
-            let alpha_size = quackle_bytes[20] as usize;
-            let mut alpha = Vec::with_capacity(alpha_size);
-            let mut p = 21;
-            for _ in 0..alpha_size {
-                let p0 = p;
-                loop {
-                    if p > quackle_bytes.len() {
-                        return Err("out of bounds".into());
-                    }
-                    if quackle_bytes[p] == b' ' {
-                        alpha.push(std::str::from_utf8(&quackle_bytes[p0..p])?);
-                        p += 1;
-                        break;
-                    }
-                    p += 1;
-                }
-            }
-            let reader = &QuackleReader { offset: p };
-            if 1 > reader.len(quackle_bytes) {
-                return Err("out of bounds".into());
-            }
-            let mut ret = String::new();
-            iter_dawg(
-                &QuackleAlphabetLabel { alpha: &alpha },
-                reader,
-                quackle_bytes,
-                1,
-                None,
-                &mut |s: &str| {
-                    ret.push_str(s);
-                    ret.push('\n');
-                    Ok(())
-                },
-                &mut default_in,
-                &mut default_out,
-            )?;
-            make_writer(&args[3])?.write_all(ret.as_bytes())?;
+            do_quackle(&args, |p| QuackleReader { offset: p })?;
         } else if args[1] == "quackle-small" {
-            let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 20 > quackle_bytes.len() {
-                return Err("out of bounds".into());
-            }
-            let alpha_size = quackle_bytes[20] as usize;
-            let mut alpha = Vec::with_capacity(alpha_size);
-            let mut p = 21;
-            for _ in 0..alpha_size {
-                let p0 = p;
-                loop {
-                    if p > quackle_bytes.len() {
-                        return Err("out of bounds".into());
-                    }
-                    if quackle_bytes[p] == b' ' {
-                        alpha.push(std::str::from_utf8(&quackle_bytes[p0..p])?);
-                        p += 1;
-                        break;
-                    }
-                    p += 1;
-                }
-            }
-            let reader = &QuackleSmallReader { offset: p };
-            if 1 > reader.len(quackle_bytes) {
-                return Err("out of bounds".into());
-            }
-            let mut ret = String::new();
-            iter_dawg(
-                &QuackleAlphabetLabel { alpha: &alpha },
-                reader,
-                quackle_bytes,
-                1,
-                None,
-                &mut |s: &str| {
-                    ret.push_str(s);
-                    ret.push('\n');
-                    Ok(())
-                },
-                &mut default_in,
-                &mut default_out,
-            )?;
-            make_writer(&args[3])?.write_all(ret.as_bytes())?;
+            do_quackle(&args, |p| QuackleSmallReader { offset: p })?;
         } else if args[1] == "zyzzyva" {
             let reader = &ZyzzyvaReader {};
             let zyzzyva_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
