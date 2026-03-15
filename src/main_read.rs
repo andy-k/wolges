@@ -737,6 +737,95 @@ fn dump_dawg<R: WgReader, A: AlphabetLabel>(
     Ok(())
 }
 
+fn do_klv_anagram<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+    klv_bytes: &[u8],
+    mode: AnagramMode,
+) -> error::Returns<()> {
+    let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
+    let parts = parse_klv(klv_bytes)?;
+    let kwg_bytes = parts.kwg_bytes;
+    let mut r = parts.r;
+    let is_klv2 = parts.is_klv2;
+    if 0 == reader.len(kwg_bytes) {
+        return Err("out of bounds".into());
+    }
+    let mut rack = vec![0; alphabet.len().into()];
+    let mut given_num_tiles = 0usize;
+    let sb = &args[4].as_bytes();
+    let mut ix = 0;
+    while ix < sb.len() {
+        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+            rack[tile as usize] += 1;
+            given_num_tiles += 1;
+            ix = end_ix;
+        } else {
+            return Err("invalid tile".into());
+        }
+    }
+    let rack_cell = std::cell::RefCell::new(rack);
+    let num_tiles = std::sync::atomic::AtomicUsize::new(0);
+    let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
+    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+    iter_dawg(
+        &WolgesAlphabetLabel { alphabet },
+        reader,
+        kwg_bytes,
+        reader.arc_index(kwg_bytes, 0),
+        alphabet.of_rack(0),
+        &mut |s: &str| {
+            let leave_value = read_leave_value(klv_bytes, &mut r, is_klv2)?;
+            let dominated = match mode {
+                AnagramMode::Sub => num_unspecified.load(std::sync::atomic::Ordering::Relaxed) != 0,
+                AnagramMode::Exact => {
+                    num_tiles.load(std::sync::atomic::Ordering::Relaxed) != given_num_tiles
+                        || num_unspecified.load(std::sync::atomic::Ordering::Relaxed) != 0
+                }
+                AnagramMode::Super => {
+                    num_tiles.load(std::sync::atomic::Ordering::Relaxed) != given_num_tiles
+                }
+            };
+            if !dominated {
+                csv_out.serialize((s, leave_value))?;
+            }
+            Ok(())
+        },
+        &mut |b: u8| {
+            let mut rack = rack_cell.borrow_mut();
+            if rack[b as usize] > 0 {
+                rack[b as usize] -= 1;
+                if !matches!(mode, AnagramMode::Sub) {
+                    num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(Some(b))
+            } else {
+                if !matches!(mode, AnagramMode::Super) {
+                    num_unspecified.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(Some(0xff))
+            }
+        },
+        &mut |b: u8| {
+            if b != 0xff {
+                let mut rack = rack_cell.borrow_mut();
+                rack[b as usize] += 1;
+                if !matches!(mode, AnagramMode::Sub) {
+                    num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            } else if !matches!(mode, AnagramMode::Super) {
+                num_unspecified.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(())
+        },
+    )?;
+    if r != klv_bytes.len() {
+        return Err("too many leaves".into());
+    }
+    Ok(())
+}
+
 fn do_wg_dawg<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
@@ -1078,208 +1167,32 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-klv-anagram-" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                let parts = parse_klv(klv_bytes)?;
-                let kwg_bytes = parts.kwg_bytes;
-                let mut r = parts.r;
-                let is_klv2 = parts.is_klv2;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut rack = vec![0; alphabet.len().into()];
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        let leave_value = read_leave_value(klv_bytes, &mut r, is_klv2)?;
-                        if num_unspecified.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                            csv_out.serialize((s, leave_value))?;
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            Ok(Some(b))
-                        } else {
-                            num_unspecified.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(0xff))
-                        }
-                    },
-                    &mut |b: u8| {
-                        if b != 0xff {
-                            let mut rack = rack_cell.borrow_mut();
-                            rack[b as usize] += 1;
-                        } else {
-                            num_unspecified.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Ok(())
-                    },
-                )?;
-                if r != klv_bytes.len() {
-                    return Err("too many leaves".into());
-                }
+                do_klv_anagram(args, &alphabet, &KwgReader {}, klv_bytes, AnagramMode::Sub)?;
                 Ok(true)
             }
             "-klv-anagram" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                let parts = parse_klv(klv_bytes)?;
-                let kwg_bytes = parts.kwg_bytes;
-                let mut r = parts.r;
-                let is_klv2 = parts.is_klv2;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut rack = vec![0; alphabet.len().into()];
-                let mut given_num_tiles = 0usize;
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        given_num_tiles += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
-                let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        let leave_value = read_leave_value(klv_bytes, &mut r, is_klv2)?;
-                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles
-                            && num_unspecified.load(std::sync::atomic::Ordering::Relaxed) == 0
-                        {
-                            csv_out.serialize((s, leave_value))?;
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(b))
-                        } else {
-                            num_unspecified.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(0xff))
-                        }
-                    },
-                    &mut |b: u8| {
-                        if b != 0xff {
-                            let mut rack = rack_cell.borrow_mut();
-                            rack[b as usize] += 1;
-                            num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        } else {
-                            num_unspecified.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Ok(())
-                    },
+                do_klv_anagram(
+                    args,
+                    &alphabet,
+                    &KwgReader {},
+                    klv_bytes,
+                    AnagramMode::Exact,
                 )?;
-                if r != klv_bytes.len() {
-                    return Err("too many leaves".into());
-                }
                 Ok(true)
             }
             "-klv-anagram+" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                let parts = parse_klv(klv_bytes)?;
-                let kwg_bytes = parts.kwg_bytes;
-                let mut r = parts.r;
-                let is_klv2 = parts.is_klv2;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut rack = vec![0; alphabet.len().into()];
-                let mut given_num_tiles = 0usize;
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        given_num_tiles += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        let leave_value = read_leave_value(klv_bytes, &mut r, is_klv2)?;
-                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
-                            csv_out.serialize((s, leave_value))?;
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(b))
-                        } else {
-                            Ok(Some(0xff))
-                        }
-                    },
-                    &mut |b: u8| {
-                        if b != 0xff {
-                            let mut rack = rack_cell.borrow_mut();
-                            rack[b as usize] += 1;
-                            num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Ok(())
-                    },
+                do_klv_anagram(
+                    args,
+                    &alphabet,
+                    &KwgReader {},
+                    klv_bytes,
+                    AnagramMode::Super,
                 )?;
-                if r != klv_bytes.len() {
-                    return Err("too many leaves".into());
-                }
                 Ok(true)
             }
             "-kwg-anagram-" => {
