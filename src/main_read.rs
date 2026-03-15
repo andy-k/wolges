@@ -515,6 +515,7 @@ struct KlvParts<'a> {
     is_klv2: bool,
 }
 
+#[inline(always)]
 fn parse_klv(klv_bytes: &[u8]) -> error::Returns<KlvParts<'_>> {
     if klv_bytes.len() < 4 {
         return Err("out of bounds".into());
@@ -537,6 +538,7 @@ fn parse_klv(klv_bytes: &[u8]) -> error::Returns<KlvParts<'_>> {
     })
 }
 
+#[inline(always)]
 fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Returns<f32> {
     if is_klv2 && klv_bytes.len() >= *r + 4 {
         let v = f32::from_bits(read_le_u32(klv_bytes, *r));
