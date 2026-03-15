@@ -492,6 +492,22 @@ fn read_le_u128_full(bytes: &[u8], p: usize) -> u128 {
     read_le_u96(bytes, p) | ((read_le_u32(bytes, p + 12) as u128) << 96)
 }
 
+#[inline(always)]
+fn wmp_read_bit_rack(
+    bytes: &[u8],
+    p: usize,
+    wmp_ver: u8,
+    num_buckets: u32,
+    bucket_idx: u32,
+) -> u128 {
+    if wmp_ver < 3 {
+        let quotient = read_le_u96(bytes, p);
+        quotient * num_buckets as u128 + bucket_idx as u128
+    } else {
+        read_le_u128_full(bytes, p)
+    }
+}
+
 struct KlvParts<'a> {
     kwg_bytes: &'a [u8],
     r: usize,
@@ -1642,13 +1658,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     p = wmp_bylen_word_entries_ofs
                                         + entry_idx as usize * wmp_entry_size
                                         + 16;
-                                    let bit_rack = if wmp_ver < 3 {
-                                        let quotient = read_le_u96(wmp_bytes, p);
-                                        quotient * wmp_bylen_num_word_buckets as u128
-                                            + bucket_idx as u128
-                                    } else {
-                                        read_le_u128_full(wmp_bytes, p)
-                                    };
+                                    let bit_rack = wmp_read_bit_rack(
+                                        wmp_bytes,
+                                        p,
+                                        wmp_ver,
+                                        wmp_bylen_num_word_buckets,
+                                        bucket_idx,
+                                    );
                                     if wmp_ver >= 3
                                         && bucket_idx
                                             != wmp3_hash(bit_rack) % wmp_bylen_num_word_buckets
@@ -1710,13 +1726,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         + 8;
                                     let bits = read_le_u32(wmp_bytes, p);
                                     p += 8;
-                                    let bit_rack = if wmp_ver < 3 {
-                                        let quotient = read_le_u96(wmp_bytes, p);
-                                        quotient * wmp_bylen_num_blank_buckets as u128
-                                            + bucket_idx as u128
-                                    } else {
-                                        read_le_u128_full(wmp_bytes, p)
-                                    };
+                                    let bit_rack = wmp_read_bit_rack(
+                                        wmp_bytes,
+                                        p,
+                                        wmp_ver,
+                                        wmp_bylen_num_blank_buckets,
+                                        bucket_idx,
+                                    );
                                     if wmp_ver >= 3
                                         && bucket_idx
                                             != wmp3_hash(bit_rack) % wmp_bylen_num_blank_buckets
@@ -1874,13 +1890,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                             + 8;
                                         let bits = read_le_u32(wmp_bytes, p);
                                         p += 8;
-                                        let bit_rack = if wmp_ver < 3 {
-                                            let quotient = read_le_u96(wmp_bytes, p);
-                                            quotient * wmp_bylen_num_double_blank_buckets as u128
-                                                + bucket_idx as u128
-                                        } else {
-                                            read_le_u128_full(wmp_bytes, p)
-                                        };
+                                        let bit_rack = wmp_read_bit_rack(
+                                            wmp_bytes,
+                                            p,
+                                            wmp_ver,
+                                            wmp_bylen_num_double_blank_buckets,
+                                            bucket_idx,
+                                        );
                                         if wmp_ver >= 3
                                             && bucket_idx
                                                 != wmp3_hash(bit_rack)
