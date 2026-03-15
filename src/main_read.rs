@@ -106,37 +106,6 @@ impl WgReader for LexpertReader {
     }
 }
 
-struct ZyzzyvaReader {}
-
-impl WgReader for ZyzzyvaReader {
-    #[inline(always)]
-    fn tile(&self, bytes: &[u8], idx: usize) -> u8 {
-        bytes[(idx * 4) + 3]
-    }
-
-    #[inline(always)]
-    fn accepts(&self, bytes: &[u8], idx: usize) -> bool {
-        bytes[(idx * 4) + 2] & 0x80 != 0
-    }
-
-    #[inline(always)]
-    fn is_end(&self, bytes: &[u8], idx: usize) -> bool {
-        bytes[(idx * 4) + 2] & 0x40 != 0
-    }
-
-    #[inline(always)]
-    fn arc_index(&self, bytes: &[u8], idx: usize) -> usize {
-        (((bytes[(idx * 4) + 2] & 0x3f) as usize) << 16)
-            | ((bytes[(idx * 4) + 1] as usize) << 8)
-            | (bytes[idx * 4] as usize)
-    }
-
-    #[inline(always)]
-    fn len(&self, bytes: &[u8]) -> usize {
-        bytes.len() / 4
-    }
-}
-
 struct QuackleReader {
     offset: usize,
 }
@@ -467,6 +436,493 @@ fn default_out(_b: u8) -> error::Returns<()> {
     Ok(())
 }
 
+#[inline(always)]
+fn read_le_u16(bytes: &[u8], p: usize) -> u16 {
+    bytes[p] as u16 | ((bytes[p + 1] as u16) << 8)
+}
+
+#[inline(always)]
+fn read_le_u32(bytes: &[u8], p: usize) -> u32 {
+    bytes[p] as u32
+        | ((bytes[p + 1] as u32) << 8)
+        | ((bytes[p + 2] as u32) << 16)
+        | ((bytes[p + 3] as u32) << 24)
+}
+
+#[inline(always)]
+fn read_le_u96(bytes: &[u8], p: usize) -> u128 {
+    read_le_u32(bytes, p) as u128
+        | ((read_le_u32(bytes, p + 4) as u128) << 32)
+        | ((read_le_u32(bytes, p + 8) as u128) << 64)
+}
+
+#[inline(always)]
+fn read_le_u128_full(bytes: &[u8], p: usize) -> u128 {
+    read_le_u96(bytes, p) | ((read_le_u32(bytes, p + 12) as u128) << 96)
+}
+
+#[inline(always)]
+fn wmp_read_bit_rack(
+    bytes: &[u8],
+    p: usize,
+    wmp_ver: u8,
+    num_buckets: u32,
+    bucket_idx: u32,
+) -> u128 {
+    if wmp_ver < 3 {
+        let quotient = read_le_u96(bytes, p);
+        quotient * num_buckets as u128 + bucket_idx as u128
+    } else {
+        read_le_u128_full(bytes, p)
+    }
+}
+
+struct KlvParts<'a> {
+    kwg_bytes: &'a [u8],
+    r: usize,
+    lv_len: usize,
+    is_klv2: bool,
+}
+
+#[inline(always)]
+fn parse_klv(klv_bytes: &[u8]) -> error::Returns<KlvParts<'_>> {
+    if klv_bytes.len() < 4 {
+        return Err("out of bounds".into());
+    }
+    let kwg_bytes_len = (read_le_u32(klv_bytes, 0) as usize) * 4;
+    let r = 4;
+    if klv_bytes.len() < r + kwg_bytes_len + 4 {
+        return Err("out of bounds".into());
+    }
+    let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+    let r = r + kwg_bytes_len;
+    let lv_len = read_le_u32(klv_bytes, r) as usize;
+    let r = r + 4;
+    let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+    Ok(KlvParts {
+        kwg_bytes,
+        r,
+        lv_len,
+        is_klv2,
+    })
+}
+
+#[inline(always)]
+fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Returns<f32> {
+    if is_klv2 && klv_bytes.len() >= *r + 4 {
+        let v = f32::from_bits(read_le_u32(klv_bytes, *r));
+        *r += 4;
+        Ok(v)
+    } else if !is_klv2 && klv_bytes.len() >= *r + 2 {
+        let v = (read_le_u16(klv_bytes, *r) as i16) as f32 * (1.0 / 256.0);
+        *r += 2;
+        Ok(v)
+    } else {
+        Err("missing leaves".into())
+    }
+}
+
+fn do_wg_check<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+) -> error::Returns<()> {
+    if args.len() < 4 {
+        return Err("need more argument".into());
+    }
+    let alphabet_reader = &alphabet::AlphabetReader::new_for_words(alphabet);
+    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if 0 == reader.len(kwg_bytes) {
+        return Err("out of bounds".into());
+    }
+    let mut not_found = false;
+    for word in &args[3..] {
+        let sb = &word.as_bytes();
+        let mut p = 0;
+        let mut ix = 0;
+        while ix < sb.len() {
+            if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                if !not_found {
+                    p = reader.arc_index(kwg_bytes, p);
+                    if p > 0 {
+                        loop {
+                            if reader.tile(kwg_bytes, p) == tile {
+                                break;
+                            }
+                            if reader.is_end(kwg_bytes, p) {
+                                not_found = true;
+                                break;
+                            }
+                            p += 1;
+                        }
+                    } else {
+                        not_found = true;
+                    }
+                }
+                ix = end_ix;
+            } else {
+                return Err("invalid tile".into());
+            }
+        }
+        if !not_found && (ix == 0 || (p != 0 && !reader.accepts(kwg_bytes, p))) {
+            not_found = true;
+        }
+    }
+    println!(
+        "{}",
+        if not_found {
+            "Play is NOT acceptable"
+        } else {
+            "Play is Acceptable"
+        }
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum AnagramMode {
+    Sub,
+    Exact,
+    Super,
+}
+
+fn do_wg_anagram<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+    mode: AnagramMode,
+) -> error::Returns<()> {
+    let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
+    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if 0 == reader.len(kwg_bytes) {
+        return Err("out of bounds".into());
+    }
+    let mut rack = vec![0; alphabet.len().into()];
+    let mut given_num_tiles = 0usize;
+    let sb = &args[4].as_bytes();
+    let mut ix = 0;
+    while ix < sb.len() {
+        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+            rack[tile as usize] += 1;
+            given_num_tiles += 1;
+            ix = end_ix;
+        } else {
+            return Err("invalid tile".into());
+        }
+    }
+    let rack_cell = std::cell::RefCell::new(rack);
+    let num_tiles = std::sync::atomic::AtomicUsize::new(0);
+    let mut ret = String::new();
+    iter_dawg(
+        &WolgesAlphabetLabel { alphabet },
+        reader,
+        kwg_bytes,
+        reader.arc_index(kwg_bytes, 0),
+        None,
+        &mut |s: &str| {
+            let dominated = match mode {
+                AnagramMode::Sub => false,
+                AnagramMode::Exact | AnagramMode::Super => {
+                    num_tiles.load(std::sync::atomic::Ordering::Relaxed) != given_num_tiles
+                }
+            };
+            if !dominated {
+                ret.push_str(s);
+                ret.push('\n');
+            }
+            Ok(())
+        },
+        &mut |b: u8| {
+            let mut rack = rack_cell.borrow_mut();
+            if rack[b as usize] > 0 {
+                rack[b as usize] -= 1;
+                if !matches!(mode, AnagramMode::Sub) {
+                    num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(Some(b))
+            } else if rack[0] > 0 {
+                rack[0] -= 1;
+                if !matches!(mode, AnagramMode::Sub) {
+                    num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(Some(0))
+            } else {
+                match mode {
+                    AnagramMode::Sub | AnagramMode::Exact => Ok(None),
+                    AnagramMode::Super => Ok(Some(0xff)),
+                }
+            }
+        },
+        &mut |b: u8| {
+            match mode {
+                AnagramMode::Sub => {
+                    rack_cell.borrow_mut()[b as usize] += 1;
+                }
+                AnagramMode::Exact => {
+                    rack_cell.borrow_mut()[b as usize] += 1;
+                    num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                AnagramMode::Super => {
+                    if b != 0xff {
+                        rack_cell.borrow_mut()[b as usize] += 1;
+                        num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+            Ok(())
+        },
+    )?;
+    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    Ok(())
+}
+
+fn dump_dawg<R: WgReader, A: AlphabetLabel>(
+    args: &[String],
+    label: &A,
+    reader: &R,
+    bytes: &[u8],
+    initial_idx: usize,
+    blank_str: Option<&str>,
+) -> error::Returns<()> {
+    if initial_idx >= reader.len(bytes) {
+        return Err("out of bounds".into());
+    }
+    let mut ret = String::new();
+    iter_dawg(
+        label,
+        reader,
+        bytes,
+        reader.arc_index(bytes, initial_idx),
+        blank_str,
+        &mut |s: &str| {
+            ret.push_str(s);
+            ret.push('\n');
+            Ok(())
+        },
+        &mut default_in,
+        &mut default_out,
+    )?;
+    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    Ok(())
+}
+
+fn do_klv_anagram<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+    klv_bytes: &[u8],
+    mode: AnagramMode,
+) -> error::Returns<()> {
+    let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
+    let parts = parse_klv(klv_bytes)?;
+    let kwg_bytes = parts.kwg_bytes;
+    let mut r = parts.r;
+    let is_klv2 = parts.is_klv2;
+    if 0 == reader.len(kwg_bytes) {
+        return Err("out of bounds".into());
+    }
+    let mut rack = vec![0; alphabet.len().into()];
+    let mut given_num_tiles = 0usize;
+    let sb = &args[4].as_bytes();
+    let mut ix = 0;
+    while ix < sb.len() {
+        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+            rack[tile as usize] += 1;
+            given_num_tiles += 1;
+            ix = end_ix;
+        } else {
+            return Err("invalid tile".into());
+        }
+    }
+    let rack_cell = std::cell::RefCell::new(rack);
+    let num_tiles = std::sync::atomic::AtomicUsize::new(0);
+    let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
+    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+    iter_dawg(
+        &WolgesAlphabetLabel { alphabet },
+        reader,
+        kwg_bytes,
+        reader.arc_index(kwg_bytes, 0),
+        alphabet.of_rack(0),
+        &mut |s: &str| {
+            let leave_value = read_leave_value(klv_bytes, &mut r, is_klv2)?;
+            let dominated = match mode {
+                AnagramMode::Sub => num_unspecified.load(std::sync::atomic::Ordering::Relaxed) != 0,
+                AnagramMode::Exact => {
+                    num_tiles.load(std::sync::atomic::Ordering::Relaxed) != given_num_tiles
+                        || num_unspecified.load(std::sync::atomic::Ordering::Relaxed) != 0
+                }
+                AnagramMode::Super => {
+                    num_tiles.load(std::sync::atomic::Ordering::Relaxed) != given_num_tiles
+                }
+            };
+            if !dominated {
+                csv_out.serialize((s, leave_value))?;
+            }
+            Ok(())
+        },
+        &mut |b: u8| {
+            let mut rack = rack_cell.borrow_mut();
+            if rack[b as usize] > 0 {
+                rack[b as usize] -= 1;
+                if !matches!(mode, AnagramMode::Sub) {
+                    num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(Some(b))
+            } else {
+                if !matches!(mode, AnagramMode::Super) {
+                    num_unspecified.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(Some(0xff))
+            }
+        },
+        &mut |b: u8| {
+            if b != 0xff {
+                let mut rack = rack_cell.borrow_mut();
+                rack[b as usize] += 1;
+                if !matches!(mode, AnagramMode::Sub) {
+                    num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            } else if !matches!(mode, AnagramMode::Super) {
+                num_unspecified.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(())
+        },
+    )?;
+    if r != klv_bytes.len() {
+        return Err("too many leaves".into());
+    }
+    Ok(())
+}
+
+fn do_wg_dawg<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+    initial_node_idx: usize,
+    blank_str: Option<&str>,
+) -> error::Returns<()> {
+    let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    dump_dawg(
+        args,
+        &WolgesAlphabetLabel { alphabet },
+        reader,
+        bytes,
+        initial_node_idx,
+        blank_str,
+    )
+}
+
+// output format not guaranteed to be stable.
+fn do_wg_nodes<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+) -> error::Returns<()> {
+    let alphabet_label = &WolgesAlphabetLabel { alphabet };
+    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    let kwg_len = reader.len(kwg_bytes);
+    let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
+    let mut kwg_pointed_to = vec![false; kwg_len];
+    for p in 0..kwg_len {
+        kwg_pointed_to[reader.arc_index(kwg_bytes, p)] = true;
+    }
+    let mut ret = String::new();
+    for (p, &p_pointed_to) in kwg_pointed_to.iter().enumerate().take(kwg_len) {
+        if p_pointed_to {
+            write!(ret, "{p:kwg_len_width$}")?;
+        } else {
+            write!(ret, "{:kwg_len_width$}", "")?;
+        }
+        ret.push(' ');
+        let t = reader.tile(kwg_bytes, p);
+        if t == 0 {
+            ret.push('@');
+        } else {
+            alphabet_label.label(&mut ret, t)?;
+        }
+        if reader.accepts(kwg_bytes, p) {
+            ret.push('*');
+        }
+        let arc_index = reader.arc_index(kwg_bytes, p);
+        if arc_index != 0 {
+            write!(ret, " {arc_index}")?;
+        }
+        if reader.is_end(kwg_bytes, p) {
+            ret.push_str(" ends");
+        }
+        ret.push('\n');
+    }
+    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    Ok(())
+}
+
+// output format not guaranteed to be stable.
+fn do_wg_prob<R: WgReader>(
+    args: &[String],
+    alphabet: &alphabet::Alphabet,
+    reader: &R,
+) -> error::Returns<()> {
+    let mut word_prob = prob::WordProbability::new(alphabet);
+    let word_cell = std::cell::RefCell::new(Vec::new());
+    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if 0 == reader.len(kwg_bytes) {
+        return Err("out of bounds".into());
+    }
+    let vec_out_cell = std::cell::RefCell::new(Vec::new());
+    iter_dawg(
+        &WolgesAlphabetLabel { alphabet },
+        reader,
+        kwg_bytes,
+        reader.arc_index(kwg_bytes, 0),
+        None,
+        &mut |s: &str| {
+            let word = word_cell.borrow();
+            let this_wp = word_prob.count_ways(&word);
+            let mut vec_out = vec_out_cell.borrow_mut();
+            let vec_len = vec_out.len();
+            let mut anagram_key = word.clone();
+            anagram_key.sort_unstable();
+            vec_out.push(((s.to_string(), word.len(), this_wp), (anagram_key, vec_len)));
+            Ok(())
+        },
+        &mut |b: u8| {
+            word_cell.borrow_mut().push(b);
+            Ok(Some(b))
+        },
+        &mut |_b: u8| {
+            word_cell.borrow_mut().pop();
+            Ok(())
+        },
+    )?;
+    let mut vec_out = vec_out_cell.into_inner();
+    vec_out.sort_unstable_by(|a, b| {
+        a.0.1.cmp(&b.0.1).then_with(|| {
+            b.0.2
+                .cmp(&a.0.2)
+                .then_with(|| a.1.0.cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
+        })
+    });
+    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+    let mut last_anagram_key = Vec::new();
+    let mut num_sets = 0;
+    let mut num_in_set = 0;
+    for elt in vec_out {
+        if last_anagram_key != elt.1.0 {
+            if last_anagram_key.len() != elt.1.0.len() {
+                num_sets = 1;
+            } else {
+                num_sets += 1;
+            }
+            num_in_set = 0;
+            last_anagram_key.clone_from(&elt.1.0);
+        }
+        num_in_set += 1;
+        csv_out.serialize((elt.0, num_sets, num_in_set))?;
+    }
+    Ok(())
+}
+
 // https://github.com/aappleby/smhasher/blob/0ff96f7835817a27d0487325b6c16033e2992eb5/src/MurmurHash3.cpp#L83-L87
 #[inline(always)]
 fn wmp3_hash(bit_rack: u128) -> u32 {
@@ -481,6 +937,42 @@ fn wmp3_hash(bit_rack: u128) -> u32 {
     k as u32
 }
 
+fn do_quackle<R: WgReader>(
+    args: &[String],
+    make_reader_fn: impl FnOnce(usize) -> R,
+) -> error::Returns<()> {
+    let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if 20 > quackle_bytes.len() {
+        return Err("out of bounds".into());
+    }
+    let alpha_size = quackle_bytes[20] as usize;
+    let mut alpha = Vec::with_capacity(alpha_size);
+    let mut p = 21;
+    for _ in 0..alpha_size {
+        let p0 = p;
+        loop {
+            if p > quackle_bytes.len() {
+                return Err("out of bounds".into());
+            }
+            if quackle_bytes[p] == b' ' {
+                alpha.push(std::str::from_utf8(&quackle_bytes[p0..p])?);
+                p += 1;
+                break;
+            }
+            p += 1;
+        }
+    }
+    let reader = make_reader_fn(p);
+    dump_dawg(
+        args,
+        &QuackleAlphabetLabel { alpha: &alpha },
+        &reader,
+        quackle_bytes,
+        1,
+        None,
+    )
+}
+
 fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     args: &[String],
     language_name: &str,
@@ -488,110 +980,24 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
 ) -> error::Returns<bool> {
     match args[1].strip_prefix(language_name) {
         Some(args1_suffix) => match args1_suffix {
-            "-klv" => {
-                let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
-                r += 4;
-                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
-                if r + lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
-                    return Err("incorrect number of leave values".into());
-                }
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        csv_out.serialize((
-                            s,
-                            if is_klv2 && klv_bytes.len() >= r + 4 {
-                                r += 4;
-                                f32::from_bits(
-                                    klv_bytes[r - 4] as u32
-                                        | ((klv_bytes[r - 3] as u32) << 8)
-                                        | ((klv_bytes[r - 2] as u32) << 16)
-                                        | ((klv_bytes[r - 1] as u32) << 24),
-                                )
-                            } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                                r += 2;
-                                ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8))
-                                    as i16) as f32
-                                    * (1.0 / 256.0)
-                            } else {
-                                return Err("missing leaves".into());
-                            },
-                        ))?;
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                if r != klv_bytes.len() {
-                    return Err("too many leaves".into());
-                }
-                Ok(true)
-            }
-            "-klv16" => {
+            "-klv" | "-klv16" => {
                 // klv16: same as klv1, but scales by 8.0 instead of 256.0.
                 // for use with olaugh/magpie-retro.
+                let is_klv16 = args1_suffix == "-klv16";
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+                let parts = parse_klv(klv_bytes)?;
+                let kwg_bytes = parts.kwg_bytes;
                 if 0 == reader.len(kwg_bytes) {
                     return Err("out of bounds".into());
                 }
-                r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
-                r += 4;
-                if r + lv_len * 2 != klv_bytes.len() {
+                let mut r = parts.r;
+                let is_klv2 = !is_klv16 && parts.is_klv2;
+                if r + parts.lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
                     return Err("incorrect number of leave values".into());
                 }
+                let scale = if is_klv16 { 1.0 / 8.0 } else { 1.0 / 256.0 };
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                 iter_dawg(
                     &WolgesAlphabetLabel {
@@ -602,17 +1008,17 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     reader.arc_index(kwg_bytes, 0),
                     alphabet.of_rack(0),
                     &mut |s: &str| {
-                        csv_out.serialize((
-                            s,
-                            if klv_bytes.len() >= r + 2 {
-                                r += 2;
-                                ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8))
-                                    as i16) as f32
-                                    * (1.0 / 8.0)
-                            } else {
-                                return Err("missing leaves".into());
-                            },
-                        ))?;
+                        let v = if is_klv2 {
+                            let v = f32::from_bits(read_le_u32(klv_bytes, r));
+                            r += 4;
+                            v
+                        } else if klv_bytes.len() >= r + 2 {
+                            r += 2;
+                            (read_le_u16(klv_bytes, r - 2) as i16) as f32 * scale
+                        } else {
+                            return Err("missing leaves".into());
+                        };
+                        csv_out.serialize((s, v))?;
                         Ok(())
                     },
                     &mut default_in,
@@ -623,391 +1029,52 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 Ok(true)
             }
-            "-kwg" => {
+            "-kwg" | "-kbwg" => {
                 let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
-            }
-            "-kwg0" => {
-                let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
-            }
-            "-kwg-gaddag" => {
-                let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 1 >= reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 1),
-                    Some("@"),
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
-            }
-            "-kwg-nodes" => {
-                // output format not guaranteed to be stable.
-                let alphabet = make_alphabet();
-                let alphabet_label = &WolgesAlphabetLabel {
-                    alphabet: &alphabet,
-                };
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                let kwg_len = reader.len(kwg_bytes);
-                let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
-                let mut kwg_pointed_to = vec![false; kwg_len];
-                for p in 0..kwg_len {
-                    kwg_pointed_to[reader.arc_index(kwg_bytes, p)] = true;
-                }
-                let mut ret = String::new();
-                for (p, &p_pointed_to) in kwg_pointed_to.iter().enumerate().take(kwg_len) {
-                    if p_pointed_to {
-                        write!(ret, "{p:kwg_len_width$}")?;
-                    } else {
-                        write!(ret, "{:kwg_len_width$}", "")?;
-                    }
-                    ret.push(' ');
-                    let t = reader.tile(kwg_bytes, p);
-                    if t == 0 {
-                        ret.push('@');
-                    } else {
-                        alphabet_label.label(&mut ret, t)?;
-                    }
-                    if reader.accepts(kwg_bytes, p) {
-                        ret.push('*');
-                    }
-                    let arc_index = reader.arc_index(kwg_bytes, p);
-                    if arc_index != 0 {
-                        write!(ret, " {arc_index}")?;
-                    }
-                    if reader.is_end(kwg_bytes, p) {
-                        ret.push_str(" ends");
-                    }
-                    ret.push('\n');
-                }
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
-            }
-            "-kwg-prob" => {
-                // output format not guaranteed to be stable.
-                let alphabet = make_alphabet();
-                let reader = &KwgReader {};
-                let mut word_prob = prob::WordProbability::new(&alphabet);
-                let word_cell = std::cell::RefCell::new(Vec::new());
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let vec_out_cell = std::cell::RefCell::new(Vec::new());
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        let word = word_cell.borrow();
-                        let this_wp = word_prob.count_ways(&word);
-                        let mut vec_out = vec_out_cell.borrow_mut();
-                        let vec_len = vec_out.len();
-                        let mut anagram_key = word.clone();
-                        anagram_key.sort_unstable();
-                        vec_out
-                            .push(((s.to_string(), word.len(), this_wp), (anagram_key, vec_len)));
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        word_cell.borrow_mut().push(b);
-                        Ok(Some(b))
-                    },
-                    &mut |_b: u8| {
-                        word_cell.borrow_mut().pop();
-                        Ok(())
-                    },
-                )?;
-                let mut vec_out = vec_out_cell.into_inner();
-                vec_out.sort_unstable_by(|a, b| {
-                    a.0.1.cmp(&b.0.1).then_with(|| {
-                        b.0.2
-                            .cmp(&a.0.2)
-                            .then_with(|| a.1.0.cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
-                    })
-                });
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                let mut last_anagram_key = Vec::new();
-                let mut num_sets = 0;
-                let mut num_in_set = 0;
-                for elt in vec_out {
-                    if last_anagram_key != elt.1.0 {
-                        if last_anagram_key.len() != elt.1.0.len() {
-                            num_sets = 1;
-                        } else {
-                            num_sets += 1;
-                        }
-                        num_in_set = 0;
-                        last_anagram_key.clone_from(&elt.1.0);
-                    }
-                    num_in_set += 1;
-                    csv_out.serialize((elt.0, num_sets, num_in_set))?;
+                let is_kbwg = args1_suffix == "-kbwg";
+                if is_kbwg {
+                    do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, None)?;
+                } else {
+                    do_wg_dawg(args, &alphabet, &KwgReader {}, 0, None)?;
                 }
                 Ok(true)
             }
-
-            // begin copy-paste kwg code adapted to kbwg
-            "-kbwg" => {
+            "-kwg0" | "-kbwg0" => {
                 let alphabet = make_alphabet();
-                let reader = &KbwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
-            }
-            "-kbwg0" => {
-                let alphabet = make_alphabet();
-                let reader = &KbwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
-            }
-            "-kbwg-gaddag" => {
-                let alphabet = make_alphabet();
-                let reader = &KbwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 1 >= reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 1),
-                    Some("@"),
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
-            }
-            "-kbwg-nodes" => {
-                // output format not guaranteed to be stable.
-                let alphabet = make_alphabet();
-                let alphabet_label = &WolgesAlphabetLabel {
-                    alphabet: &alphabet,
-                };
-                let reader = &KbwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                let kwg_len = reader.len(kwg_bytes);
-                let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
-                let mut kwg_pointed_to = vec![false; kwg_len];
-                for p in 0..kwg_len {
-                    kwg_pointed_to[reader.arc_index(kwg_bytes, p)] = true;
-                }
-                let mut ret = String::new();
-                for (p, &p_pointed_to) in kwg_pointed_to.iter().enumerate().take(kwg_len) {
-                    if p_pointed_to {
-                        write!(ret, "{p:kwg_len_width$}")?;
-                    } else {
-                        write!(ret, "{:kwg_len_width$}", "")?;
-                    }
-                    ret.push(' ');
-                    let t = reader.tile(kwg_bytes, p);
-                    if t == 0 {
-                        ret.push('@');
-                    } else {
-                        alphabet_label.label(&mut ret, t)?;
-                    }
-                    if reader.accepts(kwg_bytes, p) {
-                        ret.push('*');
-                    }
-                    let arc_index = reader.arc_index(kwg_bytes, p);
-                    if arc_index != 0 {
-                        write!(ret, " {arc_index}")?;
-                    }
-                    if reader.is_end(kwg_bytes, p) {
-                        ret.push_str(" ends");
-                    }
-                    ret.push('\n');
-                }
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
-            }
-            "-kbwg-prob" => {
-                // output format not guaranteed to be stable.
-                let alphabet = make_alphabet();
-                let reader = &KbwgReader {};
-                let mut word_prob = prob::WordProbability::new(&alphabet);
-                let word_cell = std::cell::RefCell::new(Vec::new());
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let vec_out_cell = std::cell::RefCell::new(Vec::new());
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        let word = word_cell.borrow();
-                        let this_wp = word_prob.count_ways(&word);
-                        let mut vec_out = vec_out_cell.borrow_mut();
-                        let vec_len = vec_out.len();
-                        let mut anagram_key = word.clone();
-                        anagram_key.sort_unstable();
-                        vec_out
-                            .push(((s.to_string(), word.len(), this_wp), (anagram_key, vec_len)));
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        word_cell.borrow_mut().push(b);
-                        Ok(Some(b))
-                    },
-                    &mut |_b: u8| {
-                        word_cell.borrow_mut().pop();
-                        Ok(())
-                    },
-                )?;
-                let mut vec_out = vec_out_cell.into_inner();
-                vec_out.sort_unstable_by(|a, b| {
-                    a.0.1.cmp(&b.0.1).then_with(|| {
-                        b.0.2
-                            .cmp(&a.0.2)
-                            .then_with(|| a.1.0.cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
-                    })
-                });
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                let mut last_anagram_key = Vec::new();
-                let mut num_sets = 0;
-                let mut num_in_set = 0;
-                for elt in vec_out {
-                    if last_anagram_key != elt.1.0 {
-                        if last_anagram_key.len() != elt.1.0.len() {
-                            num_sets = 1;
-                        } else {
-                            num_sets += 1;
-                        }
-                        num_in_set = 0;
-                        last_anagram_key.clone_from(&elt.1.0);
-                    }
-                    num_in_set += 1;
-                    csv_out.serialize((elt.0, num_sets, num_in_set))?;
+                if args1_suffix == "-kbwg0" {
+                    do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, alphabet.of_rack(0))?;
+                } else {
+                    do_wg_dawg(args, &alphabet, &KwgReader {}, 0, alphabet.of_rack(0))?;
                 }
                 Ok(true)
             }
-
-            // end copy-paste kwg code adapted to kbwg
-            //
+            "-kwg-gaddag" | "-kbwg-gaddag" => {
+                let alphabet = make_alphabet();
+                if args1_suffix == "-kbwg-gaddag" {
+                    do_wg_dawg(args, &alphabet, &KbwgReader {}, 1, Some("@"))?;
+                } else {
+                    do_wg_dawg(args, &alphabet, &KwgReader {}, 1, Some("@"))?;
+                }
+                Ok(true)
+            }
+            "-kwg-nodes" | "-kbwg-nodes" => {
+                let alphabet = make_alphabet();
+                if args1_suffix == "-kbwg-nodes" {
+                    do_wg_nodes(args, &alphabet, &KbwgReader {})?;
+                } else {
+                    do_wg_nodes(args, &alphabet, &KwgReader {})?;
+                }
+                Ok(true)
+            }
+            "-kwg-prob" | "-kbwg-prob" => {
+                let alphabet = make_alphabet();
+                if args1_suffix == "-kbwg-prob" {
+                    do_wg_prob(args, &alphabet, &KbwgReader {})?;
+                } else {
+                    do_wg_prob(args, &alphabet, &KwgReader {})?;
+                }
+                Ok(true)
+            }
             "-prob" => {
                 if args.len() < 3 {
                     return Err("need more argument".into());
@@ -1034,544 +1101,68 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             "-klv-anagram-" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
-                r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
-                r += 4;
-                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut rack = vec![0; alphabet.len().into()];
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
-                            r += 4;
-                            f32::from_bits(
-                                klv_bytes[r - 4] as u32
-                                    | ((klv_bytes[r - 3] as u32) << 8)
-                                    | ((klv_bytes[r - 2] as u32) << 16)
-                                    | ((klv_bytes[r - 1] as u32) << 24),
-                            )
-                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                            r += 2;
-                            ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8)) as i16)
-                                as f32
-                                * (1.0 / 256.0)
-                        } else {
-                            return Err("missing leaves".into());
-                        };
-                        if num_unspecified.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                            csv_out.serialize((s, leave_value))?;
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            Ok(Some(b))
-                        } else {
-                            num_unspecified.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(0xff))
-                        }
-                    },
-                    &mut |b: u8| {
-                        if b != 0xff {
-                            let mut rack = rack_cell.borrow_mut();
-                            rack[b as usize] += 1;
-                        } else {
-                            num_unspecified.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Ok(())
-                    },
-                )?;
-                if r != klv_bytes.len() {
-                    return Err("too many leaves".into());
-                }
+                do_klv_anagram(args, &alphabet, &KwgReader {}, klv_bytes, AnagramMode::Sub)?;
                 Ok(true)
             }
             "-klv-anagram" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
-                r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
-                r += 4;
-                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut rack = vec![0; alphabet.len().into()];
-                let mut given_num_tiles = 0usize;
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        given_num_tiles += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
-                let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
-                            r += 4;
-                            f32::from_bits(
-                                klv_bytes[r - 4] as u32
-                                    | ((klv_bytes[r - 3] as u32) << 8)
-                                    | ((klv_bytes[r - 2] as u32) << 16)
-                                    | ((klv_bytes[r - 1] as u32) << 24),
-                            )
-                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                            r += 2;
-                            ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8)) as i16)
-                                as f32
-                                * (1.0 / 256.0)
-                        } else {
-                            return Err("missing leaves".into());
-                        };
-                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles
-                            && num_unspecified.load(std::sync::atomic::Ordering::Relaxed) == 0
-                        {
-                            csv_out.serialize((s, leave_value))?;
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(b))
-                        } else {
-                            num_unspecified.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(0xff))
-                        }
-                    },
-                    &mut |b: u8| {
-                        if b != 0xff {
-                            let mut rack = rack_cell.borrow_mut();
-                            rack[b as usize] += 1;
-                            num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        } else {
-                            num_unspecified.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Ok(())
-                    },
+                do_klv_anagram(
+                    args,
+                    &alphabet,
+                    &KwgReader {},
+                    klv_bytes,
+                    AnagramMode::Exact,
                 )?;
-                if r != klv_bytes.len() {
-                    return Err("too many leaves".into());
-                }
                 Ok(true)
             }
             "-klv-anagram+" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = ((klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24))
-                    as usize)
-                    * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
-                r += kwg_bytes_len;
-                let lv_len = (klv_bytes[r] as u32
-                    | ((klv_bytes[r + 1] as u32) << 8)
-                    | ((klv_bytes[r + 2] as u32) << 16)
-                    | ((klv_bytes[r + 3] as u32) << 24)) as usize;
-                r += 4;
-                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut rack = vec![0; alphabet.len().into()];
-                let mut given_num_tiles = 0usize;
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        given_num_tiles += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
-                    &mut |s: &str| {
-                        let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
-                            r += 4;
-                            f32::from_bits(
-                                klv_bytes[r - 4] as u32
-                                    | ((klv_bytes[r - 3] as u32) << 8)
-                                    | ((klv_bytes[r - 2] as u32) << 16)
-                                    | ((klv_bytes[r - 1] as u32) << 24),
-                            )
-                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                            r += 2;
-                            ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8)) as i16)
-                                as f32
-                                * (1.0 / 256.0)
-                        } else {
-                            return Err("missing leaves".into());
-                        };
-                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
-                            csv_out.serialize((s, leave_value))?;
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(b))
-                        } else {
-                            Ok(Some(0xff))
-                        }
-                    },
-                    &mut |b: u8| {
-                        if b != 0xff {
-                            let mut rack = rack_cell.borrow_mut();
-                            rack[b as usize] += 1;
-                            num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Ok(())
-                    },
+                do_klv_anagram(
+                    args,
+                    &alphabet,
+                    &KwgReader {},
+                    klv_bytes,
+                    AnagramMode::Super,
                 )?;
-                if r != klv_bytes.len() {
-                    return Err("too many leaves".into());
+                Ok(true)
+            }
+            "-kwg-anagram-" | "-kbwg-anagram-" => {
+                let alphabet = make_alphabet();
+                if args1_suffix.starts_with("-kbwg") {
+                    do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Sub)?;
+                } else {
+                    do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Sub)?;
                 }
                 Ok(true)
             }
-            "-kwg-anagram-" => {
+            "-kwg-anagram" | "-kbwg-anagram" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
+                if args1_suffix.starts_with("-kbwg") {
+                    do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Exact)?;
+                } else {
+                    do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Exact)?;
                 }
-                let mut rack = vec![0; alphabet.len().into()];
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        ret.push_str(s);
-                        ret.push('\n');
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            Ok(Some(b))
-                        } else if rack[0] > 0 {
-                            rack[0] -= 1;
-                            Ok(Some(0))
-                        } else {
-                            Ok(None)
-                        }
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        rack[b as usize] += 1;
-                        Ok(())
-                    },
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
-            "-kwg-anagram" => {
+            "-kwg-anagram+" | "-kbwg-anagram+" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
+                if args1_suffix.starts_with("-kbwg") {
+                    do_wg_anagram(args, &alphabet, &KbwgReader {}, AnagramMode::Super)?;
+                } else {
+                    do_wg_anagram(args, &alphabet, &KwgReader {}, AnagramMode::Super)?;
                 }
-                let mut rack = vec![0; alphabet.len().into()];
-                let mut given_num_tiles = 0usize;
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        given_num_tiles += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
-                            ret.push_str(s);
-                            ret.push('\n');
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(b))
-                        } else if rack[0] > 0 {
-                            rack[0] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(0))
-                        } else {
-                            Ok(None)
-                        }
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        rack[b as usize] += 1;
-                        num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        Ok(())
-                    },
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
-            "-kwg-anagram+" => {
+            "-kwg-check" | "-kbwg-check" => {
                 let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
+                if args1_suffix == "-kbwg-check" {
+                    do_wg_check(args, &alphabet, &KbwgReader {})?;
+                } else {
+                    do_wg_check(args, &alphabet, &KwgReader {})?;
                 }
-                let mut rack = vec![0; alphabet.len().into()];
-                let mut given_num_tiles = 0usize;
-                let sb = &args[4].as_bytes();
-                let mut ix = 0;
-                while ix < sb.len() {
-                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                        rack[tile as usize] += 1;
-                        given_num_tiles += 1;
-                        ix = end_ix;
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                let rack_cell = std::cell::RefCell::new(rack);
-                let num_tiles = std::sync::atomic::AtomicUsize::new(0);
-                let mut ret = String::new();
-                iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
-                    },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    None,
-                    &mut |s: &str| {
-                        if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
-                            ret.push_str(s);
-                            ret.push('\n');
-                        }
-                        Ok(())
-                    },
-                    &mut |b: u8| {
-                        let mut rack = rack_cell.borrow_mut();
-                        if rack[b as usize] > 0 {
-                            rack[b as usize] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(b))
-                        } else if rack[0] > 0 {
-                            rack[0] -= 1;
-                            num_tiles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            Ok(Some(0))
-                        } else {
-                            Ok(Some(0xff))
-                        }
-                    },
-                    &mut |b: u8| {
-                        if b != 0xff {
-                            let mut rack = rack_cell.borrow_mut();
-                            rack[b as usize] += 1;
-                            num_tiles.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Ok(())
-                    },
-                )?;
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
-            }
-            "-kwg-check" => {
-                if args.len() < 4 {
-                    return Err("need more argument".into());
-                }
-                let alphabet = make_alphabet();
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
-                let reader = &KwgReader {};
-                let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
-                let mut not_found = false;
-                for word in &args[3..] {
-                    let sb = &word.as_bytes();
-                    let mut p = 0;
-                    let mut ix = 0;
-                    while ix < sb.len() {
-                        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                            if !not_found {
-                                p = reader.arc_index(kwg_bytes, p);
-                                if p > 0 {
-                                    loop {
-                                        if reader.tile(kwg_bytes, p) == tile {
-                                            break;
-                                        }
-                                        if reader.is_end(kwg_bytes, p) {
-                                            not_found = true;
-                                            break;
-                                        }
-                                        p += 1;
-                                    }
-                                } else {
-                                    not_found = true;
-                                }
-                            }
-                            ix = end_ix;
-                        } else {
-                            return Err("invalid tile".into());
-                        }
-                    }
-                    if !not_found && (ix == 0 || (p != 0 && !reader.accepts(kwg_bytes, p))) {
-                        not_found = true;
-                    }
-                }
-                println!(
-                    "{}",
-                    if not_found {
-                        "Play is NOT acceptable"
-                    } else {
-                        "Play is Acceptable"
-                    }
-                );
                 Ok(true)
             }
             "-q2-ort" => {
@@ -1584,37 +1175,21 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     return Err("out of bounds".into());
                 }
                 let mut r = 0;
-                let ort_num_buckets = ort_bytes[r] as u32
-                    | ((ort_bytes[r + 1] as u32) << 8)
-                    | ((ort_bytes[r + 2] as u32) << 16)
-                    | ((ort_bytes[r + 3] as u32) << 24);
+                let ort_num_buckets = read_le_u32(ort_bytes, r);
                 r += 4;
-                let ort_num_values = ort_bytes[r] as u32
-                    | ((ort_bytes[r + 1] as u32) << 8)
-                    | ((ort_bytes[r + 2] as u32) << 16)
-                    | ((ort_bytes[r + 3] as u32) << 24);
+                let ort_num_values = read_le_u32(ort_bytes, r);
                 r += 4;
                 if ort_bytes.len() < r + ((ort_num_buckets + 1 + ort_num_values) * 4) as usize {
                     return Err("out of bounds".into());
                 }
                 let mut ort_buckets = Vec::with_capacity(ort_num_buckets as usize + 1);
                 for _ in 0..=ort_num_buckets {
-                    ort_buckets.push(
-                        ort_bytes[r] as u32
-                            | ((ort_bytes[r + 1] as u32) << 8)
-                            | ((ort_bytes[r + 2] as u32) << 16)
-                            | ((ort_bytes[r + 3] as u32) << 24),
-                    );
+                    ort_buckets.push(read_le_u32(ort_bytes, r));
                     r += 4;
                 }
                 let mut ort_values = Vec::with_capacity(ort_num_values as usize);
                 for _ in 0..ort_num_values {
-                    ort_values.push(
-                        ort_bytes[r] as u32
-                            | ((ort_bytes[r + 1] as u32) << 8)
-                            | ((ort_bytes[r + 2] as u32) << 16)
-                            | ((ort_bytes[r + 3] as u32) << 24),
-                    );
+                    ort_values.push(read_le_u32(ort_bytes, r));
                     r += 4;
                 }
                 if r != ort_bytes.len() {
@@ -1781,20 +1356,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let wmp_entry_size: usize = if wmp_ver < 3 { 28 } else { 32 };
                 let max_len = wmp_bytes[1];
                 let mut r = 2;
-                let max_word_lookup_results = wmp_bytes[r] as u32
-                    | ((wmp_bytes[r + 1] as u32) << 8)
-                    | ((wmp_bytes[r + 2] as u32) << 16)
-                    | ((wmp_bytes[r + 3] as u32) << 24);
+                let max_word_lookup_results = read_le_u32(wmp_bytes, r);
                 r += 4;
                 if wmp_bytes.len() < 10 {
                     return Err("out of bounds".into());
                 }
                 let max_blank_pair_results;
                 if wmp_ver < 2 {
-                    max_blank_pair_results = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    max_blank_pair_results = read_le_u32(wmp_bytes, r);
                     r += 4;
                 } else {
                     max_blank_pair_results = 0;
@@ -1815,10 +1384,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_word_buckets = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_word_buckets = read_le_u32(wmp_bytes, r);
                     if wmp_ver >= 3 && !wmp_bylen_num_word_buckets.is_power_of_two() {
                         return Err("unsupported bucket size".into());
                     }
@@ -1828,20 +1394,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_word_entries = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_word_entries = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_word_entries_ofs = r;
                     r += wmp_entry_size * wmp_bylen_num_word_entries as usize;
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_words = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_words = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_words_ofs = r;
                     r += (len as u32 * wmp_bylen_num_words) as usize;
@@ -1849,10 +1409,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_blank_buckets = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_blank_buckets = read_le_u32(wmp_bytes, r);
                     if wmp_ver >= 3 && !wmp_bylen_num_blank_buckets.is_power_of_two() {
                         return Err("unsupported bucket size".into());
                     }
@@ -1862,10 +1419,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_blank_entries = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_blank_entries = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_blank_entries_ofs = r;
                     r += wmp_entry_size * wmp_bylen_num_blank_entries as usize;
@@ -1873,10 +1427,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_double_blank_buckets = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_double_blank_buckets = read_le_u32(wmp_bytes, r);
                     if wmp_ver >= 3 && !wmp_bylen_num_double_blank_buckets.is_power_of_two() {
                         return Err("unsupported bucket size".into());
                     }
@@ -1886,10 +1437,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
                     }
-                    let wmp_bylen_num_double_blank_entries = wmp_bytes[r] as u32
-                        | ((wmp_bytes[r + 1] as u32) << 8)
-                        | ((wmp_bytes[r + 2] as u32) << 16)
-                        | ((wmp_bytes[r + 3] as u32) << 24);
+                    let wmp_bylen_num_double_blank_entries = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_double_blank_entries_ofs = r;
                     r += wmp_entry_size * wmp_bylen_num_double_blank_entries as usize;
@@ -1898,10 +1446,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         if wmp_bytes.len() < r + 4 {
                             return Err("out of bounds".into());
                         }
-                        let wmp_bylen_num_blank_pairs = wmp_bytes[r] as u32
-                            | ((wmp_bytes[r + 1] as u32) << 8)
-                            | ((wmp_bytes[r + 2] as u32) << 16)
-                            | ((wmp_bytes[r + 3] as u32) << 24);
+                        let wmp_bylen_num_blank_pairs = read_le_u32(wmp_bytes, r);
                         r += 4;
                         wmp_bylen_blank_pairs_ofs = r;
                         r += 2 * wmp_bylen_num_blank_pairs as usize;
@@ -1916,15 +1461,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         // inlined words
                         for bucket_idx in 0..wmp_bylen_num_word_buckets {
                             let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_start_idx = read_le_u32(wmp_bytes, p);
                             p += 4;
-                            let bucket_end_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_end_idx = read_le_u32(wmp_bytes, p);
                             for entry_idx in bucket_start_idx..bucket_end_idx {
                                 p = wmp_bylen_word_entries_ofs
                                     + entry_idx as usize * wmp_entry_size;
@@ -1933,15 +1472,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     // uninlined words
                                     // this is len * index, in bytes.
                                     p += 8;
-                                    let initial_ofs = wmp_bytes[p] as u32
-                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                    let initial_ofs = read_le_u32(wmp_bytes, p);
                                     p += 4;
-                                    num_elts = wmp_bytes[p] as u32
-                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                    num_elts = read_le_u32(wmp_bytes, p);
                                     p = wmp_bylen_words_ofs + initial_ofs as usize;
                                 } else {
                                     // inlined words
@@ -1969,66 +1502,22 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         writeln!(ret, "\nword buckets: {wmp_bylen_num_word_buckets}")?;
                         for bucket_idx in 0..wmp_bylen_num_word_buckets {
                             let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_start_idx = read_le_u32(wmp_bytes, p);
                             p += 4;
-                            let bucket_end_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_end_idx = read_le_u32(wmp_bytes, p);
                             if bucket_start_idx != bucket_end_idx {
                                 writeln!(ret, "bucket {bucket_idx}/{wmp_bylen_num_word_buckets}:")?;
                                 for entry_idx in bucket_start_idx..bucket_end_idx {
                                     p = wmp_bylen_word_entries_ofs
                                         + entry_idx as usize * wmp_entry_size
                                         + 16;
-                                    let bit_rack = if wmp_ver < 3 {
-                                        let quotient = (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64);
-                                        quotient * wmp_bylen_num_word_buckets as u128
-                                            + bucket_idx as u128
-                                    } else {
-                                        (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64)
-                                            | (((wmp_bytes[p + 12] as u32
-                                                | ((wmp_bytes[p + 13] as u32) << 8)
-                                                | ((wmp_bytes[p + 14] as u32) << 16)
-                                                | ((wmp_bytes[p + 15] as u32) << 24))
-                                                as u128)
-                                                << 96)
-                                    };
+                                    let bit_rack = wmp_read_bit_rack(
+                                        wmp_bytes,
+                                        p,
+                                        wmp_ver,
+                                        wmp_bylen_num_word_buckets,
+                                        bucket_idx,
+                                    );
                                     if wmp_ver >= 3
                                         && bucket_idx
                                             != wmp3_hash(bit_rack) % wmp_bylen_num_word_buckets
@@ -2048,15 +1537,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         // uninlined words
                                         // this is len * index, in bytes.
                                         p += 8;
-                                        let initial_ofs = wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24);
+                                        let initial_ofs = read_le_u32(wmp_bytes, p);
                                         p += 4;
-                                        num_elts = wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24);
+                                        num_elts = read_le_u32(wmp_bytes, p);
                                         p = wmp_bylen_words_ofs + initial_ofs as usize;
                                     } else {
                                         // inlined words
@@ -2082,15 +1565,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         writeln!(ret, "\nblank buckets: {wmp_bylen_num_blank_buckets}")?;
                         for bucket_idx in 0..wmp_bylen_num_blank_buckets {
                             let mut p = wmp_bylen_blank_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_start_idx = read_le_u32(wmp_bytes, p);
                             p += 4;
-                            let bucket_end_idx = wmp_bytes[p] as u32
-                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                | ((wmp_bytes[p + 3] as u32) << 24);
+                            let bucket_end_idx = read_le_u32(wmp_bytes, p);
                             if bucket_start_idx != bucket_end_idx {
                                 writeln!(
                                     ret,
@@ -2100,56 +1577,15 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                     p = wmp_bylen_blank_entries_ofs
                                         + entry_idx as usize * wmp_entry_size
                                         + 8;
-                                    let bits = wmp_bytes[p] as u32
-                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                    let bits = read_le_u32(wmp_bytes, p);
                                     p += 8;
-                                    let bit_rack = if wmp_ver < 3 {
-                                        let quotient = (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64);
-                                        quotient * wmp_bylen_num_blank_buckets as u128
-                                            + bucket_idx as u128
-                                    } else {
-                                        (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64)
-                                            | (((wmp_bytes[p + 12] as u32
-                                                | ((wmp_bytes[p + 13] as u32) << 8)
-                                                | ((wmp_bytes[p + 14] as u32) << 16)
-                                                | ((wmp_bytes[p + 15] as u32) << 24))
-                                                as u128)
-                                                << 96)
-                                    };
+                                    let bit_rack = wmp_read_bit_rack(
+                                        wmp_bytes,
+                                        p,
+                                        wmp_ver,
+                                        wmp_bylen_num_blank_buckets,
+                                        bucket_idx,
+                                    );
                                     if wmp_ver >= 3
                                         && bucket_idx
                                             != wmp3_hash(bit_rack) % wmp_bylen_num_blank_buckets
@@ -2181,15 +1617,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
                                 let mut p =
                                     wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
-                                let bucket_start_idx = wmp_bytes[p] as u32
-                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                let bucket_start_idx = read_le_u32(wmp_bytes, p);
                                 p += 4;
-                                let bucket_end_idx = wmp_bytes[p] as u32
-                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                let bucket_end_idx = read_le_u32(wmp_bytes, p);
                                 if bucket_start_idx != bucket_end_idx {
                                     writeln!(
                                         ret,
@@ -2199,23 +1629,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         p = wmp_bylen_double_blank_entries_ofs
                                             + entry_idx as usize * wmp_entry_size
                                             + 16;
-                                        let quotient = (wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24))
-                                            as u128
-                                            | (((wmp_bytes[p + 4] as u32
-                                                | ((wmp_bytes[p + 5] as u32) << 8)
-                                                | ((wmp_bytes[p + 6] as u32) << 16)
-                                                | ((wmp_bytes[p + 7] as u32) << 24))
-                                                as u128)
-                                                << 32)
-                                            | (((wmp_bytes[p + 8] as u32
-                                                | ((wmp_bytes[p + 9] as u32) << 8)
-                                                | ((wmp_bytes[p + 10] as u32) << 16)
-                                                | ((wmp_bytes[p + 11] as u32) << 24))
-                                                as u128)
-                                                << 64);
+                                        let quotient = read_le_u96(wmp_bytes, p);
                                         let bit_rack = quotient
                                             * wmp_bylen_num_double_blank_buckets as u128
                                             + bucket_idx as u128;
@@ -2231,15 +1645,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         let num_elts;
                                         if wmp_bytes[p] == 0 {
                                             p += 8;
-                                            let initial_ofs = wmp_bytes[p] as u32
-                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                | ((wmp_bytes[p + 3] as u32) << 24);
+                                            let initial_ofs = read_le_u32(wmp_bytes, p);
                                             p += 4;
-                                            num_elts = wmp_bytes[p] as u32
-                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                | ((wmp_bytes[p + 3] as u32) << 24);
+                                            num_elts = read_le_u32(wmp_bytes, p);
                                             p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
                                         } else {
                                             num_elts = (wmp_bytes[p..p + 16]
@@ -2276,45 +1684,20 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                 }
                                                 let mut p = wmp_bylen_word_buckets_ofs
                                                     + bucket_idx as usize * 4;
-                                                let bucket_start_idx = wmp_bytes[p] as u32
-                                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                                let bucket_start_idx = read_le_u32(wmp_bytes, p);
                                                 p += 4;
-                                                let bucket_end_idx = wmp_bytes[p] as u32
-                                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                                let bucket_end_idx = read_le_u32(wmp_bytes, p);
                                                 let mut found = false;
                                                 for entry_idx in bucket_start_idx..bucket_end_idx {
                                                     p = wmp_bylen_word_entries_ofs
                                                         + entry_idx as usize * wmp_entry_size
                                                         + 16;
-                                                    let quotient = (wmp_bytes[p] as u32
-                                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                                        | ((wmp_bytes[p + 3] as u32) << 24))
-                                                        as u128
-                                                        | (((wmp_bytes[p + 4] as u32
-                                                            | ((wmp_bytes[p + 5] as u32) << 8)
-                                                            | ((wmp_bytes[p + 6] as u32) << 16)
-                                                            | ((wmp_bytes[p + 7] as u32) << 24))
-                                                            as u128)
-                                                            << 32)
-                                                        | (((wmp_bytes[p + 8] as u32
-                                                            | ((wmp_bytes[p + 9] as u32) << 8)
-                                                            | ((wmp_bytes[p + 10] as u32) << 16)
-                                                            | ((wmp_bytes[p + 11] as u32) << 24))
-                                                            as u128)
-                                                            << 64);
+                                                    let quotient = read_le_u96(wmp_bytes, p);
                                                     if quotient == sought_quotient {
                                                         p -= 16;
                                                         let num_elts = if wmp_bytes[p] == 0 {
                                                             p += 12;
-                                                            wmp_bytes[p] as u32
-                                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                                | ((wmp_bytes[p + 3] as u32) << 24)
+                                                            read_le_u32(wmp_bytes, p)
                                                         } else {
                                                             (wmp_bytes[p..p + 16]
                                                                 .iter()
@@ -2346,15 +1729,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
                                 let mut p =
                                     wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
-                                let bucket_start_idx = wmp_bytes[p] as u32
-                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                let bucket_start_idx = read_le_u32(wmp_bytes, p);
                                 p += 4;
-                                let bucket_end_idx = wmp_bytes[p] as u32
-                                    | ((wmp_bytes[p + 1] as u32) << 8)
-                                    | ((wmp_bytes[p + 2] as u32) << 16)
-                                    | ((wmp_bytes[p + 3] as u32) << 24);
+                                let bucket_end_idx = read_le_u32(wmp_bytes, p);
                                 if bucket_start_idx != bucket_end_idx {
                                     writeln!(
                                         ret,
@@ -2364,56 +1741,15 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                         p = wmp_bylen_double_blank_entries_ofs
                                             + entry_idx as usize * wmp_entry_size
                                             + 8;
-                                        let bits = wmp_bytes[p] as u32
-                                            | ((wmp_bytes[p + 1] as u32) << 8)
-                                            | ((wmp_bytes[p + 2] as u32) << 16)
-                                            | ((wmp_bytes[p + 3] as u32) << 24);
+                                        let bits = read_le_u32(wmp_bytes, p);
                                         p += 8;
-                                        let bit_rack = if wmp_ver < 3 {
-                                            let quotient = (wmp_bytes[p] as u32
-                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                | ((wmp_bytes[p + 3] as u32) << 24))
-                                                as u128
-                                                | (((wmp_bytes[p + 4] as u32
-                                                    | ((wmp_bytes[p + 5] as u32) << 8)
-                                                    | ((wmp_bytes[p + 6] as u32) << 16)
-                                                    | ((wmp_bytes[p + 7] as u32) << 24))
-                                                    as u128)
-                                                    << 32)
-                                                | (((wmp_bytes[p + 8] as u32
-                                                    | ((wmp_bytes[p + 9] as u32) << 8)
-                                                    | ((wmp_bytes[p + 10] as u32) << 16)
-                                                    | ((wmp_bytes[p + 11] as u32) << 24))
-                                                    as u128)
-                                                    << 64);
-                                            quotient * wmp_bylen_num_double_blank_buckets as u128
-                                                + bucket_idx as u128
-                                        } else {
-                                            (wmp_bytes[p] as u32
-                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                | ((wmp_bytes[p + 3] as u32) << 24))
-                                                as u128
-                                                | (((wmp_bytes[p + 4] as u32
-                                                    | ((wmp_bytes[p + 5] as u32) << 8)
-                                                    | ((wmp_bytes[p + 6] as u32) << 16)
-                                                    | ((wmp_bytes[p + 7] as u32) << 24))
-                                                    as u128)
-                                                    << 32)
-                                                | (((wmp_bytes[p + 8] as u32
-                                                    | ((wmp_bytes[p + 9] as u32) << 8)
-                                                    | ((wmp_bytes[p + 10] as u32) << 16)
-                                                    | ((wmp_bytes[p + 11] as u32) << 24))
-                                                    as u128)
-                                                    << 64)
-                                                | (((wmp_bytes[p + 12] as u32
-                                                    | ((wmp_bytes[p + 13] as u32) << 8)
-                                                    | ((wmp_bytes[p + 14] as u32) << 16)
-                                                    | ((wmp_bytes[p + 15] as u32) << 24))
-                                                    as u128)
-                                                    << 96)
-                                        };
+                                        let bit_rack = wmp_read_bit_rack(
+                                            wmp_bytes,
+                                            p,
+                                            wmp_ver,
+                                            wmp_bylen_num_double_blank_buckets,
+                                            bucket_idx,
+                                        );
                                         if wmp_ver >= 3
                                             && bucket_idx
                                                 != wmp3_hash(bit_rack)
@@ -2457,15 +1793,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                     }
                                                     let mut p = wmp_bylen_blank_buckets_ofs
                                                         + bucket_idx as usize * 4;
-                                                    let bucket_start_idx = wmp_bytes[p] as u32
-                                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                                    let bucket_start_idx =
+                                                        read_le_u32(wmp_bytes, p);
                                                     p += 4;
-                                                    let bucket_end_idx = wmp_bytes[p] as u32
-                                                        | ((wmp_bytes[p + 1] as u32) << 8)
-                                                        | ((wmp_bytes[p + 2] as u32) << 16)
-                                                        | ((wmp_bytes[p + 3] as u32) << 24);
+                                                    let bucket_end_idx = read_le_u32(wmp_bytes, p);
                                                     let mut found = false;
                                                     for entry_idx in
                                                         bucket_start_idx..bucket_end_idx
@@ -2474,72 +1805,35 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                             + entry_idx as usize * wmp_entry_size
                                                             + 16;
                                                         let key_check = if wmp_ver < 3 {
-                                                            let quotient = (wmp_bytes[p] as u32
-                                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                                | ((wmp_bytes[p + 3] as u32) << 24))
-                                                                as u128
-                                                                | (((wmp_bytes[p + 4] as u32
-                                                                    | ((wmp_bytes[p + 5] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 6] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 7] as u32)
-                                                                        << 24))
-                                                                    as u128)
-                                                                    << 32)
-                                                                | (((wmp_bytes[p + 8] as u32
-                                                                    | ((wmp_bytes[p + 9] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 10] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 11] as u32)
-                                                                        << 24))
-                                                                    as u128)
-                                                                    << 64);
+                                                            let quotient =
+                                                                read_le_u96(wmp_bytes, p);
                                                             quotient == sought_quotient
                                                         } else {
-                                                            let this_bit_rack = (wmp_bytes[p]
-                                                                as u32
-                                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                                | ((wmp_bytes[p + 3] as u32) << 24))
-                                                                as u128
-                                                                | (((wmp_bytes[p + 4] as u32
-                                                                    | ((wmp_bytes[p + 5] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 6] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 7] as u32)
-                                                                        << 24))
-                                                                    as u128)
-                                                                    << 32)
-                                                                | (((wmp_bytes[p + 8] as u32
-                                                                    | ((wmp_bytes[p + 9] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 10] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 11] as u32)
-                                                                        << 24))
-                                                                    as u128)
-                                                                    << 64)
-                                                                | (((wmp_bytes[p + 12] as u32
-                                                                    | ((wmp_bytes[p + 13] as u32)
-                                                                        << 8)
-                                                                    | ((wmp_bytes[p + 14] as u32)
-                                                                        << 16)
-                                                                    | ((wmp_bytes[p + 15] as u32)
-                                                                        << 24))
-                                                                    as u128)
-                                                                    << 96);
+                                                            let this_bit_rack =
+                                                                read_le_u32(wmp_bytes, p) as u128
+                                                                    | ((read_le_u32(
+                                                                        wmp_bytes,
+                                                                        p + 4,
+                                                                    )
+                                                                        as u128)
+                                                                        << 32)
+                                                                    | ((read_le_u32(
+                                                                        wmp_bytes,
+                                                                        p + 8,
+                                                                    )
+                                                                        as u128)
+                                                                        << 64)
+                                                                    | ((read_le_u32(
+                                                                        wmp_bytes,
+                                                                        p + 12,
+                                                                    )
+                                                                        as u128)
+                                                                        << 96);
                                                             this_bit_rack == b1_bit_rack
                                                         };
                                                         if key_check {
                                                             p -= 8;
-                                                            let b1_bits = wmp_bytes[p] as u32
-                                                                | ((wmp_bytes[p + 1] as u32) << 8)
-                                                                | ((wmp_bytes[p + 2] as u32) << 16)
-                                                                | ((wmp_bytes[p + 3] as u32) << 24);
+                                                            let b1_bits = read_le_u32(wmp_bytes, p);
                                                             {
                                                                 for i in first_i..32 {
                                                                     if b1_bits & (1 << i) != 0 {
@@ -2627,29 +1921,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                         + 16;
                                                                                 let key_check =
                                                                                     if wmp_ver < 3 {
-                                                                                        let quotient = (wmp_bytes[p]
-                                                                            as u32
-                                                                            | ((wmp_bytes[p + 1]
-                                                                                as u32)
-                                                                                << 8)
-                                                                            | ((wmp_bytes[p + 2]
-                                                                                as u32)
-                                                                                << 16)
-                                                                            | ((wmp_bytes[p + 3]
-                                                                                as u32)
-                                                                                << 24))
+                                                                                        let quotient = read_le_u32(wmp_bytes, p)
                                                                             as u128
-                                                                            | (((wmp_bytes[p + 4]
-                                                                                as u32
-                                                                                | ((wmp_bytes[p + 5]
-                                                                                    as u32)
-                                                                                    << 8)
-                                                                                | ((wmp_bytes[p + 6]
-                                                                                    as u32)
-                                                                                    << 16)
-                                                                                | ((wmp_bytes[p + 7]
-                                                                                    as u32)
-                                                                                    << 24))
+                                                                            | ((read_le_u32(wmp_bytes, p + 4)
                                                                                 as u128)
                                                                                 << 32)
                                                                             | (((wmp_bytes[p + 8]
@@ -2671,16 +1945,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                                 == sought_quotient
                                                                                     } else {
                                                                                         let this_bit_rack =
-                                                                            (wmp_bytes[p] as u32
-                                                                                | ((wmp_bytes[p + 1]
-                                                                                    as u32)
-                                                                                    << 8)
-                                                                                | ((wmp_bytes[p + 2]
-                                                                                    as u32)
-                                                                                    << 16)
-                                                                                | ((wmp_bytes[p + 3]
-                                                                                    as u32)
-                                                                                    << 24))
+                                                                            read_le_u32(wmp_bytes, p)
                                                                                 as u128
                                                                                 | (((wmp_bytes
                                                                                     [p + 4]
@@ -2744,16 +2009,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                                             == 0
                                                                                         {
                                                                                             p += 12;
-                                                                                            wmp_bytes[p] as u32
-                                                                                | ((wmp_bytes[p + 1]
-                                                                                    as u32)
-                                                                                    << 8)
-                                                                                | ((wmp_bytes[p + 2]
-                                                                                    as u32)
-                                                                                    << 16)
-                                                                                | ((wmp_bytes[p + 3]
-                                                                                    as u32)
-                                                                                    << 24)
+                                                                                            read_le_u32(wmp_bytes, p)
                                                                                         } else {
                                                                                             (wmp_bytes[p..p + 16]
                                                                                 .iter()
@@ -3589,8 +2845,12 @@ fn main() -> error::Returns<()> {
   english-kwg-anagram- CSW24.kwg - A?AC
   english-kwg-anagram CSW24.kwg - A?AC
   english-kwg-anagram+ CSW24.kwg - A?AC
+  english-kbwg-anagram- CSW24.kbwg - A?AC
+  english-kbwg-anagram CSW24.kbwg - A?AC
+  english-kbwg-anagram+ CSW24.kbwg - A?AC
     list all words with subanagram, anagram, or superanagram (using dawg)
   english-kwg-check CSW24.kwg word [word...]
+  english-kbwg-check CSW24.kbwg word [word...]
     checks if all words are valid (using dawg)
   english-q2-ort something.ort something.csv
     read .ort (format subject to change)
@@ -3668,22 +2928,9 @@ input/output files can be \"-\" (not advisable for binary files)"
         {
         } else if args[1] == "klv-kwg-extract" {
             let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if klv_bytes.len() < 4 {
-                return Err("out of bounds".into());
-            }
-            let mut r = 0;
-            let kwg_bytes_len = ((klv_bytes[r] as u32
-                | ((klv_bytes[r + 1] as u32) << 8)
-                | ((klv_bytes[r + 2] as u32) << 16)
-                | ((klv_bytes[r + 3] as u32) << 24)) as usize)
-                * 4;
-            r += 4;
-            if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                return Err("out of bounds".into());
-            }
-            let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+            let parts = parse_klv(klv_bytes)?;
             // binary output
-            make_writer(&args[3])?.write_all(kwg_bytes)?;
+            make_writer(&args[3])?.write_all(parts.kwg_bytes)?;
         } else if args[1] == "kwg-hitcheck" {
             let reader = &KwgReader {};
             let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
@@ -3721,27 +2968,10 @@ input/output files can be \"-\" (not advisable for binary files)"
         } else if args[1] == "quackle-make-superleaves" {
             let reader = &KwgReader {};
             let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if klv_bytes.len() < 4 {
-                return Err("out of bounds".into());
-            }
-            let mut r = 0;
-            let kwg_bytes_len = ((klv_bytes[r] as u32
-                | ((klv_bytes[r + 1] as u32) << 8)
-                | ((klv_bytes[r + 2] as u32) << 16)
-                | ((klv_bytes[r + 3] as u32) << 24)) as usize)
-                * 4;
-            r += 4;
-            if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                return Err("out of bounds".into());
-            }
-            let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
-            r += kwg_bytes_len;
-            let lv_len = (klv_bytes[r] as u32
-                | ((klv_bytes[r + 1] as u32) << 8)
-                | ((klv_bytes[r + 2] as u32) << 16)
-                | ((klv_bytes[r + 3] as u32) << 24)) as usize;
-            r += 4;
-            let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+            let parts = parse_klv(klv_bytes)?;
+            let kwg_bytes = parts.kwg_bytes;
+            let mut r = parts.r;
+            let is_klv2 = parts.is_klv2;
             if 0 == reader.len(kwg_bytes) {
                 return Err("out of bounds".into());
             }
@@ -3753,21 +2983,7 @@ input/output files can be \"-\" (not advisable for binary files)"
                 reader.arc_index(kwg_bytes, 0),
                 Some("\x01"),
                 &mut |s: &str| {
-                    let float_leave = if is_klv2 && klv_bytes.len() >= r + 4 {
-                        r += 4;
-                        f32::from_bits(
-                            klv_bytes[r - 4] as u32
-                                | ((klv_bytes[r - 3] as u32) << 8)
-                                | ((klv_bytes[r - 2] as u32) << 16)
-                                | ((klv_bytes[r - 1] as u32) << 24),
-                        )
-                    } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                        r += 2;
-                        ((klv_bytes[r - 2] as u16 | ((klv_bytes[r - 1] as u16) << 8)) as i16) as f32
-                            * (1.0 / 256.0)
-                    } else {
-                        return Err("missing leaves".into());
-                    };
+                    let float_leave = read_leave_value(klv_bytes, &mut r, is_klv2)?;
                     let rounded_leave = (float_leave * 256.0).round();
                     let int_leave = (rounded_leave as i16) ^ 0x8000u16 as i16;
                     let slen = s.len();
@@ -3809,138 +3025,36 @@ input/output files can be \"-\" (not advisable for binary files)"
                 i += l + 3;
                 csv_out.serialize((
                     &s,
-                    (bytes[i - 2] as u16 | ((bytes[i - 1] as u16) << 8)) as f32 * (1.0 / 256.0)
-                        - 128.0,
+                    (read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0,
                 ))?;
             }
         } else if args[1] == "quackle" {
-            let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 20 > quackle_bytes.len() {
-                return Err("out of bounds".into());
-            }
-            let alpha_size = quackle_bytes[20] as usize;
-            let mut alpha = Vec::with_capacity(alpha_size);
-            let mut p = 21;
-            for _ in 0..alpha_size {
-                let p0 = p;
-                loop {
-                    if p > quackle_bytes.len() {
-                        return Err("out of bounds".into());
-                    }
-                    if quackle_bytes[p] == b' ' {
-                        alpha.push(std::str::from_utf8(&quackle_bytes[p0..p])?);
-                        p += 1;
-                        break;
-                    }
-                    p += 1;
-                }
-            }
-            let reader = &QuackleReader { offset: p };
-            if 1 > reader.len(quackle_bytes) {
-                return Err("out of bounds".into());
-            }
-            let mut ret = String::new();
-            iter_dawg(
-                &QuackleAlphabetLabel { alpha: &alpha },
-                reader,
-                quackle_bytes,
-                1,
-                None,
-                &mut |s: &str| {
-                    ret.push_str(s);
-                    ret.push('\n');
-                    Ok(())
-                },
-                &mut default_in,
-                &mut default_out,
-            )?;
-            make_writer(&args[3])?.write_all(ret.as_bytes())?;
+            do_quackle(&args, |p| QuackleReader { offset: p })?;
         } else if args[1] == "quackle-small" {
-            let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 20 > quackle_bytes.len() {
-                return Err("out of bounds".into());
-            }
-            let alpha_size = quackle_bytes[20] as usize;
-            let mut alpha = Vec::with_capacity(alpha_size);
-            let mut p = 21;
-            for _ in 0..alpha_size {
-                let p0 = p;
-                loop {
-                    if p > quackle_bytes.len() {
-                        return Err("out of bounds".into());
-                    }
-                    if quackle_bytes[p] == b' ' {
-                        alpha.push(std::str::from_utf8(&quackle_bytes[p0..p])?);
-                        p += 1;
-                        break;
-                    }
-                    p += 1;
-                }
-            }
-            let reader = &QuackleSmallReader { offset: p };
-            if 1 > reader.len(quackle_bytes) {
-                return Err("out of bounds".into());
-            }
-            let mut ret = String::new();
-            iter_dawg(
-                &QuackleAlphabetLabel { alpha: &alpha },
-                reader,
-                quackle_bytes,
-                1,
-                None,
-                &mut |s: &str| {
-                    ret.push_str(s);
-                    ret.push('\n');
-                    Ok(())
-                },
-                &mut default_in,
-                &mut default_out,
-            )?;
-            make_writer(&args[3])?.write_all(ret.as_bytes())?;
+            do_quackle(&args, |p| QuackleSmallReader { offset: p })?;
         } else if args[1] == "zyzzyva" {
-            let reader = &ZyzzyvaReader {};
-            let zyzzyva_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 0x8 > zyzzyva_bytes.len() {
-                return Err("out of bounds".into());
-            }
-            let mut ret = String::new();
-            iter_dawg(
+            let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+            dump_dawg(
+                &args,
                 &LexpertAlphabetLabel {},
-                reader,
-                zyzzyva_bytes,
+                &KwgReader {},
+                bytes,
                 1,
                 None,
-                &mut |s: &str| {
-                    ret.push_str(s);
-                    ret.push('\n');
-                    Ok(())
-                },
-                &mut default_in,
-                &mut default_out,
             )?;
-            make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "lexpert" {
-            let reader = &LexpertReader {};
-            let lexpert_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 0x4c > lexpert_bytes.len() {
+            let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+            if 0x4c > bytes.len() {
                 return Err("out of bounds".into());
             }
-            let mut ret = String::new();
-            iter_dawg(
+            dump_dawg(
+                &args,
                 &LexpertAlphabetLabel {},
-                reader,
-                lexpert_bytes,
+                &LexpertReader {},
+                bytes,
                 2,
                 None,
-                &mut |s: &str| {
-                    ret.push_str(s);
-                    ret.push('\n');
-                    Ok(())
-                },
-                &mut default_in,
-                &mut default_out,
             )?;
-            make_writer(&args[3])?.write_all(ret.as_bytes())?;
         } else if args[1] == "stats-zt" {
             let mut ret = String::new();
             for ci in [0.8f64, 0.85, 0.9, 0.95, 0.99, 0.995, 0.999] {
