@@ -492,6 +492,49 @@ fn read_le_u128_full(bytes: &[u8], p: usize) -> u128 {
     read_le_u96(bytes, p) | ((read_le_u32(bytes, p + 12) as u128) << 96)
 }
 
+struct KlvParts<'a> {
+    kwg_bytes: &'a [u8],
+    r: usize,
+    lv_len: usize,
+    is_klv2: bool,
+}
+
+fn parse_klv(klv_bytes: &[u8]) -> error::Returns<KlvParts<'_>> {
+    if klv_bytes.len() < 4 {
+        return Err("out of bounds".into());
+    }
+    let kwg_bytes_len = (read_le_u32(klv_bytes, 0) as usize) * 4;
+    let r = 4;
+    if klv_bytes.len() < r + kwg_bytes_len + 4 {
+        return Err("out of bounds".into());
+    }
+    let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+    let r = r + kwg_bytes_len;
+    let lv_len = read_le_u32(klv_bytes, r) as usize;
+    let r = r + 4;
+    let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+    Ok(KlvParts {
+        kwg_bytes,
+        r,
+        lv_len,
+        is_klv2,
+    })
+}
+
+fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Returns<f32> {
+    if is_klv2 && klv_bytes.len() >= *r + 4 {
+        let v = f32::from_bits(read_le_u32(klv_bytes, *r));
+        *r += 4;
+        Ok(v)
+    } else if !is_klv2 && klv_bytes.len() >= *r + 2 {
+        let v = (read_le_u16(klv_bytes, *r) as i16) as f32 * (1.0 / 256.0);
+        *r += 2;
+        Ok(v)
+    } else {
+        Err("missing leaves".into())
+    }
+}
+
 // https://github.com/aappleby/smhasher/blob/0ff96f7835817a27d0487325b6c16033e2992eb5/src/MurmurHash3.cpp#L83-L87
 #[inline(always)]
 fn wmp3_hash(bit_rack: u128) -> u32 {
@@ -517,24 +560,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+                let parts = parse_klv(klv_bytes)?;
+                let kwg_bytes = parts.kwg_bytes;
                 if 0 == reader.len(kwg_bytes) {
                     return Err("out of bounds".into());
                 }
-                r += kwg_bytes_len;
-                let lv_len = read_le_u32(klv_bytes, r) as usize;
-                r += 4;
-                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
-                if r + lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
+                let mut r = parts.r;
+                let is_klv2 = parts.is_klv2;
+                if r + parts.lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
                     return Err("incorrect number of leave values".into());
                 }
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
@@ -547,18 +580,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     reader.arc_index(kwg_bytes, 0),
                     alphabet.of_rack(0),
                     &mut |s: &str| {
-                        csv_out.serialize((
-                            s,
-                            if is_klv2 && klv_bytes.len() >= r + 4 {
-                                r += 4;
-                                f32::from_bits(read_le_u32(klv_bytes, r - 4))
-                            } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                                r += 2;
-                                ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
-                            } else {
-                                return Err("missing leaves".into());
-                            },
-                        ))?;
+                        csv_out.serialize((s, read_leave_value(klv_bytes, &mut r, is_klv2)?))?;
                         Ok(())
                     },
                     &mut default_in,
@@ -575,23 +597,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let alphabet = make_alphabet();
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+                let parts = parse_klv(klv_bytes)?;
+                let kwg_bytes = parts.kwg_bytes;
                 if 0 == reader.len(kwg_bytes) {
                     return Err("out of bounds".into());
                 }
-                r += kwg_bytes_len;
-                let lv_len = read_le_u32(klv_bytes, r) as usize;
-                r += 4;
-                if r + lv_len * 2 != klv_bytes.len() {
+                let mut r = parts.r;
+                if r + parts.lv_len * 2 != klv_bytes.len() {
                     return Err("incorrect number of leave values".into());
                 }
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
@@ -1037,20 +1049,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
-                r += kwg_bytes_len;
-                let lv_len = read_le_u32(klv_bytes, r) as usize;
-                r += 4;
-                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+                let parts = parse_klv(klv_bytes)?;
+                let kwg_bytes = parts.kwg_bytes;
+                let mut r = parts.r;
+                let is_klv2 = parts.is_klv2;
                 if 0 == reader.len(kwg_bytes) {
                     return Err("out of bounds".into());
                 }
@@ -1077,15 +1079,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     reader.arc_index(kwg_bytes, 0),
                     alphabet.of_rack(0),
                     &mut |s: &str| {
-                        let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
-                            r += 4;
-                            f32::from_bits(read_le_u32(klv_bytes, r - 4))
-                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                            r += 2;
-                            ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
-                        } else {
-                            return Err("missing leaves".into());
-                        };
+                        let leave_value = read_leave_value(klv_bytes, &mut r, is_klv2)?;
                         if num_unspecified.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                             csv_out.serialize((s, leave_value))?;
                         }
@@ -1121,20 +1115,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
-                r += kwg_bytes_len;
-                let lv_len = read_le_u32(klv_bytes, r) as usize;
-                r += 4;
-                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+                let parts = parse_klv(klv_bytes)?;
+                let kwg_bytes = parts.kwg_bytes;
+                let mut r = parts.r;
+                let is_klv2 = parts.is_klv2;
                 if 0 == reader.len(kwg_bytes) {
                     return Err("out of bounds".into());
                 }
@@ -1164,15 +1148,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     reader.arc_index(kwg_bytes, 0),
                     alphabet.of_rack(0),
                     &mut |s: &str| {
-                        let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
-                            r += 4;
-                            f32::from_bits(read_le_u32(klv_bytes, r - 4))
-                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                            r += 2;
-                            ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
-                        } else {
-                            return Err("missing leaves".into());
-                        };
+                        let leave_value = read_leave_value(klv_bytes, &mut r, is_klv2)?;
                         if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles
                             && num_unspecified.load(std::sync::atomic::Ordering::Relaxed) == 0
                         {
@@ -1212,20 +1188,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if klv_bytes.len() < 4 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let kwg_bytes_len = read_le_u32(klv_bytes, r) as usize * 4;
-                r += 4;
-                if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                    return Err("out of bounds".into());
-                }
-                let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
-                r += kwg_bytes_len;
-                let lv_len = read_le_u32(klv_bytes, r) as usize;
-                r += 4;
-                let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+                let parts = parse_klv(klv_bytes)?;
+                let kwg_bytes = parts.kwg_bytes;
+                let mut r = parts.r;
+                let is_klv2 = parts.is_klv2;
                 if 0 == reader.len(kwg_bytes) {
                     return Err("out of bounds".into());
                 }
@@ -1254,15 +1220,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     reader.arc_index(kwg_bytes, 0),
                     alphabet.of_rack(0),
                     &mut |s: &str| {
-                        let leave_value = if is_klv2 && klv_bytes.len() >= r + 4 {
-                            r += 4;
-                            f32::from_bits(read_le_u32(klv_bytes, r - 4))
-                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                            r += 2;
-                            ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
-                        } else {
-                            return Err("missing leaves".into());
-                        };
+                        let leave_value = read_leave_value(klv_bytes, &mut r, is_klv2)?;
                         if num_tiles.load(std::sync::atomic::Ordering::Relaxed) == given_num_tiles {
                             csv_out.serialize((s, leave_value))?;
                         }
@@ -3288,18 +3246,9 @@ input/output files can be \"-\" (not advisable for binary files)"
         {
         } else if args[1] == "klv-kwg-extract" {
             let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if klv_bytes.len() < 4 {
-                return Err("out of bounds".into());
-            }
-            let mut r = 0;
-            let kwg_bytes_len = (read_le_u32(klv_bytes, r) as usize) * 4;
-            r += 4;
-            if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                return Err("out of bounds".into());
-            }
-            let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
+            let parts = parse_klv(klv_bytes)?;
             // binary output
-            make_writer(&args[3])?.write_all(kwg_bytes)?;
+            make_writer(&args[3])?.write_all(parts.kwg_bytes)?;
         } else if args[1] == "kwg-hitcheck" {
             let reader = &KwgReader {};
             let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
@@ -3337,20 +3286,10 @@ input/output files can be \"-\" (not advisable for binary files)"
         } else if args[1] == "quackle-make-superleaves" {
             let reader = &KwgReader {};
             let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if klv_bytes.len() < 4 {
-                return Err("out of bounds".into());
-            }
-            let mut r = 0;
-            let kwg_bytes_len = (read_le_u32(klv_bytes, r) as usize) * 4;
-            r += 4;
-            if klv_bytes.len() < r + kwg_bytes_len + 4 {
-                return Err("out of bounds".into());
-            }
-            let kwg_bytes = &klv_bytes[r..r + kwg_bytes_len];
-            r += kwg_bytes_len;
-            let lv_len = read_le_u32(klv_bytes, r) as usize;
-            r += 4;
-            let is_klv2 = klv_bytes.len() >= r + lv_len * 4;
+            let parts = parse_klv(klv_bytes)?;
+            let kwg_bytes = parts.kwg_bytes;
+            let mut r = parts.r;
+            let is_klv2 = parts.is_klv2;
             if 0 == reader.len(kwg_bytes) {
                 return Err("out of bounds".into());
             }
@@ -3362,15 +3301,7 @@ input/output files can be \"-\" (not advisable for binary files)"
                 reader.arc_index(kwg_bytes, 0),
                 Some("\x01"),
                 &mut |s: &str| {
-                    let float_leave = if is_klv2 && klv_bytes.len() >= r + 4 {
-                        r += 4;
-                        f32::from_bits(read_le_u32(klv_bytes, r - 4))
-                    } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                        r += 2;
-                        ((read_le_u16(klv_bytes, r - 2)) as i16) as f32 * (1.0 / 256.0)
-                    } else {
-                        return Err("missing leaves".into());
-                    };
+                    let float_leave = read_leave_value(klv_bytes, &mut r, is_klv2)?;
                     let rounded_leave = (float_leave * 256.0).round();
                     let int_leave = (rounded_leave as i16) ^ 0x8000u16 as i16;
                     let slen = s.len();
