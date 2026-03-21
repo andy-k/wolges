@@ -1011,11 +1011,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     reader.arc_index(kwg_bytes, 0),
                     alphabet.of_rack(0),
                     &mut |s: &str| {
-                        let v = if is_klv2 {
+                        let v = if is_klv2 && klv_bytes.len() >= r + 4 {
                             let v = f32::from_bits(read_le_u32(klv_bytes, r));
                             r += 4;
                             v
-                        } else if klv_bytes.len() >= r + 2 {
+                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
                             r += 2;
                             (read_le_u16(klv_bytes, r - 2) as i16) as f32 * scale
                         } else {
