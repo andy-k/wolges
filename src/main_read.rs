@@ -2814,35 +2814,20 @@ input/output files can be \"-\" (not advisable for binary files)"
             let parts = parse_klv(klv_bytes)?;
             // binary output
             make_writer(&args[3])?.write_all(parts.kwg_bytes)?;
-        } else if args[1] == "kwg-hitcheck" {
+        } else if args[1] == "kwg-hitcheck" || args[1] == "kwg-hitcheck-gaddag" {
             let reader = &KwgReader {};
             let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 0 == reader.len(kwg_bytes) {
-                return Err("out of bounds".into());
-            }
+            let initial_idx = if args[1] == "kwg-hitcheck-gaddag" {
+                1
+            } else {
+                0
+            };
             let mut ret = String::new();
             kwg_hitcheck(
                 &mut ret,
                 reader,
                 kwg_bytes,
-                0,
-                u32::from_str(&args[3])?,
-                u32::from_str(&args[4])?,
-                u32::from_str(&args[5])?,
-            )?;
-            make_writer(&args[6])?.write_all(ret.as_bytes())?;
-        } else if args[1] == "kwg-hitcheck-gaddag" {
-            let reader = &KwgReader {};
-            let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 1 >= reader.len(kwg_bytes) {
-                return Err("out of bounds".into());
-            }
-            let mut ret = String::new();
-            kwg_hitcheck(
-                &mut ret,
-                reader,
-                kwg_bytes,
-                1,
+                initial_idx,
                 u32::from_str(&args[3])?,
                 u32::from_str(&args[4])?,
                 u32::from_str(&args[5])?,
