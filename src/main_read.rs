@@ -2763,6 +2763,9 @@ fn main() -> error::Returns<()> {
     example for i7-8700B (192 kB, 6 cores, 8-way set assoc): 64 8 64.
   kwg-hitcheck-gaddag CSW24.kwg cls csa ncs outfile
     ditto for gaddag.
+  kbwg-hitcheck CSW24.kbwg cls csa ncs outfile
+  kbwg-hitcheck-gaddag CSW24.kbwg cls csa ncs outfile
+    ditto for kbwg.
   quackle-make-superleaves CSW24.klv superleaves
     read klv/klv2 file, save quackle superleaves (english/french)
   quackle-superleaves superleaves something.csv
@@ -2814,24 +2817,35 @@ input/output files can be \"-\" (not advisable for binary files)"
             let parts = parse_klv(klv_bytes)?;
             // binary output
             make_writer(&args[3])?.write_all(parts.kwg_bytes)?;
-        } else if args[1] == "kwg-hitcheck" || args[1] == "kwg-hitcheck-gaddag" {
-            let reader = &KwgReader {};
+        } else if args[1] == "kwg-hitcheck"
+            || args[1] == "kwg-hitcheck-gaddag"
+            || args[1] == "kbwg-hitcheck"
+            || args[1] == "kbwg-hitcheck-gaddag"
+        {
             let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            let initial_idx = if args[1] == "kwg-hitcheck-gaddag" {
-                1
-            } else {
-                0
-            };
+            let initial_idx = if args[1].ends_with("-gaddag") { 1 } else { 0 };
             let mut ret = String::new();
-            kwg_hitcheck(
-                &mut ret,
-                reader,
-                kwg_bytes,
-                initial_idx,
-                u32::from_str(&args[3])?,
-                u32::from_str(&args[4])?,
-                u32::from_str(&args[5])?,
-            )?;
+            if args[1].starts_with("kbwg") {
+                kwg_hitcheck(
+                    &mut ret,
+                    &KbwgReader {},
+                    kwg_bytes,
+                    initial_idx,
+                    u32::from_str(&args[3])?,
+                    u32::from_str(&args[4])?,
+                    u32::from_str(&args[5])?,
+                )?;
+            } else {
+                kwg_hitcheck(
+                    &mut ret,
+                    &KwgReader {},
+                    kwg_bytes,
+                    initial_idx,
+                    u32::from_str(&args[3])?,
+                    u32::from_str(&args[4])?,
+                    u32::from_str(&args[5])?,
+                )?;
+            }
             make_writer(&args[6])?.write_all(ret.as_bytes())?;
         } else if args[1] == "quackle-make-superleaves" {
             let reader = &KwgReader {};
