@@ -1,7 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::{alphabet, bites, error, fash, prob, stats};
+use wolges::{alphabet, bites, error, fash, kwg, prob, stats};
 
+use kwg::{read_le_u16, read_le_u32};
 use std::fmt::Write;
 use std::str::FromStr;
 
@@ -434,19 +435,6 @@ fn default_in(_b: u8) -> error::Returns<Option<u8>> {
 #[inline(always)]
 fn default_out(_b: u8) -> error::Returns<()> {
     Ok(())
-}
-
-#[inline(always)]
-fn read_le_u16(bytes: &[u8], p: usize) -> u16 {
-    bytes[p] as u16 | ((bytes[p + 1] as u16) << 8)
-}
-
-#[inline(always)]
-fn read_le_u32(bytes: &[u8], p: usize) -> u32 {
-    bytes[p] as u32
-        | ((bytes[p + 1] as u32) << 8)
-        | ((bytes[p + 2] as u32) << 16)
-        | ((bytes[p + 3] as u32) << 24)
 }
 
 #[inline(always)]
