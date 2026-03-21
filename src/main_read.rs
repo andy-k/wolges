@@ -1813,25 +1813,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                             quotient == sought_quotient
                                                         } else {
                                                             let this_bit_rack =
-                                                                read_le_u32(wmp_bytes, p) as u128
-                                                                    | ((read_le_u32(
-                                                                        wmp_bytes,
-                                                                        p + 4,
-                                                                    )
-                                                                        as u128)
-                                                                        << 32)
-                                                                    | ((read_le_u32(
-                                                                        wmp_bytes,
-                                                                        p + 8,
-                                                                    )
-                                                                        as u128)
-                                                                        << 64)
-                                                                    | ((read_le_u32(
-                                                                        wmp_bytes,
-                                                                        p + 12,
-                                                                    )
-                                                                        as u128)
-                                                                        << 96);
+                                                                read_le_u128_full(wmp_bytes, p);
                                                             this_bit_rack == b1_bit_rack
                                                         };
                                                         if key_check {
@@ -1885,34 +1867,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                             + bucket_idx as usize
                                                                                 * 4;
                                                                             let bucket_start_idx =
-                                                                                wmp_bytes[p] as u32
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 1]
-                                                                                        as u32)
-                                                                                        << 8)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 2]
-                                                                                        as u32)
-                                                                                        << 16)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 3]
-                                                                                        as u32)
-                                                                                        << 24);
+                                                                                read_le_u32(
+                                                                                    wmp_bytes, p,
+                                                                                );
                                                                             p += 4;
                                                                             let bucket_end_idx =
-                                                                                wmp_bytes[p] as u32
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 1]
-                                                                                        as u32)
-                                                                                        << 8)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 2]
-                                                                                        as u32)
-                                                                                        << 16)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 3]
-                                                                                        as u32)
-                                                                                        << 24);
+                                                                                read_le_u32(
+                                                                                    wmp_bytes, p,
+                                                                                );
                                                                             let mut found = false;
                                                                             for entry_idx in
                                                                                 bucket_start_idx
@@ -1924,85 +1886,15 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                                                                         + 16;
                                                                                 let key_check =
                                                                                     if wmp_ver < 3 {
-                                                                                        let quotient = read_le_u32(wmp_bytes, p)
-                                                                            as u128
-                                                                            | ((read_le_u32(wmp_bytes, p + 4)
-                                                                                as u128)
-                                                                                << 32)
-                                                                            | (((wmp_bytes[p + 8]
-                                                                                as u32
-                                                                                | ((wmp_bytes[p + 9]
-                                                                                    as u32)
-                                                                                    << 8)
-                                                                                | ((wmp_bytes
-                                                                                    [p + 10]
-                                                                                    as u32)
-                                                                                    << 16)
-                                                                                | ((wmp_bytes
-                                                                                    [p + 11]
-                                                                                    as u32)
-                                                                                    << 24))
-                                                                                as u128)
-                                                                                << 64);
+                                                                                        let quotient =
+                                                                                            read_le_u96(wmp_bytes, p);
                                                                                         quotient
-                                                                                == sought_quotient
+                                                                                            == sought_quotient
                                                                                     } else {
                                                                                         let this_bit_rack =
-                                                                            read_le_u32(wmp_bytes, p)
-                                                                                as u128
-                                                                                | (((wmp_bytes
-                                                                                    [p + 4]
-                                                                                    as u32
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 5]
-                                                                                        as u32)
-                                                                                        << 8)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 6]
-                                                                                        as u32)
-                                                                                        << 16)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 7]
-                                                                                        as u32)
-                                                                                        << 24))
-                                                                                    as u128)
-                                                                                    << 32)
-                                                                                | (((wmp_bytes
-                                                                                    [p + 8]
-                                                                                    as u32
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 9]
-                                                                                        as u32)
-                                                                                        << 8)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 10]
-                                                                                        as u32)
-                                                                                        << 16)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 11]
-                                                                                        as u32)
-                                                                                        << 24))
-                                                                                    as u128)
-                                                                                    << 64)
-                                                                                | (((wmp_bytes
-                                                                                    [p + 12]
-                                                                                    as u32
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 13]
-                                                                                        as u32)
-                                                                                        << 8)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 14]
-                                                                                        as u32)
-                                                                                        << 16)
-                                                                                    | ((wmp_bytes
-                                                                                        [p + 15]
-                                                                                        as u32)
-                                                                                        << 24))
-                                                                                    as u128)
-                                                                                    << 96);
+                                                                                            read_le_u128_full(wmp_bytes, p);
                                                                                         this_bit_rack
-                                                                            == unblanked_bit_rack
+                                                                                            == unblanked_bit_rack
                                                                                     };
                                                                                 if key_check {
                                                                                     p -= 16;
