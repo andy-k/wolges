@@ -68,6 +68,19 @@ impl Node for Node24 {
     }
 }
 
+#[inline(always)]
+pub fn read_le_u16(bytes: &[u8], p: usize) -> u16 {
+    bytes[p] as u16 | ((bytes[p + 1] as u16) << 8)
+}
+
+#[inline(always)]
+pub fn read_le_u32(bytes: &[u8], p: usize) -> u32 {
+    bytes[p] as u32
+        | ((bytes[p + 1] as u32) << 8)
+        | ((bytes[p + 2] as u32) << 16)
+        | ((bytes[p + 3] as u32) << 24)
+}
+
 pub struct Kwg<N: Node>(pub Box<[N]>);
 
 // kwg::Node22
@@ -88,12 +101,7 @@ impl<N: Node> Kwg<N> {
         let mut elts = Vec::with_capacity(kwg_len);
         let mut r = 0;
         for _ in 0..kwg_len {
-            elts.push(N::new(
-                buf[r] as u32
-                    | ((buf[r + 1] as u32) << 8)
-                    | ((buf[r + 2] as u32) << 16)
-                    | ((buf[r + 3] as u32) << 24),
-            ));
+            elts.push(N::new(read_le_u32(buf, r)));
             r += 4;
         }
         Kwg(elts.into_boxed_slice())
