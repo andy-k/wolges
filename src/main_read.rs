@@ -681,18 +681,15 @@ fn dump_dawg<R: WgReader, A: AlphabetLabel>(
     label: &A,
     reader: &R,
     bytes: &[u8],
-    initial_idx: usize,
+    initial_arc_index: usize,
     blank_str: Option<&str>,
 ) -> error::Returns<()> {
-    if initial_idx >= reader.len(bytes) {
-        return Err("out of bounds".into());
-    }
     let mut ret = String::new();
     iter_dawg(
         label,
         reader,
         bytes,
-        reader.arc_index(bytes, initial_idx),
+        initial_arc_index,
         blank_str,
         &mut |s: &str| {
             ret.push_str(s);
@@ -803,12 +800,15 @@ fn do_wg_dawg<R: WgReader>(
     blank_str: Option<&str>,
 ) -> error::Returns<()> {
     let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    if initial_node_idx >= reader.len(bytes) {
+        return Err("out of bounds".into());
+    }
     dump_dawg(
         args,
         &WolgesAlphabetLabel { alphabet },
         reader,
         bytes,
-        initial_node_idx,
+        reader.arc_index(bytes, initial_node_idx),
         blank_str,
     )
 }
@@ -963,6 +963,9 @@ fn do_quackle<R: WgReader>(
         }
     }
     let reader = make_reader_fn(p);
+    if 1 >= reader.len(quackle_bytes) {
+        return Err("out of bounds".into());
+    }
     dump_dawg(
         args,
         &QuackleAlphabetLabel { alpha: &alpha },
@@ -3034,6 +3037,9 @@ input/output files can be \"-\" (not advisable for binary files)"
             do_quackle(&args, |p| QuackleSmallReader { offset: p })?;
         } else if args[1] == "zyzzyva" {
             let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+            if 0x8 > bytes.len() {
+                return Err("out of bounds".into());
+            }
             dump_dawg(
                 &args,
                 &LexpertAlphabetLabel {},
