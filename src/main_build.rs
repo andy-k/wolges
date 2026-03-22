@@ -438,18 +438,15 @@ fn main() -> error::Returns<()> {
   english-lxd CSW24.kwg \"CSW24 something\" \"17 June 2021\" UKNA.lxd
     read kwg file, with title and date, save lxd
   english-kwg-alpha CSW24.txt CSW24.kad
-  english-kbwg-alpha CSW24.txt CSW24.kad
     generate kad file containing alpha dawg
   english-kwg-dawg CSW24.txt outfile.dwg
-  english-kbwg-dawg CSW24.txt outfile.dwg
     generate dawg-only file
   english-kwg-score CSW24.txt CSW24.kwg
-  english-kbwg-score CSW24.txt CSW24.kwg
   english-kwg-score-alpha CSW24.txt CSW24.kad
-  english-kbwg-score-alpha CSW24.txt CSW24.kad
   english-kwg-score-dawg CSW24.txt outfile.dwg
-  english-kbwg-score-dawg CSW24.txt outfile.dwg
     same as above but with representative same-score tiles
+  (kbwg-alpha, kbwg-dawg, kbwg-score, kbwg-score-alpha, kbwg-score-dawg
+    also exist but produce a different format not widely supported by readers)
   english-sort-words in.txt out.txt
   english-sort-words-len in.txt out.txt
     rewrite words uniq/sorted by alpha/len
