@@ -271,10 +271,12 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     )?)?;
                     Ok(true)
                 }
-                "-kwg" | "-kbwg" | "-kwg-dawg" | "-kwg-alpha" | "-kwg-score"
-                | "-kwg-score-dawg" | "-kwg-score-alpha" => {
+                "-kwg" | "-kbwg" | "-kwg-dawg" | "-kbwg-dawg" | "-kwg-alpha"
+                | "-kbwg-alpha" | "-kwg-score" | "-kbwg-score" | "-kwg-score-dawg"
+                | "-kbwg-score-dawg" | "-kwg-score-alpha" | "-kbwg-score-alpha" => {
                     let score = args1_suffix.contains("score");
                     let alpha = args1_suffix.contains("alpha");
+                    let big = args1_suffix.starts_with("-kbwg");
                     let alph = make_alphabet();
                     let alphabet_reader = if score {
                         alphabet::AlphabetReader::new_for_word_scores(&alph)
@@ -297,7 +299,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     } else {
                         build::BuildContent::Gaddawg
                     };
-                    let built = if args1_suffix == "-kbwg" {
+                    let built = if big {
                         build::build_big(build_content, build_layout, &words)?
                     } else {
                         build::build(build_content, build_layout, &words)?
@@ -436,12 +438,17 @@ fn main() -> error::Returns<()> {
   english-lxd CSW24.kwg \"CSW24 something\" \"17 June 2021\" UKNA.lxd
     read kwg file, with title and date, save lxd
   english-kwg-alpha CSW24.txt CSW24.kad
+  english-kbwg-alpha CSW24.txt CSW24.kad
     generate kad file containing alpha dawg
   english-kwg-dawg CSW24.txt outfile.dwg
+  english-kbwg-dawg CSW24.txt outfile.dwg
     generate dawg-only file
   english-kwg-score CSW24.txt CSW24.kwg
+  english-kbwg-score CSW24.txt CSW24.kwg
   english-kwg-score-alpha CSW24.txt CSW24.kad
+  english-kbwg-score-alpha CSW24.txt CSW24.kad
   english-kwg-score-dawg CSW24.txt outfile.dwg
+  english-kbwg-score-dawg CSW24.txt outfile.dwg
     same as above but with representative same-score tiles
   english-sort-words in.txt out.txt
   english-sort-words-len in.txt out.txt
