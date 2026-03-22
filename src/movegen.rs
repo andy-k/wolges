@@ -80,7 +80,7 @@ struct WorkingBuffer {
     best_leave_values: Vec<f32>,          // rack.len() + 1
     found_placements: Vec<PossiblePlacement>,
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
-    accepts_alpha_cache: Box<[(u64, bool)]>, // jumbled mode only
+    accepts_alpha_cache: Box<[([u8; 64], bool)]>, // jumbled mode only
     used_tile_scores_shadowl: Vec<i8>, // rack.len() (for shadow_play_left)
     used_tile_scores_shadowr: Vec<i8>, // rack.len() (for shadow_play_right)
     rack_tally_shadowl: Box<[u8]>, // 27 for ?A-Z (for shadow_play_left)
@@ -140,7 +140,7 @@ impl Clone for WorkingBuffer {
             best_leave_values: self.best_leave_values.clone(),
             found_placements: self.found_placements.clone(),
             used_letters_tally: self.used_letters_tally.clone(),
-            accepts_alpha_cache: self.accepts_alpha_cache.clone(),
+            accepts_alpha_cache: self.accepts_alpha_cache.clone(), // jumbled mode only
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
             rack_tally_shadowl: self.rack_tally_shadowl.clone(),
@@ -299,7 +299,7 @@ impl WorkingBuffer {
             best_leave_values: Vec::new(),
             found_placements: Vec::new(),
             used_letters_tally: Vec::new(),
-            accepts_alpha_cache: vec![(0u64, false); 128].into_boxed_slice(),
+            accepts_alpha_cache: vec![([0u8; 64], false); 128].into_boxed_slice(),
             used_tile_scores_shadowl: Vec::new(),
             used_tile_scores_shadowr: Vec::new(),
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
@@ -511,7 +511,7 @@ impl WorkingBuffer {
             p_right: 0,
             bits: 0,
         });
-        self.accepts_alpha_cache.fill((0, false));
+        self.accepts_alpha_cache.fill(([0u8; 64], false));
     }
 }
 
@@ -1417,7 +1417,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg:
     callback: CallbackType,
     multi_leaves: &'a klv::MultiLeaves,
     used_letters_tally: &'a mut [u8], // jumbled mode only
-    accepts_alpha_cache: &'a mut [(u64, bool)], // jumbled mode only
+    accepts_alpha_cache: &'a mut [([u8; 64], bool)], // jumbled mode only
 }
 
 fn gen_classic_place_moves<
@@ -1747,19 +1747,20 @@ fn gen_jumbled_place_moves<
     fn accepts_alpha_cached<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
         params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
     ) -> bool {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for &b in params.used_letters_tally.iter() {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x100000001b3);
+        let tally = &*params.used_letters_tally;
+        let mut key = [0u8; 64];
+        key[..tally.len()].copy_from_slice(tally);
+        let mut h: usize = 0;
+        for &b in tally {
+            h = h.wrapping_mul(31).wrapping_add(b as usize);
         }
-        h |= 1; // ensure nonzero
-        let cache_idx = (h as usize) & (params.accepts_alpha_cache.len() - 1);
-        let cached = params.accepts_alpha_cache[cache_idx];
-        if cached.0 == h {
+        let cache_idx = h & (params.accepts_alpha_cache.len() - 1);
+        let cached = &params.accepts_alpha_cache[cache_idx];
+        if cached.0 == key {
             return cached.1;
         }
-        let result = params.board_snapshot.kwg.accepts_alpha(&params.used_letters_tally);
-        params.accepts_alpha_cache[cache_idx] = (h, result);
+        let result = params.board_snapshot.kwg.accepts_alpha(tally);
+        params.accepts_alpha_cache[cache_idx] = (key, result);
         result
     }
 
