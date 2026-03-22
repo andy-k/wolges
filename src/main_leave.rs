@@ -1517,15 +1517,13 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
         'p' => kv.sort_unstable_by(|a, b| {
             a.0.len().cmp(&b.0.len()).then_with(|| {
                 b.1.equity
-                    .partial_cmp(&a.1.equity)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .total_cmp(&a.1.equity)
                     .then_with(|| a.0.cmp(&b.0))
             })
         }),
         'P' => kv.sort_unstable_by(|a, b| {
             b.1.equity
-                .partial_cmp(&a.1.equity)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.1.equity)
                 .then_with(|| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)))
         }),
         _ => unimplemented!(),
@@ -1957,8 +1955,8 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                      _score: i32| true,
                                     |leave_value: f32| leave_value,
                                     |equity: f32, play: &movegen::Play| {
-                                        match equity.partial_cmp(&best_equity_so_far) {
-                                            Some(std::cmp::Ordering::Greater) => {
+                                        match equity.total_cmp(&best_equity_so_far) {
+                                            std::cmp::Ordering::Greater => {
                                                 best_equity_so_far = equity;
                                                 vec_played.clear();
                                                 num_plays = 0;
@@ -1991,7 +1989,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                                 num_plays += 1;
                                                 true
                                             }
-                                            Some(std::cmp::Ordering::Equal) => {
+                                            std::cmp::Ordering::Equal => {
                                                 match play {
                                                     movegen::Play::Exchange { .. } => {}
                                                     movegen::Play::Place {
@@ -2021,7 +2019,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                                 num_plays += 1;
                                                 false // ensure top two have different equities.
                                             }
-                                            Some(std::cmp::Ordering::Less) | None => false,
+                                            std::cmp::Ordering::Less => false,
                                         }
                                     },
                                 );
@@ -2141,8 +2139,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         kv.sort_unstable_by(|a, b| {
             a.0.len().cmp(&b.0.len()).then_with(|| {
                 b.1.equity
-                    .partial_cmp(&a.1.equity)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .total_cmp(&a.1.equity)
                     .then_with(|| a.0.cmp(b.0))
             })
         });

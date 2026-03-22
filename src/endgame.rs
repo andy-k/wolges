@@ -507,7 +507,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let low_idx = state_eval.child_play_idxs[player_idx as usize];
         let high_idx = state_eval.child_play_idxs[player_idx as usize + 1];
         self.work_buffer.child_plays[low_idx..high_idx]
-            .sort_unstable_by(|a, b| b.valuation.partial_cmp(&a.valuation).unwrap());
+            .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
 
         // perform actual negamax
         let mut best_idx = !0;

@@ -324,7 +324,7 @@ fn main() -> error::Returns<()> {
         }
         if should_output {
             candidates
-                .sort_unstable_by(|a, b| b.stats.mean().partial_cmp(&a.stats.mean()).unwrap());
+                .sort_unstable_by(|a, b| b.stats.mean().total_cmp(&a.stats.mean()));
             for (i, candidate) in (1..).zip(candidates.iter().take(10)) {
                 println!(
                     "{:3} {:6.2} {:6.2} {}",

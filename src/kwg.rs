@@ -114,8 +114,9 @@ impl<N: Node> Kwg<N> {
             if p > 0 {
                 loop {
                     let node = self[p];
-                    if node.tile() == tile {
-                        return p;
+                    let t = node.tile();
+                    if t >= tile {
+                        return if t == tile { p } else { -1 };
                     }
                     if node.is_end() {
                         return -1;
