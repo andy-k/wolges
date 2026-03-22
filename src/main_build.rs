@@ -271,81 +271,38 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     )?)?;
                     Ok(true)
                 }
-                "-kwg" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::Gaddawg,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kbwg" => {
-                    make_writer(&args[3])?.write_all(&build::build_big(
-                        build::BuildContent::Gaddawg,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-dawg" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::DawgOnly,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-alpha" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::DawgOnly,
-                        build_layout,
-                        &build::make_alphagrams(&read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?),
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-score" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::Gaddawg,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-score-dawg" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::DawgOnly,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-score-alpha" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::DawgOnly,
-                        build_layout,
-                        &build::make_alphagrams(&read_machine_words(
-                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?),
-                    )?)?;
+                "-kwg" | "-kbwg" | "-kwg-dawg" | "-kwg-alpha" | "-kwg-score"
+                | "-kwg-score-dawg" | "-kwg-score-alpha" => {
+                    let score = args1_suffix.contains("score");
+                    let alpha = args1_suffix.contains("alpha");
+                    let alph = make_alphabet();
+                    let alphabet_reader = if score {
+                        alphabet::AlphabetReader::new_for_word_scores(&alph)
+                    } else {
+                        alphabet::AlphabetReader::new_for_words(&alph)
+                    };
+                    let words = read_machine_words(
+                        &alphabet_reader,
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?;
+                    let words = if alpha {
+                        build::make_alphagrams(&words)
+                    } else {
+                        words
+                    };
+                    let build_content = if args1_suffix.contains("dawg")
+                        || args1_suffix.contains("alpha")
+                    {
+                        build::BuildContent::DawgOnly
+                    } else {
+                        build::BuildContent::Gaddawg
+                    };
+                    let built = if args1_suffix == "-kbwg" {
+                        build::build_big(build_content, build_layout, &words)?
+                    } else {
+                        build::build(build_content, build_layout, &words)?
+                    };
+                    make_writer(&args[3])?.write_all(&built)?;
                     Ok(true)
                 }
                 "-macondo" => {
