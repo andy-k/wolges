@@ -405,8 +405,7 @@ fn read_machine_words_sorted_by_length(
             if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
                 v.push(tile);
                 ix = end_ix;
-            } else if ix > 0 && *unsafe { sb.get_unchecked(ix) } <= b' ' {
-                // Safe because already checked length.
+            } else if ix > 0 && sb[ix] <= b' ' {
                 break;
             } else {
                 wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));

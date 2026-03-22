@@ -3,10 +3,10 @@
 use wolges::kwg::Node;
 use wolges::{alphabet, bites, build, error, fash, kwg, lexport, prob};
 
-fn read_machine_words(
+fn parse_machine_words(
     alphabet_reader: &alphabet::AlphabetReader,
     giant_string: &str,
-) -> error::Returns<Box<[bites::Bites]>> {
+) -> error::Returns<Vec<bites::Bites>> {
     let mut machine_words = Vec::<bites::Bites>::new();
     let mut v = Vec::new();
     for s in giant_string.lines() {
@@ -20,8 +20,7 @@ fn read_machine_words(
             if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
                 v.push(tile);
                 ix = end_ix;
-            } else if ix > 0 && *unsafe { sb.get_unchecked(ix) } <= b' ' {
-                // Safe because already checked length.
+            } else if ix > 0 && sb[ix] <= b' ' {
                 break;
             } else {
                 wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
@@ -29,38 +28,24 @@ fn read_machine_words(
         }
         machine_words.push(v[..].into());
     }
+    Ok(machine_words)
+}
+
+fn read_machine_words(
+    alphabet_reader: &alphabet::AlphabetReader,
+    giant_string: &str,
+) -> error::Returns<Box<[bites::Bites]>> {
+    let mut machine_words = parse_machine_words(alphabet_reader, giant_string)?;
     machine_words.sort_unstable();
     machine_words.dedup();
     Ok(machine_words.into_boxed_slice())
 }
 
-// adjusted from main_build read_machine_words.
 fn read_machine_words_sorted_by_length(
     alphabet_reader: &alphabet::AlphabetReader,
     giant_string: &str,
 ) -> error::Returns<Box<[bites::Bites]>> {
-    let mut machine_words = Vec::<bites::Bites>::new();
-    let mut v = Vec::new();
-    for s in giant_string.lines() {
-        if s.is_empty() {
-            continue;
-        }
-        let sb = s.as_bytes();
-        v.clear();
-        let mut ix = 0;
-        while ix < sb.len() {
-            if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                v.push(tile);
-                ix = end_ix;
-            } else if ix > 0 && *unsafe { sb.get_unchecked(ix) } <= b' ' {
-                // Safe because already checked length.
-                break;
-            } else {
-                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
-            }
-        }
-        machine_words.push(v[..].into());
-    }
+    let mut machine_words = parse_machine_words(alphabet_reader, giant_string)?;
     machine_words.sort_unstable_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
     machine_words.dedup();
     Ok(machine_words.into_boxed_slice())
@@ -68,10 +53,11 @@ fn read_machine_words_sorted_by_length(
 
 use std::str::FromStr;
 
-fn build_leaves<Readable: std::io::Read>(
+fn build_leaves_scaled_i16<Readable: std::io::Read>(
     f: Readable,
     alph: alphabet::Alphabet,
     build_layout: build::BuildLayout,
+    scale: f32,
 ) -> error::Returns<Vec<u8>> {
     let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
     let mut leaves_map: fash::MyHashMap<bites::Bites, _> = fash::MyHashMap::default();
@@ -81,15 +67,16 @@ fn build_leaves<Readable: std::io::Read>(
         let record = result?;
         alphabet_reader.set_word(&record[0], &mut v)?;
         v.sort_unstable();
-        let rounded_leave = (f32::from_str(&record[1])? * 256.0).round();
+        let rounded_leave = (f32::from_str(&record[1])? * scale).round();
         let int_leave = rounded_leave as i16;
         assert!(
             (int_leave as f32 - rounded_leave).abs() == 0.0,
-            "for {}: {} (f32) {} (*256) {} (round) {} (int) {} (float) {} (-) {} (abs) {}",
+            "for {}: {} (f32) {} (*{}) {} (round) {} (int) {} (float) {} (-) {} (abs) {}",
             &record[0],
             &record[1],
             f32::from_str(&record[1])?,
-            f32::from_str(&record[1])? * 256.0,
+            scale,
+            f32::from_str(&record[1])? * scale,
             rounded_leave,
             int_leave,
             int_leave as f32,
@@ -176,67 +163,6 @@ fn build_leaves_f32<Readable: std::io::Read>(
     Ok(bin)
 }
 
-// same as build_leaves() but scales by 8.0 instead of 256.0.
-fn build_leaves_i16<Readable: std::io::Read>(
-    f: Readable,
-    alph: alphabet::Alphabet,
-    build_layout: build::BuildLayout,
-) -> error::Returns<Vec<u8>> {
-    let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
-    let mut leaves_map: fash::MyHashMap<bites::Bites, _> = fash::MyHashMap::default();
-    let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
-    let mut v = Vec::new();
-    for result in csv_reader.records() {
-        let record = result?;
-        alphabet_reader.set_word(&record[0], &mut v)?;
-        v.sort_unstable();
-        let rounded_leave = (f32::from_str(&record[1])? * 8.0).round();
-        let int_leave = rounded_leave as i16;
-        assert!(
-            (int_leave as f32 - rounded_leave).abs() == 0.0,
-            "for {}: {} (f32) {} (*8) {} (round) {} (int) {} (float) {} (-) {} (abs) {}",
-            &record[0],
-            &record[1],
-            f32::from_str(&record[1])?,
-            f32::from_str(&record[1])? * 8.0,
-            rounded_leave,
-            int_leave,
-            int_leave as f32,
-            int_leave as f32 - rounded_leave,
-            (int_leave as f32 - rounded_leave).abs(),
-        );
-        if leaves_map.insert(v[..].into(), int_leave).is_some() {
-            wolges::return_error!(format!("duplicate record {}", &record[0]));
-        }
-    }
-    let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
-    sorted_machine_words.sort_unstable();
-    let leaves_kwg = build::build(
-        build::BuildContent::DawgOnly,
-        build_layout,
-        &sorted_machine_words,
-    )?;
-    let leave_values = sorted_machine_words
-        .iter()
-        .map(|s| leaves_map[s])
-        .collect::<Box<_>>();
-    drop(sorted_machine_words);
-    drop(leaves_map);
-    let mut bin = vec![0; 2 * 4 + leaves_kwg.len() + leave_values.len() * 2];
-    let mut w = 0;
-    bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
-    w += 4;
-    bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
-    w += leaves_kwg.len();
-    bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
-    w += 4;
-    for v in &leave_values[..] {
-        bin[w..w + 2].copy_from_slice(&v.to_le_bytes());
-        w += 2;
-    }
-    assert_eq!(w, bin.len());
-    Ok(bin)
-}
 
 fn read_leaves_f32<Readable: std::io::Read>(
     f: Readable,
@@ -320,10 +246,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
             }
             match args1_suffix {
                 "-klv" => {
-                    make_writer(&args[3])?.write_all(&build_leaves(
+                    make_writer(&args[3])?.write_all(&build_leaves_scaled_i16(
                         &mut make_reader(&args[2])?,
                         make_alphabet(),
                         build_layout,
+                        256.0,
                     )?)?;
                     Ok(true)
                 }
@@ -336,88 +263,48 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     Ok(true)
                 }
                 "-klv16" => {
-                    make_writer(&args[3])?.write_all(&build_leaves_i16(
+                    make_writer(&args[3])?.write_all(&build_leaves_scaled_i16(
                         &mut make_reader(&args[2])?,
                         make_alphabet(),
                         build_layout,
+                        8.0,
                     )?)?;
                     Ok(true)
                 }
-                "-kwg" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::Gaddawg,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kbwg" => {
-                    make_writer(&args[3])?.write_all(&build::build_big(
-                        build::BuildContent::Gaddawg,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-dawg" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::DawgOnly,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-alpha" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::DawgOnly,
-                        build_layout,
-                        &build::make_alphagrams(&read_machine_words(
-                            &alphabet::AlphabetReader::new_for_words(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?),
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-score" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::Gaddawg,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-score-dawg" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::DawgOnly,
-                        build_layout,
-                        &read_machine_words(
-                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?,
-                    )?)?;
-                    Ok(true)
-                }
-                "-kwg-score-alpha" => {
-                    make_writer(&args[3])?.write_all(&build::build(
-                        build::BuildContent::DawgOnly,
-                        build_layout,
-                        &build::make_alphagrams(&read_machine_words(
-                            &alphabet::AlphabetReader::new_for_word_scores(&make_alphabet()),
-                            &read_to_string(&mut make_reader(&args[2])?)?,
-                        )?),
-                    )?)?;
+                "-kwg" | "-kbwg" | "-kwg-dawg" | "-kbwg-dawg" | "-kwg-alpha"
+                | "-kbwg-alpha" | "-kwg-score" | "-kbwg-score" | "-kwg-score-dawg"
+                | "-kbwg-score-dawg" | "-kwg-score-alpha" | "-kbwg-score-alpha" => {
+                    let score = args1_suffix.contains("score");
+                    let alpha = args1_suffix.contains("alpha");
+                    let big = args1_suffix.starts_with("-kbwg");
+                    let alph = make_alphabet();
+                    let alphabet_reader = if score {
+                        alphabet::AlphabetReader::new_for_word_scores(&alph)
+                    } else {
+                        alphabet::AlphabetReader::new_for_words(&alph)
+                    };
+                    let words = read_machine_words(
+                        &alphabet_reader,
+                        &read_to_string(&mut make_reader(&args[2])?)?,
+                    )?;
+                    let words = if alpha {
+                        build::make_alphagrams(&words)
+                    } else {
+                        words
+                    };
+                    let build_content = if args1_suffix.contains("dawg")
+                        || args1_suffix.contains("alpha")
+                    {
+                        build::BuildContent::DawgOnly
+                    } else {
+                        build::BuildContent::Gaddawg
+                    };
+                    let built = if big {
+                        build::build_big(build_content, build_layout, &words)?
+                    } else {
+                        build::build(build_content, build_layout, &words)?
+                    };
+                    make_writer(&args[3])?.write_all(&built)?;
                     Ok(true)
                 }
                 "-macondo" => {
@@ -478,75 +365,39 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     make_writer(&args[3])?.write_all(ret.as_bytes())?;
                     Ok(true)
                 }
-                "-sort-leaves" => {
+                "-sort-leaves" | "-sort-leaves-len" | "-sort-leaves-val"
+                | "-sort-leaves-lenval" => {
                     let alphabet = make_alphabet();
                     let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
                         .drain()
                         .collect::<Box<_>>();
-                    leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                    let mut s = String::new();
-                    for (k, v) in leaves {
-                        s.clear();
-                        for &tile in &k[..] {
-                            s.push_str(alphabet.of_rack(tile).unwrap());
+                    match args1_suffix {
+                        "-sort-leaves" => {
+                            leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                         }
-                        csv_out.serialize((&s, v))?;
-                    }
-                    Ok(true)
-                }
-                "-sort-leaves-len" => {
-                    let alphabet = make_alphabet();
-                    let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
-                        .drain()
-                        .collect::<Box<_>>();
-                    leaves.sort_unstable_by(|a, b| {
-                        a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0))
-                    });
-                    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                    let mut s = String::new();
-                    for (k, v) in leaves {
-                        s.clear();
-                        for &tile in &k[..] {
-                            s.push_str(alphabet.of_rack(tile).unwrap());
+                        "-sort-leaves-len" => {
+                            leaves.sort_unstable_by(|a, b| {
+                                a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0))
+                            });
                         }
-                        csv_out.serialize((&s, v))?;
-                    }
-                    Ok(true)
-                }
-                "-sort-leaves-val" => {
-                    let alphabet = make_alphabet();
-                    let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
-                        .drain()
-                        .collect::<Box<_>>();
-                    leaves.sort_unstable_by(|a, b| {
-                        b.1.partial_cmp(&a.1)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| a.0.cmp(&b.0))
-                    });
-                    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                    let mut s = String::new();
-                    for (k, v) in leaves {
-                        s.clear();
-                        for &tile in &k[..] {
-                            s.push_str(alphabet.of_rack(tile).unwrap());
+                        "-sort-leaves-val" => {
+                            leaves.sort_unstable_by(|a, b| {
+                                b.1.partial_cmp(&a.1)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                                    .then_with(|| a.0.cmp(&b.0))
+                            });
                         }
-                        csv_out.serialize((&s, v))?;
+                        "-sort-leaves-lenval" => {
+                            leaves.sort_unstable_by(|a, b| {
+                                a.0.len().cmp(&b.0.len()).then_with(|| {
+                                    b.1.partial_cmp(&a.1)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                        .then_with(|| a.0.cmp(&b.0))
+                                })
+                            });
+                        }
+                        _ => unreachable!(),
                     }
-                    Ok(true)
-                }
-                "-sort-leaves-lenval" => {
-                    let alphabet = make_alphabet();
-                    let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
-                        .drain()
-                        .collect::<Box<_>>();
-                    leaves.sort_unstable_by(|a, b| {
-                        a.0.len().cmp(&b.0.len()).then_with(|| {
-                            b.1.partial_cmp(&a.1)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                                .then_with(|| a.0.cmp(&b.0))
-                        })
-                    });
                     let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                     let mut s = String::new();
                     for (k, v) in leaves {
@@ -594,6 +445,8 @@ fn main() -> error::Returns<()> {
   english-kwg-score-alpha CSW24.txt CSW24.kad
   english-kwg-score-dawg CSW24.txt outfile.dwg
     same as above but with representative same-score tiles
+  (kbwg-alpha, kbwg-dawg, kbwg-score, kbwg-score-alpha, kbwg-score-dawg
+    also exist but produce a different format not widely supported by readers)
   english-sort-words in.txt out.txt
   english-sort-words-len in.txt out.txt
     rewrite words uniq/sorted by alpha/len
@@ -887,7 +740,7 @@ fn old_main() -> error::Returns<()> {
                 tmp_vec.extend_from_slice(word);
                 tmp_vec.sort_unstable();
                 let alphagram: bites::Bites = tmp_vec[..].into();
-                max_len = max_len.max(v.len());
+                max_len = max_len.max(word.len());
                 (alphagram, word_prob.count_ways(word))
             })
             .collect::<Box<_>>();
