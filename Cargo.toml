@@ -62,3 +62,7 @@ path = "src/main_shell.rs"
 [[bin]]
 name = "simmer"
 path = "src/main_simmer.rs"
+
+[[bin]]
+name = "movegen-test"
+path = "src/main_movegen_test.rs"
