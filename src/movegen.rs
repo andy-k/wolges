@@ -2203,7 +2203,7 @@ impl Clone for ValuedMove {
 impl PartialEq for ValuedMove {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        (other.equity - self.equity) == 0.0
+        self.equity == other.equity
     }
 }
 
