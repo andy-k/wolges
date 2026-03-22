@@ -406,75 +406,39 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     make_writer(&args[3])?.write_all(ret.as_bytes())?;
                     Ok(true)
                 }
-                "-sort-leaves" => {
+                "-sort-leaves" | "-sort-leaves-len" | "-sort-leaves-val"
+                | "-sort-leaves-lenval" => {
                     let alphabet = make_alphabet();
                     let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
                         .drain()
                         .collect::<Box<_>>();
-                    leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                    let mut s = String::new();
-                    for (k, v) in leaves {
-                        s.clear();
-                        for &tile in &k[..] {
-                            s.push_str(alphabet.of_rack(tile).unwrap());
+                    match args1_suffix {
+                        "-sort-leaves" => {
+                            leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                         }
-                        csv_out.serialize((&s, v))?;
-                    }
-                    Ok(true)
-                }
-                "-sort-leaves-len" => {
-                    let alphabet = make_alphabet();
-                    let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
-                        .drain()
-                        .collect::<Box<_>>();
-                    leaves.sort_unstable_by(|a, b| {
-                        a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0))
-                    });
-                    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                    let mut s = String::new();
-                    for (k, v) in leaves {
-                        s.clear();
-                        for &tile in &k[..] {
-                            s.push_str(alphabet.of_rack(tile).unwrap());
+                        "-sort-leaves-len" => {
+                            leaves.sort_unstable_by(|a, b| {
+                                a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0))
+                            });
                         }
-                        csv_out.serialize((&s, v))?;
-                    }
-                    Ok(true)
-                }
-                "-sort-leaves-val" => {
-                    let alphabet = make_alphabet();
-                    let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
-                        .drain()
-                        .collect::<Box<_>>();
-                    leaves.sort_unstable_by(|a, b| {
-                        b.1.partial_cmp(&a.1)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| a.0.cmp(&b.0))
-                    });
-                    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                    let mut s = String::new();
-                    for (k, v) in leaves {
-                        s.clear();
-                        for &tile in &k[..] {
-                            s.push_str(alphabet.of_rack(tile).unwrap());
+                        "-sort-leaves-val" => {
+                            leaves.sort_unstable_by(|a, b| {
+                                b.1.partial_cmp(&a.1)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                                    .then_with(|| a.0.cmp(&b.0))
+                            });
                         }
-                        csv_out.serialize((&s, v))?;
+                        "-sort-leaves-lenval" => {
+                            leaves.sort_unstable_by(|a, b| {
+                                a.0.len().cmp(&b.0.len()).then_with(|| {
+                                    b.1.partial_cmp(&a.1)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                        .then_with(|| a.0.cmp(&b.0))
+                                })
+                            });
+                        }
+                        _ => unreachable!(),
                     }
-                    Ok(true)
-                }
-                "-sort-leaves-lenval" => {
-                    let alphabet = make_alphabet();
-                    let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
-                        .drain()
-                        .collect::<Box<_>>();
-                    leaves.sort_unstable_by(|a, b| {
-                        a.0.len().cmp(&b.0.len()).then_with(|| {
-                            b.1.partial_cmp(&a.1)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                                .then_with(|| a.0.cmp(&b.0))
-                        })
-                    });
                     let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                     let mut s = String::new();
                     for (k, v) in leaves {
