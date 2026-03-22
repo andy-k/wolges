@@ -52,7 +52,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
 fn top_candidate_play_index_by_mean(candidates: &[Candidate]) -> usize {
     candidates
         .iter()
-        .max_by(|a, b| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
+        .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
         .unwrap()
         .play_index
 }
@@ -94,7 +94,7 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                     .iter()
                     .enumerate()
                     .map(|(i, candidate)| (i, candidate.stats.ci_max(-z)))
-                    .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    .min_by(|(_, a), (_, b)| a.total_cmp(b))
                     .unwrap()
                     .0,
             );
@@ -173,7 +173,7 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                         let low_bar = candidates
                             .iter()
                             .map(|candidate| candidate.stats.ci_max(-Z))
-                            .max_by(|a, b| a.partial_cmp(b).unwrap())
+                            .max_by(|a, b| a.total_cmp(b))
                             .unwrap();
                         candidates.retain(|candidate| candidate.stats.ci_max(Z) >= low_bar);
                         Self::limit_surviving_candidates(
@@ -190,7 +190,7 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 let top_idx = candidates
                     .iter()
                     .enumerate()
-                    .max_by(|(_, a), (_, b)| a.stats.mean().partial_cmp(&b.stats.mean()).unwrap())
+                    .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
                     .unwrap()
                     .0;
                 println!(

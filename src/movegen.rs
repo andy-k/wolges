@@ -2910,8 +2910,7 @@ fn kurnia_gen_place_moves_iter<
         // this will be iterated in reverse order, so sort by best_possible_equity increasing.
         found_placements.sort_unstable_by(|a, b| {
             a.best_possible_equity
-                .partial_cmp(&b.best_possible_equity)
-                .unwrap()
+                .total_cmp(&b.best_possible_equity)
         });
     }
     working_buffer.found_placements = found_placements;
