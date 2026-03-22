@@ -2725,6 +2725,8 @@ fn main() -> error::Returns<()> {
     generate .wmp v3
   (english can also be catalan, dutch, french, german, norwegian, polish,
     slovene, spanish, decimal, hex)
+  (english can also be custom, with an extra alphabet file argument:
+    custom-kwg alphabet.txt CSW24.kwg CSW24.txt)
   klv-kwg-extract CSW24.klv2 racks.kwg
     just copy out the kwg for further analysis.
   kwg-hitcheck CSW24.kwg cls csa ncs outfile
@@ -2784,6 +2786,18 @@ input/output files can be \"-\" (not advisable for binary files)"
                 alphabet::make_hong_kong_english_alphabet,
             )?
         {
+        } else if args[1].starts_with("custom-") {
+            if args.len() < 3 {
+                return Err("need alphabet file".into());
+            }
+            let alph_text = std::fs::read_to_string(&args[2])?;
+            let mut shifted_args = vec![args[0].clone(), args[1].clone()];
+            shifted_args.extend_from_slice(&args[3..]);
+            if !do_lang(&shifted_args, "custom", || {
+                alphabet::Alphabet::new_static_from_text(&alph_text).unwrap()
+            })? {
+                return Err("invalid argument".into());
+            }
         } else if args[1] == "klv-kwg-extract" {
             let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
             let parts = parse_klv(klv_bytes)?;
