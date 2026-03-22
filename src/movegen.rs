@@ -80,6 +80,7 @@ struct WorkingBuffer {
     best_leave_values: Vec<f32>,          // rack.len() + 1
     found_placements: Vec<PossiblePlacement>,
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
+    accepts_alpha_cache: Box<[(u64, bool)]>, // jumbled mode only
     used_tile_scores_shadowl: Vec<i8>, // rack.len() (for shadow_play_left)
     used_tile_scores_shadowr: Vec<i8>, // rack.len() (for shadow_play_right)
     rack_tally_shadowl: Box<[u8]>, // 27 for ?A-Z (for shadow_play_left)
@@ -139,6 +140,7 @@ impl Clone for WorkingBuffer {
             best_leave_values: self.best_leave_values.clone(),
             found_placements: self.found_placements.clone(),
             used_letters_tally: self.used_letters_tally.clone(),
+            accepts_alpha_cache: self.accepts_alpha_cache.clone(),
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
             rack_tally_shadowl: self.rack_tally_shadowl.clone(),
@@ -204,6 +206,8 @@ impl Clone for WorkingBuffer {
         self.found_placements.clone_from(&source.found_placements);
         self.used_letters_tally
             .clone_from(&source.used_letters_tally);
+        self.accepts_alpha_cache
+            .clone_from(&source.accepts_alpha_cache);
         self.used_tile_scores_shadowl
             .clone_from(&source.used_tile_scores_shadowl);
         self.used_tile_scores_shadowr
@@ -295,6 +299,7 @@ impl WorkingBuffer {
             best_leave_values: Vec::new(),
             found_placements: Vec::new(),
             used_letters_tally: Vec::new(),
+            accepts_alpha_cache: vec![(0u64, false); 128].into_boxed_slice(),
             used_tile_scores_shadowl: Vec::new(),
             used_tile_scores_shadowr: Vec::new(),
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
@@ -506,6 +511,7 @@ impl WorkingBuffer {
             p_right: 0,
             bits: 0,
         });
+        self.accepts_alpha_cache.fill((0, false));
     }
 }
 
@@ -1411,6 +1417,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg:
     callback: CallbackType,
     multi_leaves: &'a klv::MultiLeaves,
     used_letters_tally: &'a mut [u8], // jumbled mode only
+    accepts_alpha_cache: &'a mut [(u64, bool)], // jumbled mode only
 }
 
 fn gen_classic_place_moves<
@@ -1736,18 +1743,33 @@ fn gen_jumbled_place_moves<
         leave_idx: u32,
     }
 
+    #[inline(always)]
+    fn accepts_alpha_cached<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+        params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
+    ) -> bool {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in params.used_letters_tally.iter() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h |= 1; // ensure nonzero
+        let cache_idx = (h as usize) & (params.accepts_alpha_cache.len() - 1);
+        let cached = params.accepts_alpha_cache[cache_idx];
+        if cached.0 == h {
+            return cached.1;
+        }
+        let result = params.board_snapshot.kwg.accepts_alpha(&params.used_letters_tally);
+        params.accepts_alpha_cache[cache_idx] = (h, result);
+        result
+    }
+
     fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
         idx_left: i8,
         idx_right: i8,
     ) {
-        if env
-            .params
-            .board_snapshot
-            .kwg
-            .accepts_alpha(env.params.used_letters_tally)
-        {
+        if accepts_alpha_cached(env.params) {
             let score = acc.main_score * acc.word_multiplier
                 + acc.perpendicular_cumulative_score
                 + env
@@ -2096,6 +2118,7 @@ fn gen_place_moves_at<
             },
             multi_leaves,
             used_letters_tally: &mut working_buffer.used_letters_tally,
+            accepts_alpha_cache: &mut working_buffer.accepts_alpha_cache,
         },
         !placement.down,
     );
