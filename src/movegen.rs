@@ -2361,16 +2361,19 @@ impl KurniaMoveGenerator {
         always_include_pass: bool,
     ) {
         self.plays.clear();
-
-        let vec_moves = std::cell::RefCell::new(std::mem::take(&mut self.plays));
+        let mut vec_moves = std::mem::take(&mut self.plays);
 
         let working_buffer = &mut self.working_buffer;
         working_buffer.init(board_snapshot, rack, &|leave_value: f32| leave_value);
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
 
-        let found_place_move =
+        for _ in kurnia_gen_place_moves_iter(
+            true,
+            board_snapshot,
+            working_buffer,
+            &multi_leaves,
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: f32| {
-                vec_moves.borrow_mut().push(ValuedMove {
+                vec_moves.push(ValuedMove {
                     equity: 0.0,
                     play: Play::Place {
                         down,
@@ -2380,23 +2383,7 @@ impl KurniaMoveGenerator {
                         score,
                     },
                 });
-            };
-
-        let found_exchange_move = |exchanged_tiles: &[u8], _leave_value: f32| {
-            vec_moves.borrow_mut().push(ValuedMove {
-                equity: 0.0,
-                play: Play::Exchange {
-                    tiles: exchanged_tiles.into(),
-                },
-            });
-        };
-
-        for _ in kurnia_gen_place_moves_iter(
-            true,
-            board_snapshot,
-            working_buffer,
-            &multi_leaves,
-            found_place_move,
+            },
             |_best_possible_equity: f32| true,
         ) {}
         kurnia_gen_exchange_moves(
@@ -2404,16 +2391,25 @@ impl KurniaMoveGenerator {
             working_buffer,
             &multi_leaves,
             num_exchanges_by_this_player,
-            found_exchange_move,
+            |exchanged_tiles: &[u8], _leave_value: f32| {
+                vec_moves.push(ValuedMove {
+                    equity: 0.0,
+                    play: Play::Exchange {
+                        tiles: exchanged_tiles.into(),
+                    },
+                });
+            },
         );
-        if always_include_pass || vec_moves.borrow().is_empty() {
-            found_exchange_move(
-                &working_buffer.exchange_buffer,
-                multi_leaves.pass_leave_value(),
-            );
+        if always_include_pass || vec_moves.is_empty() {
+            vec_moves.push(ValuedMove {
+                equity: 0.0,
+                play: Play::Exchange {
+                    tiles: (&working_buffer.exchange_buffer[..]).into(),
+                },
+            });
         }
 
-        self.plays = vec_moves.into_inner();
+        self.plays = vec_moves;
 
         working_buffer.multi_leaves = multi_leaves;
     }
@@ -2441,30 +2437,35 @@ impl KurniaMoveGenerator {
 
         let alphabet = params.board_snapshot.game_config.alphabet();
         let board_layout = params.board_snapshot.game_config.board_layout();
+        let max_gen = params.max_gen;
 
-        let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::from(
+        let mut found_moves = std::collections::BinaryHeap::from(
             std::mem::take(&mut self.plays),
-        ));
-        let equity_pred = std::cell::RefCell::new(equity_predicate);
+        );
+        let mut equity_predicate = equity_predicate;
+        let threshold = std::cell::Cell::new(f32::NEG_INFINITY);
 
         #[inline(always)]
         fn push_move<F: FnMut() -> Play, EquityPredicate: FnMut(f32, &Play) -> bool>(
-            found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
-            equity_pred: &std::cell::RefCell<EquityPredicate>,
+            found_moves: &mut std::collections::BinaryHeap<ValuedMove>,
+            equity_pred: &mut EquityPredicate,
+            threshold: &std::cell::Cell<f32>,
             max_gen: usize,
             equity: f32,
             mut construct_play: F,
         ) {
-            let mut borrowed = found_moves.borrow_mut();
-            if borrowed.len() >= max_gen && borrowed.peek().unwrap().equity >= equity {
+            if found_moves.len() >= max_gen && threshold.get() >= equity {
                 return;
             }
             let play = construct_play();
-            if equity_pred.borrow_mut()(equity, &play) {
-                if borrowed.len() >= max_gen {
-                    *borrowed.peek_mut().unwrap() = ValuedMove { equity, play };
+            if equity_pred(equity, &play) {
+                if found_moves.len() >= max_gen {
+                    *found_moves.peek_mut().unwrap() = ValuedMove { equity, play };
                 } else {
-                    borrowed.push(ValuedMove { equity, play });
+                    found_moves.push(ValuedMove { equity, play });
+                }
+                if found_moves.len() >= max_gen {
+                    threshold.set(found_moves.peek().unwrap().equity);
                 }
             }
         }
@@ -2474,7 +2475,11 @@ impl KurniaMoveGenerator {
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
-        let found_place_move =
+        for _ in kurnia_gen_place_moves_iter(
+            false,
+            params.board_snapshot,
+            working_buffer,
+            &multi_leaves,
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: f32| {
                 if place_move_predicate(down, lane, idx, word, score) {
                     let other_adjustments = if num_tiles_on_board == 0 {
@@ -2495,43 +2500,23 @@ impl KurniaMoveGenerator {
                         0.0
                     };
                     let equity = score as f32 + leave_value + other_adjustments;
-                    push_move(&found_moves, &equity_pred, params.max_gen, equity, || {
-                        Play::Place {
+                    push_move(
+                        &mut found_moves,
+                        &mut equity_predicate,
+                        &threshold,
+                        max_gen,
+                        equity,
+                        || Play::Place {
                             down,
                             lane,
                             idx,
                             word: word.into(),
                             score,
-                        }
-                    });
+                        },
+                    );
                 }
-            };
-
-        let found_exchange_move = |exchanged_tiles: &[u8], leave_value: f32| {
-            push_move(
-                &found_moves,
-                &equity_pred,
-                params.max_gen,
-                leave_value,
-                || Play::Exchange {
-                    tiles: exchanged_tiles.into(),
-                },
-            );
-        };
-
-        let can_accept = |best_possible_equity: f32| {
-            let borrowed = found_moves.borrow();
-            !(borrowed.len() >= params.max_gen
-                && borrowed.peek().unwrap().equity >= best_possible_equity)
-        };
-
-        for _ in kurnia_gen_place_moves_iter(
-            false,
-            params.board_snapshot,
-            working_buffer,
-            &multi_leaves,
-            found_place_move,
-            can_accept,
+            },
+            |best_possible_equity: f32| threshold.get() < best_possible_equity,
         ) {
             breathe().await;
         }
@@ -2540,16 +2525,33 @@ impl KurniaMoveGenerator {
             working_buffer,
             &multi_leaves,
             params.num_exchanges_by_this_player,
-            found_exchange_move,
+            |exchanged_tiles: &[u8], leave_value: f32| {
+                push_move(
+                    &mut found_moves,
+                    &mut equity_predicate,
+                    &threshold,
+                    max_gen,
+                    leave_value,
+                    || Play::Exchange {
+                        tiles: exchanged_tiles.into(),
+                    },
+                );
+            },
         );
-        if params.always_include_pass || found_moves.borrow().is_empty() {
-            found_exchange_move(
-                &working_buffer.exchange_buffer,
+        if params.always_include_pass || found_moves.is_empty() {
+            push_move(
+                &mut found_moves,
+                &mut equity_predicate,
+                &threshold,
+                max_gen,
                 multi_leaves.pass_leave_value(),
+                || Play::Exchange {
+                    tiles: (&working_buffer.exchange_buffer[..]).into(),
+                },
             );
         }
 
-        self.plays = found_moves.into_inner().into_sorted_vec();
+        self.plays = found_moves.into_sorted_vec();
 
         working_buffer.multi_leaves = multi_leaves;
     }
@@ -2575,30 +2577,35 @@ impl KurniaMoveGenerator {
 
         let alphabet = params.board_snapshot.game_config.alphabet();
         let board_layout = params.board_snapshot.game_config.board_layout();
+        let max_gen = params.max_gen;
 
-        let found_moves = std::cell::RefCell::new(std::collections::BinaryHeap::from(
+        let mut found_moves = std::collections::BinaryHeap::from(
             std::mem::take(&mut self.plays),
-        ));
-        let equity_pred = std::cell::RefCell::new(equity_predicate);
+        );
+        let mut equity_predicate = equity_predicate;
+        let threshold = std::cell::Cell::new(f32::NEG_INFINITY);
 
         #[inline(always)]
         fn push_move<F: FnMut() -> Play, EquityPredicate: FnMut(f32, &Play) -> bool>(
-            found_moves: &std::cell::RefCell<std::collections::BinaryHeap<ValuedMove>>,
-            equity_pred: &std::cell::RefCell<EquityPredicate>,
+            found_moves: &mut std::collections::BinaryHeap<ValuedMove>,
+            equity_pred: &mut EquityPredicate,
+            threshold: &std::cell::Cell<f32>,
             max_gen: usize,
             equity: f32,
             mut construct_play: F,
         ) {
-            let mut borrowed = found_moves.borrow_mut();
-            if borrowed.len() >= max_gen && borrowed.peek().unwrap().equity >= equity {
+            if found_moves.len() >= max_gen && threshold.get() >= equity {
                 return;
             }
             let play = construct_play();
-            if equity_pred.borrow_mut()(equity, &play) {
-                if borrowed.len() >= max_gen {
-                    *borrowed.peek_mut().unwrap() = ValuedMove { equity, play };
+            if equity_pred(equity, &play) {
+                if found_moves.len() >= max_gen {
+                    *found_moves.peek_mut().unwrap() = ValuedMove { equity, play };
                 } else {
-                    borrowed.push(ValuedMove { equity, play });
+                    found_moves.push(ValuedMove { equity, play });
+                }
+                if found_moves.len() >= max_gen {
+                    threshold.set(found_moves.peek().unwrap().equity);
                 }
             }
         }
@@ -2608,7 +2615,11 @@ impl KurniaMoveGenerator {
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
-        let found_place_move =
+        for _ in kurnia_gen_place_moves_iter(
+            false,
+            params.board_snapshot,
+            working_buffer,
+            &multi_leaves,
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: f32| {
                 if place_move_predicate(down, lane, idx, word, score) {
                     let other_adjustments = if num_tiles_on_board == 0 {
@@ -2629,59 +2640,56 @@ impl KurniaMoveGenerator {
                         0.0
                     };
                     let equity = score as f32 + leave_value + other_adjustments;
-                    push_move(&found_moves, &equity_pred, params.max_gen, equity, || {
-                        Play::Place {
+                    push_move(
+                        &mut found_moves,
+                        &mut equity_predicate,
+                        &threshold,
+                        max_gen,
+                        equity,
+                        || Play::Place {
                             down,
                             lane,
                             idx,
                             word: word.into(),
                             score,
-                        }
-                    });
+                        },
+                    );
                 }
-            };
-
-        let found_exchange_move = |exchanged_tiles: &[u8], leave_value: f32| {
-            push_move(
-                &found_moves,
-                &equity_pred,
-                params.max_gen,
-                leave_value,
-                || Play::Exchange {
-                    tiles: exchanged_tiles.into(),
-                },
-            );
-        };
-
-        let can_accept = |best_possible_equity: f32| {
-            let borrowed = found_moves.borrow();
-            !(borrowed.len() >= params.max_gen
-                && borrowed.peek().unwrap().equity >= best_possible_equity)
-        };
-
-        for _ in kurnia_gen_place_moves_iter(
-            false,
-            params.board_snapshot,
-            working_buffer,
-            &multi_leaves,
-            found_place_move,
-            can_accept,
+            },
+            |best_possible_equity: f32| threshold.get() < best_possible_equity,
         ) {}
         kurnia_gen_exchange_moves(
             params.board_snapshot,
             working_buffer,
             &multi_leaves,
             params.num_exchanges_by_this_player,
-            found_exchange_move,
+            |exchanged_tiles: &[u8], leave_value: f32| {
+                push_move(
+                    &mut found_moves,
+                    &mut equity_predicate,
+                    &threshold,
+                    max_gen,
+                    leave_value,
+                    || Play::Exchange {
+                        tiles: exchanged_tiles.into(),
+                    },
+                );
+            },
         );
-        if params.always_include_pass || found_moves.borrow().is_empty() {
-            found_exchange_move(
-                &working_buffer.exchange_buffer,
+        if params.always_include_pass || found_moves.is_empty() {
+            push_move(
+                &mut found_moves,
+                &mut equity_predicate,
+                &threshold,
+                max_gen,
                 multi_leaves.pass_leave_value(),
+                || Play::Exchange {
+                    tiles: (&working_buffer.exchange_buffer[..]).into(),
+                },
             );
         }
 
-        self.plays = found_moves.into_inner().into_sorted_vec();
+        self.plays = found_moves.into_sorted_vec();
 
         working_buffer.multi_leaves = multi_leaves;
     }
