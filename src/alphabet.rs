@@ -79,7 +79,7 @@ impl Alphabet {
         })
     }
 
-    fn new_static_from_text(s: &str) -> error::Returns<Self> {
+    pub fn new_static_from_text(s: &str) -> error::Returns<Self> {
         let mut tiles = Vec::new();
         for line_str in s.lines() {
             let mut tokens = line_str.split_whitespace();

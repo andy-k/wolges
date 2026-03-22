@@ -462,6 +462,8 @@ fn main() -> error::Returns<()> {
     this is applicable for kwg, kwg-anything, klv/klv2)
   (english can also be catalan, dutch, french, german, norwegian, polish,
     slovene, spanish, decimal, hex)
+  (english can also be custom, with an extra alphabet file argument:
+    custom-kwg alphabet.txt words.txt out.kwg)
 input/output files can be \"-\" (not advisable for binary files)"
         );
         Ok(())
@@ -482,6 +484,18 @@ input/output files can be \"-\" (not advisable for binary files)"
             || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
             || do_lang(&args, "hex", alphabet::make_hex_alphabet)?
         {
+        } else if args[1].starts_with("custom-") {
+            if args.len() < 3 {
+                return Err("need alphabet file".into());
+            }
+            let alph_text = std::fs::read_to_string(&args[2])?;
+            let mut shifted_args = vec![args[0].clone(), args[1].clone()];
+            shifted_args.extend_from_slice(&args[3..]);
+            if !do_lang(&shifted_args, "custom", || {
+                alphabet::Alphabet::new_static_from_text(&alph_text).unwrap()
+            })? {
+                return Err("invalid argument".into());
+            }
         } else {
             return Err("invalid argument".into());
         }
