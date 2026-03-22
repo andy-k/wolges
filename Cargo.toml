@@ -12,6 +12,10 @@ resolver = "2"
 [profile.dev]
 opt-level = 3
 
+[profile.release]
+lto = true
+codegen-units = 1
+
 [dependencies]
 csv = "1.4.0"
 num_cpus = "1.17.0"
