@@ -122,6 +122,13 @@ static TEST_CASES: &[TestCase] = &[
         max_gen: 15,
         always_include_pass: false,
     },
+    // Large rack (threat analysis: all unseen tiles), MultiLeaves overflow
+    TestCase {
+        fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
+        rack: "??AAAAAAAAABBCDDDDEEEEEEEEEEEEFFGGGHHIIIIIIIIIJKLLLLMMNNNNNNOOOOOOOOPPQRRRRRRSSSSTTTTTTUVVWWXYYZ",
+        max_gen: 5,
+        always_include_pass: false,
+    },
 ];
 
 fn parse_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {

@@ -442,8 +442,18 @@ impl WorkingBuffer {
                 true,
                 adjust_leave_value,
             );
-            self.multi_leaves
-                .extract_raw_best_leave_values(&mut self.best_leave_values);
+            if self.multi_leaves.is_dense() {
+                self.multi_leaves
+                    .extract_raw_best_leave_values(&mut self.best_leave_values);
+            } else {
+                klv::MultiLeaves::extract_best_leave_values_from_klv(
+                    &mut self.rack_tally,
+                    board_snapshot.klv,
+                    self.num_tiles_on_rack,
+                    adjust_leave_value,
+                    &mut self.best_leave_values,
+                );
+            }
         }
         for i in 0..=self.num_tiles_on_rack {
             self.best_leave_values[i as usize] +=
@@ -1455,11 +1465,19 @@ fn gen_classic_place_moves<
                 .board_snapshot
                 .game_config
                 .num_played_bonus(env.num_played) as i32;
+        let leave_value = if env.params.multi_leaves.is_dense() {
+            env.params.multi_leaves.leave_value(acc.leave_idx)
+        } else {
+            env.params
+                .board_snapshot
+                .klv
+                .leave_value_from_tally(env.params.rack_tally)
+        };
         (env.params.callback)(
             idx_left,
             &env.params.word_strip_buffer[idx_left as usize..idx_right as usize],
             score,
-            env.params.multi_leaves.leave_value(acc.leave_idx),
+            leave_value,
         );
     }
 
@@ -1778,11 +1796,19 @@ fn gen_jumbled_place_moves<
                     .board_snapshot
                     .game_config
                     .num_played_bonus(env.num_played) as i32;
+            let leave_value = if env.params.multi_leaves.is_dense() {
+                env.params.multi_leaves.leave_value(acc.leave_idx)
+            } else {
+                env.params
+                    .board_snapshot
+                    .klv
+                    .leave_value_from_tally(env.params.rack_tally)
+            };
             (env.params.callback)(
                 idx_left,
                 &env.params.word_strip_buffer[idx_left as usize..idx_right as usize],
                 score,
-                env.params.multi_leaves.leave_value(acc.leave_idx),
+                leave_value,
             );
         }
     }
@@ -2568,7 +2594,11 @@ impl KurniaMoveGenerator {
                 &mut equity_predicate,
                 &threshold,
                 max_gen,
-                multi_leaves.pass_leave_value(),
+                if multi_leaves.is_dense() {
+                    multi_leaves.pass_leave_value()
+                } else {
+                    params.board_snapshot.klv.leave_value_from_tally(&working_buffer.rack_tally)
+                },
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
                 },
@@ -2706,7 +2736,11 @@ impl KurniaMoveGenerator {
                 &mut equity_predicate,
                 &threshold,
                 max_gen,
-                multi_leaves.pass_leave_value(),
+                if multi_leaves.is_dense() {
+                    multi_leaves.pass_leave_value()
+                } else {
+                    params.board_snapshot.klv.leave_value_from_tally(&working_buffer.rack_tally)
+                },
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
                 },
@@ -2758,6 +2792,7 @@ fn kurnia_gen_exchange_moves<
 ) {
     if working_buffer.num_tiles_in_bag >= board_snapshot.game_config.exchange_tile_limit()
         && num_exchanges_by_this_player < board_snapshot.game_config.exchanges_allowed_per_player()
+        && multi_leaves.is_dense()
     {
         multi_leaves.kurnia_gen_exchange_moves_unconditionally(
             found_exchange_move,
