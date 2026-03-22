@@ -94,6 +94,11 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 } else {
                     0
                 };
+                let seed = if args.len() > 7 {
+                    Some(u64::from_str(&args[7])?)
+                } else {
+                    None
+                };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let arc_klv0 = if args3 == "-" {
@@ -123,6 +128,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     arc_klv1,
                     num_games,
                     min_samples_per_rack,
+                    seed,
                 )?;
                 Ok(true)
             }
@@ -138,6 +144,11 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     u64::from_str(&args[6])?
                 } else {
                     0
+                };
+                let seed = if args.len() > 7 {
+                    Some(u64::from_str(&args[7])?)
+                } else {
+                    None
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
@@ -168,6 +179,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     arc_klv1,
                     num_games,
                     min_samples_per_rack,
+                    seed,
                 )?;
                 Ok(true)
             }
@@ -183,6 +195,11 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     u64::from_str(&args[6])?
                 } else {
                     0
+                };
+                let seed = if args.len() > 7 {
+                    Some(u64::from_str(&args[7])?)
+                } else {
+                    None
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
@@ -213,6 +230,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     arc_klv1,
                     num_games,
                     min_samples_per_rack,
+                    seed,
                 )?;
                 Ok(true)
             }
@@ -324,15 +342,16 @@ fn main() -> error::Returns<()> {
     if args.len() <= 1 {
         println!(
             "args:
-  english-autoplay CSW24.kwg leave0.klv leave1.klv 1000000 0
+  english-autoplay CSW24.kwg leave0.klv leave1.klv 1000000 0 [seed]
     autoplay 1000000 games, logs to a pair of csv.
     (changing output filenames needs recompile.)
     if leave is \"-\" or omitted, uses no leave.
     number of games is optional.
     min samples per rack is optional, but must be 0 for non-summarize.
-  english-autoplay-summarize CSW24.kwg leave0.klv leave1.klv 1000000 0
+    seed is optional; if provided, uses single thread for reproducibility.
+  english-autoplay-summarize CSW24.kwg leave0.klv leave1.klv 1000000 0 [seed]
     same as english-autoplay and also save summary file.
-  english-autoplay-summarize-only CSW24.kwg leave0.klv leave1.klv 1000000 0
+  english-autoplay-summarize-only CSW24.kwg leave0.klv leave1.klv 1000000 0 [seed]
     same as english-autoplay-summarize but do not save the log files.
   english-summarize logfile summary.csv
     summarize logfile into summary.csv
@@ -480,6 +499,7 @@ fn generate_autoplay_logs<
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
     num_games: u64,
     min_samples_per_rack: u64,
+    seed: Option<u64>,
 ) -> error::Returns<()> {
     if !SUMMARIZE && min_samples_per_rack != 0 {
         return Err("min_samples_per_rack requires summarize".into());
@@ -492,7 +512,7 @@ fn generate_autoplay_logs<
             .map(|x| format!("p{x}"))
             .collect::<Box<[String]>>(),
     );
-    let num_threads = num_cpus::get();
+    let num_threads = if seed.is_some() { 1 } else { num_cpus::get() };
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let epoch_secs = std::time::SystemTime::now()
@@ -615,6 +635,11 @@ fn generate_autoplay_logs<
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             threads.push(s.spawn(move || {
                 RNG.with(|rng| {
+                    if let Some(seed) = seed {
+                        *rng.borrow_mut() = Box::new(
+                            rand::rngs::ChaCha20Rng::seed_from_u64(seed),
+                        );
+                    }
                     let mut rng = &mut *rng.borrow_mut();
                     let mut game_id = String::with_capacity(8);
                     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
