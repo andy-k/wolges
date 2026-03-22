@@ -3,10 +3,10 @@
 use wolges::kwg::Node;
 use wolges::{alphabet, bites, build, error, fash, kwg, lexport, prob};
 
-fn read_machine_words(
+fn parse_machine_words(
     alphabet_reader: &alphabet::AlphabetReader,
     giant_string: &str,
-) -> error::Returns<Box<[bites::Bites]>> {
+) -> error::Returns<Vec<bites::Bites>> {
     let mut machine_words = Vec::<bites::Bites>::new();
     let mut v = Vec::new();
     for s in giant_string.lines() {
@@ -28,37 +28,24 @@ fn read_machine_words(
         }
         machine_words.push(v[..].into());
     }
+    Ok(machine_words)
+}
+
+fn read_machine_words(
+    alphabet_reader: &alphabet::AlphabetReader,
+    giant_string: &str,
+) -> error::Returns<Box<[bites::Bites]>> {
+    let mut machine_words = parse_machine_words(alphabet_reader, giant_string)?;
     machine_words.sort_unstable();
     machine_words.dedup();
     Ok(machine_words.into_boxed_slice())
 }
 
-// adjusted from main_build read_machine_words.
 fn read_machine_words_sorted_by_length(
     alphabet_reader: &alphabet::AlphabetReader,
     giant_string: &str,
 ) -> error::Returns<Box<[bites::Bites]>> {
-    let mut machine_words = Vec::<bites::Bites>::new();
-    let mut v = Vec::new();
-    for s in giant_string.lines() {
-        if s.is_empty() {
-            continue;
-        }
-        let sb = s.as_bytes();
-        v.clear();
-        let mut ix = 0;
-        while ix < sb.len() {
-            if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                v.push(tile);
-                ix = end_ix;
-            } else if ix > 0 && sb[ix] <= b' ' {
-                break;
-            } else {
-                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
-            }
-        }
-        machine_words.push(v[..].into());
-    }
+    let mut machine_words = parse_machine_words(alphabet_reader, giant_string)?;
     machine_words.sort_unstable_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
     machine_words.dedup();
     Ok(machine_words.into_boxed_slice())
