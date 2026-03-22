@@ -2995,7 +2995,6 @@ struct GenRemainingConnectedWordsParams<'a, N: kwg::Node> {
     kwg: &'a kwg::Kwg<N>,
 }
 
-// note: this basic word prune algorithm does not consider hooks yet.
 fn gen_remaining_connected_words<
     'a,
     FoundWord: 'a + FnMut(&[u8]),
