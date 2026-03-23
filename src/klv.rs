@@ -285,16 +285,6 @@ impl MultiLeaves {
         self.leave_values[0] = play_out_bonus;
     }
 
-    // undefined behavior unless rack_tally is a subset of what was init'ed.
-    #[inline(always)]
-    pub fn leave_value_from_tally(&self, rack_tally: &[u8]) -> f32 {
-        let mut leave_idx = 0u32;
-        for &tile in &self.unique_tiles {
-            leave_idx += rack_tally[tile as usize] as u32 * self.digits[tile as usize].place_value;
-        }
-        self.leave_values[leave_idx as usize]
-    }
-
     // Compute best_leave_values by traversing the KLV's KWG, constrained by
     // available tiles. Used when the dense array is too large to build.
     // Traverses KLV entries (bounded by KLV size) rather than rack subsets.
