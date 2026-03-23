@@ -423,8 +423,10 @@ impl WorkingBuffer {
                 false,
                 adjust_leave_value,
             );
-            self.multi_leaves
-                .init_endgame_leaves(|tile| alphabet.score(tile), play_out_bonus);
+            if self.multi_leaves.is_dense() {
+                self.multi_leaves
+                    .init_endgame_leaves(|tile| alphabet.score(tile), play_out_bonus);
+            }
             // the multi_leaves is correct but doing this directly is faster.
             self.best_leave_values.clear();
             self.best_leave_values
