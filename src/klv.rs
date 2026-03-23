@@ -285,16 +285,6 @@ impl MultiLeaves {
         self.leave_values[0] = play_out_bonus;
     }
 
-    // undefined behavior unless rack_tally is a subset of what was init'ed.
-    #[inline(always)]
-    pub fn leave_value_from_tally(&self, rack_tally: &[u8]) -> f32 {
-        let mut leave_idx = 0u32;
-        for &tile in &self.unique_tiles {
-            leave_idx += rack_tally[tile as usize] as u32 * self.digits[tile as usize].place_value;
-        }
-        self.leave_values[leave_idx as usize]
-    }
-
     // Compute best_leave_values by traversing the KLV's KWG, constrained by
     // available tiles. Used when the dense array is too large to build.
     // Traverses KLV entries (bounded by KLV size) rather than rack subsets.
@@ -452,6 +442,58 @@ impl MultiLeaves {
     #[inline(always)]
     pub fn is_dense(&self) -> bool {
         !self.leave_values.is_empty()
+    }
+
+    // Exchange generator that computes leave values on-the-fly via KLV.
+    // Used when the dense leave table is not available.
+    pub fn gen_exchange_moves_via_klv<'a, FoundExchangeMove: FnMut(&[u8], f32), L: kwg::Node>(
+        klv: &Klv<L>,
+        found_exchange_move: FoundExchangeMove,
+        rack_tally: &'a mut [u8],
+        exchange_buffer: &'a mut Vec<u8>,
+        max_vec_len: usize,
+    ) {
+        exchange_buffer.clear();
+        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], f32), L: kwg::Node> {
+            rack_tally_len: u8,
+            klv: &'a Klv<L>,
+            found_exchange_move: FoundExchangeMove,
+            rack_tally: &'a mut [u8],
+            exchange_buffer: &'a mut Vec<u8>,
+            max_vec_len: usize,
+        }
+        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], f32), L: kwg::Node>(
+            env: &mut ExchangeEnv<'_, FoundExchangeMove, L>,
+            tile_offset: u8,
+        ) {
+            if !env.exchange_buffer.is_empty() {
+                let leave_value = env.klv.leave_value_from_tally(env.rack_tally);
+                (env.found_exchange_move)(env.exchange_buffer, leave_value);
+            }
+            if env.exchange_buffer.len() < env.max_vec_len {
+                for tile in tile_offset..env.rack_tally_len {
+                    let tile_usize = tile as usize;
+                    if env.rack_tally[tile_usize] > 0 {
+                        env.rack_tally[tile_usize] -= 1;
+                        env.exchange_buffer.push(tile);
+                        generate_exchanges(env, tile);
+                        env.exchange_buffer.pop();
+                        env.rack_tally[tile_usize] += 1;
+                    }
+                }
+            }
+        }
+        generate_exchanges(
+            &mut ExchangeEnv {
+                rack_tally_len: rack_tally.len() as u8,
+                klv,
+                found_exchange_move,
+                rack_tally,
+                exchange_buffer,
+                max_vec_len,
+            },
+            0,
+        );
     }
 
     #[inline(always)]

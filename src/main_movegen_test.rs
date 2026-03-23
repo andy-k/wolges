@@ -7,6 +7,7 @@ struct TestCase {
     rack: &'static str,
     max_gen: usize,
     always_include_pass: bool,
+    num_exchanges_by_this_player: i16,
 }
 
 static TEST_CASES: &[TestCase] = &[
@@ -16,6 +17,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "AEINRST",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Empty board, rack with blank
     TestCase {
@@ -23,6 +25,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "?SATIRE",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // After one move through center
     TestCase {
@@ -30,6 +33,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "AEIOULD",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // One word through center, always_include_pass=true (compare with case 10)
     TestCase {
@@ -37,6 +41,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "MOOORRT",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Hooks and blanks
     TestCase {
@@ -44,6 +49,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "?STLING",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Cross words
     TestCase {
@@ -51,6 +57,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "ABCDEFG",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Bingo rack, few tiles on board
     TestCase {
@@ -58,6 +65,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "RETINAS",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Terrible rack, exchanges should appear
     TestCase {
@@ -65,6 +73,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "UUVVIIQ",
         max_gen: 30,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Only 2 tiles, limited plays, with always_include_pass=true
     TestCase {
@@ -72,6 +81,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "CS",
         max_gen: 15,
         always_include_pass: true,
+        num_exchanges_by_this_player: 0,
     },
     // Double blank
     TestCase {
@@ -79,6 +89,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "??",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Same as case 3 but always_include_pass=false, pass should not appear
     TestCase {
@@ -86,6 +97,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "MOOORRT",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Late game (ZONULE position, 73 tiles)
     TestCase {
@@ -93,6 +105,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "ST",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Same position, rack with few useful plays, pass not included
     TestCase {
@@ -100,6 +113,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "OO",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Same as above but always_include_pass=true, pass should appear
     TestCase {
@@ -107,6 +121,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "OO",
         max_gen: 100,
         always_include_pass: true,
+        num_exchanges_by_this_player: 0,
     },
     // Bag empty (80 tiles on board, bag=6 < 7), no exchanges possible
     TestCase {
@@ -114,6 +129,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "VUAENRU",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Same position, single tile, no valid plays, pass generated as fallback
     TestCase {
@@ -121,6 +137,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "V",
         max_gen: 15,
         always_include_pass: false,
+        num_exchanges_by_this_player: 0,
     },
     // Large rack (threat analysis: all unseen tiles), MultiLeaves overflow
     TestCase {
@@ -128,6 +145,7 @@ static TEST_CASES: &[TestCase] = &[
         rack: "??AAAAAAAAABBCDDDDEEEEEEEEEEEEFFGGGHHIIIIIIIIIJKLLLLMMNNNNNNOOOOOOOOPPQRRRRRRSSSSTTTTTTUVVWWXYYZ",
         max_gen: 5,
         always_include_pass: false,
+        num_exchanges_by_this_player: i16::MAX, // skip exchanges for threat analysis
     },
 ];
 
@@ -184,7 +202,7 @@ fn main() -> error::Returns<()> {
             board_snapshot: &board_snapshot,
             rack: &rack,
             max_gen: case.max_gen,
-            num_exchanges_by_this_player: 0,
+            num_exchanges_by_this_player: case.num_exchanges_by_this_player,
             always_include_pass: case.always_include_pass,
         });
         let elapsed = t0.elapsed();
