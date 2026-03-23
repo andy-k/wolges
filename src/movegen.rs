@@ -2792,14 +2792,23 @@ fn kurnia_gen_exchange_moves<
 ) {
     if working_buffer.num_tiles_in_bag >= board_snapshot.game_config.exchange_tile_limit()
         && num_exchanges_by_this_player < board_snapshot.game_config.exchanges_allowed_per_player()
-        && multi_leaves.is_dense()
     {
-        multi_leaves.kurnia_gen_exchange_moves_unconditionally(
-            found_exchange_move,
-            &mut working_buffer.rack_tally,
-            &mut working_buffer.exchange_buffer,
-            working_buffer.num_tiles_in_bag as usize,
-        );
+        if multi_leaves.is_dense() {
+            multi_leaves.kurnia_gen_exchange_moves_unconditionally(
+                found_exchange_move,
+                &mut working_buffer.rack_tally,
+                &mut working_buffer.exchange_buffer,
+                working_buffer.num_tiles_in_bag as usize,
+            );
+        } else {
+            klv::MultiLeaves::gen_exchange_moves_via_klv(
+                board_snapshot.klv,
+                found_exchange_move,
+                &mut working_buffer.rack_tally,
+                &mut working_buffer.exchange_buffer,
+                working_buffer.num_tiles_in_bag as usize,
+            );
+        }
     }
 }
 

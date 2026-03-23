@@ -444,6 +444,58 @@ impl MultiLeaves {
         !self.leave_values.is_empty()
     }
 
+    // Exchange generator that computes leave values on-the-fly via KLV.
+    // Used when the dense leave table is not available.
+    pub fn gen_exchange_moves_via_klv<'a, FoundExchangeMove: FnMut(&[u8], f32), L: kwg::Node>(
+        klv: &Klv<L>,
+        found_exchange_move: FoundExchangeMove,
+        rack_tally: &'a mut [u8],
+        exchange_buffer: &'a mut Vec<u8>,
+        max_vec_len: usize,
+    ) {
+        exchange_buffer.clear();
+        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], f32), L: kwg::Node> {
+            rack_tally_len: u8,
+            klv: &'a Klv<L>,
+            found_exchange_move: FoundExchangeMove,
+            rack_tally: &'a mut [u8],
+            exchange_buffer: &'a mut Vec<u8>,
+            max_vec_len: usize,
+        }
+        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], f32), L: kwg::Node>(
+            env: &mut ExchangeEnv<'_, FoundExchangeMove, L>,
+            tile_offset: u8,
+        ) {
+            if !env.exchange_buffer.is_empty() {
+                let leave_value = env.klv.leave_value_from_tally(env.rack_tally);
+                (env.found_exchange_move)(env.exchange_buffer, leave_value);
+            }
+            if env.exchange_buffer.len() < env.max_vec_len {
+                for tile in tile_offset..env.rack_tally_len {
+                    let tile_usize = tile as usize;
+                    if env.rack_tally[tile_usize] > 0 {
+                        env.rack_tally[tile_usize] -= 1;
+                        env.exchange_buffer.push(tile);
+                        generate_exchanges(env, tile);
+                        env.exchange_buffer.pop();
+                        env.rack_tally[tile_usize] += 1;
+                    }
+                }
+            }
+        }
+        generate_exchanges(
+            &mut ExchangeEnv {
+                rack_tally_len: rack_tally.len() as u8,
+                klv,
+                found_exchange_move,
+                rack_tally,
+                exchange_buffer,
+                max_vec_len,
+            },
+            0,
+        );
+    }
+
     #[inline(always)]
     pub fn pass_leave_idx(&self) -> u32 {
         if self.leave_values.is_empty() {
