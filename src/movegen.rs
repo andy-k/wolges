@@ -68,6 +68,7 @@ struct WorkingBuffer {
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
     num_tiles_in_bag: i16, // negative when players also have less than full racks
+    play_out_bonus: f32,
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     multi_leaves: klv::MultiLeaves,
@@ -126,6 +127,7 @@ impl Clone for WorkingBuffer {
             transposed_board_tiles: self.transposed_board_tiles.clone(),
             num_tiles_on_board: self.num_tiles_on_board,
             num_tiles_in_bag: self.num_tiles_in_bag,
+            play_out_bonus: self.play_out_bonus,
             num_tiles_on_rack: self.num_tiles_on_rack,
             rack_bits: self.rack_bits,
             multi_leaves: self.multi_leaves.clone(),
@@ -189,6 +191,7 @@ impl Clone for WorkingBuffer {
         self.num_tiles_on_board
             .clone_from(&source.num_tiles_on_board);
         self.num_tiles_in_bag.clone_from(&source.num_tiles_in_bag);
+        self.play_out_bonus.clone_from(&source.play_out_bonus);
         self.num_tiles_on_rack.clone_from(&source.num_tiles_on_rack);
         self.rack_bits.clone_from(&source.rack_bits);
         self.multi_leaves.clone_from(&source.multi_leaves);
@@ -278,6 +281,7 @@ impl WorkingBuffer {
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
             num_tiles_in_bag: 0,
+            play_out_bonus: 0.0,
             num_tiles_on_rack: 0,
             rack_bits: 0,
             multi_leaves: klv::MultiLeaves::new(),
@@ -401,6 +405,7 @@ impl WorkingBuffer {
         } else {
             0.0
         };
+        self.play_out_bonus = play_out_bonus;
 
         // eg if my rack is ZY??YVA it'd be [10,4,4,4,1,0,0].
         self.descending_scores.clear();
@@ -1428,6 +1433,8 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg:
     rightmost: i8,
     callback: CallbackType,
     multi_leaves: &'a klv::MultiLeaves,
+    num_tiles_in_bag: i16,
+    play_out_bonus: f32,
     used_letters_tally: &'a mut [u8], // jumbled mode only
     accepts_alpha_cache: &'a mut [([u8; 64], bool)], // jumbled mode only
 }
@@ -1469,6 +1476,16 @@ fn gen_classic_place_moves<
                 .num_played_bonus(env.num_played) as i32;
         let leave_value = if env.params.multi_leaves.is_dense() {
             env.params.multi_leaves.leave_value(acc.leave_idx)
+        } else if env.params.num_tiles_in_bag <= 0 {
+            let is_played_out = env.params.rack_tally.iter().all(|&count| count == 0);
+            if is_played_out {
+                env.params.play_out_bonus
+            } else {
+                let residual: i32 = (0u8..).zip(env.params.rack_tally.iter()).map(|(tile, &count)| {
+                    count as i32 * env.params.board_snapshot.game_config.alphabet().score(tile) as i32
+                }).sum();
+                (-10 - 2 * residual) as f32
+            }
         } else {
             env.params
                 .board_snapshot
@@ -1800,6 +1817,16 @@ fn gen_jumbled_place_moves<
                     .num_played_bonus(env.num_played) as i32;
             let leave_value = if env.params.multi_leaves.is_dense() {
                 env.params.multi_leaves.leave_value(acc.leave_idx)
+            } else if env.params.num_tiles_in_bag <= 0 {
+                let is_played_out = env.params.rack_tally.iter().all(|&count| count == 0);
+                if is_played_out {
+                    env.params.play_out_bonus
+                } else {
+                    let residual: i32 = (0u8..).zip(env.params.rack_tally.iter()).map(|(tile, &count)| {
+                        count as i32 * env.params.board_snapshot.game_config.alphabet().score(tile) as i32
+                    }).sum();
+                    (-10 - 2 * residual) as f32
+                }
             } else {
                 env.params
                     .board_snapshot
@@ -2146,6 +2173,8 @@ fn gen_place_moves_at<
                 )
             },
             multi_leaves,
+            num_tiles_in_bag: working_buffer.num_tiles_in_bag,
+            play_out_bonus: working_buffer.play_out_bonus,
             used_letters_tally: &mut working_buffer.used_letters_tally,
             accepts_alpha_cache: &mut working_buffer.accepts_alpha_cache,
         },
