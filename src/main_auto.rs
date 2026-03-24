@@ -17,7 +17,7 @@ fn main() -> error::Returns<()> {
             v.push((rng.get_seed(), rng.get_stream(), rng.get_word_pos()));
             bag = bag::Bag::new(&alphabet);
             bag.shuffle(&mut rng);
-            println!("Pool {}: {}", bag.0.len(), alphabet.fmt_rack(&bag.0));
+            println!("Pool {}: {}", bag.len(), alphabet.fmt_rack(bag.as_slice()));
         }
         println!("{v:?}");
         for _ in 0..40 {
@@ -31,7 +31,7 @@ fn main() -> error::Returns<()> {
             rng.set_stream(stream);
             rng.set_word_pos(word_pos);
             bag.shuffle(&mut rng);
-            println!("Pool {}: {}", bag.0.len(), alphabet.fmt_rack(&bag.0));
+            println!("Pool {}: {}", bag.len(), alphabet.fmt_rack(bag.as_slice()));
         }
         return Ok(());
     }
@@ -117,12 +117,7 @@ fn do_it<N: kwg::Node>(
             }
         }
         // put the bag
-        game_state.bag.0.clear();
-        game_state
-            .bag
-            .0
-            .reserve(available_tally.iter().map(|&x| x as usize).sum());
-        game_state.bag.0.extend(
+        game_state.bag.set_from_iter(
             (0u8..)
                 .zip(available_tally.iter())
                 .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),

@@ -372,8 +372,10 @@ impl std::fmt::Display for GameStatePrinter<'_> {
                 board_layout: self.game_config.board_layout(),
                 board_tiles: &self.game_state.board_tiles,
             },
-            self.game_state.bag.0.len(),
-            self.game_config.alphabet().fmt_rack(&self.game_state.bag.0)
+            self.game_state.bag.len(),
+            self.game_config
+                .alphabet()
+                .fmt_rack(self.game_state.bag.as_slice())
         )?;
         let now = std::time::Instant::now();
         for (i, player) in self.game_state.players.iter().enumerate() {

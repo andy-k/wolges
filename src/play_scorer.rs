@@ -39,7 +39,7 @@ impl PlayScorer {
             movegen::Play::Exchange { tiles } => {
                 if tiles.is_empty() {
                     return Ok(None);
-                } else if game_state.bag.0.len() < game_config.exchange_tile_limit() as usize {
+                } else if game_state.bag.len() < game_config.exchange_tile_limit() as usize {
                     return_error!("not enough tiles to allow exchanges".into());
                 }
 
@@ -467,7 +467,7 @@ impl PlayScorer {
         };
 
         let mut recounted_equity = recounted_score as f32;
-        if game_state.bag.0.is_empty() {
+        if game_state.bag.is_empty() {
             // empty bag, do not add leave.
             if self.rack_tally.iter().any(|&count| count != 0) {
                 let kept_tiles_worth = (0u8..)
