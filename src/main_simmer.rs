@@ -245,10 +245,10 @@ fn main() -> error::Returns<()> {
             .zip(available_tally.iter())
             .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
     );
-    for player in game_state.players.iter_mut() {
+    for (i, player) in game_state.players.iter_mut().enumerate() {
         game_state
             .bag
-            .replenish(&mut player.rack, game_config.rack_size() as usize);
+            .replenish(&mut player.rack, game_config.rack_size() as usize, i);
     }
     display::print_game_state(&game_config, &game_state, None);
 
