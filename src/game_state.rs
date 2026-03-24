@@ -97,12 +97,12 @@ impl GameState {
     pub fn reset(&mut self) {
         for player in self.players.iter_mut() {
             player.score = 0;
-            self.bag.0.extend_from_slice(&player.rack);
+            self.bag.return_tiles(&player.rack);
             player.rack.clear();
             player.num_exchanges = 0;
         }
         for &tile in self.board_tiles.iter().filter(|&&tile| tile != 0) {
-            self.bag.0.push(tile & !((tile as i8) >> 7) as u8);
+            self.bag.return_tile(tile & !((tile as i8) >> 7) as u8);
         }
         self.board_tiles.iter_mut().for_each(|m| *m = 0);
         self.turn = 0;
@@ -127,13 +127,11 @@ impl GameState {
     // if desired tile is missing, final rack will be shorter.
     pub fn set_current_rack(&mut self, desired_rack: &[u8]) {
         self.bag
-            .0
-            .extend_from_slice(&self.players[self.turn as usize].rack);
+            .return_tiles(&self.players[self.turn as usize].rack);
         self.players[self.turn as usize].rack.clear();
         for &tile in desired_rack {
-            match self.bag.0.iter().rposition(|&t| t == tile) {
-                Some(pos) => {
-                    self.bag.0.swap_remove(pos);
+            match self.bag.swap_remove_tile(tile) {
+                Some(()) => {
                     self.players[self.turn as usize].rack.push(tile);
                 }
                 None => {

@@ -3,7 +3,7 @@
 use super::alphabet;
 use rand::prelude::*;
 
-pub struct Bag(pub Vec<u8>);
+pub struct Bag(Vec<u8>);
 
 impl Bag {
     pub fn new(alphabet: &alphabet::Alphabet) -> Bag {
@@ -37,6 +37,37 @@ impl Bag {
         for _ in 0..(rack_size - rack.len()).min(self.0.len()) {
             rack.push(self.pop().unwrap());
         }
+    }
+
+    pub fn return_tiles(&mut self, tiles: &[u8]) {
+        self.0.extend_from_slice(tiles);
+    }
+
+    pub fn return_tile(&mut self, tile: u8) {
+        self.0.push(tile);
+    }
+
+    pub fn set_from_iter<I: IntoIterator<Item = u8>>(&mut self, iter: I) {
+        self.0.clear();
+        self.0.extend(iter);
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn swap_remove_tile(&mut self, tile: u8) -> Option<()> {
+        self.0.iter().rposition(|&t| t == tile).map(|pos| {
+            self.0.swap_remove(pos);
+        })
     }
 
     // put back the tiles in random order. keep the rest of the bag in the same order.
