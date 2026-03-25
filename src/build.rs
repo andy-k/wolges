@@ -780,3 +780,77 @@ pub fn build_big(
 ) -> error::Returns<bites::Bites> {
     do_build::<2>(build_content, build_layout, machine_words)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kwg::{self, Node};
+
+    fn collect_dawg_words<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        p: i32,
+        word: &mut Vec<u8>,
+        out: &mut Vec<bites::Bites>,
+    ) {
+        if p <= 0 {
+            return;
+        }
+        let mut i = p;
+        loop {
+            let node = kwg[i];
+            word.push(node.tile());
+            if node.accepts() {
+                out.push(word[..].into());
+            }
+            if node.arc_index() != 0 {
+                collect_dawg_words(kwg, node.arc_index(), word, out);
+            }
+            word.pop();
+            if node.is_end() {
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    fn round_trip_dawg(layout: BuildLayout, words: &[&str]) {
+        let machine_words: Vec<bites::Bites> = words
+            .iter()
+            .map(|w| w.bytes().collect::<Vec<u8>>()[..].into())
+            .collect();
+        let bytes = build(BuildContent::Gaddawg, layout, &machine_words).unwrap();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes);
+        let mut got = Vec::new();
+        collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
+        got.sort_unstable();
+        let mut expected = machine_words.clone();
+        expected.sort_unstable();
+        expected.dedup();
+        assert_eq!(got, expected);
+    }
+
+    static WORD_LIST: &[&str] = &[
+        "AA", "AAH", "AAHED", "AAL", "AALS", "AAS", "AB", "ABA", "ABAC", "ABS", "ABY", "CAB",
+        "CAD", "CAT", "CATS", "ZAP", "ZAPS", "ZED", "ZOO",
+    ];
+
+    #[test]
+    fn round_trip_wolges() {
+        round_trip_dawg(BuildLayout::Wolges, WORD_LIST);
+    }
+
+    #[test]
+    fn round_trip_legacy() {
+        round_trip_dawg(BuildLayout::Legacy, WORD_LIST);
+    }
+
+    #[test]
+    fn round_trip_empty() {
+        round_trip_dawg(BuildLayout::Wolges, &[]);
+    }
+
+    #[test]
+    fn round_trip_single() {
+        round_trip_dawg(BuildLayout::Wolges, &["HELLO"]);
+    }
+}
