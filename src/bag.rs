@@ -174,20 +174,16 @@ impl Bag {
             return;
         }
         // General case: m >= 3. Interleave with Fisher-Yates probability.
-        // Scratch buffer for new tiles stored in self.tiles itself.
+        // Safety: wp and old_ptr stay in fc..fc+m+n = 0..tiles.len().
+        // Left-to-right: wp <= old_ptr because new_placed <= m.
+        // Right-to-left: wp >= old_ptr because new_placed <= m.
+        // pick < remaining_new <= m <= 16 = new_buf.len().
+        let mut new_buf = [0u8; 16];
+        new_buf[..m].copy_from_slice(tiles);
         let mut remaining_new = m;
         let mut remaining_old = n;
         if self.fc >= m {
             // Dead space: left-to-right (wp <= old_ptr since new_placed <= m).
-            let new_base = if self.fc >= 2 * m {
-                // Scratch in dead space [0..m), disjoint from write range [fc-m..fc+n).
-                self.tiles[..m].copy_from_slice(tiles);
-                0
-            } else {
-                // fc < 2m: dead space overlaps write range. Use vec's back.
-                self.tiles.extend_from_slice(tiles);
-                self.fc + n
-            };
             self.fc -= m;
             let mut old_ptr = self.fc + m;
             for wp in self.fc..self.fc + m + n {
@@ -205,25 +201,17 @@ impl Bag {
                 } else {
                     let pick = rng.random_range(0..remaining_new);
                     unsafe {
-                        *self.tiles.get_unchecked_mut(wp) =
-                            *self.tiles.get_unchecked(new_base + pick);
+                        *self.tiles.get_unchecked_mut(wp) = *new_buf.get_unchecked(pick);
                     }
                     remaining_new -= 1;
-                    self.tiles.swap(new_base + pick, new_base + remaining_new);
+                    new_buf.swap(pick, remaining_new);
                 }
-            }
-            if new_base > 0 {
-                self.tiles.truncate(self.fc + m + n);
             }
         } else {
             // Grow: right-to-left (wp >= old_ptr since new_placed <= m).
-            // Scratch at [fc+n+m..fc+n+2m), disjoint from write range [fc..fc+n+m).
-            let final_len = self.fc + n + m;
-            self.tiles.resize(final_len + m, 0);
-            self.tiles[final_len..].copy_from_slice(tiles);
-            let new_base = final_len;
+            self.tiles.resize(self.fc + n + m, 0);
             let mut old_ptr = self.fc + n;
-            for wp in (self.fc..final_len).rev() {
+            for wp in (self.fc..self.fc + n + m).rev() {
                 if remaining_new == 0 {
                     break; // remaining old tiles at fc..old_ptr are already in place.
                 }
@@ -238,14 +226,12 @@ impl Bag {
                 } else {
                     let pick = rng.random_range(0..remaining_new);
                     unsafe {
-                        *self.tiles.get_unchecked_mut(wp) =
-                            *self.tiles.get_unchecked(new_base + pick);
+                        *self.tiles.get_unchecked_mut(wp) = *new_buf.get_unchecked(pick);
                     }
                     remaining_new -= 1;
-                    self.tiles.swap(new_base + pick, new_base + remaining_new);
+                    new_buf.swap(pick, remaining_new);
                 }
             }
-            self.tiles.truncate(final_len);
         }
     }
 }
