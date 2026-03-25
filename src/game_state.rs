@@ -97,12 +97,12 @@ impl GameState {
     pub fn reset(&mut self) {
         for player in self.players.iter_mut() {
             player.score = 0;
-            self.bag.0.extend_from_slice(&player.rack);
+            self.bag.return_tiles(&player.rack);
             player.rack.clear();
             player.num_exchanges = 0;
         }
         for &tile in self.board_tiles.iter().filter(|&&tile| tile != 0) {
-            self.bag.0.push(tile & !((tile as i8) >> 7) as u8);
+            self.bag.return_tile(tile & !((tile as i8) >> 7) as u8);
         }
         self.board_tiles.iter_mut().for_each(|m| *m = 0);
         self.turn = 0;
@@ -119,7 +119,20 @@ impl GameState {
         self.bag.shuffle(&mut rng);
         for player in self.players.iter_mut() {
             self.bag
-                .replenish(&mut player.rack, game_config.rack_size() as usize);
+                .replenish_back(&mut player.rack, game_config.rack_size() as usize);
+        }
+    }
+
+    pub fn reset_and_draw_tiles_double_ended(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        mut rng: &mut dyn Rng,
+    ) {
+        self.reset();
+        self.bag.shuffle(&mut rng);
+        for (i, player) in self.players.iter_mut().enumerate() {
+            self.bag
+                .replenish(&mut player.rack, game_config.rack_size() as usize, i);
         }
     }
 
@@ -127,13 +140,11 @@ impl GameState {
     // if desired tile is missing, final rack will be shorter.
     pub fn set_current_rack(&mut self, desired_rack: &[u8]) {
         self.bag
-            .0
-            .extend_from_slice(&self.players[self.turn as usize].rack);
+            .return_tiles(&self.players[self.turn as usize].rack);
         self.players[self.turn as usize].rack.clear();
         for &tile in desired_rack {
-            match self.bag.0.iter().rposition(|&t| t == tile) {
-                Some(pos) => {
-                    self.bag.0.swap_remove(pos);
+            match self.bag.remove_tile(tile) {
+                Some(()) => {
                     self.players[self.turn as usize].rack.push(tile);
                 }
                 None => {
@@ -144,7 +155,7 @@ impl GameState {
                                     let len = self.players[i].rack.len();
                                     self.players[i].rack.swap_remove(pos);
                                     self.players[self.turn as usize].rack.push(tile);
-                                    self.bag.replenish(&mut self.players[i].rack, len);
+                                    self.bag.replenish(&mut self.players[i].rack, len, i);
                                     break;
                                 }
                                 None => continue,
@@ -174,8 +185,11 @@ impl GameState {
                     self.zero_turns += 1;
                 } else {
                     use_tiles(&mut current_player.rack, tiles.iter().copied())?;
-                    self.bag
-                        .replenish(&mut current_player.rack, game_config.rack_size() as usize);
+                    self.bag.replenish(
+                        &mut current_player.rack,
+                        game_config.rack_size() as usize,
+                        self.turn as usize,
+                    );
                     self.bag.put_back(&mut rng, tiles);
                     self.pass_turns = 0;
                     current_player.num_exchanges += 1;
@@ -213,8 +227,11 @@ impl GameState {
                         }
                     }),
                 )?;
-                self.bag
-                    .replenish(&mut current_player.rack, game_config.rack_size() as usize);
+                self.bag.replenish(
+                    &mut current_player.rack,
+                    game_config.rack_size() as usize,
+                    self.turn as usize,
+                );
                 self.zero_turns = 0;
                 self.pass_turns = 0;
             }

@@ -227,12 +227,7 @@ fn main() -> error::Returns<()> {
         .copy_from_slice(&kibitzer.board_tiles);
 
     // put the bag and shuffle it
-    game_state.bag.0.clear();
-    game_state
-        .bag
-        .0
-        .reserve(kibitzer.available_tally.iter().map(|&x| x as usize).sum());
-    game_state.bag.0.extend(
+    game_state.bag.set_from_iter(
         (0u8..)
             .zip(kibitzer.available_tally.iter())
             .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),

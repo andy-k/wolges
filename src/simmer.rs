@@ -89,7 +89,7 @@ impl Simmer {
                 .unwrap_or(0);
         self.num_sim_plies = num_sim_plies;
         self.num_tiles_that_matter = num_sim_plies * game_config.rack_size() as usize;
-        let mut num_unseen_tiles = self.initial_game_state.bag.0.len();
+        let mut num_unseen_tiles = self.initial_game_state.bag.len();
         let initial_turn = self.initial_game_state.turn as usize;
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
             if i != initial_turn {
@@ -117,10 +117,7 @@ impl Simmer {
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
             if i != initial_turn {
                 self.final_scores[i] = player.rack.len() as i32;
-                self.initial_game_state
-                    .bag
-                    .0
-                    .extend_from_slice(&player.rack);
+                self.initial_game_state.bag.return_tiles(&player.rack);
                 player.rack.clear();
             }
         }
@@ -131,9 +128,11 @@ impl Simmer {
         });
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
             if i != initial_turn {
-                self.initial_game_state
-                    .bag
-                    .replenish(&mut player.rack, self.final_scores[i] as usize);
+                self.initial_game_state.bag.replenish(
+                    &mut player.rack,
+                    self.final_scores[i] as usize,
+                    i,
+                );
             }
         }
     }
@@ -243,7 +242,7 @@ impl Simmer {
         } else {
             // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
             // (to adjust these, adjust the 30.0 and 0.9 consts below)
-            let num_unseen_tiles = self.game_state.bag.0.len()
+            let num_unseen_tiles = self.game_state.bag.len()
                 + self
                     .game_state
                     .players

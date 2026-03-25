@@ -240,16 +240,15 @@ fn main() -> error::Returns<()> {
     }
     game_state.board_tiles[..].clone_from_slice(&board_tiles);
     game_state.set_current_rack(&question.rack);
-    game_state.bag.0.clear();
-    game_state.bag.0.extend(
+    game_state.bag.set_from_iter(
         (0u8..)
             .zip(available_tally.iter())
             .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
     );
-    for player in game_state.players.iter_mut() {
+    for (i, player) in game_state.players.iter_mut().enumerate() {
         game_state
             .bag
-            .replenish(&mut player.rack, game_config.rack_size() as usize);
+            .replenish(&mut player.rack, game_config.rack_size() as usize, i);
     }
     display::print_game_state(&game_config, &game_state, None);
 
