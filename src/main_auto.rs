@@ -191,8 +191,15 @@ fn do_it<N: kwg::Node>(
         }
         return Ok(());
     }
+    let mut saved_game_state = game_state.clone();
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
+        saved_game_state.clone_from(&game_state);
+        for went_first in 0..2u8 {
+        if went_first > 0 {
+            game_state.clone_from(&saved_game_state);
+        }
+        game_state.turn = went_first;
         let mut final_scores = vec![0; game_state.players.len()];
         //timers.reset_to(25 * 60 * 1000);
         timers.reset_to(15 * 1000);
@@ -473,6 +480,7 @@ fn do_it<N: kwg::Node>(
             win_stats_0.mean(),
             win_stats_0.standard_deviation(),
         );
+    } // for went_first
     } // temp loop
 
     //Ok(())
