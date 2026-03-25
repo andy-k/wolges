@@ -866,7 +866,7 @@ fn generate_autoplay_logs<
                         game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
                         game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
                         let went_first = rng.random_range(0..game_config.num_players());
-                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                        game_state.reset_and_draw_tiles(&game_config, &mut rng);
                         game_state.turn = went_first;
                         loop {
                             num_moves += 1;
@@ -1943,7 +1943,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             break;
                         }
 
-                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                        game_state.reset_and_draw_tiles(&game_config, &mut rng);
                         loop {
                             game_state.players[game_state.turn as usize]
                                 .rack

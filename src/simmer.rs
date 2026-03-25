@@ -128,11 +128,9 @@ impl Simmer {
         });
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
             if i != initial_turn {
-                self.initial_game_state.bag.replenish(
-                    &mut player.rack,
-                    self.final_scores[i] as usize,
-                    i,
-                );
+                self.initial_game_state
+                    .bag
+                    .replenish(&mut player.rack, self.final_scores[i] as usize);
             }
         }
     }

@@ -192,7 +192,7 @@ fn do_it<N: kwg::Node>(
         return Ok(());
     }
     loop {
-        game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
+        game_state.reset_and_draw_tiles(game_config, &mut rng);
         let mut final_scores = vec![0; game_state.players.len()];
         //timers.reset_to(25 * 60 * 1000);
         timers.reset_to(15 * 1000);
