@@ -240,7 +240,8 @@ fn main() -> error::Returns<()> {
     }
     game_state.board_tiles[..].clone_from_slice(&board_tiles);
     game_state.set_current_rack(&question.rack);
-    game_state.bag.set_from_iter(
+    game_state.bag.0.clear();
+    game_state.bag.0.extend(
         (0u8..)
             .zip(available_tally.iter())
             .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),

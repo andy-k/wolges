@@ -876,7 +876,7 @@ fn generate_autoplay_logs<
                                 .sort_unstable();
                             let cur_rack = &game_state.current_player().rack;
 
-                            let old_bag_len = game_state.bag.len();
+                            let old_bag_len = game_state.bag.0.len();
                             if SUMMARIZE && old_bag_len > 0 {
                                 cur_rack_as_vec.clone_from(cur_rack);
                             }
@@ -1950,7 +1950,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 .sort_unstable();
                             let cur_rack = &game_state.current_player().rack;
 
-                            let old_bag_len = game_state.bag.len();
+                            let old_bag_len = game_state.bag.0.len();
 
                             let board_snapshot = &movegen::BoardSnapshot {
                                 board_tiles: &game_state.board_tiles,
