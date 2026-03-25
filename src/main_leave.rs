@@ -2162,11 +2162,9 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
         let mut kv = full_word_map.iter().collect::<Vec<_>>();
         kv.sort_unstable_by(|a, b| {
-            a.0.len().cmp(&b.0.len()).then_with(|| {
-                b.1.equity
-                    .total_cmp(&a.1.equity)
-                    .then_with(|| a.0.cmp(b.0))
-            })
+            a.0.len()
+                .cmp(&b.0.len())
+                .then_with(|| b.1.equity.total_cmp(&a.1.equity).then_with(|| a.0.cmp(b.0)))
         });
 
         let mut csv_out = csv::Writer::from_path(format!("playability-{run_identifier}"))?;

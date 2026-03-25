@@ -1481,9 +1481,13 @@ fn gen_classic_place_moves<
             if is_played_out {
                 env.params.play_out_bonus
             } else {
-                let residual: i32 = (0u8..).zip(env.params.rack_tally.iter()).map(|(tile, &count)| {
-                    count as i32 * env.params.board_snapshot.game_config.alphabet().score(tile) as i32
-                }).sum();
+                let residual: i32 = (0u8..)
+                    .zip(env.params.rack_tally.iter())
+                    .map(|(tile, &count)| {
+                        count as i32
+                            * env.params.board_snapshot.game_config.alphabet().score(tile) as i32
+                    })
+                    .sum();
                 (-10 - 2 * residual) as f32
             }
         } else {
@@ -1781,7 +1785,11 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn accepts_alpha_cached<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+    fn accepts_alpha_cached<
+        CallbackType: FnMut(i8, &[u8], i32, f32),
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         params: &mut GenPlaceMovesParams<'_, CallbackType, N, L>,
     ) -> bool {
         let tally = &*params.used_letters_tally;
@@ -1822,9 +1830,14 @@ fn gen_jumbled_place_moves<
                 if is_played_out {
                     env.params.play_out_bonus
                 } else {
-                    let residual: i32 = (0u8..).zip(env.params.rack_tally.iter()).map(|(tile, &count)| {
-                        count as i32 * env.params.board_snapshot.game_config.alphabet().score(tile) as i32
-                    }).sum();
+                    let residual: i32 = (0u8..)
+                        .zip(env.params.rack_tally.iter())
+                        .map(|(tile, &count)| {
+                            count as i32
+                                * env.params.board_snapshot.game_config.alphabet().score(tile)
+                                    as i32
+                        })
+                        .sum();
                     (-10 - 2 * residual) as f32
                 }
             } else {
@@ -2520,9 +2533,7 @@ impl KurniaMoveGenerator {
         let board_layout = params.board_snapshot.game_config.board_layout();
         let max_gen = params.max_gen;
 
-        let mut found_moves = std::collections::BinaryHeap::from(
-            std::mem::take(&mut self.plays),
-        );
+        let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
         let mut equity_predicate = equity_predicate;
         let threshold = std::cell::Cell::new(f32::NEG_INFINITY);
 
@@ -2628,7 +2639,10 @@ impl KurniaMoveGenerator {
                 if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
-                    params.board_snapshot.klv.leave_value_from_tally(&working_buffer.rack_tally)
+                    params
+                        .board_snapshot
+                        .klv
+                        .leave_value_from_tally(&working_buffer.rack_tally)
                 },
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
@@ -2664,9 +2678,7 @@ impl KurniaMoveGenerator {
         let board_layout = params.board_snapshot.game_config.board_layout();
         let max_gen = params.max_gen;
 
-        let mut found_moves = std::collections::BinaryHeap::from(
-            std::mem::take(&mut self.plays),
-        );
+        let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
         let mut equity_predicate = equity_predicate;
         let threshold = std::cell::Cell::new(f32::NEG_INFINITY);
 
@@ -2770,7 +2782,10 @@ impl KurniaMoveGenerator {
                 if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
-                    params.board_snapshot.klv.leave_value_from_tally(&working_buffer.rack_tally)
+                    params
+                        .board_snapshot
+                        .klv
+                        .leave_value_from_tally(&working_buffer.rack_tally)
                 },
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
@@ -3015,10 +3030,8 @@ fn kurnia_gen_place_moves_iter<
     }
     if !want_raw {
         // this will be iterated in reverse order, so sort by best_possible_equity increasing.
-        found_placements.sort_unstable_by(|a, b| {
-            a.best_possible_equity
-                .total_cmp(&b.best_possible_equity)
-        });
+        found_placements
+            .sort_unstable_by(|a, b| a.best_possible_equity.total_cmp(&b.best_possible_equity));
     }
     working_buffer.found_placements = found_placements;
     std::iter::from_fn(move || match working_buffer.found_placements.pop() {

@@ -163,7 +163,6 @@ fn build_leaves_f32<Readable: std::io::Read>(
     Ok(bin)
 }
 
-
 fn read_leaves_f32<Readable: std::io::Read>(
     f: Readable,
     alph: &alphabet::Alphabet,
@@ -271,9 +270,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     )?)?;
                     Ok(true)
                 }
-                "-kwg" | "-kbwg" | "-kwg-dawg" | "-kbwg-dawg" | "-kwg-alpha"
-                | "-kbwg-alpha" | "-kwg-score" | "-kbwg-score" | "-kwg-score-dawg"
-                | "-kbwg-score-dawg" | "-kwg-score-alpha" | "-kbwg-score-alpha" => {
+                "-kwg" | "-kbwg" | "-kwg-dawg" | "-kbwg-dawg" | "-kwg-alpha" | "-kbwg-alpha"
+                | "-kwg-score" | "-kbwg-score" | "-kwg-score-dawg" | "-kbwg-score-dawg"
+                | "-kwg-score-alpha" | "-kbwg-score-alpha" => {
                     let score = args1_suffix.contains("score");
                     let alpha = args1_suffix.contains("alpha");
                     let big = args1_suffix.starts_with("-kbwg");
@@ -292,13 +291,12 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     } else {
                         words
                     };
-                    let build_content = if args1_suffix.contains("dawg")
-                        || args1_suffix.contains("alpha")
-                    {
-                        build::BuildContent::DawgOnly
-                    } else {
-                        build::BuildContent::Gaddawg
-                    };
+                    let build_content =
+                        if args1_suffix.contains("dawg") || args1_suffix.contains("alpha") {
+                            build::BuildContent::DawgOnly
+                        } else {
+                            build::BuildContent::Gaddawg
+                        };
                     let built = if big {
                         build::build_big(build_content, build_layout, &words)?
                     } else {
@@ -365,7 +363,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     make_writer(&args[3])?.write_all(ret.as_bytes())?;
                     Ok(true)
                 }
-                "-sort-leaves" | "-sort-leaves-len" | "-sort-leaves-val"
+                "-sort-leaves"
+                | "-sort-leaves-len"
+                | "-sort-leaves-val"
                 | "-sort-leaves-lenval" => {
                     let alphabet = make_alphabet();
                     let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
@@ -382,16 +382,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         }
                         "-sort-leaves-val" => {
                             leaves.sort_unstable_by(|a, b| {
-                                b.1.total_cmp(&a.1)
-                                    .then_with(|| a.0.cmp(&b.0))
+                                b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0))
                             });
                         }
                         "-sort-leaves-lenval" => {
                             leaves.sort_unstable_by(|a, b| {
-                                a.0.len().cmp(&b.0.len()).then_with(|| {
-                                    b.1.total_cmp(&a.1)
-                                        .then_with(|| a.0.cmp(&b.0))
-                                })
+                                a.0.len()
+                                    .cmp(&b.0.len())
+                                    .then_with(|| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)))
                             });
                         }
                         _ => unreachable!(),

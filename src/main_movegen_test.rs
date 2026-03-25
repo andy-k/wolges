@@ -209,12 +209,25 @@ fn main() -> error::Returns<()> {
         total_elapsed += elapsed;
 
         use std::fmt::Write;
-        writeln!(output, "=== Case {case_idx}: rack={} fen={} ===",
-            case.rack, case.fen).unwrap();
+        writeln!(
+            output,
+            "=== Case {case_idx}: rack={} fen={} ===",
+            case.rack, case.fen
+        )
+        .unwrap();
         for play in move_generator.plays.iter() {
-            writeln!(output, "  {:.4} {}", play.equity, play.play.fmt(&board_snapshot)).unwrap();
+            writeln!(
+                output,
+                "  {:.4} {}",
+                play.equity,
+                play.play.fmt(&board_snapshot)
+            )
+            .unwrap();
         }
-        eprintln!("Case {case_idx}: {} moves, {elapsed:?}", move_generator.plays.len());
+        eprintln!(
+            "Case {case_idx}: {} moves, {elapsed:?}",
+            move_generator.plays.len()
+        );
         total_moves += move_generator.plays.len();
     }
 

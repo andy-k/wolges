@@ -324,8 +324,9 @@ impl MultiLeaves {
                     env.kept_tally[tile as usize] += 1;
                     env.num_kept += 1;
                     if node.accepts() {
-                        let leave_val =
-                            (env.adjust_leave_value)(env.klv.leave_value_from_tally(env.kept_tally));
+                        let leave_val = (env.adjust_leave_value)(
+                            env.klv.leave_value_from_tally(env.kept_tally),
+                        );
                         let num_played = (env.num_tiles_on_rack - env.num_kept) as usize;
                         if num_played < env.best_leave_values.len()
                             && leave_val > env.best_leave_values[num_played]

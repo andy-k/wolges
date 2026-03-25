@@ -323,8 +323,7 @@ fn main() -> error::Returns<()> {
             candidate.win_rate_stats.update(win_prob);
         }
         if should_output {
-            candidates
-                .sort_unstable_by(|a, b| b.stats.mean().total_cmp(&a.stats.mean()));
+            candidates.sort_unstable_by(|a, b| b.stats.mean().total_cmp(&a.stats.mean()));
             for (i, candidate) in (1..).zip(candidates.iter().take(10)) {
                 println!(
                     "{:3} {:6.2} {:6.2} {}",
