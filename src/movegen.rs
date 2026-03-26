@@ -1418,7 +1418,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 env.rightmost,
                 f32::INFINITY,
             );
-        } else {
+        } else if env.params.extension_strip[env.anchor as usize] != 0 {
             env.best_possible_equity = f32::NEG_INFINITY;
             shadow_play_left(
                 env,
