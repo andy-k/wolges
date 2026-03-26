@@ -940,115 +940,59 @@ fn gen_extension_sets<N: kwg::Node>(
 ) {
     let len = board_strip.len();
 
-    // Left extension: for each empty square immediately left of a tile group,
-    // traverse GADDAG through the group (right to left), get children.
-    // Pass 1: right to left, tracking GADDAG state.
-    let mut p: i32 = 1; // GADDAG root
-    for j in (0..len).rev() {
-        if board_strip[j] != 0 {
-            p = kwg.seek(p, board_strip[j] & 0x7f);
-        } else {
-            // Empty square. If the square to the right (j+1) was nonempty,
-            // p holds the GADDAG state after traversing tiles to the right.
-            if j + 1 < len && board_strip[j + 1] != 0 && p > 0 {
-                let mut bits = 0u64;
-                let mut q = kwg[p].arc_index();
-                if q > 0 {
-                    loop {
-                        let node = kwg[q];
-                        // Any child arc means the tile can continue toward a word.
-                        bits |= 1u64 << node.tile();
-                        if node.is_end() {
-                            break;
-                        }
-                        q += 1;
-                    }
+    // Collect extension set bits from a GADDAG node's children.
+    // Excludes separator (bit 0), then adds blank bit if non-empty.
+    let collect_bits = |kwg: &kwg::Kwg<N>, p: i32| -> u64 {
+        if p <= 0 {
+            return 0;
+        }
+        let mut bits = 0u64;
+        let mut q = kwg[p].arc_index();
+        if q > 0 {
+            loop {
+                let node = kwg[q];
+                bits |= 1u64 << node.tile();
+                if node.is_end() {
+                    break;
                 }
-                // Exclude separator (bit 0), then add blank bit if non-empty.
-                let bits = bits & !1;
-                left_extension_sets[j] = bits | (bits != 0) as u64;
-            } else {
-                left_extension_sets[j] = !0u64;
+                q += 1;
             }
-            p = 1; // reset for next group
         }
-    }
-    // Fill nonempty squares (don't matter, but keep consistent).
-    for j in 0..len {
-        if board_strip[j] != 0 {
-            left_extension_sets[j] = !0u64;
-        }
-    }
+        let bits = bits & !1;
+        bits | (bits != 0) as u64
+    };
 
-    // Right extension: for each empty square immediately right of a tile group,
-    // traverse GADDAG through the group (right to left) then seek separator,
-    // get children.
-    // Reuse the right-to-left GADDAG state: for each tile group, compute
-    // the GADDAG state at the leftmost tile, then seek separator.
-    p = 1;
+    // Single right-to-left pass. For each tile group, one GADDAG traversal
+    // yields both left extension (children of p) and right extension
+    // (children of seek(p, separator)).
+    left_extension_sets.fill(!0u64);
+    right_extension_sets.fill(!0u64);
+    let mut p: i32 = 1;
+    let mut group_right_empty: usize = len;
     for j in (0..len).rev() {
         if board_strip[j] != 0 {
+            if j + 1 == len || board_strip[j + 1] == 0 {
+                group_right_empty = j + 1;
+                p = 1;
+            }
             p = kwg.seek(p, board_strip[j] & 0x7f);
         } else {
+            if j + 1 < len && board_strip[j + 1] != 0 {
+                // Empty square immediately left of a tile group.
+                // p = GADDAG state after traversing entire group right-to-left.
+                left_extension_sets[j] = collect_bits(kwg, p);
+                if group_right_empty < len {
+                    right_extension_sets[group_right_empty] =
+                        collect_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
+                }
+            }
             p = 1;
         }
     }
-    // Now do a left-to-right pass, tracking the GADDAG state at each group start.
-    // Actually, we need the GADDAG state at the END of each group (leftmost tile),
-    // which is the cumulative state after traversing the entire group right-to-left.
-    // We need a different approach: for each group, find its GADDAG state, seek
-    // separator, and store at the empty square after the group.
-    //
-    // Simpler: scan left to right. Track whether we're in a tile group.
-    // When we exit a group (hit an empty square), compute right extension.
-    let mut group_gaddag_p: i32 = 0; // 0 = not in a group
-    for j in 0..len {
-        if board_strip[j] != 0 {
-            if group_gaddag_p == 0 {
-                // Start of a new group. Compute GADDAG state by scanning
-                // right-to-left from the end of this group.
-                let mut q: i32 = 1;
-                let mut k = j;
-                // Find end of group.
-                while k < len && board_strip[k] != 0 {
-                    k += 1;
-                }
-                // Traverse right to left through GADDAG.
-                for i in (j..k).rev() {
-                    q = kwg.seek(q, board_strip[i] & 0x7f);
-                }
-                group_gaddag_p = q;
-            }
-            right_extension_sets[j] = !0u64;
-        } else {
-            if group_gaddag_p != 0 {
-                // Just exited a tile group. Seek separator to get right extension.
-                let sep_p = if group_gaddag_p > 0 {
-                    kwg.seek(group_gaddag_p, 0)
-                } else {
-                    -1
-                };
-                let mut bits = 0u64;
-                if sep_p > 0 {
-                    let mut q = kwg[sep_p].arc_index();
-                    if q > 0 {
-                        loop {
-                            let node = kwg[q];
-                            bits |= 1u64 << node.tile();
-                            if node.is_end() {
-                                break;
-                            }
-                            q += 1;
-                        }
-                    }
-                }
-                let bits = bits & !1;
-                right_extension_sets[j] = bits | (bits != 0) as u64;
-                group_gaddag_p = 0;
-            } else {
-                right_extension_sets[j] = !0u64;
-            }
-        }
+    // Handle group starting at position 0.
+    if !board_strip.is_empty() && board_strip[0] != 0 && group_right_empty < len {
+        right_extension_sets[group_right_empty] =
+            collect_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
     }
 }
 
