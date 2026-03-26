@@ -964,8 +964,9 @@ fn gen_extension_sets<N: kwg::Node>(
                         q += 1;
                     }
                 }
-                // Exclude separator (bit 0) from extension set.
-                left_extension_sets[j] = bits & !1;
+                // Exclude separator (bit 0), then add blank bit if non-empty.
+                let bits = bits & !1;
+                left_extension_sets[j] = bits | (bits != 0) as u64;
             } else {
                 left_extension_sets[j] = !0u64;
             }
@@ -1041,7 +1042,8 @@ fn gen_extension_sets<N: kwg::Node>(
                         }
                     }
                 }
-                right_extension_sets[j] = bits & !1;
+                let bits = bits & !1;
+                right_extension_sets[j] = bits | (bits != 0) as u64;
                 group_gaddag_p = 0;
             } else {
                 right_extension_sets[j] = !0u64;
