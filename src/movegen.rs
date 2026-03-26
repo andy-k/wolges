@@ -1255,8 +1255,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits =
-                    this_cross_bits & rack_bits & env.params.right_extension_strip[idx as usize];
+                let matching_bits = this_cross_bits
+                    & rack_bits
+                    & env.params.left_extension_strip[idx as usize]
+                    & env.params.right_extension_strip[idx as usize];
                 if matching_bits == 0 {
                     break;
                 }
@@ -1361,8 +1363,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits =
-                    this_cross_bits & rack_bits & env.params.left_extension_strip[idx as usize];
+                let matching_bits = this_cross_bits
+                    & rack_bits
+                    & env.params.left_extension_strip[idx as usize]
+                    & env.params.right_extension_strip[idx as usize];
                 if matching_bits == 0 {
                     break;
                 }
