@@ -538,6 +538,8 @@ impl WorkingBuffer {
             p_right: 0,
             bits: 0,
         });
+        self.extension_set_for_across_plays.fill(!0u64);
+        self.extension_set_for_down_plays.fill(!0u64);
         self.accepts_alpha_cache.fill(([0u8; 64], false));
     }
 }
