@@ -65,6 +65,10 @@ struct WorkingBuffer {
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
     perpendicular_scores_for_down_plays: Box<[i32]>,   // c*r
+    left_extension_set_for_across_plays: Box<[u64]>,   // r*c
+    right_extension_set_for_across_plays: Box<[u64]>,  // r*c
+    left_extension_set_for_down_plays: Box<[u64]>,     // c*r
+    right_extension_set_for_down_plays: Box<[u64]>,    // c*r
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
     num_tiles_in_bag: i16, // negative when players also have less than full racks
@@ -124,6 +128,10 @@ impl Clone for WorkingBuffer {
                 .perpendicular_scores_for_across_plays
                 .clone(),
             perpendicular_scores_for_down_plays: self.perpendicular_scores_for_down_plays.clone(),
+            left_extension_set_for_across_plays: self.left_extension_set_for_across_plays.clone(),
+            right_extension_set_for_across_plays: self.right_extension_set_for_across_plays.clone(),
+            left_extension_set_for_down_plays: self.left_extension_set_for_down_plays.clone(),
+            right_extension_set_for_down_plays: self.right_extension_set_for_down_plays.clone(),
             transposed_board_tiles: self.transposed_board_tiles.clone(),
             num_tiles_on_board: self.num_tiles_on_board,
             num_tiles_in_bag: self.num_tiles_in_bag,
@@ -186,6 +194,14 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.perpendicular_scores_for_across_plays);
         self.perpendicular_scores_for_down_plays
             .clone_from(&source.perpendicular_scores_for_down_plays);
+        self.left_extension_set_for_across_plays
+            .clone_from(&source.left_extension_set_for_across_plays);
+        self.right_extension_set_for_across_plays
+            .clone_from(&source.right_extension_set_for_across_plays);
+        self.left_extension_set_for_down_plays
+            .clone_from(&source.left_extension_set_for_down_plays);
+        self.right_extension_set_for_down_plays
+            .clone_from(&source.right_extension_set_for_down_plays);
         self.transposed_board_tiles
             .clone_from(&source.transposed_board_tiles);
         self.num_tiles_on_board
@@ -278,6 +294,10 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             perpendicular_scores_for_across_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
             perpendicular_scores_for_down_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
+            left_extension_set_for_across_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
+            right_extension_set_for_across_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
+            left_extension_set_for_down_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
+            right_extension_set_for_down_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
             num_tiles_in_bag: 0,
@@ -551,7 +571,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 ) {
     let len = output_strider.len();
     let step = output_strider.step() as usize;
-    let kwg = &board_snapshot.kwg;
+    let kwg = board_snapshot.kwg;
     let mut last_nonempty = len;
     {
         let alphabet = board_snapshot.game_config.alphabet();
@@ -824,7 +844,7 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     let len = output_strider.len();
     let step = output_strider.step() as usize;
     let mut wp = output_strider.base() as usize;
-    let kwg = &board_snapshot.kwg;
+    let kwg = board_snapshot.kwg;
     let alphabet = board_snapshot.game_config.alphabet();
     let mut prev_wp = !0;
     for i in 0..len {
@@ -906,6 +926,130 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     }
 }
 
+// Compute left and right extension sets for a strip in the play direction.
+// Left extension set at position j: which tiles can extend leftward into j,
+// given the board tiles to the right of j.
+// Right extension set at position j: which tiles can extend rightward into j,
+// given the board tiles to the left of j.
+// Non-adjacent empty squares get !0u64 (all bits, no constraint).
+fn gen_extension_sets<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    board_strip: &[u8],
+    left_extension_sets: &mut [u64],
+    right_extension_sets: &mut [u64],
+) {
+    let len = board_strip.len();
+
+    // Left extension: for each empty square immediately left of a tile group,
+    // traverse GADDAG through the group (right to left), get children.
+    // Pass 1: right to left, tracking GADDAG state.
+    let mut p: i32 = 1; // GADDAG root
+    for j in (0..len).rev() {
+        if board_strip[j] != 0 {
+            p = kwg.seek(p, board_strip[j] & 0x7f);
+        } else {
+            // Empty square. If the square to the right (j+1) was nonempty,
+            // p holds the GADDAG state after traversing tiles to the right.
+            if j + 1 < len && board_strip[j + 1] != 0 && p > 0 {
+                let mut bits = 0u64;
+                let mut q = kwg[p].arc_index();
+                if q > 0 {
+                    loop {
+                        let node = kwg[q];
+                        // Any child arc means the tile can continue toward a word.
+                        bits |= 1u64 << node.tile();
+                        if node.is_end() {
+                            break;
+                        }
+                        q += 1;
+                    }
+                }
+                // Exclude separator (bit 0) from extension set.
+                left_extension_sets[j] = bits & !1;
+            } else {
+                left_extension_sets[j] = !0u64;
+            }
+            p = 1; // reset for next group
+        }
+    }
+    // Fill nonempty squares (don't matter, but keep consistent).
+    for j in 0..len {
+        if board_strip[j] != 0 {
+            left_extension_sets[j] = !0u64;
+        }
+    }
+
+    // Right extension: for each empty square immediately right of a tile group,
+    // traverse GADDAG through the group (right to left) then seek separator,
+    // get children.
+    // Reuse the right-to-left GADDAG state: for each tile group, compute
+    // the GADDAG state at the leftmost tile, then seek separator.
+    p = 1;
+    for j in (0..len).rev() {
+        if board_strip[j] != 0 {
+            p = kwg.seek(p, board_strip[j] & 0x7f);
+        } else {
+            p = 1;
+        }
+    }
+    // Now do a left-to-right pass, tracking the GADDAG state at each group start.
+    // Actually, we need the GADDAG state at the END of each group (leftmost tile),
+    // which is the cumulative state after traversing the entire group right-to-left.
+    // We need a different approach: for each group, find its GADDAG state, seek
+    // separator, and store at the empty square after the group.
+    //
+    // Simpler: scan left to right. Track whether we're in a tile group.
+    // When we exit a group (hit an empty square), compute right extension.
+    let mut group_gaddag_p: i32 = 0; // 0 = not in a group
+    for j in 0..len {
+        if board_strip[j] != 0 {
+            if group_gaddag_p == 0 {
+                // Start of a new group. Compute GADDAG state by scanning
+                // right-to-left from the end of this group.
+                let mut q: i32 = 1;
+                let mut k = j;
+                // Find end of group.
+                while k < len && board_strip[k] != 0 {
+                    k += 1;
+                }
+                // Traverse right to left through GADDAG.
+                for i in (j..k).rev() {
+                    q = kwg.seek(q, board_strip[i] & 0x7f);
+                }
+                group_gaddag_p = q;
+            }
+            right_extension_sets[j] = !0u64;
+        } else {
+            if group_gaddag_p != 0 {
+                // Just exited a tile group. Seek separator to get right extension.
+                let sep_p = if group_gaddag_p > 0 {
+                    kwg.seek(group_gaddag_p, 0)
+                } else {
+                    -1
+                };
+                let mut bits = 0u64;
+                if sep_p > 0 {
+                    let mut q = kwg[sep_p].arc_index();
+                    if q > 0 {
+                        loop {
+                            let node = kwg[q];
+                            bits |= 1u64 << node.tile();
+                            if node.is_end() {
+                                break;
+                            }
+                            q += 1;
+                        }
+                    }
+                }
+                right_extension_sets[j] = bits & !1;
+                group_gaddag_p = 0;
+            } else {
+                right_extension_sets[j] = !0u64;
+            }
+        }
+    }
+}
+
 struct GenPlacePlacementsParams<'a> {
     board_strip: &'a [u8],
     alphabet: &'a alphabet::Alphabet,
@@ -914,6 +1058,8 @@ struct GenPlacePlacementsParams<'a> {
     used_tile_scores_shadowr: &'a mut Vec<i8>,
     shadow_strip_buffer: &'a mut [u8], // not really storing letters here
     cross_set_strip: &'a [CrossSet],
+    left_extension_strip: &'a [u64],
+    right_extension_strip: &'a [u64],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
     perpendicular_word_multipliers_strip: &'a [i8],
@@ -1163,7 +1309,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits = this_cross_bits & rack_bits;
+                let matching_bits =
+                    this_cross_bits & rack_bits & env.params.right_extension_strip[idx as usize];
                 if matching_bits == 0 {
                     break;
                 }
@@ -1268,7 +1415,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits = this_cross_bits & rack_bits;
+                let matching_bits =
+                    this_cross_bits & rack_bits & env.params.left_extension_strip[idx as usize];
                 if matching_bits == 0 {
                     break;
                 }
@@ -2922,6 +3070,36 @@ fn kurnia_gen_place_moves_iter<
         working_buffer.cross_set_for_across_plays[dim.at_row_col(star_row, star_col)] =
             CrossSet { bits: !1, score: 0 };
     }
+    // extension sets: per strip in the play direction
+    if matches!(
+        board_snapshot.game_config.game_rules(),
+        game_config::GameRules::Classic
+    ) {
+        for row in 0..dim.rows {
+            let strip_range_start = (row as isize * dim.cols as isize) as usize;
+            let strip_range_end = strip_range_start + dim.cols as usize;
+            gen_extension_sets(
+                board_snapshot.kwg,
+                &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                &mut working_buffer.left_extension_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.right_extension_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+            );
+        }
+        for col in 0..dim.cols {
+            let strip_range_start = (col as isize * dim.rows as isize) as usize;
+            let strip_range_end = strip_range_start + dim.rows as usize;
+            gen_extension_sets(
+                board_snapshot.kwg,
+                &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                &mut working_buffer.left_extension_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.right_extension_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+            );
+        }
+    }
     working_buffer.init_after_cross_sets(board_snapshot);
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
@@ -2938,6 +3116,10 @@ fn kurnia_gen_place_moves_iter<
                 shadow_strip_buffer: &mut working_buffer.word_buffer_for_across_plays
                     [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+                left_extension_strip: &working_buffer.left_extension_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+                right_extension_strip: &working_buffer.right_extension_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_across_plays
@@ -2991,6 +3173,10 @@ fn kurnia_gen_place_moves_iter<
                 shadow_strip_buffer: &mut working_buffer.word_buffer_for_down_plays
                     [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+                left_extension_strip: &working_buffer.left_extension_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+                right_extension_strip: &working_buffer.right_extension_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_down_plays[strip_range_start..strip_range_end],
