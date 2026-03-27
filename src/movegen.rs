@@ -65,8 +65,10 @@ struct WorkingBuffer {
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
     perpendicular_scores_for_down_plays: Box<[i32]>,   // c*r
-    extension_set_for_across_plays: Box<[u64]>,        // r*c
-    extension_set_for_down_plays: Box<[u64]>,          // c*r
+    left_extension_set_for_across_plays: Box<[u64]>,   // r*c
+    right_extension_set_for_across_plays: Box<[u64]>,  // r*c
+    left_extension_set_for_down_plays: Box<[u64]>,     // c*r
+    right_extension_set_for_down_plays: Box<[u64]>,    // c*r
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
     num_tiles_in_bag: i16, // negative when players also have less than full racks
@@ -126,8 +128,10 @@ impl Clone for WorkingBuffer {
                 .perpendicular_scores_for_across_plays
                 .clone(),
             perpendicular_scores_for_down_plays: self.perpendicular_scores_for_down_plays.clone(),
-            extension_set_for_across_plays: self.extension_set_for_across_plays.clone(),
-            extension_set_for_down_plays: self.extension_set_for_down_plays.clone(),
+            left_extension_set_for_across_plays: self.left_extension_set_for_across_plays.clone(),
+            right_extension_set_for_across_plays: self.right_extension_set_for_across_plays.clone(),
+            left_extension_set_for_down_plays: self.left_extension_set_for_down_plays.clone(),
+            right_extension_set_for_down_plays: self.right_extension_set_for_down_plays.clone(),
             transposed_board_tiles: self.transposed_board_tiles.clone(),
             num_tiles_on_board: self.num_tiles_on_board,
             num_tiles_in_bag: self.num_tiles_in_bag,
@@ -190,10 +194,14 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.perpendicular_scores_for_across_plays);
         self.perpendicular_scores_for_down_plays
             .clone_from(&source.perpendicular_scores_for_down_plays);
-        self.extension_set_for_across_plays
-            .clone_from(&source.extension_set_for_across_plays);
-        self.extension_set_for_down_plays
-            .clone_from(&source.extension_set_for_down_plays);
+        self.left_extension_set_for_across_plays
+            .clone_from(&source.left_extension_set_for_across_plays);
+        self.right_extension_set_for_across_plays
+            .clone_from(&source.right_extension_set_for_across_plays);
+        self.left_extension_set_for_down_plays
+            .clone_from(&source.left_extension_set_for_down_plays);
+        self.right_extension_set_for_down_plays
+            .clone_from(&source.right_extension_set_for_down_plays);
         self.transposed_board_tiles
             .clone_from(&source.transposed_board_tiles);
         self.num_tiles_on_board
@@ -286,8 +294,10 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             perpendicular_scores_for_across_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
             perpendicular_scores_for_down_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
-            extension_set_for_across_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
-            extension_set_for_down_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
+            left_extension_set_for_across_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
+            right_extension_set_for_across_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
+            left_extension_set_for_down_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
+            right_extension_set_for_down_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
             num_tiles_in_bag: 0,
@@ -538,8 +548,10 @@ impl WorkingBuffer {
             p_right: 0,
             bits: 0,
         });
-        self.extension_set_for_across_plays.fill(!0u64);
-        self.extension_set_for_down_plays.fill(!0u64);
+        self.left_extension_set_for_across_plays.fill(!0u64);
+        self.right_extension_set_for_across_plays.fill(!0u64);
+        self.left_extension_set_for_down_plays.fill(!0u64);
+        self.right_extension_set_for_down_plays.fill(!0u64);
         self.accepts_alpha_cache.fill(([0u8; 64], false));
     }
 }
@@ -927,7 +939,8 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 fn gen_extension_sets<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
     board_strip: &[u8],
-    extension_sets: &mut [u64],
+    left_extension_sets: &mut [u64],
+    right_extension_sets: &mut [u64],
 ) {
     let len = board_strip.len();
 
@@ -955,9 +968,7 @@ fn gen_extension_sets<N: kwg::Node>(
 
     // Single right-to-left pass. For each tile group, one GADDAG traversal
     // yields both left extension (children of p) and right extension
-    // (children of seek(p, separator)). These are ANDed together at each
-    // position since both constraints apply regardless of play direction.
-    extension_sets.fill(!0u64);
+    // (children of seek(p, separator)).
     let mut p: i32 = 1;
     let mut group_right_empty: usize = len;
     for j in (0..len).rev() {
@@ -971,9 +982,9 @@ fn gen_extension_sets<N: kwg::Node>(
             if j + 1 < len && board_strip[j + 1] != 0 {
                 // Empty square immediately left of a tile group.
                 // p = GADDAG state after traversing entire group right-to-left.
-                extension_sets[j] &= collect_bits(kwg, p);
+                left_extension_sets[j] = collect_bits(kwg, p);
                 if group_right_empty < len {
-                    extension_sets[group_right_empty] &=
+                    right_extension_sets[group_right_empty] =
                         collect_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
                 }
             }
@@ -982,7 +993,7 @@ fn gen_extension_sets<N: kwg::Node>(
     }
     // Handle group starting at position 0.
     if !board_strip.is_empty() && board_strip[0] != 0 && group_right_empty < len {
-        extension_sets[group_right_empty] &=
+        right_extension_sets[group_right_empty] =
             collect_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
     }
 }
@@ -995,7 +1006,8 @@ struct GenPlacePlacementsParams<'a> {
     used_tile_scores_shadowr: &'a mut Vec<i8>,
     shadow_strip_buffer: &'a mut [u8], // not really storing letters here
     cross_set_strip: &'a [CrossSet],
-    extension_strip: &'a [u64],
+    left_extension_strip: &'a [u64],
+    right_extension_strip: &'a [u64],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
     perpendicular_word_multipliers_strip: &'a [i8],
@@ -1245,8 +1257,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits =
-                    this_cross_bits & rack_bits & env.params.extension_strip[idx as usize];
+                let matching_bits = this_cross_bits
+                    & rack_bits
+                    & env.params.left_extension_strip[idx as usize]
+                    & env.params.right_extension_strip[idx as usize];
                 if matching_bits == 0 {
                     break;
                 }
@@ -1351,8 +1365,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits =
-                    this_cross_bits & rack_bits & env.params.extension_strip[idx as usize];
+                let matching_bits = this_cross_bits
+                    & rack_bits
+                    & env.params.left_extension_strip[idx as usize]
+                    & env.params.right_extension_strip[idx as usize];
                 if matching_bits == 0 {
                     break;
                 }
@@ -1420,7 +1436,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 env.rightmost,
                 f32::INFINITY,
             );
-        } else if env.params.extension_strip[env.anchor as usize] != 0 {
+        } else if (env.params.left_extension_strip[env.anchor as usize]
+            | env.params.right_extension_strip[env.anchor as usize])
+            != 0
+        {
             env.best_possible_equity = f32::NEG_INFINITY;
             shadow_play_left(
                 env,
@@ -3011,13 +3030,25 @@ fn kurnia_gen_place_moves_iter<
         board_snapshot.game_config.game_rules(),
         game_config::GameRules::Classic
     ) {
+        working_buffer
+            .left_extension_set_for_across_plays
+            .fill(!0u64);
+        working_buffer
+            .right_extension_set_for_across_plays
+            .fill(!0u64);
+        working_buffer.left_extension_set_for_down_plays.fill(!0u64);
+        working_buffer
+            .right_extension_set_for_down_plays
+            .fill(!0u64);
         for row in 0..dim.rows {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
             gen_extension_sets(
                 board_snapshot.kwg,
                 &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.extension_set_for_across_plays
+                &mut working_buffer.left_extension_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.right_extension_set_for_across_plays
                     [strip_range_start..strip_range_end],
             );
         }
@@ -3027,7 +3058,9 @@ fn kurnia_gen_place_moves_iter<
             gen_extension_sets(
                 board_snapshot.kwg,
                 &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.extension_set_for_down_plays
+                &mut working_buffer.left_extension_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.right_extension_set_for_down_plays
                     [strip_range_start..strip_range_end],
             );
         }
@@ -3049,7 +3082,9 @@ fn kurnia_gen_place_moves_iter<
                     [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
-                extension_strip: &working_buffer.extension_set_for_across_plays
+                left_extension_strip: &working_buffer.left_extension_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+                right_extension_strip: &working_buffer.right_extension_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_across_plays
@@ -3104,7 +3139,9 @@ fn kurnia_gen_place_moves_iter<
                     [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
-                extension_strip: &working_buffer.extension_set_for_down_plays
+                left_extension_strip: &working_buffer.left_extension_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+                right_extension_strip: &working_buffer.right_extension_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_down_plays[strip_range_start..strip_range_end],
