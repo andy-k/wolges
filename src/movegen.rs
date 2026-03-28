@@ -47,20 +47,25 @@ struct MultiJump {
 // reset_for_another_kwg().
 // This is not enforced.
 struct WorkingBuffer {
-    rack_tally: Box<[u8]>,                                      // 27 for ?A-Z
-    word_buffer_for_across_plays: Box<[u8]>,                    // r*c
-    word_buffer_for_down_plays: Box<[u8]>,                      // c*r
-    cross_set_for_across_plays: Box<[CrossSet]>,                // r*c
-    cross_set_for_down_plays: Box<[CrossSet]>,                  // c*r
-    cached_cross_set_for_across_plays: Box<[CachedCrossSet]>,   // c*r
-    cached_cross_set_for_down_plays: Box<[CachedCrossSet]>,     // r*c
-    cross_set_buffer: Box<[CrossSetComputation]>,               // max(r, c)
-    remaining_word_multipliers_for_across_plays: Box<[i8]>,     // r*c (1 if tile placed)
-    remaining_word_multipliers_for_down_plays: Box<[i8]>,       // c*r
-    remaining_tile_multipliers_for_across_plays: Box<[i8]>,     // r*c (1 if tile placed)
-    remaining_tile_multipliers_for_down_plays: Box<[i8]>,       // c*r
-    face_value_scores_for_across_plays: Box<[i8]>,              // r*c
-    face_value_scores_for_down_plays: Box<[i8]>,                // c*r
+    rack_tally: Box<[u8]>,                                         // 27 for ?A-Z
+    word_buffer_for_across_plays: Box<[u8]>,                       // r*c
+    word_buffer_for_down_plays: Box<[u8]>,                         // c*r
+    cross_set_for_across_plays: Box<[CrossSet]>,                   // r*c
+    cross_set_for_down_plays: Box<[CrossSet]>,                     // c*r
+    cached_cross_set_for_across_plays: Box<[CachedCrossSet]>,      // c*r
+    cached_cross_set_for_down_plays: Box<[CachedCrossSet]>,        // r*c
+    cross_set_buffer_for_across_plays: Box<[CrossSetComputation]>, // c*r (perpendicular strips)
+    cross_set_buffer_for_down_plays: Box<[CrossSetComputation]>,   // r*c (perpendicular strips)
+    prev_board_for_across_cross_sets: Box<[u8]>, // c*r (previous transposed tiles)
+    prev_board_for_down_cross_sets: Box<[u8]>,   // r*c (previous board tiles)
+    prev_board_for_across_ext_sets: Box<[u8]>,   // r*c (previous board tiles for ext sets)
+    prev_board_for_down_ext_sets: Box<[u8]>,     // c*r (previous transposed tiles for ext sets)
+    remaining_word_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
+    remaining_word_multipliers_for_down_plays: Box<[i8]>, // c*r
+    remaining_tile_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
+    remaining_tile_multipliers_for_down_plays: Box<[i8]>, // c*r
+    face_value_scores_for_across_plays: Box<[i8]>, // r*c
+    face_value_scores_for_down_plays: Box<[i8]>, // c*r
     perpendicular_word_multipliers_for_across_plays: Box<[i8]>, // r*c (0 if no perpendicularly adjacent tile)
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
@@ -103,7 +108,12 @@ impl Clone for WorkingBuffer {
             cross_set_for_down_plays: self.cross_set_for_down_plays.clone(),
             cached_cross_set_for_across_plays: self.cached_cross_set_for_across_plays.clone(),
             cached_cross_set_for_down_plays: self.cached_cross_set_for_down_plays.clone(),
-            cross_set_buffer: self.cross_set_buffer.clone(),
+            cross_set_buffer_for_across_plays: self.cross_set_buffer_for_across_plays.clone(),
+            cross_set_buffer_for_down_plays: self.cross_set_buffer_for_down_plays.clone(),
+            prev_board_for_across_cross_sets: self.prev_board_for_across_cross_sets.clone(),
+            prev_board_for_down_cross_sets: self.prev_board_for_down_cross_sets.clone(),
+            prev_board_for_across_ext_sets: self.prev_board_for_across_ext_sets.clone(),
+            prev_board_for_down_ext_sets: self.prev_board_for_down_ext_sets.clone(),
             remaining_word_multipliers_for_across_plays: self
                 .remaining_word_multipliers_for_across_plays
                 .clone(),
@@ -173,7 +183,18 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.cached_cross_set_for_across_plays);
         self.cached_cross_set_for_down_plays
             .clone_from(&source.cached_cross_set_for_down_plays);
-        self.cross_set_buffer.clone_from(&source.cross_set_buffer);
+        self.cross_set_buffer_for_across_plays
+            .clone_from(&source.cross_set_buffer_for_across_plays);
+        self.cross_set_buffer_for_down_plays
+            .clone_from(&source.cross_set_buffer_for_down_plays);
+        self.prev_board_for_across_cross_sets
+            .clone_from(&source.prev_board_for_across_cross_sets);
+        self.prev_board_for_down_cross_sets
+            .clone_from(&source.prev_board_for_down_cross_sets);
+        self.prev_board_for_across_ext_sets
+            .clone_from(&source.prev_board_for_across_ext_sets);
+        self.prev_board_for_down_ext_sets
+            .clone_from(&source.prev_board_for_down_ext_sets);
         self.remaining_word_multipliers_for_across_plays
             .clone_from(&source.remaining_word_multipliers_for_across_plays);
         self.remaining_word_multipliers_for_down_plays
@@ -268,16 +289,30 @@ impl WorkingBuffer {
                 rows_times_cols
             ]
             .into_boxed_slice(),
-            cross_set_buffer: vec![
+            cross_set_buffer_for_across_plays: vec![
                 CrossSetComputation {
                     score: 0,
                     b_letter: 0,
                     end_range: 0,
                     p: 0,
                 };
-                dim.rows.max(dim.cols) as usize
+                rows_times_cols
             ]
             .into_boxed_slice(),
+            cross_set_buffer_for_down_plays: vec![
+                CrossSetComputation {
+                    score: 0,
+                    b_letter: 0,
+                    end_range: 0,
+                    p: 0,
+                };
+                rows_times_cols
+            ]
+            .into_boxed_slice(),
+            prev_board_for_across_cross_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
+            prev_board_for_down_cross_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
+            prev_board_for_across_ext_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
+            prev_board_for_down_ext_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
             remaining_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
             remaining_word_multipliers_for_down_plays: vec![0i8; rows_times_cols]
@@ -354,58 +389,56 @@ impl WorkingBuffer {
         self.word_buffer_for_down_plays
             .iter_mut()
             .for_each(|m| *m = 0);
-        self.cross_set_for_across_plays.iter_mut().for_each(|m| {
-            m.bits = 0;
-            m.score = 0;
-        });
-        self.cross_set_for_down_plays.iter_mut().for_each(|m| {
-            m.bits = 0;
-            m.score = 0;
-        });
-
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
-        let premiums = board_layout.premiums();
-        let transposed_premiums = board_layout.transposed_premiums();
         let area = (dim.rows as isize * dim.cols as isize) as usize;
-        // row * dim.cols + col
-        for (idx, &b) in board_snapshot.board_tiles.iter().enumerate().take(area) {
-            if b == 0 {
-                let premium = &premiums[idx];
-                self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
-                self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
-                self.face_value_scores_for_across_plays[idx] = 0;
-            } else {
-                self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
-                //self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
-                self.face_value_scores_for_across_plays[idx] = alphabet.score(b);
+        // Skip board-dependent work if board tiles haven't changed.
+        // prev_board_for_down_cross_sets stores the most recent board_tiles
+        // (row-major), updated by the cross set strip caching.
+        // On first call it's 0xFF so this always runs initially.
+        if self.prev_board_for_down_cross_sets[..area] != board_snapshot.board_tiles[..area] {
+            let premiums = board_layout.premiums();
+            let transposed_premiums = board_layout.transposed_premiums();
+            // row * dim.cols + col
+            for (idx, &b) in board_snapshot.board_tiles.iter().enumerate().take(area) {
+                if b == 0 {
+                    let premium = &premiums[idx];
+                    self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
+                    self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
+                    self.face_value_scores_for_across_plays[idx] = 0;
+                } else {
+                    self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
+                    //self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
+                    self.face_value_scores_for_across_plays[idx] = alphabet.score(b);
+                }
             }
-        }
-        for col in 0..dim.cols {
-            for row in 0..dim.rows {
-                self.transposed_board_tiles
-                    [(col as isize * dim.rows as isize + row as isize) as usize] = board_snapshot
-                    .board_tiles[(row as isize * dim.cols as isize + col as isize) as usize];
+            for col in 0..dim.cols {
+                for row in 0..dim.rows {
+                    self.transposed_board_tiles
+                        [(col as isize * dim.rows as isize + row as isize) as usize] =
+                        board_snapshot.board_tiles
+                            [(row as isize * dim.cols as isize + col as isize) as usize];
+                }
             }
-        }
-        // col * dim.rows + row
-        for (idx, &b) in self.transposed_board_tiles.iter().enumerate().take(area) {
-            if b == 0 {
-                let premium = &transposed_premiums[idx];
-                self.remaining_word_multipliers_for_down_plays[idx] = premium.word_multiplier;
-                self.remaining_tile_multipliers_for_down_plays[idx] = premium.tile_multiplier;
-                self.face_value_scores_for_down_plays[idx] = 0;
-            } else {
-                self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
-                //self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
-                self.face_value_scores_for_down_plays[idx] = alphabet.score(b);
+            // col * dim.rows + row
+            for (idx, &b) in self.transposed_board_tiles.iter().enumerate().take(area) {
+                if b == 0 {
+                    let premium = &transposed_premiums[idx];
+                    self.remaining_word_multipliers_for_down_plays[idx] = premium.word_multiplier;
+                    self.remaining_tile_multipliers_for_down_plays[idx] = premium.tile_multiplier;
+                    self.face_value_scores_for_down_plays[idx] = 0;
+                } else {
+                    self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
+                    //self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
+                    self.face_value_scores_for_down_plays[idx] = alphabet.score(b);
+                }
             }
+            self.num_tiles_on_board = board_snapshot
+                .board_tiles
+                .iter()
+                .filter(|&t| *t != 0)
+                .count() as u16;
         }
-        self.num_tiles_on_board = board_snapshot
-            .board_tiles
-            .iter()
-            .filter(|&t| *t != 0)
-            .count() as u16;
         self.num_tiles_in_bag = alphabet.num_tiles() as i16
             - (self.num_tiles_on_board as i16
                 + board_snapshot.game_config.num_players() as i16
@@ -504,34 +537,41 @@ impl WorkingBuffer {
     fn init_after_cross_sets<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
+        recompute_across: bool,
+        recompute_down: bool,
     ) {
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
-        let premiums = board_layout.premiums();
-        let transposed_premiums = board_layout.transposed_premiums();
         let area = (dim.rows as isize * dim.cols as isize) as usize;
-        // row * dim.cols + col
-        for (idx, premium) in premiums.iter().enumerate().take(area) {
-            let cross_set = &mut self.cross_set_for_across_plays[idx];
-            if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
-                cross_set.bits = 1;
+        if recompute_across {
+            let premiums = board_layout.premiums();
+            // row * dim.cols + col
+            for (idx, premium) in premiums.iter().enumerate().take(area) {
+                let cross_set = &mut self.cross_set_for_across_plays[idx];
+                if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
+                    cross_set.bits = 1;
+                }
+                let effective_pwm = self.remaining_word_multipliers_for_across_plays[idx]
+                    & -(cross_set.bits as i8 & 1);
+                self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
+                self.perpendicular_scores_for_across_plays[idx] =
+                    cross_set.score * effective_pwm as i32;
             }
-            let effective_pwm =
-                self.remaining_word_multipliers_for_across_plays[idx] & -(cross_set.bits as i8 & 1);
-            self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
-            self.perpendicular_scores_for_across_plays[idx] =
-                cross_set.score * effective_pwm as i32;
         }
-        // col * dim.rows + row
-        for (idx, premium) in transposed_premiums.iter().enumerate().take(area) {
-            let cross_set = &mut self.cross_set_for_down_plays[idx];
-            if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
-                cross_set.bits = 1;
+        if recompute_down {
+            let transposed_premiums = board_layout.transposed_premiums();
+            // col * dim.rows + row
+            for (idx, premium) in transposed_premiums.iter().enumerate().take(area) {
+                let cross_set = &mut self.cross_set_for_down_plays[idx];
+                if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
+                    cross_set.bits = 1;
+                }
+                let effective_pwm = self.remaining_word_multipliers_for_down_plays[idx]
+                    & -(cross_set.bits as i8 & 1);
+                self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
+                self.perpendicular_scores_for_down_plays[idx] =
+                    cross_set.score * effective_pwm as i32;
             }
-            let effective_pwm =
-                self.remaining_word_multipliers_for_down_plays[idx] & -(cross_set.bits as i8 & 1);
-            self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
-            self.perpendicular_scores_for_down_plays[idx] = cross_set.score * effective_pwm as i32;
         }
     }
 
@@ -548,6 +588,10 @@ impl WorkingBuffer {
             p_right: 0,
             bits: 0,
         });
+        self.prev_board_for_across_cross_sets.fill(0xFF);
+        self.prev_board_for_down_cross_sets.fill(0xFF);
+        self.prev_board_for_across_ext_sets.fill(0xFF);
+        self.prev_board_for_down_ext_sets.fill(0xFF);
         self.left_extension_set_for_across_plays.fill(!0u64);
         self.right_extension_set_for_across_plays.fill(!0u64);
         self.left_extension_set_for_down_plays.fill(!0u64);
@@ -3008,37 +3052,58 @@ fn kurnia_gen_place_moves_iter<
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
     // striped by row
+    let mut any_across_strip_changed = false;
     for col in 0..dim.cols {
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
-        gen_cross_set(
-            board_snapshot,
-            &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-            &mut working_buffer.cross_set_for_across_plays,
-            dim.down(col),
-            &mut working_buffer.cross_set_buffer,
-            &mut working_buffer.cached_cross_set_for_across_plays
-                [strip_range_start..strip_range_end],
-            &mut working_buffer.used_letters_tally,
-        );
+        if working_buffer.prev_board_for_across_cross_sets[strip_range_start..strip_range_end]
+            != working_buffer.transposed_board_tiles[strip_range_start..strip_range_end]
+        {
+            gen_cross_set(
+                board_snapshot,
+                &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                &mut working_buffer.cross_set_for_across_plays,
+                dim.down(col),
+                &mut working_buffer.cross_set_buffer_for_across_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.cached_cross_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.used_letters_tally,
+            );
+            working_buffer.prev_board_for_across_cross_sets[strip_range_start..strip_range_end]
+                .copy_from_slice(
+                    &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                );
+            any_across_strip_changed = true;
+        }
     }
     let transposed_dim = matrix::Dim {
         rows: dim.cols,
         cols: dim.rows,
     };
     // striped by columns for better cache locality
+    let mut any_down_strip_changed = false;
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
-        gen_cross_set(
-            board_snapshot,
-            &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-            &mut working_buffer.cross_set_for_down_plays,
-            transposed_dim.down(row),
-            &mut working_buffer.cross_set_buffer,
-            &mut working_buffer.cached_cross_set_for_down_plays[strip_range_start..strip_range_end],
-            &mut working_buffer.used_letters_tally,
-        );
+        if working_buffer.prev_board_for_down_cross_sets[strip_range_start..strip_range_end]
+            != board_snapshot.board_tiles[strip_range_start..strip_range_end]
+        {
+            gen_cross_set(
+                board_snapshot,
+                &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                &mut working_buffer.cross_set_for_down_plays,
+                transposed_dim.down(row),
+                &mut working_buffer.cross_set_buffer_for_down_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.cached_cross_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.used_letters_tally,
+            );
+            working_buffer.prev_board_for_down_cross_sets[strip_range_start..strip_range_end]
+                .copy_from_slice(&board_snapshot.board_tiles[strip_range_start..strip_range_end]);
+            any_down_strip_changed = true;
+        }
     }
     if working_buffer.num_tiles_on_board == 0 {
         // empty board activates star
@@ -3052,46 +3117,69 @@ fn kurnia_gen_place_moves_iter<
             CrossSet { bits: !1, score: 0 };
     }
     // extension sets: per strip in the play direction
+    // Across extension sets use board_tiles (rows), down use transposed_board_tiles (columns).
     if matches!(
         board_snapshot.game_config.game_rules(),
         game_config::GameRules::Classic
     ) {
-        working_buffer
-            .left_extension_set_for_across_plays
-            .fill(!0u64);
-        working_buffer
-            .right_extension_set_for_across_plays
-            .fill(!0u64);
-        working_buffer.left_extension_set_for_down_plays.fill(!0u64);
-        working_buffer
-            .right_extension_set_for_down_plays
-            .fill(!0u64);
         for row in 0..dim.rows {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
-            gen_extension_sets(
-                board_snapshot.kwg,
-                &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.left_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end],
-                &mut working_buffer.right_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end],
-            );
+            if working_buffer.prev_board_for_across_ext_sets[strip_range_start..strip_range_end]
+                != board_snapshot.board_tiles[strip_range_start..strip_range_end]
+            {
+                working_buffer.left_extension_set_for_across_plays
+                    [strip_range_start..strip_range_end]
+                    .fill(!0u64);
+                working_buffer.right_extension_set_for_across_plays
+                    [strip_range_start..strip_range_end]
+                    .fill(!0u64);
+                gen_extension_sets(
+                    board_snapshot.kwg,
+                    &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                    &mut working_buffer.left_extension_set_for_across_plays
+                        [strip_range_start..strip_range_end],
+                    &mut working_buffer.right_extension_set_for_across_plays
+                        [strip_range_start..strip_range_end],
+                );
+                working_buffer.prev_board_for_across_ext_sets[strip_range_start..strip_range_end]
+                    .copy_from_slice(
+                        &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                    );
+            }
         }
         for col in 0..dim.cols {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
             let strip_range_end = strip_range_start + dim.rows as usize;
-            gen_extension_sets(
-                board_snapshot.kwg,
-                &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.left_extension_set_for_down_plays
-                    [strip_range_start..strip_range_end],
-                &mut working_buffer.right_extension_set_for_down_plays
-                    [strip_range_start..strip_range_end],
-            );
+            if working_buffer.prev_board_for_down_ext_sets[strip_range_start..strip_range_end]
+                != working_buffer.transposed_board_tiles[strip_range_start..strip_range_end]
+            {
+                working_buffer.left_extension_set_for_down_plays
+                    [strip_range_start..strip_range_end]
+                    .fill(!0u64);
+                working_buffer.right_extension_set_for_down_plays
+                    [strip_range_start..strip_range_end]
+                    .fill(!0u64);
+                gen_extension_sets(
+                    board_snapshot.kwg,
+                    &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                    &mut working_buffer.left_extension_set_for_down_plays
+                        [strip_range_start..strip_range_end],
+                    &mut working_buffer.right_extension_set_for_down_plays
+                        [strip_range_start..strip_range_end],
+                );
+                working_buffer.prev_board_for_down_ext_sets[strip_range_start..strip_range_end]
+                    .copy_from_slice(
+                        &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                    );
+            }
         }
     }
-    working_buffer.init_after_cross_sets(board_snapshot);
+    working_buffer.init_after_cross_sets(
+        board_snapshot,
+        any_across_strip_changed,
+        any_down_strip_changed,
+    );
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
     for row in 0..dim.rows {
