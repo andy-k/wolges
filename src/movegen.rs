@@ -46,6 +46,8 @@ struct MultiJump {
 // WorkingBuffer can also be reset for reuse with another kwg by calling
 // reset_for_another_kwg().
 // This is not enforced.
+type AlphaCacheEntry = ([u8; 64], bool);
+
 struct WorkingBuffer {
     rack_tally: Box<[u8]>,                                         // 27 for ?A-Z
     word_buffer_for_across_plays: Box<[u8]>,                       // r*c
@@ -90,7 +92,7 @@ struct WorkingBuffer {
     best_leave_values: Vec<f32>,          // rack.len() + 1
     found_placements: Vec<PossiblePlacement>,
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
-    accepts_alpha_cache: Box<[([u8; 64], bool)]>, // jumbled mode only
+    accepts_alpha_cache: Option<Box<[AlphaCacheEntry]>>, // jumbled mode only
     used_tile_scores_shadowl: Vec<i8>, // rack.len() (for shadow_play_left)
     used_tile_scores_shadowr: Vec<i8>, // rack.len() (for shadow_play_right)
     rack_tally_shadowl: Box<[u8]>, // 27 for ?A-Z (for shadow_play_left)
@@ -358,7 +360,7 @@ impl WorkingBuffer {
             best_leave_values: Vec::new(),
             found_placements: Vec::new(),
             used_letters_tally: Vec::new(),
-            accepts_alpha_cache: vec![([0u8; 64], false); 128].into_boxed_slice(),
+            accepts_alpha_cache: None,
             used_tile_scores_shadowl: Vec::new(),
             used_tile_scores_shadowr: Vec::new(),
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
@@ -524,6 +526,10 @@ impl WorkingBuffer {
             game_config::GameRules::Classic => {}
             game_config::GameRules::Jumbled => {
                 self.used_letters_tally.resize(alphabet.len() as usize, 0);
+                if self.accepts_alpha_cache.is_none() {
+                    self.accepts_alpha_cache =
+                        Some(vec![([0u8; 64], false); 128].into_boxed_slice());
+                }
             }
         }
         self.used_tile_scores_shadowl.clear();
@@ -596,7 +602,9 @@ impl WorkingBuffer {
         self.right_extension_set_for_across_plays.fill(!0u64);
         self.left_extension_set_for_down_plays.fill(!0u64);
         self.right_extension_set_for_down_plays.fill(!0u64);
-        self.accepts_alpha_cache.fill(([0u8; 64], false));
+        if let Some(cache) = &mut self.accepts_alpha_cache {
+            cache.fill(([0u8; 64], false));
+        }
     }
 }
 
@@ -1537,7 +1545,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg:
     num_tiles_in_bag: i16,
     play_out_bonus: f32,
     used_letters_tally: &'a mut [u8], // jumbled mode only
-    accepts_alpha_cache: &'a mut [([u8; 64], bool)], // jumbled mode only
+    accepts_alpha_cache: &'a mut [AlphaCacheEntry], // jumbled mode only
 }
 
 fn gen_classic_place_moves<
@@ -2314,7 +2322,10 @@ fn gen_place_moves_at<
             num_tiles_in_bag: working_buffer.num_tiles_in_bag,
             play_out_bonus: working_buffer.play_out_bonus,
             used_letters_tally: &mut working_buffer.used_letters_tally,
-            accepts_alpha_cache: &mut working_buffer.accepts_alpha_cache,
+            accepts_alpha_cache: working_buffer
+                .accepts_alpha_cache
+                .as_deref_mut()
+                .unwrap_or(&mut []),
         },
         !placement.down,
     );
