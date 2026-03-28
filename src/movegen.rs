@@ -47,20 +47,21 @@ struct MultiJump {
 // reset_for_another_kwg().
 // This is not enforced.
 struct WorkingBuffer {
-    rack_tally: Box<[u8]>,                                      // 27 for ?A-Z
-    word_buffer_for_across_plays: Box<[u8]>,                    // r*c
-    word_buffer_for_down_plays: Box<[u8]>,                      // c*r
-    cross_set_for_across_plays: Box<[CrossSet]>,                // r*c
-    cross_set_for_down_plays: Box<[CrossSet]>,                  // c*r
-    cached_cross_set_for_across_plays: Box<[CachedCrossSet]>,   // c*r
-    cached_cross_set_for_down_plays: Box<[CachedCrossSet]>,     // r*c
-    cross_set_buffer: Box<[CrossSetComputation]>,               // max(r, c)
-    remaining_word_multipliers_for_across_plays: Box<[i8]>,     // r*c (1 if tile placed)
-    remaining_word_multipliers_for_down_plays: Box<[i8]>,       // c*r
-    remaining_tile_multipliers_for_across_plays: Box<[i8]>,     // r*c (1 if tile placed)
-    remaining_tile_multipliers_for_down_plays: Box<[i8]>,       // c*r
-    face_value_scores_for_across_plays: Box<[i8]>,              // r*c
-    face_value_scores_for_down_plays: Box<[i8]>,                // c*r
+    rack_tally: Box<[u8]>,                                         // 27 for ?A-Z
+    word_buffer_for_across_plays: Box<[u8]>,                       // r*c
+    word_buffer_for_down_plays: Box<[u8]>,                         // c*r
+    cross_set_for_across_plays: Box<[CrossSet]>,                   // r*c
+    cross_set_for_down_plays: Box<[CrossSet]>,                     // c*r
+    cached_cross_set_for_across_plays: Box<[CachedCrossSet]>,      // c*r
+    cached_cross_set_for_down_plays: Box<[CachedCrossSet]>,        // r*c
+    cross_set_buffer_for_across_plays: Box<[CrossSetComputation]>, // c*r (perpendicular strips)
+    cross_set_buffer_for_down_plays: Box<[CrossSetComputation]>,   // r*c (perpendicular strips)
+    remaining_word_multipliers_for_across_plays: Box<[i8]>,        // r*c (1 if tile placed)
+    remaining_word_multipliers_for_down_plays: Box<[i8]>,          // c*r
+    remaining_tile_multipliers_for_across_plays: Box<[i8]>,        // r*c (1 if tile placed)
+    remaining_tile_multipliers_for_down_plays: Box<[i8]>,          // c*r
+    face_value_scores_for_across_plays: Box<[i8]>,                 // r*c
+    face_value_scores_for_down_plays: Box<[i8]>,                   // c*r
     perpendicular_word_multipliers_for_across_plays: Box<[i8]>, // r*c (0 if no perpendicularly adjacent tile)
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
@@ -103,7 +104,8 @@ impl Clone for WorkingBuffer {
             cross_set_for_down_plays: self.cross_set_for_down_plays.clone(),
             cached_cross_set_for_across_plays: self.cached_cross_set_for_across_plays.clone(),
             cached_cross_set_for_down_plays: self.cached_cross_set_for_down_plays.clone(),
-            cross_set_buffer: self.cross_set_buffer.clone(),
+            cross_set_buffer_for_across_plays: self.cross_set_buffer_for_across_plays.clone(),
+            cross_set_buffer_for_down_plays: self.cross_set_buffer_for_down_plays.clone(),
             remaining_word_multipliers_for_across_plays: self
                 .remaining_word_multipliers_for_across_plays
                 .clone(),
@@ -173,7 +175,10 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.cached_cross_set_for_across_plays);
         self.cached_cross_set_for_down_plays
             .clone_from(&source.cached_cross_set_for_down_plays);
-        self.cross_set_buffer.clone_from(&source.cross_set_buffer);
+        self.cross_set_buffer_for_across_plays
+            .clone_from(&source.cross_set_buffer_for_across_plays);
+        self.cross_set_buffer_for_down_plays
+            .clone_from(&source.cross_set_buffer_for_down_plays);
         self.remaining_word_multipliers_for_across_plays
             .clone_from(&source.remaining_word_multipliers_for_across_plays);
         self.remaining_word_multipliers_for_down_plays
@@ -268,14 +273,24 @@ impl WorkingBuffer {
                 rows_times_cols
             ]
             .into_boxed_slice(),
-            cross_set_buffer: vec![
+            cross_set_buffer_for_across_plays: vec![
                 CrossSetComputation {
                     score: 0,
                     b_letter: 0,
                     end_range: 0,
                     p: 0,
                 };
-                dim.rows.max(dim.cols) as usize
+                rows_times_cols
+            ]
+            .into_boxed_slice(),
+            cross_set_buffer_for_down_plays: vec![
+                CrossSetComputation {
+                    score: 0,
+                    b_letter: 0,
+                    end_range: 0,
+                    p: 0,
+                };
+                rows_times_cols
             ]
             .into_boxed_slice(),
             remaining_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]
@@ -3016,7 +3031,8 @@ fn kurnia_gen_place_moves_iter<
             &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
             &mut working_buffer.cross_set_for_across_plays,
             dim.down(col),
-            &mut working_buffer.cross_set_buffer,
+            &mut working_buffer.cross_set_buffer_for_across_plays
+                [strip_range_start..strip_range_end],
             &mut working_buffer.cached_cross_set_for_across_plays
                 [strip_range_start..strip_range_end],
             &mut working_buffer.used_letters_tally,
@@ -3035,7 +3051,7 @@ fn kurnia_gen_place_moves_iter<
             &board_snapshot.board_tiles[strip_range_start..strip_range_end],
             &mut working_buffer.cross_set_for_down_plays,
             transposed_dim.down(row),
-            &mut working_buffer.cross_set_buffer,
+            &mut working_buffer.cross_set_buffer_for_down_plays[strip_range_start..strip_range_end],
             &mut working_buffer.cached_cross_set_for_down_plays[strip_range_start..strip_range_end],
             &mut working_buffer.used_letters_tally,
         );
