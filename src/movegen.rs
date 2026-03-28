@@ -58,6 +58,8 @@ struct WorkingBuffer {
     cross_set_buffer_for_down_plays: Box<[CrossSetComputation]>,   // r*c (perpendicular strips)
     prev_board_for_across_cross_sets: Box<[u8]>, // c*r (previous transposed tiles)
     prev_board_for_down_cross_sets: Box<[u8]>,   // r*c (previous board tiles)
+    prev_board_for_across_ext_sets: Box<[u8]>,   // r*c (previous board tiles for ext sets)
+    prev_board_for_down_ext_sets: Box<[u8]>,     // c*r (previous transposed tiles for ext sets)
     remaining_word_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
     remaining_word_multipliers_for_down_plays: Box<[i8]>, // c*r
     remaining_tile_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
@@ -110,6 +112,8 @@ impl Clone for WorkingBuffer {
             cross_set_buffer_for_down_plays: self.cross_set_buffer_for_down_plays.clone(),
             prev_board_for_across_cross_sets: self.prev_board_for_across_cross_sets.clone(),
             prev_board_for_down_cross_sets: self.prev_board_for_down_cross_sets.clone(),
+            prev_board_for_across_ext_sets: self.prev_board_for_across_ext_sets.clone(),
+            prev_board_for_down_ext_sets: self.prev_board_for_down_ext_sets.clone(),
             remaining_word_multipliers_for_across_plays: self
                 .remaining_word_multipliers_for_across_plays
                 .clone(),
@@ -187,6 +191,10 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.prev_board_for_across_cross_sets);
         self.prev_board_for_down_cross_sets
             .clone_from(&source.prev_board_for_down_cross_sets);
+        self.prev_board_for_across_ext_sets
+            .clone_from(&source.prev_board_for_across_ext_sets);
+        self.prev_board_for_down_ext_sets
+            .clone_from(&source.prev_board_for_down_ext_sets);
         self.remaining_word_multipliers_for_across_plays
             .clone_from(&source.remaining_word_multipliers_for_across_plays);
         self.remaining_word_multipliers_for_down_plays
@@ -303,6 +311,8 @@ impl WorkingBuffer {
             .into_boxed_slice(),
             prev_board_for_across_cross_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
             prev_board_for_down_cross_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
+            prev_board_for_across_ext_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
+            prev_board_for_down_ext_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
             remaining_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
             remaining_word_multipliers_for_down_plays: vec![0i8; rows_times_cols]
@@ -580,6 +590,8 @@ impl WorkingBuffer {
         });
         self.prev_board_for_across_cross_sets.fill(0xFF);
         self.prev_board_for_down_cross_sets.fill(0xFF);
+        self.prev_board_for_across_ext_sets.fill(0xFF);
+        self.prev_board_for_down_ext_sets.fill(0xFF);
         self.left_extension_set_for_across_plays.fill(!0u64);
         self.right_extension_set_for_across_plays.fill(!0u64);
         self.left_extension_set_for_down_plays.fill(!0u64);
@@ -3106,23 +3118,22 @@ fn kurnia_gen_place_moves_iter<
     }
     // extension sets: per strip in the play direction
     // Across extension sets use board_tiles (rows), down use transposed_board_tiles (columns).
-    // Use the any_*_strip_changed flags from cross set computation — if any row of board_tiles
-    // changed, down cross sets detected it; if any column changed, across cross sets detected it.
-    // Note: across extension sets depend on rows (same as down cross sets), and vice versa.
     if matches!(
         board_snapshot.game_config.game_rules(),
         game_config::GameRules::Classic
     ) {
-        if any_down_strip_changed {
-            working_buffer
-                .left_extension_set_for_across_plays
-                .fill(!0u64);
-            working_buffer
-                .right_extension_set_for_across_plays
-                .fill(!0u64);
-            for row in 0..dim.rows {
-                let strip_range_start = (row as isize * dim.cols as isize) as usize;
-                let strip_range_end = strip_range_start + dim.cols as usize;
+        for row in 0..dim.rows {
+            let strip_range_start = (row as isize * dim.cols as isize) as usize;
+            let strip_range_end = strip_range_start + dim.cols as usize;
+            if working_buffer.prev_board_for_across_ext_sets[strip_range_start..strip_range_end]
+                != board_snapshot.board_tiles[strip_range_start..strip_range_end]
+            {
+                working_buffer.left_extension_set_for_across_plays
+                    [strip_range_start..strip_range_end]
+                    .fill(!0u64);
+                working_buffer.right_extension_set_for_across_plays
+                    [strip_range_start..strip_range_end]
+                    .fill(!0u64);
                 gen_extension_sets(
                     board_snapshot.kwg,
                     &board_snapshot.board_tiles[strip_range_start..strip_range_end],
@@ -3131,16 +3142,24 @@ fn kurnia_gen_place_moves_iter<
                     &mut working_buffer.right_extension_set_for_across_plays
                         [strip_range_start..strip_range_end],
                 );
+                working_buffer.prev_board_for_across_ext_sets[strip_range_start..strip_range_end]
+                    .copy_from_slice(
+                        &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                    );
             }
         }
-        if any_across_strip_changed {
-            working_buffer.left_extension_set_for_down_plays.fill(!0u64);
-            working_buffer
-                .right_extension_set_for_down_plays
-                .fill(!0u64);
-            for col in 0..dim.cols {
-                let strip_range_start = (col as isize * dim.rows as isize) as usize;
-                let strip_range_end = strip_range_start + dim.rows as usize;
+        for col in 0..dim.cols {
+            let strip_range_start = (col as isize * dim.rows as isize) as usize;
+            let strip_range_end = strip_range_start + dim.rows as usize;
+            if working_buffer.prev_board_for_down_ext_sets[strip_range_start..strip_range_end]
+                != working_buffer.transposed_board_tiles[strip_range_start..strip_range_end]
+            {
+                working_buffer.left_extension_set_for_down_plays
+                    [strip_range_start..strip_range_end]
+                    .fill(!0u64);
+                working_buffer.right_extension_set_for_down_plays
+                    [strip_range_start..strip_range_end]
+                    .fill(!0u64);
                 gen_extension_sets(
                     board_snapshot.kwg,
                     &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
@@ -3149,6 +3168,10 @@ fn kurnia_gen_place_moves_iter<
                     &mut working_buffer.right_extension_set_for_down_plays
                         [strip_range_start..strip_range_end],
                 );
+                working_buffer.prev_board_for_down_ext_sets[strip_range_start..strip_range_end]
+                    .copy_from_slice(
+                        &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                    );
             }
         }
     }
