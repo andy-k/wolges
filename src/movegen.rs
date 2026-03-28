@@ -1421,17 +1421,18 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         want_raw: bool,
         mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
     ) {
-        if want_raw {
+        if env.params.left_extension_strip[env.anchor as usize] == 0
+            && env.params.right_extension_strip[env.anchor as usize] == 0
+        {
+            // Dead anchor: no tile can extend in either direction.
+        } else if want_raw {
             possible_strip_placement_callback(
                 env.anchor,
                 env.leftmost,
                 env.rightmost,
                 f32::INFINITY,
             );
-        } else if (env.params.left_extension_strip[env.anchor as usize]
-            | env.params.right_extension_strip[env.anchor as usize])
-            != 0
-        {
+        } else {
             env.best_possible_equity = f32::NEG_INFINITY;
             shadow_play_left(
                 env,
