@@ -999,11 +999,11 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 // Non-adjacent empty squares get !0u64 (all bits, no constraint).
 fn gen_extension_sets<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
-    board_strip: &[u8],
+    cross_set_buffer: &[CrossSetComputation],
     left_extension_sets: &mut [u64],
     right_extension_sets: &mut [u64],
 ) {
-    let len = board_strip.len();
+    let len = cross_set_buffer.len();
 
     // Collect extension set bits from a GADDAG node's children.
     // Excludes separator (bit 0), then adds blank bit if non-empty.
@@ -1027,33 +1027,31 @@ fn gen_extension_sets<N: kwg::Node>(
         bits | (bits != 0) as u64
     };
 
-    // Single right-to-left pass. For each tile group, one GADDAG traversal
-    // yields both left extension (children of p) and right extension
-    // (children of seek(p, separator)).
-    let mut p: i32 = 1;
+    // Read GADDAG state (p) from cross_set_buffer instead of recomputing.
+    // The cross set reverse scan already traversed the same tiles in the
+    // same order, so cross_set_buffer[j].p is the GADDAG state at each
+    // nonempty position.
     let mut group_right_empty: usize = len;
     for j in (0..len).rev() {
-        if board_strip[j] != 0 {
-            if j + 1 == len || board_strip[j + 1] == 0 {
+        if cross_set_buffer[j].b_letter != 0 {
+            if j + 1 == len || cross_set_buffer[j + 1].b_letter == 0 {
                 group_right_empty = j + 1;
-                p = 1;
             }
-            p = kwg.seek(p, board_strip[j] & 0x7f);
         } else {
-            if j + 1 < len && board_strip[j + 1] != 0 {
+            if j + 1 < len && cross_set_buffer[j + 1].b_letter != 0 {
                 // Empty square immediately left of a tile group.
-                // p = GADDAG state after traversing entire group right-to-left.
+                let p = cross_set_buffer[j + 1].p;
                 left_extension_sets[j] = collect_bits(kwg, p);
                 if group_right_empty < len {
                     right_extension_sets[group_right_empty] =
                         collect_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
                 }
             }
-            p = 1;
         }
     }
     // Handle group starting at position 0.
-    if !board_strip.is_empty() && board_strip[0] != 0 && group_right_empty < len {
+    if len > 0 && cross_set_buffer[0].b_letter != 0 && group_right_empty < len {
+        let p = cross_set_buffer[0].p;
         right_extension_sets[group_right_empty] =
             collect_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
     }
@@ -3153,7 +3151,8 @@ fn kurnia_gen_place_moves_iter<
                     .fill(!0u64);
                 gen_extension_sets(
                     board_snapshot.kwg,
-                    &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                    &working_buffer.cross_set_buffer_for_down_plays
+                        [strip_range_start..strip_range_end],
                     &mut working_buffer.left_extension_set_for_across_plays
                         [strip_range_start..strip_range_end],
                     &mut working_buffer.right_extension_set_for_across_plays
@@ -3179,7 +3178,8 @@ fn kurnia_gen_place_moves_iter<
                     .fill(!0u64);
                 gen_extension_sets(
                     board_snapshot.kwg,
-                    &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                    &working_buffer.cross_set_buffer_for_across_plays
+                        [strip_range_start..strip_range_end],
                     &mut working_buffer.left_extension_set_for_down_plays
                         [strip_range_start..strip_range_end],
                     &mut working_buffer.right_extension_set_for_down_plays
