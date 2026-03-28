@@ -3098,43 +3098,51 @@ fn kurnia_gen_place_moves_iter<
             CrossSet { bits: !1, score: 0 };
     }
     // extension sets: per strip in the play direction
+    // Across extension sets use board_tiles (rows), down use transposed_board_tiles (columns).
+    // Use the any_*_strip_changed flags from cross set computation — if any row of board_tiles
+    // changed, down cross sets detected it; if any column changed, across cross sets detected it.
+    // Note: across extension sets depend on rows (same as down cross sets), and vice versa.
     if matches!(
         board_snapshot.game_config.game_rules(),
         game_config::GameRules::Classic
     ) {
-        working_buffer
-            .left_extension_set_for_across_plays
-            .fill(!0u64);
-        working_buffer
-            .right_extension_set_for_across_plays
-            .fill(!0u64);
-        working_buffer.left_extension_set_for_down_plays.fill(!0u64);
-        working_buffer
-            .right_extension_set_for_down_plays
-            .fill(!0u64);
-        for row in 0..dim.rows {
-            let strip_range_start = (row as isize * dim.cols as isize) as usize;
-            let strip_range_end = strip_range_start + dim.cols as usize;
-            gen_extension_sets(
-                board_snapshot.kwg,
-                &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.left_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end],
-                &mut working_buffer.right_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end],
-            );
+        if any_down_strip_changed {
+            working_buffer
+                .left_extension_set_for_across_plays
+                .fill(!0u64);
+            working_buffer
+                .right_extension_set_for_across_plays
+                .fill(!0u64);
+            for row in 0..dim.rows {
+                let strip_range_start = (row as isize * dim.cols as isize) as usize;
+                let strip_range_end = strip_range_start + dim.cols as usize;
+                gen_extension_sets(
+                    board_snapshot.kwg,
+                    &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                    &mut working_buffer.left_extension_set_for_across_plays
+                        [strip_range_start..strip_range_end],
+                    &mut working_buffer.right_extension_set_for_across_plays
+                        [strip_range_start..strip_range_end],
+                );
+            }
         }
-        for col in 0..dim.cols {
-            let strip_range_start = (col as isize * dim.rows as isize) as usize;
-            let strip_range_end = strip_range_start + dim.rows as usize;
-            gen_extension_sets(
-                board_snapshot.kwg,
-                &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-                &mut working_buffer.left_extension_set_for_down_plays
-                    [strip_range_start..strip_range_end],
-                &mut working_buffer.right_extension_set_for_down_plays
-                    [strip_range_start..strip_range_end],
-            );
+        if any_across_strip_changed {
+            working_buffer.left_extension_set_for_down_plays.fill(!0u64);
+            working_buffer
+                .right_extension_set_for_down_plays
+                .fill(!0u64);
+            for col in 0..dim.cols {
+                let strip_range_start = (col as isize * dim.rows as isize) as usize;
+                let strip_range_end = strip_range_start + dim.rows as usize;
+                gen_extension_sets(
+                    board_snapshot.kwg,
+                    &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                    &mut working_buffer.left_extension_set_for_down_plays
+                        [strip_range_start..strip_range_end],
+                    &mut working_buffer.right_extension_set_for_down_plays
+                        [strip_range_start..strip_range_end],
+                );
+            }
         }
     }
     working_buffer.init_after_cross_sets(
