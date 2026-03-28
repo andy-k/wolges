@@ -1017,7 +1017,7 @@ fn extension_bits_from_letter_bits<N: kwg::Node>(
     if arc <= 0 {
         return 0;
     }
-    let bits = letter_bits.0[arc as usize] & !1;
+    let bits = letter_bits.letter_bits[arc as usize] & !1;
     bits | (bits != 0) as u64
 }
 
