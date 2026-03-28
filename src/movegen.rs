@@ -621,6 +621,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     output_strider: matrix::Strider,
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
+    letter_bits: &kwg::LetterBits,
 ) {
     let len = output_strider.len();
     let step = output_strider.step() as usize;
@@ -691,21 +692,14 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     while j < len {
         if j > 0 {
             // [j-1] has right, no left.
-            let mut p = cross_set_buffer[j as usize].p;
+            let p = cross_set_buffer[j as usize].p;
             let mut bits = reuse_cross_set(cached_cross_sets, j - 1, -2, p);
             if bits == 0 {
                 bits = 1u64;
                 if p > 0 {
-                    p = kwg[p].arc_index();
-                    if p > 0 {
-                        loop {
-                            let node = kwg[p];
-                            bits |= (node.accepts() as u64) << node.tile();
-                            if node.is_end() {
-                                break;
-                            }
-                            p += 1;
-                        }
+                    let arc = kwg[p].arc_index();
+                    if arc > 0 {
+                        bits |= letter_bits.accepting_bits[arc as usize];
                     }
                 }
                 cached_cross_sets[j as usize - 1].bits = bits;
@@ -867,21 +861,14 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             break;
         }
         // [j] has left, no right.
-        let mut p = kwg.seek(cross_set_buffer[prev_j as usize].p, 0);
+        let p = kwg.seek(cross_set_buffer[prev_j as usize].p, 0);
         let mut bits = reuse_cross_set(cached_cross_sets, j, p, -2);
         if bits == 0 {
             bits = 1u64;
             if p > 0 {
-                p = kwg[p].arc_index();
-                if p > 0 {
-                    loop {
-                        let node = kwg[p];
-                        bits |= (node.accepts() as u64) << node.tile();
-                        if node.is_end() {
-                            break;
-                        }
-                        p += 1;
-                    }
+                let arc = kwg[p].arc_index();
+                if arc > 0 {
+                    bits |= letter_bits.accepting_bits[arc as usize];
                 }
             }
             cached_cross_sets[j as usize].bits = bits;
@@ -976,6 +963,7 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
     used_letters_tally: &'a mut [u8],
+    letter_bits: &kwg::LetterBits,
 ) {
     match board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => gen_classic_cross_set(
@@ -985,6 +973,7 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             output_strider,
             cross_set_buffer,
             cached_cross_sets,
+            letter_bits,
         ),
         game_config::GameRules::Jumbled => gen_jumbled_cross_set(
             board_snapshot,
@@ -3073,6 +3062,11 @@ fn kurnia_gen_place_moves_iter<
     let max_rack_size = game_config.rack_size();
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
+    // Lazily compute letter_bits table for the current KWG.
+    let letter_bits = working_buffer
+        .kwg_letter_bits
+        .get_or_insert_with(|| board_snapshot.kwg.compute_letter_bits());
+
     // striped by row
     let mut any_across_strip_changed = false;
     for col in 0..dim.cols {
@@ -3091,6 +3085,7 @@ fn kurnia_gen_place_moves_iter<
                 &mut working_buffer.cached_cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
+                letter_bits,
             );
             working_buffer.prev_board_for_across_cross_sets[strip_range_start..strip_range_end]
                 .copy_from_slice(
@@ -3121,6 +3116,7 @@ fn kurnia_gen_place_moves_iter<
                 &mut working_buffer.cached_cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
+                letter_bits,
             );
             working_buffer.prev_board_for_down_cross_sets[strip_range_start..strip_range_end]
                 .copy_from_slice(&board_snapshot.board_tiles[strip_range_start..strip_range_end]);
@@ -3144,9 +3140,8 @@ fn kurnia_gen_place_moves_iter<
         board_snapshot.game_config.game_rules(),
         game_config::GameRules::Classic
     ) {
-        let letter_bits = working_buffer
-            .kwg_letter_bits
-            .get_or_insert_with(|| board_snapshot.kwg.compute_letter_bits());
+        // letter_bits already initialized above, before cross set loops.
+        let letter_bits = working_buffer.kwg_letter_bits.as_ref().unwrap();
         for row in 0..dim.rows {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
