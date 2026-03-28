@@ -83,6 +83,12 @@ pub fn read_le_u32(bytes: &[u8], p: usize) -> u32 {
 
 pub struct Kwg<N: Node>(pub Box<[N]>);
 
+// Precomputed bitmask of child tiles for each sibling group position.
+// letter_bits[i] = bitmask of tiles from node i through the end of its
+// sibling group. Bit 0 = separator/blank, bits 1-26 = tiles A-Z.
+#[derive(Clone)]
+pub struct LetterBits(pub Box<[u64]>);
+
 // kwg::Node22
 pub static EMPTY_KWG_BYTES: &[u8] = b"\x00\x00\x40\x00\x00\x00\x40\x00";
 
@@ -159,6 +165,26 @@ impl<N: Node> Kwg<N> {
             self.count_words_at(&mut word_counts, p as i32);
         }
         word_counts.into_boxed_slice()
+    }
+
+    // Precompute letter_bits for every sibling group position.
+    // Scan right-to-left: accumulate tile bits, reset at each is_end node.
+    pub fn compute_letter_bits(&self) -> LetterBits {
+        let len = self.0.len();
+        let mut bits = vec![0u64; len];
+        let mut acc = 0u64;
+        for i in (0..len).rev() {
+            let node = self.0[i];
+            // Reset BEFORE accumulating: is_end marks the last sibling
+            // (rightmost), and the scan goes right-to-left. Resetting
+            // before ensures this node's bits start a fresh group.
+            if node.is_end() {
+                acc = 0;
+            }
+            acc |= 1u64 << node.tile();
+            bits[i] = acc;
+        }
+        LetterBits(bits.into_boxed_slice())
     }
 
     pub fn count_dawg_words_alloc(&self) -> Box<[u32]> {

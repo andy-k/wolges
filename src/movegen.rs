@@ -95,6 +95,7 @@ struct WorkingBuffer {
     used_tile_scores_shadowr: Vec<i8>, // rack.len() (for shadow_play_right)
     rack_tally_shadowl: Box<[u8]>, // 27 for ?A-Z (for shadow_play_left)
     rack_tally_shadowr: Box<[u8]>, // 27 for ?A-Z (for shadow_play_right)
+    kwg_letter_bits: Option<kwg::LetterBits>, // precomputed child tile bitmasks, lazily initialized
 }
 
 impl Clone for WorkingBuffer {
@@ -165,6 +166,7 @@ impl Clone for WorkingBuffer {
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
             rack_tally_shadowl: self.rack_tally_shadowl.clone(),
             rack_tally_shadowr: self.rack_tally_shadowr.clone(),
+            kwg_letter_bits: self.kwg_letter_bits.clone(),
         }
     }
 
@@ -256,6 +258,7 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.rack_tally_shadowl);
         self.rack_tally_shadowr
             .clone_from(&source.rack_tally_shadowr);
+        self.kwg_letter_bits.clone_from(&source.kwg_letter_bits);
     }
 }
 
@@ -363,6 +366,7 @@ impl WorkingBuffer {
             used_tile_scores_shadowr: Vec::new(),
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             rack_tally_shadowr: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
+            kwg_letter_bits: None,
         }
     }
 
@@ -596,6 +600,7 @@ impl WorkingBuffer {
         self.right_extension_set_for_across_plays.fill(!0u64);
         self.left_extension_set_for_down_plays.fill(!0u64);
         self.right_extension_set_for_down_plays.fill(!0u64);
+        self.kwg_letter_bits = None;
         self.accepts_alpha_cache.fill(([0u8; 64], false));
     }
 }
@@ -997,40 +1002,36 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 // Right extension set at position j: which tiles can extend rightward into j,
 // given the board tiles to the left of j.
 // Non-adjacent empty squares get !0u64 (all bits, no constraint).
+// Look up child tile bitmask from precomputed letter_bits table.
+// Excludes separator (bit 0), then adds blank bit if non-empty.
+#[inline(always)]
+fn extension_bits_from_letter_bits<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    letter_bits: &kwg::LetterBits,
+    p: i32,
+) -> u64 {
+    if p <= 0 {
+        return 0;
+    }
+    let arc = kwg[p].arc_index();
+    if arc <= 0 {
+        return 0;
+    }
+    let bits = letter_bits.0[arc as usize] & !1;
+    bits | (bits != 0) as u64
+}
+
 fn gen_extension_sets<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
+    letter_bits: &kwg::LetterBits,
     cross_set_buffer: &[CrossSetComputation],
     left_extension_sets: &mut [u64],
     right_extension_sets: &mut [u64],
 ) {
     let len = cross_set_buffer.len();
 
-    // Collect extension set bits from a GADDAG node's children.
-    // Excludes separator (bit 0), then adds blank bit if non-empty.
-    let collect_bits = |kwg: &kwg::Kwg<N>, p: i32| -> u64 {
-        if p <= 0 {
-            return 0;
-        }
-        let mut bits = 0u64;
-        let mut q = kwg[p].arc_index();
-        if q > 0 {
-            loop {
-                let node = kwg[q];
-                bits |= 1u64 << node.tile();
-                if node.is_end() {
-                    break;
-                }
-                q += 1;
-            }
-        }
-        let bits = bits & !1;
-        bits | (bits != 0) as u64
-    };
-
     // Read GADDAG state (p) from cross_set_buffer instead of recomputing.
-    // The cross set reverse scan already traversed the same tiles in the
-    // same order, so cross_set_buffer[j].p is the GADDAG state at each
-    // nonempty position.
+    // Look up child tile bitmasks from precomputed letter_bits table.
     let mut group_right_empty: usize = len;
     for j in (0..len).rev() {
         if cross_set_buffer[j].b_letter != 0 {
@@ -1041,10 +1042,13 @@ fn gen_extension_sets<N: kwg::Node>(
             if j + 1 < len && cross_set_buffer[j + 1].b_letter != 0 {
                 // Empty square immediately left of a tile group.
                 let p = cross_set_buffer[j + 1].p;
-                left_extension_sets[j] = collect_bits(kwg, p);
+                left_extension_sets[j] = extension_bits_from_letter_bits(kwg, letter_bits, p);
                 if group_right_empty < len {
-                    right_extension_sets[group_right_empty] =
-                        collect_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
+                    right_extension_sets[group_right_empty] = extension_bits_from_letter_bits(
+                        kwg,
+                        letter_bits,
+                        if p > 0 { kwg.seek(p, 0) } else { -1 },
+                    );
                 }
             }
         }
@@ -1052,8 +1056,11 @@ fn gen_extension_sets<N: kwg::Node>(
     // Handle group starting at position 0.
     if len > 0 && cross_set_buffer[0].b_letter != 0 && group_right_empty < len {
         let p = cross_set_buffer[0].p;
-        right_extension_sets[group_right_empty] =
-            collect_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
+        right_extension_sets[group_right_empty] = extension_bits_from_letter_bits(
+            kwg,
+            letter_bits,
+            if p > 0 { kwg.seek(p, 0) } else { -1 },
+        );
     }
 }
 
@@ -3137,6 +3144,9 @@ fn kurnia_gen_place_moves_iter<
         board_snapshot.game_config.game_rules(),
         game_config::GameRules::Classic
     ) {
+        let letter_bits = working_buffer
+            .kwg_letter_bits
+            .get_or_insert_with(|| board_snapshot.kwg.compute_letter_bits());
         for row in 0..dim.rows {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
@@ -3151,6 +3161,7 @@ fn kurnia_gen_place_moves_iter<
                     .fill(!0u64);
                 gen_extension_sets(
                     board_snapshot.kwg,
+                    letter_bits,
                     &working_buffer.cross_set_buffer_for_down_plays
                         [strip_range_start..strip_range_end],
                     &mut working_buffer.left_extension_set_for_across_plays
@@ -3178,6 +3189,7 @@ fn kurnia_gen_place_moves_iter<
                     .fill(!0u64);
                 gen_extension_sets(
                     board_snapshot.kwg,
+                    letter_bits,
                     &working_buffer.cross_set_buffer_for_across_plays
                         [strip_range_start..strip_range_end],
                     &mut working_buffer.left_extension_set_for_down_plays
