@@ -724,118 +724,55 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             j += 1;
             // [j-1] has left and right.
             let j_end = cross_set_buffer[j as usize].end_range;
-            let mut p_right = cross_set_buffer[j as usize].p;
-            let mut p_left = kwg.seek(cross_set_buffer[prev_j as usize].p, 0);
+            let p_right = cross_set_buffer[j as usize].p;
+            let p_left = kwg.seek(cross_set_buffer[prev_j as usize].p, 0);
             let mut bits = reuse_cross_set(cached_cross_sets, j - 1, p_left, p_right);
             if bits == 0 {
                 bits = 1u64;
                 if p_right > 0 && p_left > 0 {
-                    p_right = kwg[p_right].arc_index();
-                    if p_right > 0 {
-                        p_left = kwg[p_left].arc_index();
-                        if p_left > 0 {
-                            let mut node_left = kwg[p_left];
-                            let mut node_right = kwg[p_right];
-                            let mut node_left_tile = node_left.tile();
-                            if j_end - j > j - 1 - prev_j {
-                                // Right is longer than left.
-                                loop {
-                                    match node_left_tile.cmp(&node_right.tile()) {
-                                        std::cmp::Ordering::Less => {
-                                            // left < right: advance left
-                                            if node_left.is_end() {
-                                                break;
-                                            }
-                                            p_left += 1;
-                                            node_left = kwg[p_left];
-                                            node_left_tile = node_left.tile();
-                                        }
-                                        std::cmp::Ordering::Greater => {
-                                            // left > right: advance right
-                                            if node_right.is_end() {
-                                                break;
-                                            }
-                                            p_right += 1;
-                                            node_right = kwg[p_right];
-                                        }
-                                        std::cmp::Ordering::Equal => {
-                                            // left == right (right is longer than left):
-                                            // complete right half with the shorter left half
-                                            let mut q = p_right;
-                                            for qi in (prev_j..j - 1).rev() {
-                                                q = kwg.seek(
-                                                    q,
-                                                    cross_set_buffer[qi as usize].b_letter,
-                                                );
-                                                if q <= 0 {
-                                                    break;
-                                                }
-                                            }
-                                            if q > 0 {
-                                                bits |= (kwg[q].accepts() as u64) << node_left_tile;
-                                            }
-                                            if node_left.is_end() {
-                                                break;
-                                            }
-                                            p_left += 1;
-                                            node_left = kwg[p_left];
-                                            node_left_tile = node_left.tile();
-                                            if node_right.is_end() {
-                                                break;
-                                            }
-                                            p_right += 1;
-                                            node_right = kwg[p_right];
+                    let arc_right = kwg[p_right].arc_index();
+                    let arc_left = kwg[p_left].arc_index();
+                    if arc_right > 0 && arc_left > 0 {
+                        // Pre-filter: only tiles present in both child sets
+                        // need full word verification.
+                        let mut candidates = letter_bits.letter_bits[arc_right as usize]
+                            & letter_bits.letter_bits[arc_left as usize]
+                            & !1; // exclude separator
+                        if j_end - j > j - 1 - prev_j {
+                            // Right is longer than left: verify by traversing
+                            // the right path through the shorter left tiles.
+                            while candidates != 0 {
+                                let tile = candidates.trailing_zeros() as u8;
+                                candidates &= candidates - 1;
+                                let mut q = kwg.seek(p_right, tile);
+                                if q > 0 {
+                                    for qi in (prev_j..j - 1).rev() {
+                                        q = kwg.seek(q, cross_set_buffer[qi as usize].b_letter);
+                                        if q <= 0 {
+                                            break;
                                         }
                                     }
+                                    if q > 0 {
+                                        bits |= (kwg[q].accepts() as u64) << tile;
+                                    }
                                 }
-                            } else {
-                                loop {
-                                    match node_left_tile.cmp(&node_right.tile()) {
-                                        std::cmp::Ordering::Less => {
-                                            // left < right: advance left
-                                            if node_left.is_end() {
-                                                break;
-                                            }
-                                            p_left += 1;
-                                            node_left = kwg[p_left];
-                                            node_left_tile = node_left.tile();
+                            }
+                        } else {
+                            // Left is longer or equal: verify by traversing
+                            // the left path through the right tiles.
+                            while candidates != 0 {
+                                let tile = candidates.trailing_zeros() as u8;
+                                candidates &= candidates - 1;
+                                let mut q = kwg.seek(p_left, tile);
+                                if q > 0 {
+                                    for qi in j..j_end {
+                                        q = kwg.seek(q, cross_set_buffer[qi as usize].b_letter);
+                                        if q <= 0 {
+                                            break;
                                         }
-                                        std::cmp::Ordering::Greater => {
-                                            // left > right: advance right
-                                            if node_right.is_end() {
-                                                break;
-                                            }
-                                            p_right += 1;
-                                            node_right = kwg[p_right];
-                                        }
-                                        std::cmp::Ordering::Equal => {
-                                            // left == right (right is not longer than left):
-                                            // complete left half with right half
-                                            let mut q = p_left;
-                                            for qi in j..j_end {
-                                                q = kwg.seek(
-                                                    q,
-                                                    cross_set_buffer[qi as usize].b_letter,
-                                                );
-                                                if q <= 0 {
-                                                    break;
-                                                }
-                                            }
-                                            if q > 0 {
-                                                bits |= (kwg[q].accepts() as u64) << node_left_tile;
-                                            }
-                                            if node_right.is_end() {
-                                                break;
-                                            }
-                                            p_right += 1;
-                                            node_right = kwg[p_right];
-                                            if node_left.is_end() {
-                                                break;
-                                            }
-                                            p_left += 1;
-                                            node_left = kwg[p_left];
-                                            node_left_tile = node_left.tile();
-                                        }
+                                    }
+                                    if q > 0 {
+                                        bits |= (kwg[q].accepts() as u64) << tile;
                                     }
                                 }
                             }
