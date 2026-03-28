@@ -369,15 +369,6 @@ impl WorkingBuffer {
         self.word_buffer_for_down_plays
             .iter_mut()
             .for_each(|m| *m = 0);
-        self.cross_set_for_across_plays.iter_mut().for_each(|m| {
-            m.bits = 0;
-            m.score = 0;
-        });
-        self.cross_set_for_down_plays.iter_mut().for_each(|m| {
-            m.bits = 0;
-            m.score = 0;
-        });
-
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
         let premiums = board_layout.premiums();
