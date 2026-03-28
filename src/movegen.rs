@@ -626,24 +626,41 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
         let mut p = 1;
         let mut score = 0i32;
         let mut last_empty = len;
+        // Within each tile group (contiguous nonempty tiles), the seek chain
+        // starts from p=1. If tiles from the right edge of the group haven't
+        // changed AND the group boundary is in the same place, the cached
+        // seek results are valid.
+        let mut chain_valid = true; // right edge is always a valid group start
         for j in (0..len).rev() {
             let b = board_strip[j as usize];
             if b != 0 {
                 let b_letter = b & 0x7f;
-                p = kwg.seek(p, b_letter);
-                score += alphabet.score(b) as i32;
-                cross_set_buffer[j as usize] = CrossSetComputation {
-                    score,
-                    b_letter,
-                    end_range: last_empty,
-                    p,
-                };
+                if chain_valid && cross_set_buffer[j as usize].b_letter == b_letter {
+                    // Same tile, chain unbroken — use cached seek result.
+                    p = cross_set_buffer[j as usize].p;
+                    score = cross_set_buffer[j as usize].score;
+                } else {
+                    chain_valid = false;
+                    p = kwg.seek(p, b_letter);
+                    score += alphabet.score(b) as i32;
+                    cross_set_buffer[j as usize] = CrossSetComputation {
+                        score,
+                        b_letter,
+                        end_range: last_empty,
+                        p,
+                    };
+                }
+                // Always update end_range (depends on current scan state, not cached).
+                cross_set_buffer[j as usize].end_range = last_empty;
                 last_nonempty = j;
             } else {
                 // empty square, reset
                 p = 1; // cumulative gaddag traversal results
                 score = 0; // cumulative face-value score
                 last_empty = j; // last seen empty square
+                // Chain is valid at this group boundary only if the cached
+                // state was also empty here (group boundary hasn't moved).
+                chain_valid = cross_set_buffer[j as usize].b_letter == 0;
                 cross_set_buffer[j as usize].b_letter = 0;
                 cross_set_buffer[j as usize].end_range = last_nonempty;
             }
