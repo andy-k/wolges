@@ -381,47 +381,54 @@ impl WorkingBuffer {
             .for_each(|m| *m = 0);
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
-        let premiums = board_layout.premiums();
-        let transposed_premiums = board_layout.transposed_premiums();
         let area = (dim.rows as isize * dim.cols as isize) as usize;
-        // row * dim.cols + col
-        for (idx, &b) in board_snapshot.board_tiles.iter().enumerate().take(area) {
-            if b == 0 {
-                let premium = &premiums[idx];
-                self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
-                self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
-                self.face_value_scores_for_across_plays[idx] = 0;
-            } else {
-                self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
-                //self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
-                self.face_value_scores_for_across_plays[idx] = alphabet.score(b);
+        // Skip board-dependent work if board tiles haven't changed.
+        // prev_board_for_down_cross_sets stores the most recent board_tiles
+        // (row-major), updated by the cross set strip caching.
+        // On first call it's 0xFF so this always runs initially.
+        if self.prev_board_for_down_cross_sets[..area] != board_snapshot.board_tiles[..area] {
+            let premiums = board_layout.premiums();
+            let transposed_premiums = board_layout.transposed_premiums();
+            // row * dim.cols + col
+            for (idx, &b) in board_snapshot.board_tiles.iter().enumerate().take(area) {
+                if b == 0 {
+                    let premium = &premiums[idx];
+                    self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
+                    self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
+                    self.face_value_scores_for_across_plays[idx] = 0;
+                } else {
+                    self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
+                    //self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
+                    self.face_value_scores_for_across_plays[idx] = alphabet.score(b);
+                }
             }
-        }
-        for col in 0..dim.cols {
-            for row in 0..dim.rows {
-                self.transposed_board_tiles
-                    [(col as isize * dim.rows as isize + row as isize) as usize] = board_snapshot
-                    .board_tiles[(row as isize * dim.cols as isize + col as isize) as usize];
+            for col in 0..dim.cols {
+                for row in 0..dim.rows {
+                    self.transposed_board_tiles
+                        [(col as isize * dim.rows as isize + row as isize) as usize] =
+                        board_snapshot.board_tiles
+                            [(row as isize * dim.cols as isize + col as isize) as usize];
+                }
             }
-        }
-        // col * dim.rows + row
-        for (idx, &b) in self.transposed_board_tiles.iter().enumerate().take(area) {
-            if b == 0 {
-                let premium = &transposed_premiums[idx];
-                self.remaining_word_multipliers_for_down_plays[idx] = premium.word_multiplier;
-                self.remaining_tile_multipliers_for_down_plays[idx] = premium.tile_multiplier;
-                self.face_value_scores_for_down_plays[idx] = 0;
-            } else {
-                self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
-                //self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
-                self.face_value_scores_for_down_plays[idx] = alphabet.score(b);
+            // col * dim.rows + row
+            for (idx, &b) in self.transposed_board_tiles.iter().enumerate().take(area) {
+                if b == 0 {
+                    let premium = &transposed_premiums[idx];
+                    self.remaining_word_multipliers_for_down_plays[idx] = premium.word_multiplier;
+                    self.remaining_tile_multipliers_for_down_plays[idx] = premium.tile_multiplier;
+                    self.face_value_scores_for_down_plays[idx] = 0;
+                } else {
+                    self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
+                    //self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
+                    self.face_value_scores_for_down_plays[idx] = alphabet.score(b);
+                }
             }
+            self.num_tiles_on_board = board_snapshot
+                .board_tiles
+                .iter()
+                .filter(|&t| *t != 0)
+                .count() as u16;
         }
-        self.num_tiles_on_board = board_snapshot
-            .board_tiles
-            .iter()
-            .filter(|&t| *t != 0)
-            .count() as u16;
         self.num_tiles_in_bag = alphabet.num_tiles() as i16
             - (self.num_tiles_on_board as i16
                 + board_snapshot.game_config.num_players() as i16
