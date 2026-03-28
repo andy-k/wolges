@@ -95,7 +95,6 @@ struct WorkingBuffer {
     used_tile_scores_shadowr: Vec<i8>, // rack.len() (for shadow_play_right)
     rack_tally_shadowl: Box<[u8]>, // 27 for ?A-Z (for shadow_play_left)
     rack_tally_shadowr: Box<[u8]>, // 27 for ?A-Z (for shadow_play_right)
-    kwg_letter_bits: Option<kwg::LetterBits>, // precomputed child tile bitmasks, lazily initialized
 }
 
 impl Clone for WorkingBuffer {
@@ -161,12 +160,11 @@ impl Clone for WorkingBuffer {
             best_leave_values: self.best_leave_values.clone(),
             found_placements: self.found_placements.clone(),
             used_letters_tally: self.used_letters_tally.clone(),
-            accepts_alpha_cache: self.accepts_alpha_cache.clone(), // jumbled mode only
+            accepts_alpha_cache: self.accepts_alpha_cache.clone(),
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
             rack_tally_shadowl: self.rack_tally_shadowl.clone(),
             rack_tally_shadowr: self.rack_tally_shadowr.clone(),
-            kwg_letter_bits: self.kwg_letter_bits.clone(),
         }
     }
 
@@ -258,7 +256,6 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.rack_tally_shadowl);
         self.rack_tally_shadowr
             .clone_from(&source.rack_tally_shadowr);
-        self.kwg_letter_bits.clone_from(&source.kwg_letter_bits);
     }
 }
 
@@ -366,7 +363,6 @@ impl WorkingBuffer {
             used_tile_scores_shadowr: Vec::new(),
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             rack_tally_shadowr: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
-            kwg_letter_bits: None,
         }
     }
 
@@ -600,7 +596,6 @@ impl WorkingBuffer {
         self.right_extension_set_for_across_plays.fill(!0u64);
         self.left_extension_set_for_down_plays.fill(!0u64);
         self.right_extension_set_for_down_plays.fill(!0u64);
-        self.kwg_letter_bits = None;
         self.accepts_alpha_cache.fill(([0u8; 64], false));
     }
 }
@@ -621,8 +616,25 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     output_strider: matrix::Strider,
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
-    letter_bits: &kwg::LetterBits,
 ) {
+    // Compute bitmask of tiles in a sibling group on the fly.
+    let sibling_bits = |kwg: &kwg::Kwg<N>, mut p: i32, accepting_only: bool| -> u64 {
+        let mut bits = 0u64;
+        if p > 0 {
+            loop {
+                let node = kwg[p];
+                if !accepting_only || node.accepts() {
+                    bits |= 1u64 << node.tile();
+                }
+                if node.is_end() {
+                    break;
+                }
+                p += 1;
+            }
+        }
+        bits
+    };
+
     let len = output_strider.len();
     let step = output_strider.step() as usize;
     let kwg = board_snapshot.kwg;
@@ -698,9 +710,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                 bits = 1u64;
                 if p > 0 {
                     let arc = kwg[p].arc_index();
-                    if arc > 0 {
-                        bits |= letter_bits.accepting_bits[arc as usize];
-                    }
+                    bits |= sibling_bits(kwg, arc, true);
                 }
                 cached_cross_sets[j as usize - 1].bits = bits;
             }
@@ -735,8 +745,8 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                     if arc_right > 0 && arc_left > 0 {
                         // Pre-filter: only tiles present in both child sets
                         // need full word verification.
-                        let mut candidates = letter_bits.letter_bits[arc_right as usize]
-                            & letter_bits.letter_bits[arc_left as usize]
+                        let mut candidates = sibling_bits(kwg, arc_right, false)
+                            & sibling_bits(kwg, arc_left, false)
                             & !1; // exclude separator
                         if j_end - j > j - 1 - prev_j {
                             // Right is longer than left: verify by traversing
@@ -804,9 +814,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             bits = 1u64;
             if p > 0 {
                 let arc = kwg[p].arc_index();
-                if arc > 0 {
-                    bits |= letter_bits.accepting_bits[arc as usize];
-                }
+                bits |= sibling_bits(kwg, arc, true);
             }
             cached_cross_sets[j as usize].bits = bits;
         }
@@ -900,7 +908,6 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
     used_letters_tally: &'a mut [u8],
-    letter_bits: &kwg::LetterBits,
 ) {
     match board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => gen_classic_cross_set(
@@ -910,7 +917,6 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             output_strider,
             cross_set_buffer,
             cached_cross_sets,
-            letter_bits,
         ),
         game_config::GameRules::Jumbled => gen_jumbled_cross_set(
             board_snapshot,
@@ -928,28 +934,32 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
 // Right extension set at position j: which tiles can extend rightward into j,
 // given the board tiles to the left of j.
 // Non-adjacent empty squares get !0u64 (all bits, no constraint).
-// Look up child tile bitmask from precomputed letter_bits table.
+// Collect extension set bits from a GADDAG node's children.
 // Excludes separator (bit 0), then adds blank bit if non-empty.
 #[inline(always)]
-fn extension_bits_from_letter_bits<N: kwg::Node>(
-    kwg: &kwg::Kwg<N>,
-    letter_bits: &kwg::LetterBits,
-    p: i32,
-) -> u64 {
+fn collect_extension_bits<N: kwg::Node>(kwg: &kwg::Kwg<N>, p: i32) -> u64 {
     if p <= 0 {
         return 0;
     }
-    let arc = kwg[p].arc_index();
+    let mut arc = kwg[p].arc_index();
     if arc <= 0 {
         return 0;
     }
-    let bits = letter_bits.letter_bits[arc as usize] & !1;
+    let mut bits = 0u64;
+    loop {
+        let node = kwg[arc];
+        bits |= 1u64 << node.tile();
+        if node.is_end() {
+            break;
+        }
+        arc += 1;
+    }
+    let bits = bits & !1;
     bits | (bits != 0) as u64
 }
 
 fn gen_extension_sets<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
-    letter_bits: &kwg::LetterBits,
     cross_set_buffer: &[CrossSetComputation],
     left_extension_sets: &mut [u64],
     right_extension_sets: &mut [u64],
@@ -957,7 +967,6 @@ fn gen_extension_sets<N: kwg::Node>(
     let len = cross_set_buffer.len();
 
     // Read GADDAG state (p) from cross_set_buffer instead of recomputing.
-    // Look up child tile bitmasks from precomputed letter_bits table.
     let mut group_right_empty: usize = len;
     for j in (0..len).rev() {
         if cross_set_buffer[j].b_letter != 0 {
@@ -968,13 +977,10 @@ fn gen_extension_sets<N: kwg::Node>(
             if j + 1 < len && cross_set_buffer[j + 1].b_letter != 0 {
                 // Empty square immediately left of a tile group.
                 let p = cross_set_buffer[j + 1].p;
-                left_extension_sets[j] = extension_bits_from_letter_bits(kwg, letter_bits, p);
+                left_extension_sets[j] = collect_extension_bits(kwg, p);
                 if group_right_empty < len {
-                    right_extension_sets[group_right_empty] = extension_bits_from_letter_bits(
-                        kwg,
-                        letter_bits,
-                        if p > 0 { kwg.seek(p, 0) } else { -1 },
-                    );
+                    right_extension_sets[group_right_empty] =
+                        collect_extension_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
                 }
             }
         }
@@ -982,11 +988,8 @@ fn gen_extension_sets<N: kwg::Node>(
     // Handle group starting at position 0.
     if len > 0 && cross_set_buffer[0].b_letter != 0 && group_right_empty < len {
         let p = cross_set_buffer[0].p;
-        right_extension_sets[group_right_empty] = extension_bits_from_letter_bits(
-            kwg,
-            letter_bits,
-            if p > 0 { kwg.seek(p, 0) } else { -1 },
-        );
+        right_extension_sets[group_right_empty] =
+            collect_extension_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
     }
 }
 
@@ -3000,11 +3003,6 @@ fn kurnia_gen_place_moves_iter<
     let max_rack_size = game_config.rack_size();
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
-    // Lazily compute letter_bits table for the current KWG.
-    let letter_bits = working_buffer
-        .kwg_letter_bits
-        .get_or_insert_with(|| board_snapshot.kwg.compute_letter_bits());
-
     // striped by row
     let mut any_across_strip_changed = false;
     for col in 0..dim.cols {
@@ -3023,7 +3021,6 @@ fn kurnia_gen_place_moves_iter<
                 &mut working_buffer.cached_cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
-                letter_bits,
             );
             working_buffer.prev_board_for_across_cross_sets[strip_range_start..strip_range_end]
                 .copy_from_slice(
@@ -3054,7 +3051,6 @@ fn kurnia_gen_place_moves_iter<
                 &mut working_buffer.cached_cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 &mut working_buffer.used_letters_tally,
-                letter_bits,
             );
             working_buffer.prev_board_for_down_cross_sets[strip_range_start..strip_range_end]
                 .copy_from_slice(&board_snapshot.board_tiles[strip_range_start..strip_range_end]);
@@ -3078,8 +3074,6 @@ fn kurnia_gen_place_moves_iter<
         board_snapshot.game_config.game_rules(),
         game_config::GameRules::Classic
     ) {
-        // letter_bits already initialized above, before cross set loops.
-        let letter_bits = working_buffer.kwg_letter_bits.as_ref().unwrap();
         for row in 0..dim.rows {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
             let strip_range_end = strip_range_start + dim.cols as usize;
@@ -3094,7 +3088,6 @@ fn kurnia_gen_place_moves_iter<
                     .fill(!0u64);
                 gen_extension_sets(
                     board_snapshot.kwg,
-                    letter_bits,
                     &working_buffer.cross_set_buffer_for_down_plays
                         [strip_range_start..strip_range_end],
                     &mut working_buffer.left_extension_set_for_across_plays
@@ -3122,7 +3115,6 @@ fn kurnia_gen_place_moves_iter<
                     .fill(!0u64);
                 gen_extension_sets(
                     board_snapshot.kwg,
-                    letter_bits,
                     &working_buffer.cross_set_buffer_for_across_plays
                         [strip_range_start..strip_range_end],
                     &mut working_buffer.left_extension_set_for_down_plays
