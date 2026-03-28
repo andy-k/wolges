@@ -56,12 +56,14 @@ struct WorkingBuffer {
     cached_cross_set_for_down_plays: Box<[CachedCrossSet]>,        // r*c
     cross_set_buffer_for_across_plays: Box<[CrossSetComputation]>, // c*r (perpendicular strips)
     cross_set_buffer_for_down_plays: Box<[CrossSetComputation]>,   // r*c (perpendicular strips)
-    remaining_word_multipliers_for_across_plays: Box<[i8]>,        // r*c (1 if tile placed)
-    remaining_word_multipliers_for_down_plays: Box<[i8]>,          // c*r
-    remaining_tile_multipliers_for_across_plays: Box<[i8]>,        // r*c (1 if tile placed)
-    remaining_tile_multipliers_for_down_plays: Box<[i8]>,          // c*r
-    face_value_scores_for_across_plays: Box<[i8]>,                 // r*c
-    face_value_scores_for_down_plays: Box<[i8]>,                   // c*r
+    prev_board_for_across_cross_sets: Box<[u8]>, // c*r (previous transposed tiles)
+    prev_board_for_down_cross_sets: Box<[u8]>,   // r*c (previous board tiles)
+    remaining_word_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
+    remaining_word_multipliers_for_down_plays: Box<[i8]>, // c*r
+    remaining_tile_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
+    remaining_tile_multipliers_for_down_plays: Box<[i8]>, // c*r
+    face_value_scores_for_across_plays: Box<[i8]>, // r*c
+    face_value_scores_for_down_plays: Box<[i8]>, // c*r
     perpendicular_word_multipliers_for_across_plays: Box<[i8]>, // r*c (0 if no perpendicularly adjacent tile)
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
@@ -106,6 +108,8 @@ impl Clone for WorkingBuffer {
             cached_cross_set_for_down_plays: self.cached_cross_set_for_down_plays.clone(),
             cross_set_buffer_for_across_plays: self.cross_set_buffer_for_across_plays.clone(),
             cross_set_buffer_for_down_plays: self.cross_set_buffer_for_down_plays.clone(),
+            prev_board_for_across_cross_sets: self.prev_board_for_across_cross_sets.clone(),
+            prev_board_for_down_cross_sets: self.prev_board_for_down_cross_sets.clone(),
             remaining_word_multipliers_for_across_plays: self
                 .remaining_word_multipliers_for_across_plays
                 .clone(),
@@ -179,6 +183,10 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.cross_set_buffer_for_across_plays);
         self.cross_set_buffer_for_down_plays
             .clone_from(&source.cross_set_buffer_for_down_plays);
+        self.prev_board_for_across_cross_sets
+            .clone_from(&source.prev_board_for_across_cross_sets);
+        self.prev_board_for_down_cross_sets
+            .clone_from(&source.prev_board_for_down_cross_sets);
         self.remaining_word_multipliers_for_across_plays
             .clone_from(&source.remaining_word_multipliers_for_across_plays);
         self.remaining_word_multipliers_for_down_plays
@@ -293,6 +301,8 @@ impl WorkingBuffer {
                 rows_times_cols
             ]
             .into_boxed_slice(),
+            prev_board_for_across_cross_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
+            prev_board_for_down_cross_sets: vec![0xFFu8; rows_times_cols].into_boxed_slice(),
             remaining_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
             remaining_word_multipliers_for_down_plays: vec![0i8; rows_times_cols]
@@ -554,6 +564,8 @@ impl WorkingBuffer {
             p_right: 0,
             bits: 0,
         });
+        self.prev_board_for_across_cross_sets.fill(0xFF);
+        self.prev_board_for_down_cross_sets.fill(0xFF);
         self.left_extension_set_for_across_plays.fill(!0u64);
         self.right_extension_set_for_across_plays.fill(!0u64);
         self.left_extension_set_for_down_plays.fill(!0u64);
@@ -3017,17 +3029,25 @@ fn kurnia_gen_place_moves_iter<
     for col in 0..dim.cols {
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
-        gen_cross_set(
-            board_snapshot,
-            &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
-            &mut working_buffer.cross_set_for_across_plays,
-            dim.down(col),
-            &mut working_buffer.cross_set_buffer_for_across_plays
-                [strip_range_start..strip_range_end],
-            &mut working_buffer.cached_cross_set_for_across_plays
-                [strip_range_start..strip_range_end],
-            &mut working_buffer.used_letters_tally,
-        );
+        if working_buffer.prev_board_for_across_cross_sets[strip_range_start..strip_range_end]
+            != working_buffer.transposed_board_tiles[strip_range_start..strip_range_end]
+        {
+            gen_cross_set(
+                board_snapshot,
+                &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                &mut working_buffer.cross_set_for_across_plays,
+                dim.down(col),
+                &mut working_buffer.cross_set_buffer_for_across_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.cached_cross_set_for_across_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.used_letters_tally,
+            );
+            working_buffer.prev_board_for_across_cross_sets[strip_range_start..strip_range_end]
+                .copy_from_slice(
+                    &working_buffer.transposed_board_tiles[strip_range_start..strip_range_end],
+                );
+        }
     }
     let transposed_dim = matrix::Dim {
         rows: dim.cols,
@@ -3037,15 +3057,23 @@ fn kurnia_gen_place_moves_iter<
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
-        gen_cross_set(
-            board_snapshot,
-            &board_snapshot.board_tiles[strip_range_start..strip_range_end],
-            &mut working_buffer.cross_set_for_down_plays,
-            transposed_dim.down(row),
-            &mut working_buffer.cross_set_buffer_for_down_plays[strip_range_start..strip_range_end],
-            &mut working_buffer.cached_cross_set_for_down_plays[strip_range_start..strip_range_end],
-            &mut working_buffer.used_letters_tally,
-        );
+        if working_buffer.prev_board_for_down_cross_sets[strip_range_start..strip_range_end]
+            != board_snapshot.board_tiles[strip_range_start..strip_range_end]
+        {
+            gen_cross_set(
+                board_snapshot,
+                &board_snapshot.board_tiles[strip_range_start..strip_range_end],
+                &mut working_buffer.cross_set_for_down_plays,
+                transposed_dim.down(row),
+                &mut working_buffer.cross_set_buffer_for_down_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.cached_cross_set_for_down_plays
+                    [strip_range_start..strip_range_end],
+                &mut working_buffer.used_letters_tally,
+            );
+            working_buffer.prev_board_for_down_cross_sets[strip_range_start..strip_range_end]
+                .copy_from_slice(&board_snapshot.board_tiles[strip_range_start..strip_range_end]);
+        }
     }
     if working_buffer.num_tiles_on_board == 0 {
         // empty board activates star
