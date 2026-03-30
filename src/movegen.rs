@@ -1503,6 +1503,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg:
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
+    cross_set_buffer_strip: &'a [CrossSetComputation], // cached GADDAG state per position
     left_extension_strip: &'a [u64],
     right_extension_strip: &'a [u64],
     remaining_word_multipliers_strip: &'a [i8],
@@ -1716,17 +1717,35 @@ fn gen_classic_place_moves<
         mut is_unique: bool,
     ) {
         // tail-recurse placing current sequence of tiles
-        while idx >= env.params.leftmost {
-            let b = env.params.board_strip[idx as usize];
-            if b == 0 {
-                break;
+        if p == 1 && idx >= env.params.leftmost && env.params.board_strip[idx as usize] != 0 {
+            // Initial call from anchor with p=1. The cross_set_buffer has
+            // the cached GADDAG state from the same right-to-left traversal.
+            // Jump directly to the leftmost tile of this preset group.
+            let mut jump_idx = idx;
+            while jump_idx > env.params.leftmost
+                && env.params.board_strip[jump_idx as usize - 1] != 0
+            {
+                jump_idx -= 1;
             }
-            p = env.params.board_snapshot.kwg.seek(p, b & 0x7f);
+            p = env.params.cross_set_buffer_strip[jump_idx as usize].p;
             if p <= 0 {
                 return;
             }
-            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
-            idx -= 1;
+            acc.main_score += env.params.cross_set_buffer_strip[jump_idx as usize].score;
+            idx = jump_idx - 1;
+        } else {
+            while idx >= env.params.leftmost {
+                let b = env.params.board_strip[idx as usize];
+                if b == 0 {
+                    break;
+                }
+                p = env.params.board_snapshot.kwg.seek(p, b & 0x7f);
+                if p <= 0 {
+                    return;
+                }
+                acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+                idx -= 1;
+            }
         }
         let mut node = env.params.board_snapshot.kwg[p];
         if env.num_played > !is_unique as u8 && env.params.anchor - idx >= 2 && node.accepts() {
@@ -2225,6 +2244,14 @@ fn gen_place_moves_at<
                 &working_buffer.cross_set_for_down_plays[strip_range_start..strip_range_end]
             } else {
                 &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
+            },
+            // Across play_left uses cross_set_buffer_for_down_plays (both process rows).
+            // Down play_left uses cross_set_buffer_for_across_plays (both process columns).
+            cross_set_buffer_strip: if placement.down {
+                &working_buffer.cross_set_buffer_for_across_plays
+                    [strip_range_start..strip_range_end]
+            } else {
+                &working_buffer.cross_set_buffer_for_down_plays[strip_range_start..strip_range_end]
             },
             left_extension_strip: if placement.down {
                 &working_buffer.left_extension_set_for_down_plays
