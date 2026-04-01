@@ -1,60 +1,63 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-/// A newtype wrapper around f32 for equity values, providing total ordering.
-#[derive(Clone, Copy)]
-pub struct Equity(f32);
+/// Equity value for move evaluation, stored as i32 with scale factor 1000
+/// (millipoints). Provides deterministic total ordering.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Equity(i32);
+
+const SCALE: i32 = 1000;
 
 impl Equity {
-    pub const NEG_INFINITY: Self = Self(f32::NEG_INFINITY);
-    pub const INFINITY: Self = Self(f32::INFINITY);
+    pub const NEG_INFINITY: Self = Self(i32::MIN);
+    pub const INFINITY: Self = Self(i32::MAX);
+    pub const ZERO: Self = Self(0);
 
+    /// Construct from a raw scaled i32 value.
     #[inline(always)]
-    pub fn new(value: f32) -> Self {
-        Self(value)
+    pub fn new(v: i32) -> Self {
+        Self(v)
     }
 
+    /// Construct from an f32 value (scaled and rounded).
     #[inline(always)]
-    pub fn raw(self) -> f32 {
+    pub fn from_f32(v: f32) -> Self {
+        Self((v * SCALE as f32).round() as i32)
+    }
+
+    /// Construct from integer score + f32 leave value.
+    #[inline(always)]
+    pub fn from_score_and_leave(score: i32, leave_value: f32) -> Self {
+        Self(score * SCALE + (leave_value * SCALE as f32).round() as i32)
+    }
+
+    /// The raw scaled i32 value (1 unit = 0.001 equity points).
+    #[inline(always)]
+    pub fn raw(self) -> i32 {
         self.0
+    }
+
+    /// Convert to f64 for display or external use.
+    #[inline(always)]
+    pub fn as_f64(self) -> f64 {
+        self.0 as f64 / SCALE as f64
     }
 
     #[inline(always)]
     pub fn is_finite(self) -> bool {
-        self.0.is_finite()
-    }
-}
-
-impl PartialEq for Equity {
-    #[inline(always)]
-    fn eq(&self, other: &Self) -> bool {
-        self.0.to_bits() == other.0.to_bits()
-    }
-}
-
-impl Eq for Equity {}
-
-impl PartialOrd for Equity {
-    #[inline(always)]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Equity {
-    #[inline(always)]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.total_cmp(&other.0)
+        self.0 != i32::MIN && self.0 != i32::MAX
     }
 }
 
 impl std::fmt::Display for Equity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let precision = fmt.precision().unwrap_or(3);
+        let v = self.0 as f64 / SCALE as f64;
+        write!(fmt, "{v:.precision$}")
     }
 }
 
 impl std::fmt::Debug for Equity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        std::fmt::Display::fmt(self, f)
     }
 }

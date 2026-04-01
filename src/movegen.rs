@@ -2617,7 +2617,7 @@ impl KurniaMoveGenerator {
             &multi_leaves,
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: f32| {
                 vec_moves.push(ValuedMove {
-                    equity: equity::Equity::new(0.0),
+                    equity: equity::Equity::ZERO,
                     play: Play::Place {
                         down,
                         lane,
@@ -2636,7 +2636,7 @@ impl KurniaMoveGenerator {
             num_exchanges_by_this_player,
             |exchanged_tiles: &[u8], _leave_value: f32| {
                 vec_moves.push(ValuedMove {
-                    equity: equity::Equity::new(0.0),
+                    equity: equity::Equity::ZERO,
                     play: Play::Exchange {
                         tiles: exchanged_tiles.into(),
                     },
@@ -2645,7 +2645,7 @@ impl KurniaMoveGenerator {
         );
         if always_include_pass || vec_moves.is_empty() {
             vec_moves.push(ValuedMove {
-                equity: equity::Equity::new(0.0),
+                equity: equity::Equity::ZERO,
                 play: Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
                 },
@@ -2740,8 +2740,10 @@ impl KurniaMoveGenerator {
                     } else {
                         0.0
                     };
-                    let equity =
-                        equity::Equity::new(score as f32 + leave_value + other_adjustments);
+                    let equity = equity::Equity::from_score_and_leave(
+                        score,
+                        leave_value + other_adjustments,
+                    );
                     push_move(
                         &mut found_moves,
                         &mut equity_predicate,
@@ -2758,7 +2760,9 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: f32| threshold.get() < equity::Equity::new(best_possible_equity),
+            |best_possible_equity: f32| {
+                threshold.get() < equity::Equity::from_f32(best_possible_equity)
+            },
         ) {
             breathe().await;
         }
@@ -2773,7 +2777,7 @@ impl KurniaMoveGenerator {
                     &mut equity_predicate,
                     &threshold,
                     max_gen,
-                    equity::Equity::new(leave_value),
+                    equity::Equity::from_f32(leave_value),
                     || Play::Exchange {
                         tiles: exchanged_tiles.into(),
                     },
@@ -2786,7 +2790,7 @@ impl KurniaMoveGenerator {
                 &mut equity_predicate,
                 &threshold,
                 max_gen,
-                equity::Equity::new(if multi_leaves.is_dense() {
+                equity::Equity::from_f32(if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
                     params
@@ -2886,8 +2890,10 @@ impl KurniaMoveGenerator {
                     } else {
                         0.0
                     };
-                    let equity =
-                        equity::Equity::new(score as f32 + leave_value + other_adjustments);
+                    let equity = equity::Equity::from_score_and_leave(
+                        score,
+                        leave_value + other_adjustments,
+                    );
                     push_move(
                         &mut found_moves,
                         &mut equity_predicate,
@@ -2904,7 +2910,9 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: f32| threshold.get() < equity::Equity::new(best_possible_equity),
+            |best_possible_equity: f32| {
+                threshold.get() < equity::Equity::from_f32(best_possible_equity)
+            },
         ) {}
         kurnia_gen_exchange_moves(
             params.board_snapshot,
@@ -2917,7 +2925,7 @@ impl KurniaMoveGenerator {
                     &mut equity_predicate,
                     &threshold,
                     max_gen,
-                    equity::Equity::new(leave_value),
+                    equity::Equity::from_f32(leave_value),
                     || Play::Exchange {
                         tiles: exchanged_tiles.into(),
                     },
@@ -2930,7 +2938,7 @@ impl KurniaMoveGenerator {
                 &mut equity_predicate,
                 &threshold,
                 max_gen,
-                equity::Equity::new(if multi_leaves.is_dense() {
+                equity::Equity::from_f32(if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
                     params

@@ -386,12 +386,10 @@ fn do_it<N: kwg::Node>(
                                         leave_scale,
                                         recounted_score,
                                     );
-                                    // If leave_scale is negative these may be 0.0 and -0.0.
-                                    let play_equity_raw = play.equity.raw();
-                                    if play_equity_raw.to_le_bytes()
-                                        != recounted_equity.to_le_bytes()
-                                        && !(play_equity_raw == 0.0 && recounted_equity == 0.0)
-                                    {
+                                    // Compare equity as f64 with tolerance for scale conversion.
+                                    let play_equity_f64 = play.equity.as_f64();
+                                    let recounted_equity_f64 = recounted_equity as f64;
+                                    if (play_equity_f64 - recounted_equity_f64).abs() > 0.002 {
                                         issues += 1;
                                         println!(
                                             "{} should have equity {} instead of {}!",

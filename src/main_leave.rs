@@ -945,7 +945,7 @@ fn generate_autoplay_logs<
                                 };
 
                                 if is_possible {
-                                    let rounded_equity = play.equity.raw() as f64; // no rounding
+                                    let rounded_equity = play.equity.as_f64(); // no rounding
                                     thread_full_rack_map
                                         .entry(
                                             undersampled_thread_racks
@@ -1114,7 +1114,7 @@ fn generate_autoplay_logs<
                             game_state.turn = old_turn;
 
                             if SUMMARIZE && old_bag_len > 0 {
-                                let rounded_equity = play.equity.raw() as f64; // no rounding
+                                let rounded_equity = play.equity.as_f64(); // no rounding
                                 thread_full_rack_map
                                     .entry(cur_rack_as_vec[..].into())
                                     .and_modify(|e| {
@@ -1130,7 +1130,7 @@ fn generate_autoplay_logs<
                             if WRITE_LOGS {
                                 equity_fmt.clear();
                                 // no rounding, this used to be {:.3} for compatibility reasons.
-                                write!(equity_fmt, "{}", play.equity.raw()).unwrap();
+                                write!(equity_fmt, "{}", play.equity).unwrap();
                             }
 
                             let res = {
