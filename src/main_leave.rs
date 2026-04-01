@@ -5,7 +5,7 @@ use std::fmt::Write;
 use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
-    alphabet, bites, display, error, fash, game_config, game_state, klv, kwg, move_filter,
+    alphabet, bites, display, equity, error, fash, game_config, game_state, klv, kwg, move_filter,
     move_picker, movegen, prob,
 };
 
@@ -945,7 +945,7 @@ fn generate_autoplay_logs<
                                 };
 
                                 if is_possible {
-                                    let rounded_equity = play.equity as f64; // no rounding
+                                    let rounded_equity = play.equity.raw() as f64; // no rounding
                                     thread_full_rack_map
                                         .entry(
                                             undersampled_thread_racks
@@ -1114,7 +1114,7 @@ fn generate_autoplay_logs<
                             game_state.turn = old_turn;
 
                             if SUMMARIZE && old_bag_len > 0 {
-                                let rounded_equity = play.equity as f64; // no rounding
+                                let rounded_equity = play.equity.raw() as f64; // no rounding
                                 thread_full_rack_map
                                     .entry(cur_rack_as_vec[..].into())
                                     .and_modify(|e| {
@@ -1130,7 +1130,7 @@ fn generate_autoplay_logs<
                             if WRITE_LOGS {
                                 equity_fmt.clear();
                                 // no rounding, this used to be {:.3} for compatibility reasons.
-                                write!(equity_fmt, "{}", play.equity).unwrap();
+                                write!(equity_fmt, "{}", play.equity.raw()).unwrap();
                             }
 
                             let res = {
@@ -1960,7 +1960,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             };
 
                             let moves_made_before_ending: u64 = if old_bag_len > 0 {
-                                let mut best_equity_so_far = f32::NEG_INFINITY;
+                                let mut best_equity_so_far = equity::Equity::NEG_INFINITY;
                                 let mut num_plays = 0usize;
                                 vec_played.clear();
                                 move_generator.gen_moves_filtered(
@@ -1979,8 +1979,8 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                      _word: &[u8],
                                      _score: i32| true,
                                     |leave_value: f32| leave_value,
-                                    |equity: f32, play: &movegen::Play| {
-                                        match equity.total_cmp(&best_equity_so_far) {
+                                    |equity: equity::Equity, play: &movegen::Play| {
+                                        match equity.cmp(&best_equity_so_far) {
                                             std::cmp::Ordering::Greater => {
                                                 best_equity_so_far = equity;
                                                 vec_played.clear();

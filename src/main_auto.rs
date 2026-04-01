@@ -2,8 +2,8 @@
 
 use rand::prelude::*;
 use wolges::{
-    alphabet, bag, bites, build, display, error, fash, game_config, game_state, game_timers, klv,
-    kwg, move_filter, move_picker, movegen, play_scorer, stats,
+    alphabet, bag, bites, build, display, equity, error, fash, game_config, game_state,
+    game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
 
 fn main() -> error::Returns<()> {
@@ -340,7 +340,7 @@ fn do_it<N: kwg::Node>(
                         },
                         |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
                         |leave_value: f32| leave_scale * leave_value,
-                        |_equity: f32, _play: &movegen::Play| true,
+                        |_equity: equity::Equity, _play: &movegen::Play| true,
                     );
                     let plays = &mut move_generator.plays;
                     println!("{} moves found...", plays.len());
@@ -387,8 +387,10 @@ fn do_it<N: kwg::Node>(
                                         recounted_score,
                                     );
                                     // If leave_scale is negative these may be 0.0 and -0.0.
-                                    if play.equity.to_le_bytes() != recounted_equity.to_le_bytes()
-                                        && !(play.equity == 0.0 && recounted_equity == 0.0)
+                                    let play_equity_raw = play.equity.raw();
+                                    if play_equity_raw.to_le_bytes()
+                                        != recounted_equity.to_le_bytes()
+                                        && !(play_equity_raw == 0.0 && recounted_equity == 0.0)
                                     {
                                         issues += 1;
                                         println!(

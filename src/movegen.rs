@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, bites, display, game_config, klv, kwg, matrix};
+use super::{alphabet, bites, display, equity, game_config, klv, kwg, matrix};
 
 #[derive(Clone)]
 struct CrossSet {
@@ -2423,7 +2423,7 @@ impl Clone for Play {
 }
 
 pub struct ValuedMove {
-    pub equity: f32,
+    pub equity: equity::Equity,
     pub play: Play,
 }
 
@@ -2462,7 +2462,7 @@ impl PartialOrd for ValuedMove {
 impl Ord for ValuedMove {
     #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.equity.total_cmp(&self.equity)
+        other.equity.cmp(&self.equity)
     }
 }
 
@@ -2617,7 +2617,7 @@ impl KurniaMoveGenerator {
             &multi_leaves,
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: f32| {
                 vec_moves.push(ValuedMove {
-                    equity: 0.0,
+                    equity: equity::Equity::new(0.0),
                     play: Play::Place {
                         down,
                         lane,
@@ -2636,7 +2636,7 @@ impl KurniaMoveGenerator {
             num_exchanges_by_this_player,
             |exchanged_tiles: &[u8], _leave_value: f32| {
                 vec_moves.push(ValuedMove {
-                    equity: 0.0,
+                    equity: equity::Equity::new(0.0),
                     play: Play::Exchange {
                         tiles: exchanged_tiles.into(),
                     },
@@ -2645,7 +2645,7 @@ impl KurniaMoveGenerator {
         );
         if always_include_pass || vec_moves.is_empty() {
             vec_moves.push(ValuedMove {
-                equity: 0.0,
+                equity: equity::Equity::new(0.0),
                 play: Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
                 },
@@ -2661,7 +2661,7 @@ impl KurniaMoveGenerator {
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         AdjustLeaveValue: Fn(f32) -> f32,
-        EquityPredicate: FnMut(f32, &Play) -> bool,
+        EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
         L: kwg::Node,
@@ -2684,15 +2684,15 @@ impl KurniaMoveGenerator {
 
         let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
         let mut equity_predicate = equity_predicate;
-        let threshold = std::cell::Cell::new(f32::NEG_INFINITY);
+        let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
 
         #[inline(always)]
-        fn push_move<F: FnMut() -> Play, EquityPredicate: FnMut(f32, &Play) -> bool>(
+        fn push_move<F: FnMut() -> Play, EquityPredicate: FnMut(equity::Equity, &Play) -> bool>(
             found_moves: &mut std::collections::BinaryHeap<ValuedMove>,
             equity_pred: &mut EquityPredicate,
-            threshold: &std::cell::Cell<f32>,
+            threshold: &std::cell::Cell<equity::Equity>,
             max_gen: usize,
-            equity: f32,
+            equity: equity::Equity,
             mut construct_play: F,
         ) {
             if found_moves.len() >= max_gen && threshold.get() >= equity {
@@ -2740,7 +2740,8 @@ impl KurniaMoveGenerator {
                     } else {
                         0.0
                     };
-                    let equity = score as f32 + leave_value + other_adjustments;
+                    let equity =
+                        equity::Equity::new(score as f32 + leave_value + other_adjustments);
                     push_move(
                         &mut found_moves,
                         &mut equity_predicate,
@@ -2757,7 +2758,7 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: f32| threshold.get() < best_possible_equity,
+            |best_possible_equity: f32| threshold.get() < equity::Equity::new(best_possible_equity),
         ) {
             breathe().await;
         }
@@ -2772,7 +2773,7 @@ impl KurniaMoveGenerator {
                     &mut equity_predicate,
                     &threshold,
                     max_gen,
-                    leave_value,
+                    equity::Equity::new(leave_value),
                     || Play::Exchange {
                         tiles: exchanged_tiles.into(),
                     },
@@ -2785,14 +2786,14 @@ impl KurniaMoveGenerator {
                 &mut equity_predicate,
                 &threshold,
                 max_gen,
-                if multi_leaves.is_dense() {
+                equity::Equity::new(if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
                     params
                         .board_snapshot
                         .klv
                         .leave_value_from_tally(&working_buffer.rack_tally)
-                },
+                }),
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
                 },
@@ -2808,7 +2809,7 @@ impl KurniaMoveGenerator {
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         AdjustLeaveValue: Fn(f32) -> f32,
-        EquityPredicate: FnMut(f32, &Play) -> bool,
+        EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -2829,15 +2830,15 @@ impl KurniaMoveGenerator {
 
         let mut found_moves = std::collections::BinaryHeap::from(std::mem::take(&mut self.plays));
         let mut equity_predicate = equity_predicate;
-        let threshold = std::cell::Cell::new(f32::NEG_INFINITY);
+        let threshold = std::cell::Cell::new(equity::Equity::NEG_INFINITY);
 
         #[inline(always)]
-        fn push_move<F: FnMut() -> Play, EquityPredicate: FnMut(f32, &Play) -> bool>(
+        fn push_move<F: FnMut() -> Play, EquityPredicate: FnMut(equity::Equity, &Play) -> bool>(
             found_moves: &mut std::collections::BinaryHeap<ValuedMove>,
             equity_pred: &mut EquityPredicate,
-            threshold: &std::cell::Cell<f32>,
+            threshold: &std::cell::Cell<equity::Equity>,
             max_gen: usize,
-            equity: f32,
+            equity: equity::Equity,
             mut construct_play: F,
         ) {
             if found_moves.len() >= max_gen && threshold.get() >= equity {
@@ -2885,7 +2886,8 @@ impl KurniaMoveGenerator {
                     } else {
                         0.0
                     };
-                    let equity = score as f32 + leave_value + other_adjustments;
+                    let equity =
+                        equity::Equity::new(score as f32 + leave_value + other_adjustments);
                     push_move(
                         &mut found_moves,
                         &mut equity_predicate,
@@ -2902,7 +2904,7 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: f32| threshold.get() < best_possible_equity,
+            |best_possible_equity: f32| threshold.get() < equity::Equity::new(best_possible_equity),
         ) {}
         kurnia_gen_exchange_moves(
             params.board_snapshot,
@@ -2915,7 +2917,7 @@ impl KurniaMoveGenerator {
                     &mut equity_predicate,
                     &threshold,
                     max_gen,
-                    leave_value,
+                    equity::Equity::new(leave_value),
                     || Play::Exchange {
                         tiles: exchanged_tiles.into(),
                     },
@@ -2928,14 +2930,14 @@ impl KurniaMoveGenerator {
                 &mut equity_predicate,
                 &threshold,
                 max_gen,
-                if multi_leaves.is_dense() {
+                equity::Equity::new(if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
                     params
                         .board_snapshot
                         .klv
                         .leave_value_from_tally(&working_buffer.rack_tally)
-                },
+                }),
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
                 },
@@ -2956,7 +2958,7 @@ impl KurniaMoveGenerator {
             params,
             |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
             |leave_value: f32| leave_value,
-            |_equity: f32, _play: &Play| true,
+            |_equity: equity::Equity, _play: &Play| true,
         );
     }
 
