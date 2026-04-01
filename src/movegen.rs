@@ -642,7 +642,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             if b != 0 {
                 let b_letter = b & 0x7f;
                 if chain_valid && cross_set_buffer[j as usize].b_letter == b_letter {
-                    // Same tile, chain unbroken — use cached seek result.
+                    // Same tile, chain unbroken - use cached seek result.
                     p = cross_set_buffer[j as usize].p;
                     score = cross_set_buffer[j as usize].score;
                 } else {
