@@ -170,9 +170,6 @@ impl MultiLeaves {
             self.leave_values.resize(place_value as usize, 0.0);
             self.num_playeds.resize(place_value as usize, 0xff);
             self.num_playeds[0] = num_tiles_on_rack;
-        }
-
-        if dense {
             struct Env<'a, L: kwg::Node> {
                 klv: &'a Klv<L>,
                 unique_tiles: &'a [u8],
