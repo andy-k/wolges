@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{game_config, game_state, klv, kwg, movegen};
+use super::{equity, game_config, game_state, klv, kwg, movegen};
 use rand::SeedableRng;
 
 fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen::Play) {
@@ -182,7 +182,7 @@ impl Simmer {
                 &next_play,
             );
             self.last_seen_leave_values[self.game_state.turn as usize] =
-                klv.leave_value_from_tally(&self.rack_tally);
+                klv.leave_value_from_tally(&self.rack_tally) * equity::SCALE as f32;
             RNG.with(|rng| {
                 self.game_state
                     .play(game_config, &mut *rng.borrow_mut(), &next_play)

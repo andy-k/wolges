@@ -5,7 +5,6 @@ use wolges::{
     alphabet, bag, bites, build, display, equity, error, fash, game_config, game_state,
     game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
-
 fn main() -> error::Returns<()> {
     if false {
         let mut rng = rand::rngs::ChaCha20Rng::from_seed(*b"the seed is an array of 32 bytes");
@@ -386,10 +385,10 @@ fn do_it<N: kwg::Node>(
                                         leave_scale,
                                         recounted_score,
                                     );
-                                    // Compare equity as f64 with tolerance for scale conversion.
-                                    let play_equity_f64 = play.equity.as_f64();
-                                    let recounted_equity_f64 = recounted_equity as f64;
-                                    if (play_equity_f64 - recounted_equity_f64).abs() > 0.002 {
+                                    // Compare equity as millipoint i32 with tolerance for rounding.
+                                    let play_equity_raw = play.equity.raw();
+                                    let recounted_equity_raw = recounted_equity as i32;
+                                    if (play_equity_raw - recounted_equity_raw).abs() > 2 {
                                         issues += 1;
                                         println!(
                                             "{} should have equity {} instead of {}!",
@@ -448,32 +447,50 @@ fn do_it<N: kwg::Node>(
             timers.set_turn(-1);
 
             display::print_game_state(game_config, &game_state, Some(&timers));
-            println!("Final scores: {final_scores:?}");
+            let display_scores: Vec<f64> = final_scores
+                .iter()
+                .map(|&s| s as f64 / equity::SCALE as f64)
+                .collect();
+            println!("Final scores: {display_scores:?}");
             let mut has_time_adjustment = false;
             for (i, &clock_ms) in timers.clocks_ms.iter().enumerate() {
                 let adjustment = game_config.time_adjustment(clock_ms);
                 if adjustment != 0 {
                     println!("Player {} adjustment {}", i + 1, adjustment);
-                    final_scores[i] += adjustment as i32;
+                    final_scores[i] += adjustment as i32 * equity::SCALE;
                     has_time_adjustment = true;
                 }
             }
             if has_time_adjustment {
-                println!("Really final scores: {final_scores:?}");
+                let display_scores: Vec<f64> = final_scores
+                    .iter()
+                    .map(|&s| s as f64 / equity::SCALE as f64)
+                    .collect();
+                println!("Really final scores: {display_scores:?}");
             }
 
-            let fs0 = final_scores[0];
-            let fs1 = final_scores[1];
+            let display_scores: Vec<f64> = final_scores
+                .iter()
+                .map(|&s| s as f64 / equity::SCALE as f64)
+                .collect();
+            let fs0 = display_scores[0];
+            let fs1 = display_scores[1];
             let spr = fs0 - fs1;
-            let p0dw = spr.signum() + 1; // double win (2 = win, 1 = draw/tie, 0 = loss)
-            score_stats_0.update(fs0.into());
-            score_stats_1.update(fs1.into());
-            spread_stats_0.update(spr.into());
+            let p0dw = if spr > 0.0 {
+                2
+            } else if spr < 0.0 {
+                0
+            } else {
+                1
+            }; // double win
+            score_stats_0.update(fs0);
+            score_stats_1.update(fs1);
+            spread_stats_0.update(spr);
             win_stats_0.update(p0dw as f64 * 50.0);
             loss_draw_win[p0dw as usize] += 1;
 
             println!(
-                "Stats: {final_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3})",
+                "Stats: {display_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3})",
                 loss_draw_win[0] + loss_draw_win[1] + loss_draw_win[2],
                 loss_draw_win[2],
                 loss_draw_win[0],

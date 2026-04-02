@@ -56,7 +56,7 @@ impl From<&movegen::Play> for JsonPlay {
                     lane: *lane,
                     idx: *idx,
                     word: word_played.into(),
-                    score: *score,
+                    score: *score / equity::SCALE,
                 }
             }
         }
@@ -93,7 +93,7 @@ impl From<&JsonPlay> for movegen::Play {
                     lane: *lane,
                     idx: *idx,
                     word: word_played[..].into(),
-                    score: *score,
+                    score: *score * equity::SCALE,
                 }
             }
         }

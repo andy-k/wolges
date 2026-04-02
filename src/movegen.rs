@@ -63,8 +63,8 @@ struct WorkingBuffer {
     remaining_word_multipliers_for_down_plays: Box<[i8]>, // c*r
     remaining_tile_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
     remaining_tile_multipliers_for_down_plays: Box<[i8]>, // c*r
-    face_value_scores_for_across_plays: Box<[i8]>, // r*c
-    face_value_scores_for_down_plays: Box<[i8]>, // c*r
+    face_value_scores_for_across_plays: Box<[i32]>, // r*c (premultiplied by SCALE)
+    face_value_scores_for_down_plays: Box<[i32]>, // c*r (premultiplied by SCALE)
     perpendicular_word_multipliers_for_across_plays: Box<[i8]>, // r*c (0 if no perpendicularly adjacent tile)
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
@@ -80,8 +80,8 @@ struct WorkingBuffer {
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     multi_leaves: klv::MultiLeaves,
-    descending_scores: Vec<i8>,            // rack.len()
-    exchange_buffer: Vec<u8>,              // rack.len(), or max(word length) with word prune
+    descending_scores: Vec<i32>, // rack.len() (premultiplied by SCALE)
+    exchange_buffer: Vec<u8>,    // rack.len(), or max(word length) with word prune
     aggregated_word_multipliers: Vec<i32>, // sorted, unique, O(n) insertion but n is tiny.
     precomputed_square_multiplier_buffer: Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
@@ -90,10 +90,10 @@ struct WorkingBuffer {
     found_placements: Vec<PossiblePlacement>,
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
     accepts_alpha_cache: Option<Box<[AlphaCacheEntry]>>, // jumbled mode only
-    used_tile_scores_shadowl: Vec<i8>, // rack.len() (for shadow_play_left)
-    used_tile_scores_shadowr: Vec<i8>, // rack.len() (for shadow_play_right)
-    rack_tally_shadowl: Box<[u8]>, // 27 for ?A-Z (for shadow_play_left)
-    rack_tally_shadowr: Box<[u8]>, // 27 for ?A-Z (for shadow_play_right)
+    used_tile_scores_shadowl: Vec<i32>, // rack.len() (for shadow_play_left, premultiplied by SCALE)
+    used_tile_scores_shadowr: Vec<i32>, // rack.len() (for shadow_play_right, premultiplied by SCALE)
+    rack_tally_shadowl: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_left)
+    rack_tally_shadowr: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_right)
 }
 
 impl Clone for WorkingBuffer {
@@ -307,8 +307,8 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             remaining_tile_multipliers_for_down_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
-            face_value_scores_for_across_plays: vec![0i8; rows_times_cols].into_boxed_slice(),
-            face_value_scores_for_down_plays: vec![0i8; rows_times_cols].into_boxed_slice(),
+            face_value_scores_for_across_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
+            face_value_scores_for_down_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
             perpendicular_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
             perpendicular_word_multipliers_for_down_plays: vec![0i8; rows_times_cols]
@@ -394,7 +394,8 @@ impl WorkingBuffer {
                 } else {
                     self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
                     //self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
-                    self.face_value_scores_for_across_plays[idx] = alphabet.score(b);
+                    self.face_value_scores_for_across_plays[idx] =
+                        alphabet.score(b) as i32 * equity::SCALE;
                 }
             }
             for col in 0..dim.cols {
@@ -415,7 +416,8 @@ impl WorkingBuffer {
                 } else {
                     self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
                     //self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
-                    self.face_value_scores_for_down_plays[idx] = alphabet.score(b);
+                    self.face_value_scores_for_down_plays[idx] =
+                        alphabet.score(b) as i32 * equity::SCALE;
                 }
             }
             self.num_tiles_on_board = board_snapshot
@@ -445,14 +447,14 @@ impl WorkingBuffer {
         };
         self.play_out_bonus = play_out_bonus;
 
-        // eg if my rack is ZY??YVA it'd be [10,4,4,4,1,0,0].
+        // eg if my rack is ZY??YVA it'd be [10000,4000,4000,4000,1000,0,0] (in millipoints).
         self.descending_scores.clear();
         self.descending_scores
             .reserve(self.num_tiles_on_rack as usize);
         for &tile in alphabet.tiles_by_descending_scores() {
             let count = self.rack_tally[tile as usize];
             if count != 0 {
-                let score = alphabet.score(tile);
+                let score = alphabet.score(tile) as i32 * equity::SCALE;
                 for _ in 0..count {
                     self.descending_scores.push(score);
                 }
@@ -476,10 +478,12 @@ impl WorkingBuffer {
                 .resize(self.num_tiles_on_rack as usize + 1, f32::NEG_INFINITY);
             let mut unplayed = 0i32;
             for i in (0..self.num_tiles_on_rack).rev() {
-                unplayed += self.descending_scores[i as usize] as i32;
-                self.best_leave_values[i as usize] = (-10 - 2 * unplayed) as f32;
+                unplayed += self.descending_scores[i as usize];
+                self.best_leave_values[i as usize] =
+                    (-equity::ENDGAME_PENALTY_BASE - 2 * unplayed) as f32;
             }
-            self.best_leave_values[self.num_tiles_on_rack as usize] = play_out_bonus;
+            self.best_leave_values[self.num_tiles_on_rack as usize] =
+                play_out_bonus * equity::SCALE as f32;
         } else {
             self.multi_leaves.init(
                 &self.rack_tally,
@@ -499,10 +503,14 @@ impl WorkingBuffer {
                     &mut self.best_leave_values,
                 );
             }
+            // Scale raw leave values to millipoints.
+            self.best_leave_values
+                .iter_mut()
+                .for_each(|v| *v *= equity::SCALE as f32);
         }
         for i in 0..=self.num_tiles_on_rack {
             self.best_leave_values[i as usize] +=
-                board_snapshot.game_config.num_played_bonus(i) as f32;
+                board_snapshot.game_config.num_played_bonus(i) as f32 * equity::SCALE as f32;
         }
         self.used_letters_tally.clear();
         match board_snapshot.game_config.game_rules() {
@@ -648,7 +656,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                 } else {
                     chain_valid = false;
                     p = kwg.seek(p, b_letter);
-                    score += alphabet.score(b) as i32;
+                    score += alphabet.score(b) as i32 * equity::SCALE;
                     cross_set_buffer[j as usize] = CrossSetComputation {
                         score,
                         b_letter,
@@ -857,7 +865,7 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                     break;
                 }
                 j -= 1;
-                score += alphabet.score(b) as i32;
+                score += alphabet.score(b) as i32 * equity::SCALE;
                 used_letters_tally[(b & 0x7f) as usize] += 1;
             }
             let mut k = i + 1;
@@ -867,7 +875,7 @@ fn gen_jumbled_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                     break;
                 }
                 k += 1;
-                score += alphabet.score(b) as i32;
+                score += alphabet.score(b) as i32 * equity::SCALE;
                 used_letters_tally[(b & 0x7f) as usize] += 1;
             }
             if k == j + 1 {
@@ -985,8 +993,8 @@ struct GenPlacePlacementsParams<'a> {
     board_strip: &'a [u8],
     alphabet: &'a alphabet::Alphabet,
     rack_tally: &'a mut [u8],
-    used_tile_scores_shadowl: &'a mut Vec<i8>,
-    used_tile_scores_shadowr: &'a mut Vec<i8>,
+    used_tile_scores_shadowl: &'a mut Vec<i32>,
+    used_tile_scores_shadowr: &'a mut Vec<i32>,
     shadow_strip_buffer: &'a mut [u8], // not really storing letters here
     cross_set_strip: &'a [CrossSet],
     left_extension_strip: &'a [u64],
@@ -996,7 +1004,7 @@ struct GenPlacePlacementsParams<'a> {
     perpendicular_word_multipliers_strip: &'a [i8],
     perpendicular_scores_strip: &'a [i32],
     rack_bits: u64,
-    descending_scores: &'a [i8],
+    descending_scores: &'a [i32],
     aggregated_word_multipliers: &'a mut Vec<i32>,
     precomputed_square_multiplier_buffer: &'a mut Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
@@ -1083,10 +1091,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         for j in (0..strider_len).rev() {
             let b = params.board_strip[j];
             if b != 0 {
-                score += params.alphabet.score(b) as i32;
+                score += params.alphabet.score(b) as i32 * equity::SCALE;
             } else {
                 // empty square, reset
-                score = 0; // cumulative face-value score
+                score = 0; // cumulative face-value score (millipoints)
                 last_empty = j as i8; // last seen empty square
             }
             params.multi_jumps_buffer[j].right_score = score;
@@ -1097,10 +1105,10 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         for j in 0..strider_len {
             let b = params.board_strip[j];
             if b != 0 {
-                score += params.alphabet.score(b) as i32;
+                score += params.alphabet.score(b) as i32 * equity::SCALE;
             } else {
                 // empty square, reset
-                score = 0; // cumulative face-value score
+                score = 0; // cumulative face-value score (millipoints)
                 last_empty = j as i8; // last seen empty square
             }
             params.multi_jumps_buffer[j].left_score = score;
@@ -1177,7 +1185,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     && idx < idx_right
                     && env.params.shadow_strip_buffer[idx as usize] == 0
                 {
-                    best_scoring += *desc_scores_iter.next().unwrap() as i32
+                    best_scoring += *desc_scores_iter.next().unwrap()
                         * precomputed_square_multiplier_slice[idx as usize];
                     to_assign -= 1;
                     if to_assign == 0 {
@@ -1264,14 +1272,14 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
                     env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                    let tile_score = env.params.alphabet.score(tile);
+                    let tile_score = env.params.alphabet.score(tile) as i32 * equity::SCALE;
                     env.params.used_tile_scores_shadowr.insert(
                         env.params
                             .used_tile_scores_shadowr
                             .partition_point(|&x| x <= tile_score),
                         tile_score,
                     );
-                    let tile_value = tile_score as i32
+                    let tile_value = tile_score
                         * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
                     acc.main_score += tile_value;
                     acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
@@ -1370,14 +1378,14 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
                     env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
-                    let tile_score = env.params.alphabet.score(tile);
+                    let tile_score = env.params.alphabet.score(tile) as i32 * equity::SCALE;
                     env.params.used_tile_scores_shadowl.insert(
                         env.params
                             .used_tile_scores_shadowl
                             .partition_point(|&x| x <= tile_score),
                         tile_score,
                     );
-                    let tile_value = tile_score as i32
+                    let tile_value = tile_score
                         * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
                     acc.main_score += tile_value;
                     acc.perpendicular_cumulative_score += env.params.perpendicular_scores_strip
@@ -1508,7 +1516,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg:
     right_extension_strip: &'a [u64],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
-    face_value_scores_strip: &'a [i8],
+    face_value_scores_strip: &'a [i32],
     perpendicular_word_multipliers_strip: &'a [i8],
     perpendicular_scores_strip: &'a [i32],
     rack_tally: &'a mut [u8],
@@ -1559,7 +1567,8 @@ fn gen_classic_place_moves<
                 .params
                 .board_snapshot
                 .game_config
-                .num_played_bonus(env.num_played) as i32;
+                .num_played_bonus(env.num_played) as i32
+                * equity::SCALE;
         let leave_value = if env.params.multi_leaves.is_dense() {
             env.params.multi_leaves.leave_value(acc.leave_idx)
         } else if env.params.num_tiles_in_bag <= 0 {
@@ -1607,7 +1616,7 @@ fn gen_classic_place_moves<
             if p <= 0 {
                 return;
             }
-            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_score += env.params.face_value_scores_strip[idx as usize];
             idx += 1;
         }
         let node = env.params.board_snapshot.kwg[p];
@@ -1652,7 +1661,8 @@ fn gen_classic_place_moves<
             env.num_played += 1;
             let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
                 // intentional to not hardcode blank tile value as zero
-                let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
+                let tile_value =
+                    env.alphabet.score(0) as i32 * equity::SCALE * tile_multiplier as i32;
                 Accumulator {
                     main_score: acc.main_score + tile_value,
                     perpendicular_cumulative_score: acc.perpendicular_cumulative_score
@@ -1670,7 +1680,9 @@ fn gen_classic_place_moves<
                 if this_cross_bits & (1 << tile) != 0 {
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
-                        let tile_value = env.alphabet.score(tile) as i32 * tile_multiplier as i32;
+                        let tile_value = env.alphabet.score(tile) as i32
+                            * equity::SCALE
+                            * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_right(
                             env,
@@ -1746,7 +1758,7 @@ fn gen_classic_place_moves<
                 if p <= 0 {
                     return;
                 }
-                acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+                acc.main_score += env.params.face_value_scores_strip[idx as usize];
                 idx -= 1;
             }
         }
@@ -1800,7 +1812,8 @@ fn gen_classic_place_moves<
             env.num_played += 1;
             let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
                 // intentional to not hardcode blank tile value as zero
-                let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
+                let tile_value =
+                    env.alphabet.score(0) as i32 * equity::SCALE * tile_multiplier as i32;
                 Accumulator {
                     main_score: acc.main_score + tile_value,
                     perpendicular_cumulative_score: acc.perpendicular_cumulative_score
@@ -1818,7 +1831,9 @@ fn gen_classic_place_moves<
                 if this_cross_bits & (1 << tile) != 0 {
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
-                        let tile_value = env.alphabet.score(tile) as i32 * tile_multiplier as i32;
+                        let tile_value = env.alphabet.score(tile) as i32
+                            * equity::SCALE
+                            * tile_multiplier as i32;
                         env.params.word_strip_buffer[idx as usize] = tile;
                         play_left(
                             env,
@@ -1942,7 +1957,8 @@ fn gen_jumbled_place_moves<
                     .params
                     .board_snapshot
                     .game_config
-                    .num_played_bonus(env.num_played) as i32;
+                    .num_played_bonus(env.num_played) as i32
+                    * equity::SCALE;
             let leave_value = if env.params.multi_leaves.is_dense() {
                 env.params.multi_leaves.leave_value(acc.leave_idx)
             } else if env.params.num_tiles_in_bag <= 0 {
@@ -1989,7 +2005,7 @@ fn gen_jumbled_place_moves<
                 break;
             }
             env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
-            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_score += env.params.face_value_scores_strip[idx as usize];
             idx += 1;
         }
         if idx > env.params.anchor + 1
@@ -2019,7 +2035,8 @@ fn gen_jumbled_place_moves<
                 env.num_played += 1;
                 let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
                     // intentional to not hardcode blank tile value as zero
-                    let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
+                    let tile_value =
+                        env.alphabet.score(0) as i32 * equity::SCALE * tile_multiplier as i32;
                     Accumulator {
                         main_score: acc.main_score + tile_value,
                         perpendicular_cumulative_score: acc.perpendicular_cumulative_score
@@ -2036,8 +2053,9 @@ fn gen_jumbled_place_moves<
                         if env.params.rack_tally[tile as usize] > 0 {
                             env.params.rack_tally[tile as usize] -= 1;
                             env.params.used_letters_tally[tile as usize] += 1;
-                            let tile_value =
-                                env.alphabet.score(tile) as i32 * tile_multiplier as i32;
+                            let tile_value = env.alphabet.score(tile) as i32
+                                * equity::SCALE
+                                * tile_multiplier as i32;
                             env.params.word_strip_buffer[idx as usize] = tile;
                             play_right(
                                 env,
@@ -2090,7 +2108,7 @@ fn gen_jumbled_place_moves<
                 break;
             }
             env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
-            acc.main_score += env.params.face_value_scores_strip[idx as usize] as i32;
+            acc.main_score += env.params.face_value_scores_strip[idx as usize];
             idx -= 1;
         }
         if env.num_played > !is_unique as u8 && env.params.anchor - idx >= 2 {
@@ -2123,7 +2141,8 @@ fn gen_jumbled_place_moves<
                     env.num_played += 1;
                     let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
                         // intentional to not hardcode blank tile value as zero
-                        let tile_value = env.alphabet.score(0) as i32 * tile_multiplier as i32;
+                        let tile_value =
+                            env.alphabet.score(0) as i32 * equity::SCALE * tile_multiplier as i32;
                         Accumulator {
                             main_score: acc.main_score + tile_value,
                             perpendicular_cumulative_score: acc.perpendicular_cumulative_score
@@ -2140,8 +2159,9 @@ fn gen_jumbled_place_moves<
                             if env.params.rack_tally[tile as usize] > 0 {
                                 env.params.rack_tally[tile as usize] -= 1;
                                 env.params.used_letters_tally[tile as usize] += 1;
-                                let tile_value =
-                                    env.alphabet.score(tile) as i32 * tile_multiplier as i32;
+                                let tile_value = env.alphabet.score(tile) as i32
+                                    * equity::SCALE
+                                    * tile_multiplier as i32;
                                 env.params.word_strip_buffer[idx as usize] = tile;
                                 play_left(
                                     env,
@@ -2530,7 +2550,7 @@ impl<N: kwg::Node, L: kwg::Node> std::fmt::Display for WriteablePlay<'_, N, L> {
                 if inside {
                     write!(f, ")")?;
                 }
-                write!(f, " {score}")?;
+                write!(f, " {}", score / equity::SCALE)?;
             }
         }
         Ok(())
@@ -2740,7 +2760,7 @@ impl KurniaMoveGenerator {
                     } else {
                         0.0
                     };
-                    let equity = equity::Equity::from_score_and_leave(
+                    let equity = equity::Equity::from_millipoint_score_and_leave(
                         score,
                         leave_value + other_adjustments,
                     );
@@ -2761,7 +2781,7 @@ impl KurniaMoveGenerator {
                 }
             },
             |best_possible_equity: f32| {
-                threshold.get() < equity::Equity::from_f32(best_possible_equity)
+                threshold.get() < equity::Equity::new(best_possible_equity as i32)
             },
         ) {
             breathe().await;
@@ -2890,7 +2910,7 @@ impl KurniaMoveGenerator {
                     } else {
                         0.0
                     };
-                    let equity = equity::Equity::from_score_and_leave(
+                    let equity = equity::Equity::from_millipoint_score_and_leave(
                         score,
                         leave_value + other_adjustments,
                     );
@@ -2911,7 +2931,7 @@ impl KurniaMoveGenerator {
                 }
             },
             |best_possible_equity: f32| {
-                threshold.get() < equity::Equity::from_f32(best_possible_equity)
+                threshold.get() < equity::Equity::new(best_possible_equity as i32)
             },
         ) {}
         kurnia_gen_exchange_moves(
@@ -3302,7 +3322,7 @@ fn kurnia_gen_place_moves_iter<
                           word: &[u8],
                           score: i32,
                           leave_value: f32| {
-                        let this_best = score as f32 + leave_value;
+                        let this_best = score as f32 + leave_value * equity::SCALE as f32;
                         debug_assert!(
                             this_best <= placement.best_possible_equity,
                             "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",

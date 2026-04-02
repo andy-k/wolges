@@ -5,7 +5,13 @@
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Equity(i32);
 
-const SCALE: i32 = 1000;
+pub const SCALE: i32 = 1000;
+
+// Opening penalty for vowels adjacent to premium squares (0.7 points per vowel).
+pub const OPENING_HOTSPOT_PENALTY: i32 = 700; // 0.7 * SCALE
+
+// Endgame penalty base for unplayed tiles (10 points).
+pub const ENDGAME_PENALTY_BASE: i32 = 10_000; // 10 * SCALE
 
 impl Equity {
     pub const NEG_INFINITY: Self = Self(i32::MIN);
@@ -24,10 +30,11 @@ impl Equity {
         Self((v * SCALE as f32).round() as i32)
     }
 
-    /// Construct from integer score + f32 leave value.
+    /// Construct from millipoint score + f32 leave value.
+    /// Score must already be in millipoints (premultiplied by SCALE).
     #[inline(always)]
-    pub fn from_score_and_leave(score: i32, leave_value: f32) -> Self {
-        Self(score * SCALE + (leave_value * SCALE as f32).round() as i32)
+    pub fn from_millipoint_score_and_leave(score: i32, leave_value: f32) -> Self {
+        Self(score + (leave_value * SCALE as f32).round() as i32)
     }
 
     /// The raw scaled i32 value (1 unit = 0.001 equity points).

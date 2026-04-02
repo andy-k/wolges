@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, board_layout, error, game_config, game_state, game_timers};
+use super::{alphabet, board_layout, equity, error, game_config, game_state, game_timers};
 use std::str::FromStr;
 
 #[inline(always)]
@@ -383,7 +383,7 @@ impl std::fmt::Display for GameStatePrinter<'_> {
                 f,
                 "Player {}: {} {}",
                 i + 1,
-                player.score,
+                player.score / equity::SCALE,
                 self.game_config.alphabet().fmt_rack(&player.rack)
             )?;
             if let Some(game_timers) = self.optional_game_timers {

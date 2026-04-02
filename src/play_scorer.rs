@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{error, game_config, game_state, kwg, move_filter, movegen};
+use super::{equity, error, game_config, game_state, kwg, move_filter, movegen};
 
 pub struct PlayScorer {
     rack_tally: Vec<u8>,
@@ -376,8 +376,9 @@ impl PlayScorer {
                             tile_multiplier = 1;
                             board_snapshot.board_tiles[strider_at_i]
                         };
-                        let face_value_tile_score = alphabet.score(placed_tile);
-                        let tile_score = face_value_tile_score as i32 * tile_multiplier as i32;
+                        let face_value_tile_score =
+                            alphabet.score(placed_tile) as i32 * equity::SCALE;
+                        let tile_score = face_value_tile_score * tile_multiplier as i32;
                         word_score += tile_score;
                     }
                     let multiplied_word_score = word_score * word_multiplier;
@@ -421,8 +422,9 @@ impl PlayScorer {
                             if placed_tile == 0 {
                                 break;
                             }
-                            let face_value_tile_score = alphabet.score(placed_tile);
-                            let tile_score = face_value_tile_score as i32 * tile_multiplier as i32;
+                            let face_value_tile_score =
+                                alphabet.score(placed_tile) as i32 * equity::SCALE;
+                            let tile_score = face_value_tile_score * tile_multiplier as i32;
                             word_score += tile_score;
                         }
                         let multiplied_word_score = word_score * word_multiplier;
@@ -430,7 +432,7 @@ impl PlayScorer {
                     }
                 }
                 let num_played_bonus = game_config.num_played_bonus(num_played);
-                recounted_score += num_played_bonus as i32;
+                recounted_score += num_played_bonus as i32 * equity::SCALE;
             }
         };
 
@@ -475,7 +477,7 @@ impl PlayScorer {
                     .map(|(tile, &count)| count as i32 * game_config.alphabet().score(tile) as i32)
                     .sum::<i32>();
                 let kept_tiles_penalty = 10 + 2 * kept_tiles_worth;
-                recounted_equity -= kept_tiles_penalty as f32;
+                recounted_equity -= kept_tiles_penalty as f32 * equity::SCALE as f32;
             } else {
                 let mut unplayed_tiles_worth = 0;
                 for (player_idx, player) in (0u8..).zip(game_state.players.iter()) {
@@ -489,11 +491,11 @@ impl PlayScorer {
                     }
                 }
                 let unplayed_tiles_bonus = 2 * unplayed_tiles_worth;
-                recounted_equity += unplayed_tiles_bonus as f32;
+                recounted_equity += unplayed_tiles_bonus as f32 * equity::SCALE as f32;
             }
         } else {
             let leave_value = board_snapshot.klv.leave_value_from_tally(&self.rack_tally);
-            recounted_equity += leave_scale * leave_value;
+            recounted_equity += leave_scale * leave_value * equity::SCALE as f32;
             if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
                 match play {
                     movegen::Play::Exchange { .. } => {}
@@ -542,7 +544,8 @@ impl PlayScorer {
                                 }
                             })
                             .count();
-                        let dangerous_vowel_penalty = dangerous_vowel_count as f32 * 0.7;
+                        let dangerous_vowel_penalty =
+                            dangerous_vowel_count as f32 * equity::OPENING_HOTSPOT_PENALTY as f32;
                         recounted_equity -= dangerous_vowel_penalty;
                     }
                 }

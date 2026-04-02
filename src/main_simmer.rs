@@ -117,7 +117,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> ObservableSimmer<'a, N, L> {
 
 fn main() -> error::Returns<()> {
     // https://github.com/domino14/macondo/issues/43
-    let scores = [336, 298];
+    let scores = [336000, 298000];
     let question = Question::from_fen(
         &game_config::make_english_game_config(),
         "NWL23", // actually "NWL20",
