@@ -191,6 +191,8 @@ fn do_it<N: kwg::Node>(
         return Ok(());
     }
     let mut saved_game_state = game_state.clone();
+    let mut final_scores = vec![0i32; game_state.players.len()];
+    let mut display_scores = vec![0i32; game_state.players.len()];
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
         saved_game_state.clone_from(&game_state);
@@ -199,7 +201,7 @@ fn do_it<N: kwg::Node>(
                 game_state.clone_from(&saved_game_state);
             }
             game_state.turn = went_first;
-            let mut final_scores = vec![0; game_state.players.len()];
+            final_scores.iter_mut().for_each(|s| *s = 0);
             //timers.reset_to(25 * 60 * 1000);
             timers.reset_to(15 * 1000);
 
@@ -447,8 +449,9 @@ fn do_it<N: kwg::Node>(
             timers.set_turn(-1);
 
             display::print_game_state(game_config, &game_state, Some(&timers));
-            let display_scores: Vec<i32> =
-                final_scores.iter().map(|&s| s / equity::SCALE).collect();
+            for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
+                *d = f / equity::SCALE;
+            }
             println!("Final scores: {display_scores:?}");
             let mut has_time_adjustment = false;
             for (i, &clock_ms) in timers.clocks_ms.iter().enumerate() {
@@ -460,13 +463,12 @@ fn do_it<N: kwg::Node>(
                 }
             }
             if has_time_adjustment {
-                let display_scores: Vec<i32> =
-                    final_scores.iter().map(|&s| s / equity::SCALE).collect();
+                for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
+                    *d = f / equity::SCALE;
+                }
                 println!("Really final scores: {display_scores:?}");
             }
 
-            let display_scores: Vec<i32> =
-                final_scores.iter().map(|&s| s / equity::SCALE).collect();
             let spr = display_scores[0] - display_scores[1];
             let p0dw = spr.signum() + 1; // double win
             score_stats_0.update(display_scores[0] as f64);
