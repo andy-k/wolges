@@ -24,8 +24,7 @@ impl<L: kwg::Node> Klv<L> {
         if buf.len() < r + 4 * lv_len as usize {
             // klv uses i16 (fixed-point, 1/256 scale)
             for _ in 0..lv_len {
-                let raw = kwg::read_le_u16(buf, r) as i16 as f32 * (1.0 / 256.0);
-                elts.push((raw * equity::SCALE as f32).round() as i32);
+                elts.push((kwg::read_le_u16(buf, r) as i16 as i32 * equity::SCALE + 128) / 256);
                 r += 2;
             }
         } else {
