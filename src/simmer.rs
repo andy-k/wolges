@@ -43,7 +43,7 @@ pub struct Simmer {
 
     // simulate() simulates a single iteration and sets these
     game_state: game_state::GameState,
-    last_seen_leave_values: Box<[f32]>,
+    last_seen_leave_values: Box<[i32]>,
     final_scores: Box<[i32]>,
 
     // simulate() reuses these internally
@@ -62,7 +62,7 @@ impl Simmer {
             win_prob_weightage: 0.0,
 
             game_state: game_state::GameState::new(game_config),
-            last_seen_leave_values: vec![0.0f32; game_config.num_players() as usize]
+            last_seen_leave_values: vec![0i32; game_config.num_players() as usize]
                 .into_boxed_slice(),
             final_scores: vec![0; game_config.num_players() as usize].into_boxed_slice(),
 
@@ -148,9 +148,7 @@ impl Simmer {
     ) -> bool {
         self.game_state.clone_from(&self.initial_game_state);
         // reset leave values from previous iteration
-        self.last_seen_leave_values
-            .iter_mut()
-            .for_each(|m| *m = 0.0);
+        self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
         let mut next_play = movegen::Play::Exchange {
             tiles: [][..].into(),
         };
@@ -198,9 +196,7 @@ impl Simmer {
                     for (i, player) in self.game_state.players.iter_mut().enumerate() {
                         player.score = self.final_scores[i];
                     }
-                    self.last_seen_leave_values
-                        .iter_mut()
-                        .for_each(|m| *m = 0.0);
+                    self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
                     return true;
                 }
             }
@@ -210,34 +206,31 @@ impl Simmer {
     }
 
     #[inline(always)]
-    pub fn final_equity_spread(&self) -> f32 {
-        let mut best_opponent_equity = f32::NEG_INFINITY;
+    pub fn final_equity_spread(&self) -> i32 {
+        let mut best_opponent_equity = i32::MIN;
         for (i, player) in (0..).zip(self.game_state.players.iter()) {
             if i != self.initial_game_state.turn {
-                let opponent_equity = player.score as f32 + self.last_seen_leave_values[i as usize];
+                let opponent_equity = player.score + self.last_seen_leave_values[i as usize];
                 if opponent_equity > best_opponent_equity {
                     best_opponent_equity = opponent_equity;
                 }
             }
         }
         let mut this_equity = self.game_state.players[self.initial_game_state.turn as usize].score
-            as f32
             + self.last_seen_leave_values[self.initial_game_state.turn as usize];
-        if best_opponent_equity != f32::NEG_INFINITY {
+        if best_opponent_equity != i32::MIN {
             this_equity -= best_opponent_equity;
         }
         this_equity
     }
 
     #[inline(always)]
-    pub fn compute_win_prob(&self, game_ended: bool, final_spread: f32) -> f64 {
+    pub fn compute_win_prob(&self, game_ended: bool, final_spread: i32) -> f64 {
         if game_ended {
-            if final_spread > 0.0 {
-                1.0
-            } else if final_spread < 0.0 {
-                0.0
-            } else {
-                0.5
+            match final_spread.signum() {
+                1 => 1.0,
+                -1 => 0.0,
+                _ => 0.5,
             }
         } else {
             // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)

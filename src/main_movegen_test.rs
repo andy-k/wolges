@@ -218,7 +218,7 @@ fn main() -> error::Returns<()> {
         for play in move_generator.plays.iter() {
             writeln!(
                 output,
-                "  {:.4} {}",
+                "  {:.3} {}",
                 play.equity,
                 play.play.fmt(&board_snapshot)
             )

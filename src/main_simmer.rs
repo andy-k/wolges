@@ -117,7 +117,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> ObservableSimmer<'a, N, L> {
 
 fn main() -> error::Returns<()> {
     // https://github.com/domino14/macondo/issues/43
-    let scores = [336, 298];
+    let scores = [336000, 298000];
     let question = Question::from_fen(
         &game_config::make_english_game_config(),
         "NWL23", // actually "NWL20",
@@ -314,7 +314,7 @@ fn main() -> error::Returns<()> {
             );
             let final_spread = simmer.simmer.final_equity_spread();
             let win_prob = simmer.simmer.compute_win_prob(game_ended, final_spread);
-            let sim_spread = final_spread - simmer.simmer.initial_score_spread as f32;
+            let sim_spread = final_spread - simmer.simmer.initial_score_spread;
             candidate
                 .stats
                 .update(sim_spread as f64 + win_prob * simmer.simmer.win_prob_weightage());

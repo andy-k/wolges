@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bag, error, game_config, movegen};
+use super::{bag, equity, error, game_config, movegen};
 use rand::prelude::*;
 
 pub fn use_tiles<II: IntoIterator<Item = u8>>(
@@ -255,13 +255,15 @@ impl GameState {
                 final_scores[i] = player.score;
             }
             if self.players.len() == 2 {
-                final_scores[self.turn as usize] += 2 * game_config
-                    .alphabet()
-                    .rack_score(&self.players[(1 - self.turn) as usize].rack);
+                final_scores[self.turn as usize] += 2
+                    * equity::SCALE
+                    * game_config
+                        .alphabet()
+                        .rack_score(&self.players[(1 - self.turn) as usize].rack);
             } else {
                 let mut earned = 0;
                 for (i, player) in self.players.iter().enumerate() {
-                    let this_rack = game_config.alphabet().rack_score(&player.rack);
+                    let this_rack = game_config.alphabet().scaled_rack_score(&player.rack);
                     final_scores[i] -= this_rack;
                     earned += this_rack;
                 }
@@ -278,7 +280,8 @@ impl GameState {
                     || self.board_tiles.iter().any(|&tile| tile != 0)))
         {
             for (i, player) in self.players.iter().enumerate() {
-                final_scores[i] = player.score - game_config.alphabet().rack_score(&player.rack);
+                final_scores[i] =
+                    player.score - game_config.alphabet().scaled_rack_score(&player.rack);
             }
             CheckGameEnded::ZeroScores
         } else {

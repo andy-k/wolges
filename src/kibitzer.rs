@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{error, game_config, movegen};
+use super::{equity, error, game_config, movegen};
 
 // note: only this representation uses -1i8 for blank-as-A (in "board" input
 // and "word" response for "action":"play"). everywhere else, use 0x81u8.
@@ -56,7 +56,7 @@ impl From<&movegen::Play> for JsonPlay {
                     lane: *lane,
                     idx: *idx,
                     word: word_played.into(),
-                    score: *score,
+                    score: *score / equity::SCALE,
                 }
             }
         }
@@ -93,7 +93,7 @@ impl From<&JsonPlay> for movegen::Play {
                     lane: *lane,
                     idx: *idx,
                     word: word_played[..].into(),
-                    score: *score,
+                    score: *score * equity::SCALE,
                 }
             }
         }
@@ -111,7 +111,7 @@ impl From<&movegen::ValuedMove> for JsonPlayWithEquity {
     #[inline(always)]
     fn from(play: &movegen::ValuedMove) -> Self {
         Self {
-            equity: play.equity,
+            equity: play.equity.as_f64() as f32,
             play: (&play.play).into(),
         }
     }
@@ -121,7 +121,7 @@ impl From<&JsonPlayWithEquity> for movegen::ValuedMove {
     #[inline(always)]
     fn from(play: &JsonPlayWithEquity) -> Self {
         Self {
-            equity: play.equity,
+            equity: equity::Equity::new((play.equity * equity::SCALE as f32).round() as i32),
             play: (&play.play).into(),
         }
     }

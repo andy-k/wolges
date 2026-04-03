@@ -2,10 +2,9 @@
 
 use rand::prelude::*;
 use wolges::{
-    alphabet, bag, bites, build, display, error, fash, game_config, game_state, game_timers, klv,
-    kwg, move_filter, move_picker, movegen, play_scorer, stats,
+    alphabet, bag, bites, build, display, equity, error, fash, game_config, game_state,
+    game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
-
 fn main() -> error::Returns<()> {
     if false {
         let mut rng = rand::rngs::ChaCha20Rng::from_seed(*b"the seed is an array of 32 bytes");
@@ -192,6 +191,8 @@ fn do_it<N: kwg::Node>(
         return Ok(());
     }
     let mut saved_game_state = game_state.clone();
+    let mut final_scores = vec![0i32; game_state.players.len()];
+    let mut display_scores = vec![0i32; game_state.players.len()];
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
         saved_game_state.clone_from(&game_state);
@@ -200,7 +201,7 @@ fn do_it<N: kwg::Node>(
                 game_state.clone_from(&saved_game_state);
             }
             game_state.turn = went_first;
-            let mut final_scores = vec![0; game_state.players.len()];
+            final_scores.iter_mut().for_each(|s| *s = 0);
             //timers.reset_to(25 * 60 * 1000);
             timers.reset_to(15 * 1000);
 
@@ -235,8 +236,11 @@ fn do_it<N: kwg::Node>(
                 if let move_filter::GenMoves::Tilt { tilt, bot_level } = filtered_movegen {
                     tilt.tilt_by_rng(&mut rng, *bot_level);
                     println!(
-                        "Effective tilt: tilt factor = {}, leave scale = {}",
-                        tilt.tilt_factor, tilt.leave_scale
+                        "Effective tilt: tilt factor = {}/{}, leave scale = {}/{}",
+                        tilt.tilt_factor,
+                        move_filter::TILT_DENOM,
+                        tilt.leave_scale,
+                        move_filter::LEAVE_SCALE_DENOM
                     );
                 }
 
@@ -328,7 +332,7 @@ fn do_it<N: kwg::Node>(
                         if let move_filter::GenMoves::Tilt { tilt, .. } = filtered_movegen {
                             tilt.leave_scale
                         } else {
-                            1.0
+                            move_filter::LEAVE_SCALE_DENOM
                         };
                     move_generator.gen_moves_filtered(
                         &movegen::GenMovesParams {
@@ -339,8 +343,12 @@ fn do_it<N: kwg::Node>(
                             always_include_pass: true,
                         },
                         |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
-                        |leave_value: f32| leave_scale * leave_value,
-                        |_equity: f32, _play: &movegen::Play| true,
+                        |leave_value: i32| {
+                            (leave_value as i64 * leave_scale as i64
+                                / move_filter::LEAVE_SCALE_DENOM as i64)
+                                as i32
+                        },
+                        |_equity: equity::Equity, _play: &movegen::Play| true,
                     );
                     let plays = &mut move_generator.plays;
                     println!("{} moves found...", plays.len());
@@ -386,15 +394,12 @@ fn do_it<N: kwg::Node>(
                                         leave_scale,
                                         recounted_score,
                                     );
-                                    // If leave_scale is negative these may be 0.0 and -0.0.
-                                    if play.equity.to_le_bytes() != recounted_equity.to_le_bytes()
-                                        && !(play.equity == 0.0 && recounted_equity == 0.0)
-                                    {
+                                    if play.equity.raw() != recounted_equity {
                                         issues += 1;
                                         println!(
                                             "{} should have equity {} instead of {}!",
                                             play.play.fmt(board_snapshot),
-                                            recounted_equity,
+                                            equity::Equity::new(recounted_equity),
                                             play.equity
                                         );
                                     }
@@ -448,32 +453,36 @@ fn do_it<N: kwg::Node>(
             timers.set_turn(-1);
 
             display::print_game_state(game_config, &game_state, Some(&timers));
-            println!("Final scores: {final_scores:?}");
+            for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
+                *d = f / equity::SCALE;
+            }
+            println!("Final scores: {display_scores:?}");
             let mut has_time_adjustment = false;
             for (i, &clock_ms) in timers.clocks_ms.iter().enumerate() {
                 let adjustment = game_config.time_adjustment(clock_ms);
                 if adjustment != 0 {
                     println!("Player {} adjustment {}", i + 1, adjustment);
-                    final_scores[i] += adjustment as i32;
+                    final_scores[i] += adjustment as i32 * equity::SCALE;
                     has_time_adjustment = true;
                 }
             }
             if has_time_adjustment {
-                println!("Really final scores: {final_scores:?}");
+                for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
+                    *d = f / equity::SCALE;
+                }
+                println!("Really final scores: {display_scores:?}");
             }
 
-            let fs0 = final_scores[0];
-            let fs1 = final_scores[1];
-            let spr = fs0 - fs1;
-            let p0dw = spr.signum() + 1; // double win (2 = win, 1 = draw/tie, 0 = loss)
-            score_stats_0.update(fs0.into());
-            score_stats_1.update(fs1.into());
-            spread_stats_0.update(spr.into());
+            let spr = display_scores[0] - display_scores[1];
+            let p0dw = spr.signum() + 1; // double win
+            score_stats_0.update(display_scores[0] as f64);
+            score_stats_1.update(display_scores[1] as f64);
+            spread_stats_0.update(spr as f64);
             win_stats_0.update(p0dw as f64 * 50.0);
             loss_draw_win[p0dw as usize] += 1;
 
             println!(
-                "Stats: {final_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3})",
+                "Stats: {display_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3})",
                 loss_draw_win[0] + loss_draw_win[1] + loss_draw_win[2],
                 loss_draw_win[2],
                 loss_draw_win[0],

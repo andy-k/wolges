@@ -2,8 +2,8 @@
 
 use rand::prelude::*;
 use wolges::{
-    alphabet, bites, build, display, endgame, error, fash, game_config, game_state, klv, kwg,
-    matrix, movegen, play_scorer,
+    alphabet, bites, build, display, endgame, equity, error, fash, game_config, game_state, klv,
+    kwg, matrix, movegen, play_scorer,
 };
 
 // this is reusing most of main_json, but main_json is the most current code.
@@ -173,7 +173,8 @@ impl Question {
             let _ = player_token;
             let _ = cum_token;
             let mut move_score = i32::from_str(score_token)
-                .map_err(|e| fmt_error!(format_args!("invalid score token: {e}")))?;
+                .map_err(|e| fmt_error!(format_args!("invalid score token: {e}")))?
+                * equity::SCALE;
             parse_rack(&mut v, rack_token)
                 .map_err(|e| fmt_error!(format_args!("invalid rack token: {e}")))?;
             game_state.set_current_rack(&v);

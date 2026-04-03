@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bites, bites_str, error};
+use super::{bites, bites_str, equity, error};
 
 use std::str::FromStr;
 
@@ -9,6 +9,7 @@ struct Tile {
     blank_label: bites_str::BitesStr,
     freq: u8,
     score: i8,
+    scaled_score: i16, // score * equity::SCALE, precomputed once
     is_vowel: bool,
     alias_labels: Vec<bites_str::BitesStr>,
     alias_blank_labels: Vec<bites_str::BitesStr>,
@@ -111,6 +112,7 @@ impl Alphabet {
                 label,
                 blank_label,
                 freq,
+                scaled_score: score as i16 * equity::SCALE as i16,
                 score,
                 is_vowel,
                 alias_labels,
@@ -179,6 +181,12 @@ impl Alphabet {
         self.get(idx & !((idx as i8) >> 7) as u8).score
     }
 
+    /// Score premultiplied by equity::SCALE (millipoints). Precomputed at construction.
+    #[inline(always)]
+    pub fn scaled_score(&self, idx: u8) -> i32 {
+        self.get(idx & !((idx as i8) >> 7) as u8).scaled_score as i32
+    }
+
     #[inline(always)]
     pub fn is_vowel(&self, idx: u8) -> bool {
         self.get(idx & 0x7f).is_vowel
@@ -231,6 +239,10 @@ impl Alphabet {
 
     pub fn rack_score(&self, rack: &[u8]) -> i32 {
         rack.iter().map(|&t| self.score(t) as i32).sum::<i32>()
+    }
+
+    pub fn scaled_rack_score(&self, rack: &[u8]) -> i32 {
+        rack.iter().map(|&t| self.scaled_score(t)).sum::<i32>()
     }
 }
 
