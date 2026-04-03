@@ -447,10 +447,8 @@ fn do_it<N: kwg::Node>(
             timers.set_turn(-1);
 
             display::print_game_state(game_config, &game_state, Some(&timers));
-            let display_scores: Vec<f64> = final_scores
-                .iter()
-                .map(|&s| s as f64 / equity::SCALE as f64)
-                .collect();
+            let display_scores: Vec<i32> =
+                final_scores.iter().map(|&s| s / equity::SCALE).collect();
             println!("Final scores: {display_scores:?}");
             let mut has_time_adjustment = false;
             for (i, &clock_ms) in timers.clocks_ms.iter().enumerate() {
@@ -462,30 +460,18 @@ fn do_it<N: kwg::Node>(
                 }
             }
             if has_time_adjustment {
-                let display_scores: Vec<f64> = final_scores
-                    .iter()
-                    .map(|&s| s as f64 / equity::SCALE as f64)
-                    .collect();
+                let display_scores: Vec<i32> =
+                    final_scores.iter().map(|&s| s / equity::SCALE).collect();
                 println!("Really final scores: {display_scores:?}");
             }
 
-            let display_scores: Vec<f64> = final_scores
-                .iter()
-                .map(|&s| s as f64 / equity::SCALE as f64)
-                .collect();
-            let fs0 = display_scores[0];
-            let fs1 = display_scores[1];
-            let spr = fs0 - fs1;
-            let p0dw = if spr > 0.0 {
-                2
-            } else if spr < 0.0 {
-                0
-            } else {
-                1
-            }; // double win
-            score_stats_0.update(fs0);
-            score_stats_1.update(fs1);
-            spread_stats_0.update(spr);
+            let display_scores: Vec<i32> =
+                final_scores.iter().map(|&s| s / equity::SCALE).collect();
+            let spr = display_scores[0] - display_scores[1];
+            let p0dw = spr.signum() + 1; // double win
+            score_stats_0.update(display_scores[0] as f64);
+            score_stats_1.update(display_scores[1] as f64);
+            spread_stats_0.update(spr as f64);
             win_stats_0.update(p0dw as f64 * 50.0);
             loss_draw_win[p0dw as usize] += 1;
 
