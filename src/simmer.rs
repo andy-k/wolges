@@ -206,7 +206,7 @@ impl Simmer {
     }
 
     #[inline(always)]
-    pub fn final_equity_spread(&self) -> f32 {
+    pub fn final_equity_spread(&self) -> i32 {
         let mut best_opponent_equity = i32::MIN;
         for (i, player) in (0..).zip(self.game_state.players.iter()) {
             if i != self.initial_game_state.turn {
@@ -221,18 +221,16 @@ impl Simmer {
         if best_opponent_equity != i32::MIN {
             this_equity -= best_opponent_equity;
         }
-        this_equity as f32
+        this_equity
     }
 
     #[inline(always)]
-    pub fn compute_win_prob(&self, game_ended: bool, final_spread: f32) -> f64 {
+    pub fn compute_win_prob(&self, game_ended: bool, final_spread: i32) -> f64 {
         if game_ended {
-            if final_spread > 0.0 {
-                1.0
-            } else if final_spread < 0.0 {
-                0.0
-            } else {
-                0.5
+            match final_spread.signum() {
+                1 => 1.0,
+                -1 => 0.0,
+                _ => 0.5,
             }
         } else {
             // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)

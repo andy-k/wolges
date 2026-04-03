@@ -314,7 +314,7 @@ fn main() -> error::Returns<()> {
             );
             let final_spread = simmer.simmer.final_equity_spread();
             let win_prob = simmer.simmer.compute_win_prob(game_ended, final_spread);
-            let sim_spread = final_spread - simmer.simmer.initial_score_spread as f32;
+            let sim_spread = final_spread - simmer.simmer.initial_score_spread;
             candidate
                 .stats
                 .update(sim_spread as f64 + win_prob * simmer.simmer.win_prob_weightage());
