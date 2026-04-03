@@ -443,7 +443,7 @@ impl PlayScorer {
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         game_state: &game_state::GameState,
         play: &movegen::Play,
-        leave_scale: f32,
+        leave_scale: i32,
         recounted_score: i32,
     ) -> i32 {
         let game_config = board_snapshot.game_config;
@@ -493,7 +493,8 @@ impl PlayScorer {
             }
         } else {
             let leave_value = board_snapshot.klv.leave_value_from_tally(&self.rack_tally);
-            recounted_equity += (leave_value as f32 * leave_scale).round() as i32;
+            recounted_equity += (leave_value as i64 * leave_scale as i64
+                / move_filter::LEAVE_SCALE_DENOM as i64) as i32;
             if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
                 match play {
                     movegen::Play::Exchange { .. } => {}

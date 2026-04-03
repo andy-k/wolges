@@ -237,7 +237,8 @@ fn do_it<N: kwg::Node>(
                     tilt.tilt_by_rng(&mut rng, *bot_level);
                     println!(
                         "Effective tilt: tilt factor = {}, leave scale = {}",
-                        tilt.tilt_factor, tilt.leave_scale
+                        tilt.tilt_factor,
+                        tilt.leave_scale as f64 / move_filter::LEAVE_SCALE_DENOM as f64
                     );
                 }
 
@@ -329,7 +330,7 @@ fn do_it<N: kwg::Node>(
                         if let move_filter::GenMoves::Tilt { tilt, .. } = filtered_movegen {
                             tilt.leave_scale
                         } else {
-                            1.0
+                            move_filter::LEAVE_SCALE_DENOM
                         };
                     move_generator.gen_moves_filtered(
                         &movegen::GenMovesParams {
@@ -340,7 +341,11 @@ fn do_it<N: kwg::Node>(
                             always_include_pass: true,
                         },
                         |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
-                        |leave_value: i32| (leave_value as f32 * leave_scale).round() as i32,
+                        |leave_value: i32| {
+                            (leave_value as i64 * leave_scale as i64
+                                / move_filter::LEAVE_SCALE_DENOM as i64)
+                                as i32
+                        },
                         |_equity: equity::Equity, _play: &movegen::Play| true,
                     );
                     let plays = &mut move_generator.plays;

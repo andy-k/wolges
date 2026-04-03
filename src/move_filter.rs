@@ -97,9 +97,11 @@ pub struct Tilt<'a> {
     max_prob_by_len: Box<[u64]>,
     length_importances: &'a [f32],
     pub tilt_factor: f32,
-    pub leave_scale: f32,
+    pub leave_scale: i32, // 0..=LEAVE_SCALE_DENOM
     limited_vocab_checker: LimitedVocabChecker,
 }
+
+pub const LEAVE_SCALE_DENOM: i32 = 1024;
 
 impl<'a> Tilt<'a> {
     pub fn length_importances() -> &'a [f32] {
@@ -119,7 +121,7 @@ impl<'a> Tilt<'a> {
             max_prob_by_len: max_prob_by_len.into_boxed_slice(),
             length_importances,
             tilt_factor: 0.0,
-            leave_scale: 1.0,
+            leave_scale: LEAVE_SCALE_DENOM,
             limited_vocab_checker: LimitedVocabChecker::new(),
         }
     }
@@ -129,7 +131,9 @@ impl<'a> Tilt<'a> {
         // 0.0 = untilted (can see all valid moves)
         // 1.0 = tilted (can see no valid moves)
         self.tilt_factor = new_tilt_factor.clamp(0.0, 1.0);
-        self.leave_scale = (bot_level as f32 * 0.1 + (1.0 - self.tilt_factor)).clamp(0.0, 1.0);
+        self.leave_scale = ((bot_level as f32 * 0.1 + (1.0 - self.tilt_factor)).clamp(0.0, 1.0)
+            * LEAVE_SCALE_DENOM as f32)
+            .round() as i32;
     }
 
     #[inline(always)]
@@ -213,7 +217,9 @@ impl GenMoves<'_> {
                             |word: &[u8]| tilt.word_is_ok(word),
                         )
                     },
-                    |leave_value: i32| (leave_value as f32 * leave_scale).round() as i32,
+                    |leave_value: i32| {
+                        (leave_value as i64 * leave_scale as i64 / LEAVE_SCALE_DENOM as i64) as i32
+                    },
                     |_equity: equity::Equity, _play: &movegen::Play| true,
                 );
                 tilt.limited_vocab_checker = limited_vocab_checker;
