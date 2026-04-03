@@ -15,10 +15,10 @@ jobs:
     runs-on: "${{ matrix.os }}"
     steps:
     - uses: actions/checkout@v4
-    - name: Version
+    - name: System Rust version
       run: cargo version
     - uses: dtolnay/rust-toolchain@stable
-    - name: Version
+    - name: Stable Rust version
       run: cargo version
     - name: Clippy
       run: cargo clippy --release --verbose
