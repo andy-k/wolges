@@ -1659,7 +1659,9 @@ fn gen_classic_place_moves<
                         + perpendicular_score
                         + tile_value * perpendicular_word_multiplier as i32,
                     word_multiplier: new_word_multiplier,
-                    leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                    leave_idx: acc
+                        .leave_idx
+                        .wrapping_sub(env.params.multi_leaves.place_value(0)),
                 }
             });
             loop {
@@ -1678,8 +1680,9 @@ fn gen_classic_place_moves<
                                     + perpendicular_score
                                     + tile_value * perpendicular_word_multiplier as i32,
                                 word_multiplier: new_word_multiplier,
-                                leave_idx: acc.leave_idx
-                                    - env.params.multi_leaves.place_value(tile),
+                                leave_idx: acc
+                                    .leave_idx
+                                    .wrapping_sub(env.params.multi_leaves.place_value(tile)),
                             },
                             p,
                             idx + 1,
@@ -1804,7 +1807,9 @@ fn gen_classic_place_moves<
                         + perpendicular_score
                         + tile_value * perpendicular_word_multiplier as i32,
                     word_multiplier: new_word_multiplier,
-                    leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                    leave_idx: acc
+                        .leave_idx
+                        .wrapping_sub(env.params.multi_leaves.place_value(0)),
                 }
             });
             loop {
@@ -1823,8 +1828,9 @@ fn gen_classic_place_moves<
                                     + perpendicular_score
                                     + tile_value * perpendicular_word_multiplier as i32,
                                 word_multiplier: new_word_multiplier,
-                                leave_idx: acc.leave_idx
-                                    - env.params.multi_leaves.place_value(tile),
+                                leave_idx: acc
+                                    .leave_idx
+                                    .wrapping_sub(env.params.multi_leaves.place_value(tile)),
                             },
                             p,
                             idx - 1,
@@ -2020,7 +2026,9 @@ fn gen_jumbled_place_moves<
                             + perpendicular_score
                             + tile_value * perpendicular_word_multiplier as i32,
                         word_multiplier: new_word_multiplier,
-                        leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                        leave_idx: acc
+                            .leave_idx
+                            .wrapping_sub(env.params.multi_leaves.place_value(0)),
                     }
                 });
                 for tile in 1..env.alphabet.len() {
@@ -2122,7 +2130,9 @@ fn gen_jumbled_place_moves<
                                 + perpendicular_score
                                 + tile_value * perpendicular_word_multiplier as i32,
                             word_multiplier: new_word_multiplier,
-                            leave_idx: acc.leave_idx - env.params.multi_leaves.place_value(0),
+                            leave_idx: acc
+                                .leave_idx
+                                .wrapping_sub(env.params.multi_leaves.place_value(0)),
                         }
                     });
                     for tile in 1..env.alphabet.len() {
