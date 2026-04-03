@@ -338,7 +338,7 @@ fn do_it<N: kwg::Node>(
                             always_include_pass: true,
                         },
                         |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
-                        |leave_value: f32| leave_scale * leave_value,
+                        |leave_value: i32| (leave_value as f32 * leave_scale).round() as i32,
                         |_equity: equity::Equity, _play: &movegen::Play| true,
                     );
                     let plays = &mut move_generator.plays;

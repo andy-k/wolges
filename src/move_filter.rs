@@ -213,7 +213,7 @@ impl GenMoves<'_> {
                             |word: &[u8]| tilt.word_is_ok(word),
                         )
                     },
-                    |leave_value: f32| leave_scale * leave_value,
+                    |leave_value: i32| (leave_value as f32 * leave_scale).round() as i32,
                     |_equity: equity::Equity, _play: &movegen::Play| true,
                 );
                 tilt.limited_vocab_checker = limited_vocab_checker;

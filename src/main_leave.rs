@@ -1978,7 +1978,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                      _idx: i8,
                                      _word: &[u8],
                                      _score: i32| true,
-                                    |leave_value: f32| leave_value,
+                                    |leave_value: i32| leave_value,
                                     |equity: equity::Equity, play: &movegen::Play| {
                                         match equity.cmp(&best_equity_so_far) {
                                             std::cmp::Ordering::Greater => {

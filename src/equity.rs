@@ -30,13 +30,6 @@ impl Equity {
         Self((v * SCALE as f32).round() as i32)
     }
 
-    /// Construct from millipoint score + f32 leave value.
-    /// Score must already be in millipoints (premultiplied by SCALE).
-    #[inline(always)]
-    pub fn from_millipoint_score_and_leave(score: i32, leave_value: f32) -> Self {
-        Self(score + (leave_value * SCALE as f32).round() as i32)
-    }
-
     /// The raw scaled i32 value (1 unit = 0.001 equity points).
     #[inline(always)]
     pub fn raw(self) -> i32 {

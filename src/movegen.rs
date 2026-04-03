@@ -30,7 +30,7 @@ struct PossiblePlacement {
     anchor: i8,
     leftmost: i8,
     rightmost: i8,
-    best_possible_equity: f32,
+    best_possible_equity: i32,
 }
 
 #[derive(Clone)]
@@ -76,7 +76,7 @@ struct WorkingBuffer {
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
     num_tiles_in_bag: i16, // negative when players also have less than full racks
-    play_out_bonus: f32,
+    play_out_bonus: i32,
     num_tiles_on_rack: u8,
     rack_bits: u64, // bit 0 = blank conveniently matches bit 0 = have cross set
     multi_leaves: klv::MultiLeaves,
@@ -86,7 +86,7 @@ struct WorkingBuffer {
     precomputed_square_multiplier_buffer: Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
     multi_jumps_buffer: Box<[MultiJump]>, // max(r, c)
-    best_leave_values: Vec<f32>,          // rack.len() + 1
+    best_leave_values: Vec<i32>,          // rack.len() + 1
     found_placements: Vec<PossiblePlacement>,
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
     accepts_alpha_cache: Option<Box<[AlphaCacheEntry]>>, // jumbled mode only
@@ -322,7 +322,7 @@ impl WorkingBuffer {
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
             num_tiles_in_bag: 0,
-            play_out_bonus: 0.0,
+            play_out_bonus: 0,
             num_tiles_on_rack: 0,
             rack_bits: 0,
             multi_leaves: klv::MultiLeaves::new(),
@@ -352,7 +352,7 @@ impl WorkingBuffer {
         }
     }
 
-    fn init<AdjustLeaveValue: Fn(f32) -> f32, N: kwg::Node, L: kwg::Node>(
+    fn init<AdjustLeaveValue: Fn(i32) -> i32, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
         rack: &[u8],
@@ -429,7 +429,7 @@ impl WorkingBuffer {
                 + board_snapshot.game_config.num_players() as i16
                     * board_snapshot.game_config.rack_size() as i16);
         let play_out_bonus = if self.num_tiles_in_bag <= 0 {
-            (2 * ((0u8..)
+            2 * ((0u8..)
                 .zip(self.rack_tally.iter())
                 .map(|(tile, &num)| {
                     (alphabet.freq(tile) as i32 - num as i32) * alphabet.score(tile) as i32
@@ -439,9 +439,10 @@ impl WorkingBuffer {
                     .board_tiles
                     .iter()
                     .map(|&t| if t != 0 { alphabet.score(t) as i32 } else { 0 })
-                    .sum::<i32>())) as f32
+                    .sum::<i32>())
+                * equity::SCALE
         } else {
-            0.0
+            0
         };
         self.play_out_bonus = play_out_bonus;
 
@@ -473,15 +474,13 @@ impl WorkingBuffer {
             // the multi_leaves is correct but doing this directly is faster.
             self.best_leave_values.clear();
             self.best_leave_values
-                .resize(self.num_tiles_on_rack as usize + 1, f32::NEG_INFINITY);
+                .resize(self.num_tiles_on_rack as usize + 1, i32::MIN);
             let mut unplayed = 0i32;
             for i in (0..self.num_tiles_on_rack).rev() {
                 unplayed += self.descending_scores[i as usize];
-                self.best_leave_values[i as usize] =
-                    (-equity::ENDGAME_PENALTY_BASE - 2 * unplayed) as f32;
+                self.best_leave_values[i as usize] = -equity::ENDGAME_PENALTY_BASE - 2 * unplayed;
             }
-            self.best_leave_values[self.num_tiles_on_rack as usize] =
-                play_out_bonus * equity::SCALE as f32;
+            self.best_leave_values[self.num_tiles_on_rack as usize] = play_out_bonus;
         } else {
             self.multi_leaves.init(
                 &self.rack_tally,
@@ -501,14 +500,11 @@ impl WorkingBuffer {
                     &mut self.best_leave_values,
                 );
             }
-            // Scale raw leave values to millipoints.
-            self.best_leave_values
-                .iter_mut()
-                .for_each(|v| *v *= equity::SCALE as f32);
+            // Leave values are already i32 millipoints from MultiLeaves.
         }
         for i in 0..=self.num_tiles_on_rack {
             self.best_leave_values[i as usize] +=
-                board_snapshot.game_config.num_played_bonus(i) as f32 * equity::SCALE as f32;
+                board_snapshot.game_config.num_played_bonus(i) as i32 * equity::SCALE;
         }
         self.used_letters_tally.clear();
         match board_snapshot.game_config.game_rules() {
@@ -1007,13 +1003,13 @@ struct GenPlacePlacementsParams<'a> {
     precomputed_square_multiplier_buffer: &'a mut Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
     multi_jumps_buffer: &'a mut [MultiJump],
-    best_leave_values: &'a [f32],
+    best_leave_values: &'a [i32],
     num_max_played: u8,
     rack_tally_shadowl: &'a mut [u8],
     rack_tally_shadowr: &'a mut [u8],
 }
 
-fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
+fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32)>(
     params: &'a mut GenPlacePlacementsParams<'a>,
     single_tile_plays: bool,
     want_raw: bool,
@@ -1120,7 +1116,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         anchor: i8,
         leftmost: i8,
         rightmost: i8,
-        best_possible_equity: f32,
+        best_possible_equity: i32,
     }
 
     let mut env = Env {
@@ -1129,7 +1125,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         anchor: 0,
         leftmost: 0,
         rightmost: 0,
-        best_possible_equity: f32::NEG_INFINITY,
+        best_possible_equity: i32::MIN,
     };
 
     // during shadow-playing, main_score and perpendicular_cumulative_score
@@ -1192,9 +1188,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 }
             }
         }
-        let equity = (acc.main_score * acc.word_multiplier
+        let equity = acc.main_score * acc.word_multiplier
             + acc.perpendicular_cumulative_score
-            + best_scoring) as f32
+            + best_scoring
             + env.params.best_leave_values[num_played as usize];
         if equity > env.best_possible_equity {
             env.best_possible_equity = equity;
@@ -1408,7 +1404,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     #[inline(always)]
-    fn gen_places_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, f32)>(
+    fn gen_places_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32)>(
         env: &mut Env<'_>,
         single_tile_plays: bool,
         want_raw: bool,
@@ -1419,14 +1415,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         {
             // Dead anchor: no tile can extend in either direction.
         } else if want_raw {
-            possible_strip_placement_callback(
-                env.anchor,
-                env.leftmost,
-                env.rightmost,
-                f32::INFINITY,
-            );
+            possible_strip_placement_callback(env.anchor, env.leftmost, env.rightmost, i32::MAX);
         } else {
-            env.best_possible_equity = f32::NEG_INFINITY;
+            env.best_possible_equity = i32::MIN;
             shadow_play_left(
                 env,
                 Accumulator {
@@ -1437,7 +1428,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 env.anchor,
                 single_tile_plays,
             );
-            if env.best_possible_equity.is_finite() {
+            if env.best_possible_equity != i32::MIN {
                 possible_strip_placement_callback(
                     env.anchor,
                     env.leftmost,
@@ -1504,7 +1495,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 }
 
-struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>
+struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>
 {
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
@@ -1526,21 +1517,21 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg:
     callback: CallbackType,
     multi_leaves: &'a klv::MultiLeaves,
     num_tiles_in_bag: i16,
-    play_out_bonus: f32,
+    play_out_bonus: i32,
     used_letters_tally: &'a mut [u8], // jumbled mode only
     accepts_alpha_cache: &'a mut [AlphaCacheEntry], // jumbled mode only
 }
 
 fn gen_classic_place_moves<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, f32),
+    CallbackType: FnMut(i8, &[u8], i32, i32),
     N: kwg::Node,
     L: kwg::Node,
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
@@ -1553,7 +1544,7 @@ fn gen_classic_place_moves<
         leave_idx: u32,
     }
 
-    fn record<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+    fn record<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
         idx_left: i8,
@@ -1581,13 +1572,15 @@ fn gen_classic_place_moves<
                             * env.params.board_snapshot.game_config.alphabet().score(tile) as i32
                     })
                     .sum();
-                (-10 - 2 * residual) as f32
+                -equity::ENDGAME_PENALTY_BASE - 2 * residual * equity::SCALE
             }
         } else {
-            env.params
+            (env.params
                 .board_snapshot
                 .klv
                 .leave_value_from_tally(env.params.rack_tally)
+                * equity::SCALE as f32)
+                .round() as i32
         };
         (env.params.callback)(
             idx_left,
@@ -1597,7 +1590,7 @@ fn gen_classic_place_moves<
         );
     }
 
-    fn play_right<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+    fn play_right<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut p: i32,
@@ -1721,7 +1714,7 @@ fn gen_classic_place_moves<
         }
     }
 
-    fn play_left<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+    fn play_left<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut p: i32,
@@ -1895,14 +1888,14 @@ fn gen_classic_place_moves<
 
 fn gen_jumbled_place_moves<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, f32),
+    CallbackType: FnMut(i8, &[u8], i32, i32),
     N: kwg::Node,
     L: kwg::Node,
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
@@ -1917,7 +1910,7 @@ fn gen_jumbled_place_moves<
 
     #[inline(always)]
     fn accepts_alpha_cached<
-        CallbackType: FnMut(i8, &[u8], i32, f32),
+        CallbackType: FnMut(i8, &[u8], i32, i32),
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -1940,7 +1933,7 @@ fn gen_jumbled_place_moves<
         result
     }
 
-    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
         idx_left: i8,
@@ -1970,13 +1963,15 @@ fn gen_jumbled_place_moves<
                                     as i32
                         })
                         .sum();
-                    (-10 - 2 * residual) as f32
+                    -equity::ENDGAME_PENALTY_BASE - 2 * residual * equity::SCALE
                 }
             } else {
-                env.params
+                (env.params
                     .board_snapshot
                     .klv
                     .leave_value_from_tally(env.params.rack_tally)
+                    * equity::SCALE as f32)
+                    .round() as i32
             };
             (env.params.callback)(
                 idx_left,
@@ -1987,7 +1982,7 @@ fn gen_jumbled_place_moves<
         }
     }
 
-    fn play_right<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+    fn play_right<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut idx: i8,
@@ -2089,7 +2084,7 @@ fn gen_jumbled_place_moves<
         }
     }
 
-    fn play_left<CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+    fn play_left<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut idx: i8,
@@ -2223,7 +2218,7 @@ fn gen_jumbled_place_moves<
 }
 
 #[inline(always)]
-fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L: kwg::Node>(
+fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
@@ -2235,7 +2230,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, f32), N: kwg::Node, L
 
 fn gen_place_moves_at<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, f32),
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32),
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -2335,7 +2330,7 @@ fn gen_place_moves_at<
             anchor: placement.anchor,
             leftmost: placement.leftmost,
             rightmost: placement.rightmost,
-            callback: |idx: i8, word: &[u8], score: i32, leave_value: f32| {
+            callback: |idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 found_place_move(
                     placement.down,
                     placement.lane,
@@ -2621,7 +2616,7 @@ impl KurniaMoveGenerator {
         let mut vec_moves = std::mem::take(&mut self.plays);
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, rack, &|leave_value: f32| leave_value);
+        working_buffer.init(board_snapshot, rack, &|leave_value: i32| leave_value);
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
 
         for _ in kurnia_gen_place_moves_iter(
@@ -2629,7 +2624,7 @@ impl KurniaMoveGenerator {
             board_snapshot,
             working_buffer,
             &multi_leaves,
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: f32| {
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: i32| {
                 vec_moves.push(ValuedMove {
                     equity: equity::Equity::ZERO,
                     play: Play::Place {
@@ -2641,14 +2636,14 @@ impl KurniaMoveGenerator {
                     },
                 });
             },
-            |_best_possible_equity: f32| true,
+            |_best_possible_equity: i32| true,
         ) {}
         kurnia_gen_exchange_moves(
             board_snapshot,
             working_buffer,
             &multi_leaves,
             num_exchanges_by_this_player,
-            |exchanged_tiles: &[u8], _leave_value: f32| {
+            |exchanged_tiles: &[u8], _leave_value: i32| {
                 vec_moves.push(ValuedMove {
                     equity: equity::Equity::ZERO,
                     play: Play::Exchange {
@@ -2674,7 +2669,7 @@ impl KurniaMoveGenerator {
     pub async fn gen_moves_filtered_async<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
-        AdjustLeaveValue: Fn(f32) -> f32,
+        AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
@@ -2735,7 +2730,7 @@ impl KurniaMoveGenerator {
             params.board_snapshot,
             working_buffer,
             &multi_leaves,
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: f32| {
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 if place_move_predicate(down, lane, idx, word, score) {
                     let other_adjustments = if num_tiles_on_board == 0 {
                         (idx..)
@@ -2749,15 +2744,12 @@ impl KurniaMoveGenerator {
                                         board_layout.danger_star_across(*i)
                                     }
                             })
-                            .count() as f32
-                            * -0.7
+                            .count() as i32
+                            * -equity::OPENING_HOTSPOT_PENALTY
                     } else {
-                        0.0
+                        0
                     };
-                    let equity = equity::Equity::from_millipoint_score_and_leave(
-                        score,
-                        leave_value + other_adjustments,
-                    );
+                    let equity = equity::Equity::new(score + leave_value + other_adjustments);
                     push_move(
                         &mut found_moves,
                         &mut equity_predicate,
@@ -2774,9 +2766,7 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: f32| {
-                threshold.get() < equity::Equity::new(best_possible_equity as i32)
-            },
+            |best_possible_equity: i32| threshold.get() < equity::Equity::new(best_possible_equity),
         ) {
             breathe().await;
         }
@@ -2785,13 +2775,13 @@ impl KurniaMoveGenerator {
             working_buffer,
             &multi_leaves,
             params.num_exchanges_by_this_player,
-            |exchanged_tiles: &[u8], leave_value: f32| {
+            |exchanged_tiles: &[u8], leave_value: i32| {
                 push_move(
                     &mut found_moves,
                     &mut equity_predicate,
                     &threshold,
                     max_gen,
-                    equity::Equity::from_f32(leave_value),
+                    equity::Equity::new(leave_value),
                     || Play::Exchange {
                         tiles: exchanged_tiles.into(),
                     },
@@ -2804,13 +2794,15 @@ impl KurniaMoveGenerator {
                 &mut equity_predicate,
                 &threshold,
                 max_gen,
-                equity::Equity::from_f32(if multi_leaves.is_dense() {
+                equity::Equity::new(if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
-                    params
+                    (params
                         .board_snapshot
                         .klv
                         .leave_value_from_tally(&working_buffer.rack_tally)
+                        * equity::SCALE as f32)
+                        .round() as i32
                 }),
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
@@ -2826,7 +2818,7 @@ impl KurniaMoveGenerator {
     pub fn gen_moves_filtered<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
-        AdjustLeaveValue: Fn(f32) -> f32,
+        AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
@@ -2885,7 +2877,7 @@ impl KurniaMoveGenerator {
             params.board_snapshot,
             working_buffer,
             &multi_leaves,
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: f32| {
+            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 if place_move_predicate(down, lane, idx, word, score) {
                     let other_adjustments = if num_tiles_on_board == 0 {
                         (idx..)
@@ -2899,15 +2891,12 @@ impl KurniaMoveGenerator {
                                         board_layout.danger_star_across(*i)
                                     }
                             })
-                            .count() as f32
-                            * -0.7
+                            .count() as i32
+                            * -equity::OPENING_HOTSPOT_PENALTY
                     } else {
-                        0.0
+                        0
                     };
-                    let equity = equity::Equity::from_millipoint_score_and_leave(
-                        score,
-                        leave_value + other_adjustments,
-                    );
+                    let equity = equity::Equity::new(score + leave_value + other_adjustments);
                     push_move(
                         &mut found_moves,
                         &mut equity_predicate,
@@ -2924,22 +2913,20 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: f32| {
-                threshold.get() < equity::Equity::new(best_possible_equity as i32)
-            },
+            |best_possible_equity: i32| threshold.get() < equity::Equity::new(best_possible_equity),
         ) {}
         kurnia_gen_exchange_moves(
             params.board_snapshot,
             working_buffer,
             &multi_leaves,
             params.num_exchanges_by_this_player,
-            |exchanged_tiles: &[u8], leave_value: f32| {
+            |exchanged_tiles: &[u8], leave_value: i32| {
                 push_move(
                     &mut found_moves,
                     &mut equity_predicate,
                     &threshold,
                     max_gen,
-                    equity::Equity::from_f32(leave_value),
+                    equity::Equity::new(leave_value),
                     || Play::Exchange {
                         tiles: exchanged_tiles.into(),
                     },
@@ -2952,13 +2939,15 @@ impl KurniaMoveGenerator {
                 &mut equity_predicate,
                 &threshold,
                 max_gen,
-                equity::Equity::from_f32(if multi_leaves.is_dense() {
+                equity::Equity::new(if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
-                    params
+                    (params
                         .board_snapshot
                         .klv
                         .leave_value_from_tally(&working_buffer.rack_tally)
+                        * equity::SCALE as f32)
+                        .round() as i32
                 }),
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
@@ -2979,7 +2968,7 @@ impl KurniaMoveGenerator {
         self.gen_moves_filtered(
             params,
             |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
-            |leave_value: f32| leave_value,
+            |leave_value: i32| leave_value,
             |_equity: equity::Equity, _play: &Play| true,
         );
     }
@@ -2992,14 +2981,14 @@ impl KurniaMoveGenerator {
         found_word: FoundWord,
     ) {
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, &[], &|leave_value: f32| leave_value);
+        working_buffer.init(board_snapshot, &[], &|leave_value: i32| leave_value);
         gen_remaining_words(board_snapshot, working_buffer, found_word)
     }
 }
 
 fn kurnia_gen_exchange_moves<
     'a,
-    FoundExchangeMove: FnMut(&[u8], f32),
+    FoundExchangeMove: FnMut(&[u8], i32),
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -3033,8 +3022,8 @@ fn kurnia_gen_exchange_moves<
 
 fn kurnia_gen_place_moves_iter<
     'a,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, f32),
-    CanAccept: 'a + Fn(f32) -> bool,
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
+    CanAccept: 'a + Fn(i32) -> bool,
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -3228,7 +3217,7 @@ fn kurnia_gen_place_moves_iter<
             },
             true,
             want_raw,
-            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: f32| {
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32| {
                 found_placements.push(PossiblePlacement {
                     down: false,
                     lane: row,
@@ -3283,7 +3272,7 @@ fn kurnia_gen_place_moves_iter<
             },
             false,
             want_raw,
-            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: f32| {
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32| {
                 found_placements.push(PossiblePlacement {
                     down: true,
                     lane: col,
@@ -3298,7 +3287,7 @@ fn kurnia_gen_place_moves_iter<
     if !want_raw {
         // this will be iterated in reverse order, so sort by best_possible_equity increasing.
         found_placements
-            .sort_unstable_by(|a, b| a.best_possible_equity.total_cmp(&b.best_possible_equity));
+            .sort_unstable_by(|a, b| a.best_possible_equity.cmp(&b.best_possible_equity));
     }
     working_buffer.found_placements = found_placements;
     std::iter::from_fn(move || match working_buffer.found_placements.pop() {
@@ -3315,8 +3304,8 @@ fn kurnia_gen_place_moves_iter<
                           idx: i8,
                           word: &[u8],
                           score: i32,
-                          leave_value: f32| {
-                        let this_best = score as f32 + leave_value * equity::SCALE as f32;
+                          leave_value: i32| {
+                        let this_best = score + leave_value;
                         debug_assert!(
                             this_best <= placement.best_possible_equity,
                             "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",

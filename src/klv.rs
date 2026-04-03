@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::kwg;
+use super::{equity, kwg};
 
 pub struct Klv<L: kwg::Node> {
     kwg: kwg::Kwg<L>,
@@ -93,7 +93,7 @@ struct MultiLeavesDigit {
 pub struct MultiLeaves {
     unique_tiles: Vec<u8>, // sorted, unique, len() == rack_bits.count_ones()
     digits: Vec<MultiLeavesDigit>, // len() == rack_tally.len() == alphabet.len()
-    leave_values: Vec<f32>, // typically 2**7, can be shorter when duplicates
+    leave_values: Vec<i32>, // typically 2**7, can be shorter when duplicates
     num_playeds: Vec<u8>,  // same length as leave_values
 }
 
@@ -127,8 +127,8 @@ impl MultiLeaves {
         }
     }
 
-    // use_klv=false means to just use 0.0 for all leaves, this may be slightly faster.
-    pub fn init<AdjustLeaveValue: Fn(f32) -> f32, L: kwg::Node>(
+    // use_klv=false means to just use 0 for all leaves, this may be slightly faster.
+    pub fn init<AdjustLeaveValue: Fn(i32) -> i32, L: kwg::Node>(
         &mut self,
         rack_tally: &[u8],
         klv: &Klv<L>,
@@ -167,14 +167,14 @@ impl MultiLeaves {
         self.leave_values.clear();
         self.num_playeds.clear();
         if dense {
-            self.leave_values.resize(place_value as usize, 0.0);
+            self.leave_values.resize(place_value as usize, 0);
             self.num_playeds.resize(place_value as usize, 0xff);
             self.num_playeds[0] = num_tiles_on_rack;
             struct Env<'a, L: kwg::Node> {
                 klv: &'a Klv<L>,
                 unique_tiles: &'a [u8],
                 digits: &'a mut [MultiLeavesDigit],
-                leave_values: &'a mut [f32],
+                leave_values: &'a mut [i32],
                 num_playeds: &'a mut [u8],
             }
             fn precompute_leaves<L: kwg::Node>(
@@ -211,9 +211,9 @@ impl MultiLeaves {
                             idx -= env.klv.count(p);
                             let node = env.klv.kwg(p);
                             let leave_val = if node.tile() == tile && node.accepts() {
-                                env.klv.leave(idx)
+                                (env.klv.leave(idx) * equity::SCALE as f32).round() as i32
                             } else {
-                                0.0
+                                0
                             };
                             env.leave_values[leave_idx as usize] = leave_val;
                             precompute_leaves(
@@ -225,7 +225,7 @@ impl MultiLeaves {
                                 num_played,
                             );
                         } else {
-                            env.leave_values[leave_idx as usize] = 0.0;
+                            env.leave_values[leave_idx as usize] = 0;
                             precompute_leaves(
                                 env,
                                 p,
@@ -255,7 +255,7 @@ impl MultiLeaves {
             );
 
             if use_klv {
-                // note: adjust_leave_value(f) must return between 0.0 and f
+                // note: adjust_leave_value(v) must return between 0 and v
                 self.leave_values
                     .iter_mut()
                     .for_each(|m| *m = adjust_leave_value(*m));
@@ -266,39 +266,39 @@ impl MultiLeaves {
     pub fn init_endgame_leaves<AlphabetScore: Fn(u8) -> i8>(
         &mut self,
         alphabet_score: AlphabetScore,
-        play_out_bonus: f32,
+        play_out_bonus: i32,
     ) {
-        // leave value for not going out is -10 - 2 * residual tiles.
-        self.leave_values[0] = -10.0;
+        // leave value for not going out is -10 - 2 * residual tiles (in millipoints).
+        self.leave_values[0] = -equity::ENDGAME_PENALTY_BASE;
         for &tile in &self.unique_tiles {
-            let penalty = -2.0 * alphabet_score(tile) as f32;
+            let penalty = -2 * alphabet_score(tile) as i32 * equity::SCALE;
             let &MultiLeavesDigit { count, place_value } = &self.digits[tile as usize];
             for i in 0..place_value * count as u32 {
                 self.leave_values[(i + place_value) as usize] =
                     self.leave_values[i as usize] + penalty;
             }
         }
-        // leave value for keeping 0 tiles is play_out_bonus.
+        // leave value for keeping 0 tiles is play_out_bonus (already in millipoints).
         self.leave_values[0] = play_out_bonus;
     }
 
     // Compute best_leave_values by traversing the KLV's KWG, constrained by
     // available tiles. Used when the dense array is too large to build.
     // Traverses KLV entries (bounded by KLV size) rather than rack subsets.
-    pub fn extract_best_leave_values_from_klv<AdjustLeaveValue: Fn(f32) -> f32, L: kwg::Node>(
+    pub fn extract_best_leave_values_from_klv<AdjustLeaveValue: Fn(i32) -> i32, L: kwg::Node>(
         rack_tally: &mut [u8],
         klv: &Klv<L>,
         num_tiles_on_rack: u8,
         adjust_leave_value: &AdjustLeaveValue,
-        best_leave_values: &mut Vec<f32>,
+        best_leave_values: &mut Vec<i32>,
     ) {
         best_leave_values.clear();
-        best_leave_values.resize(num_tiles_on_rack as usize + 1, f32::NEG_INFINITY);
+        best_leave_values.resize(num_tiles_on_rack as usize + 1, i32::MIN);
         struct Env<'a, AdjustLeaveValue, L: kwg::Node> {
             klv: &'a Klv<L>,
             rack_tally: &'a mut [u8],
             kept_tally: &'a mut [u8],
-            best_leave_values: &'a mut [f32],
+            best_leave_values: &'a mut [i32],
             num_tiles_on_rack: u8,
             num_kept: u8,
             adjust_leave_value: &'a AdjustLeaveValue,
@@ -306,7 +306,7 @@ impl MultiLeaves {
         // Traverse the KLV's KWG children. At each node, if the tile is
         // available in rack_tally, consume it and recurse. At accepting nodes,
         // look up the leave value for the kept tiles.
-        fn traverse<AdjustLeaveValue: Fn(f32) -> f32, L: kwg::Node>(
+        fn traverse<AdjustLeaveValue: Fn(i32) -> i32, L: kwg::Node>(
             env: &mut Env<'_, AdjustLeaveValue, L>,
             mut p: i32,
         ) {
@@ -322,7 +322,8 @@ impl MultiLeaves {
                     env.num_kept += 1;
                     if node.accepts() {
                         let leave_val = (env.adjust_leave_value)(
-                            env.klv.leave_value_from_tally(env.kept_tally),
+                            (env.klv.leave_value_from_tally(env.kept_tally) * equity::SCALE as f32)
+                                .round() as i32,
                         );
                         let num_played = (env.num_tiles_on_rack - env.num_kept) as usize;
                         if num_played < env.best_leave_values.len()
@@ -358,16 +359,16 @@ impl MultiLeaves {
         );
         // Leaves not found in KLV have value 0.
         for v in best_leave_values.iter_mut() {
-            if *v == f32::NEG_INFINITY {
-                *v = 0.0;
+            if *v == i32::MIN {
+                *v = 0;
             }
         }
     }
 
     #[inline(always)]
-    pub fn extract_raw_best_leave_values(&self, best_leave_values: &mut Vec<f32>) {
+    pub fn extract_raw_best_leave_values(&self, best_leave_values: &mut Vec<i32>) {
         best_leave_values.clear();
-        best_leave_values.resize(self.num_playeds[0] as usize + 1, f32::NEG_INFINITY);
+        best_leave_values.resize(self.num_playeds[0] as usize + 1, i32::MIN);
         for i in 0..self.leave_values.len() {
             let this_leave_value = self.leave_values[i];
             let num_tiles_exchanged = self.num_playeds[i] as usize;
@@ -378,7 +379,7 @@ impl MultiLeaves {
     }
 
     #[inline(always)]
-    pub fn kurnia_gen_exchange_moves_unconditionally<'a, FoundExchangeMove: FnMut(&[u8], f32)>(
+    pub fn kurnia_gen_exchange_moves_unconditionally<'a, FoundExchangeMove: FnMut(&[u8], i32)>(
         &self,
         found_exchange_move: FoundExchangeMove,
         rack_tally: &'a mut [u8],
@@ -386,14 +387,14 @@ impl MultiLeaves {
         max_vec_len: usize,
     ) {
         exchange_buffer.clear(); // should be no-op
-        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], f32)> {
+        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], i32)> {
             multi_leaves: &'a MultiLeaves,
             found_exchange_move: FoundExchangeMove,
             rack_tally: &'a mut [u8],
             exchange_buffer: &'a mut Vec<u8>,
             max_vec_len: usize,
         }
-        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], f32)>(
+        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], i32)>(
             env: &mut ExchangeEnv<'_, FoundExchangeMove>,
             unique_tile_idx_offset: u8,
             leave_idx: u32,
@@ -444,7 +445,7 @@ impl MultiLeaves {
 
     // Exchange generator that computes leave values on-the-fly via KLV.
     // Used when the dense leave table is not available.
-    pub fn gen_exchange_moves_via_klv<'a, FoundExchangeMove: FnMut(&[u8], f32), L: kwg::Node>(
+    pub fn gen_exchange_moves_via_klv<'a, FoundExchangeMove: FnMut(&[u8], i32), L: kwg::Node>(
         klv: &Klv<L>,
         found_exchange_move: FoundExchangeMove,
         rack_tally: &'a mut [u8],
@@ -452,7 +453,7 @@ impl MultiLeaves {
         max_vec_len: usize,
     ) {
         exchange_buffer.clear();
-        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], f32), L: kwg::Node> {
+        struct ExchangeEnv<'a, FoundExchangeMove: FnMut(&[u8], i32), L: kwg::Node> {
             rack_tally_len: u8,
             klv: &'a Klv<L>,
             found_exchange_move: FoundExchangeMove,
@@ -460,12 +461,14 @@ impl MultiLeaves {
             exchange_buffer: &'a mut Vec<u8>,
             max_vec_len: usize,
         }
-        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], f32), L: kwg::Node>(
+        fn generate_exchanges<FoundExchangeMove: FnMut(&[u8], i32), L: kwg::Node>(
             env: &mut ExchangeEnv<'_, FoundExchangeMove, L>,
             tile_offset: u8,
         ) {
             if !env.exchange_buffer.is_empty() {
-                let leave_value = env.klv.leave_value_from_tally(env.rack_tally);
+                let leave_value = (env.klv.leave_value_from_tally(env.rack_tally)
+                    * equity::SCALE as f32)
+                    .round() as i32;
                 (env.found_exchange_move)(env.exchange_buffer, leave_value);
             }
             if env.exchange_buffer.len() < env.max_vec_len {
@@ -509,20 +512,20 @@ impl MultiLeaves {
         self.digits[tile as usize].place_value
     }
 
-    // undefined behavior unless idx is valid. Returns 0.0 when not dense.
+    // undefined behavior unless idx is valid. Returns 0 when not dense.
     #[inline(always)]
-    pub fn leave_value(&self, idx: u32) -> f32 {
+    pub fn leave_value(&self, idx: u32) -> i32 {
         if self.leave_values.is_empty() {
-            0.0
+            0
         } else {
             self.leave_values[idx as usize]
         }
     }
 
     #[inline(always)]
-    pub fn pass_leave_value(&self) -> f32 {
+    pub fn pass_leave_value(&self) -> i32 {
         if self.leave_values.is_empty() {
-            0.0 // fallback; caller should use klv.leave_value_from_tally
+            0 // fallback; caller should use klv.leave_value_from_tally
         } else {
             *self.leave_values.last().unwrap()
         }
