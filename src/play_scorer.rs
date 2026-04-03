@@ -445,7 +445,7 @@ impl PlayScorer {
         play: &movegen::Play,
         leave_scale: f32,
         recounted_score: i32,
-    ) -> f32 {
+    ) -> i32 {
         let game_config = board_snapshot.game_config;
 
         self.set_rack_tally(game_config, &game_state.current_player().rack);
@@ -466,7 +466,7 @@ impl PlayScorer {
             }
         };
 
-        let mut recounted_equity = recounted_score as f32;
+        let mut recounted_equity = recounted_score;
         if game_state.bag.is_empty() {
             // empty bag, do not add leave.
             if self.rack_tally.iter().any(|&count| count != 0) {
@@ -475,7 +475,7 @@ impl PlayScorer {
                     .map(|(tile, &count)| count as i32 * game_config.alphabet().score(tile) as i32)
                     .sum::<i32>();
                 let kept_tiles_penalty = 10 + 2 * kept_tiles_worth;
-                recounted_equity -= kept_tiles_penalty as f32 * equity::SCALE as f32;
+                recounted_equity -= kept_tiles_penalty * equity::SCALE;
             } else {
                 let mut unplayed_tiles_worth = 0;
                 for (player_idx, player) in (0u8..).zip(game_state.players.iter()) {
@@ -489,11 +489,11 @@ impl PlayScorer {
                     }
                 }
                 let unplayed_tiles_bonus = 2 * unplayed_tiles_worth;
-                recounted_equity += unplayed_tiles_bonus as f32 * equity::SCALE as f32;
+                recounted_equity += unplayed_tiles_bonus * equity::SCALE;
             }
         } else {
             let leave_value = board_snapshot.klv.leave_value_from_tally(&self.rack_tally);
-            recounted_equity += leave_value as f32 * leave_scale;
+            recounted_equity += (leave_value as f32 * leave_scale).round() as i32;
             if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
                 match play {
                     movegen::Play::Exchange { .. } => {}
@@ -543,7 +543,7 @@ impl PlayScorer {
                             })
                             .count();
                         let dangerous_vowel_penalty =
-                            dangerous_vowel_count as f32 * equity::OPENING_HOTSPOT_PENALTY as f32;
+                            dangerous_vowel_count as i32 * equity::OPENING_HOTSPOT_PENALTY;
                         recounted_equity -= dangerous_vowel_penalty;
                     }
                 }

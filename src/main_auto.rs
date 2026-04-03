@@ -387,15 +387,12 @@ fn do_it<N: kwg::Node>(
                                         leave_scale,
                                         recounted_score,
                                     );
-                                    // Compare equity as millipoint i32 with tolerance for rounding.
-                                    let play_equity_raw = play.equity.raw();
-                                    let recounted_equity_raw = recounted_equity as i32;
-                                    if (play_equity_raw - recounted_equity_raw).abs() > 2 {
+                                    if play.equity.raw() != recounted_equity {
                                         issues += 1;
                                         println!(
                                             "{} should have equity {} instead of {}!",
                                             play.play.fmt(board_snapshot),
-                                            recounted_equity,
+                                            equity::Equity::new(recounted_equity),
                                             play.equity
                                         );
                                     }
