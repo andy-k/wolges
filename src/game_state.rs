@@ -263,7 +263,7 @@ impl GameState {
             } else {
                 let mut earned = 0;
                 for (i, player) in self.players.iter().enumerate() {
-                    let this_rack = equity::SCALE * game_config.alphabet().rack_score(&player.rack);
+                    let this_rack = game_config.alphabet().scaled_rack_score(&player.rack);
                     final_scores[i] -= this_rack;
                     earned += this_rack;
                 }
@@ -281,7 +281,7 @@ impl GameState {
         {
             for (i, player) in self.players.iter().enumerate() {
                 final_scores[i] =
-                    player.score - equity::SCALE * game_config.alphabet().rack_score(&player.rack);
+                    player.score - game_config.alphabet().scaled_rack_score(&player.rack);
             }
             CheckGameEnded::ZeroScores
         } else {

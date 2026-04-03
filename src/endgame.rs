@@ -3,7 +3,7 @@
 // note: this module is very slow and may need a lot of space
 // and it still has many bugs
 
-use super::{display, equity, fash, game_config, klv, kwg, move_picker, movegen};
+use super::{display, fash, game_config, klv, kwg, move_picker, movegen};
 
 // move one tile at a time from rack
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -179,8 +179,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         self.racks[0].extend_from_slice(racks[0]);
         self.racks[1].clear();
         self.racks[1].extend_from_slice(racks[1]);
-        self.rack_scores[0] = equity::SCALE * self.game_config.alphabet().rack_score(racks[0]);
-        self.rack_scores[1] = equity::SCALE * self.game_config.alphabet().rack_score(racks[1]);
+        self.rack_scores[0] = self.game_config.alphabet().scaled_rack_score(racks[0]);
+        self.rack_scores[1] = self.game_config.alphabet().scaled_rack_score(racks[1]);
         self.work_buffer.init();
     }
 

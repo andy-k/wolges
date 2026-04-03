@@ -240,6 +240,10 @@ impl Alphabet {
     pub fn rack_score(&self, rack: &[u8]) -> i32 {
         rack.iter().map(|&t| self.score(t) as i32).sum::<i32>()
     }
+
+    pub fn scaled_rack_score(&self, rack: &[u8]) -> i32 {
+        rack.iter().map(|&t| self.scaled_score(t)).sum::<i32>()
+    }
 }
 
 pub struct WriteableRack<'a> {
