@@ -20,6 +20,8 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - name: Stable Rust version
       run: cargo version
+    - name: Format
+      run: cargo fmt --check
     - name: Clippy
       run: cargo clippy --release --verbose
     - name: Build
