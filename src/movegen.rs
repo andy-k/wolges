@@ -3278,8 +3278,7 @@ fn kurnia_gen_place_moves_iter<
     }
     if !want_raw {
         // this will be iterated in reverse order, so sort by best_possible_equity increasing.
-        found_placements
-            .sort_unstable_by(|a, b| a.best_possible_equity.cmp(&b.best_possible_equity));
+        found_placements.sort_unstable_by_key(|a| a.best_possible_equity);
     }
     working_buffer.found_placements = found_placements;
     std::iter::from_fn(move || match working_buffer.found_placements.pop() {
