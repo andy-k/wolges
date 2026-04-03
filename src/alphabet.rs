@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bites, bites_str, error};
+use super::{bites, bites_str, equity, error};
 
 use std::str::FromStr;
 
@@ -9,6 +9,7 @@ struct Tile {
     blank_label: bites_str::BitesStr,
     freq: u8,
     score: i8,
+    scaled_score: i16, // score * equity::SCALE, precomputed once
     is_vowel: bool,
     alias_labels: Vec<bites_str::BitesStr>,
     alias_blank_labels: Vec<bites_str::BitesStr>,
@@ -111,6 +112,7 @@ impl Alphabet {
                 label,
                 blank_label,
                 freq,
+                scaled_score: score as i16 * equity::SCALE as i16,
                 score,
                 is_vowel,
                 alias_labels,
@@ -177,6 +179,12 @@ impl Alphabet {
     #[inline(always)]
     pub fn score(&self, idx: u8) -> i8 {
         self.get(idx & !((idx as i8) >> 7) as u8).score
+    }
+
+    /// Score premultiplied by equity::SCALE (millipoints). Precomputed at construction.
+    #[inline(always)]
+    pub fn scaled_score(&self, idx: u8) -> i32 {
+        self.get(idx & !((idx as i8) >> 7) as u8).scaled_score as i32
     }
 
     #[inline(always)]
