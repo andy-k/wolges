@@ -493,7 +493,7 @@ impl PlayScorer {
             }
         } else {
             let leave_value = board_snapshot.klv.leave_value_from_tally(&self.rack_tally);
-            recounted_equity += leave_scale * leave_value * equity::SCALE as f32;
+            recounted_equity += leave_value as f32 * leave_scale;
             if !game_state.board_tiles.iter().any(|&tile| tile != 0) {
                 match play {
                     movegen::Play::Exchange { .. } => {}

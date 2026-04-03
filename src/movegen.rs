@@ -1575,12 +1575,10 @@ fn gen_classic_place_moves<
                 -equity::ENDGAME_PENALTY_BASE - 2 * residual * equity::SCALE
             }
         } else {
-            (env.params
+            env.params
                 .board_snapshot
                 .klv
                 .leave_value_from_tally(env.params.rack_tally)
-                * equity::SCALE as f32)
-                .round() as i32
         };
         (env.params.callback)(
             idx_left,
@@ -1966,12 +1964,10 @@ fn gen_jumbled_place_moves<
                     -equity::ENDGAME_PENALTY_BASE - 2 * residual * equity::SCALE
                 }
             } else {
-                (env.params
+                env.params
                     .board_snapshot
                     .klv
                     .leave_value_from_tally(env.params.rack_tally)
-                    * equity::SCALE as f32)
-                    .round() as i32
             };
             (env.params.callback)(
                 idx_left,
@@ -2797,12 +2793,10 @@ impl KurniaMoveGenerator {
                 equity::Equity::new(if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
-                    (params
+                    params
                         .board_snapshot
                         .klv
                         .leave_value_from_tally(&working_buffer.rack_tally)
-                        * equity::SCALE as f32)
-                        .round() as i32
                 }),
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),
@@ -2942,12 +2936,10 @@ impl KurniaMoveGenerator {
                 equity::Equity::new(if multi_leaves.is_dense() {
                     multi_leaves.pass_leave_value()
                 } else {
-                    (params
+                    params
                         .board_snapshot
                         .klv
                         .leave_value_from_tally(&working_buffer.rack_tally)
-                        * equity::SCALE as f32)
-                        .round() as i32
                 }),
                 || Play::Exchange {
                     tiles: (&working_buffer.exchange_buffer[..]).into(),

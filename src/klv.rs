@@ -5,7 +5,7 @@ use super::{equity, kwg};
 pub struct Klv<L: kwg::Node> {
     kwg: kwg::Kwg<L>,
     counts: Box<[u32]>,
-    leaves: Box<[f32]>,
+    leaves: Box<[i32]>, // millipoints, converted from f32 at load time
 }
 
 // kwg::Node22
@@ -22,15 +22,17 @@ impl<L: kwg::Node> Klv<L> {
         r += 4;
         let mut elts = Vec::with_capacity(lv_len as usize);
         if buf.len() < r + 4 * lv_len as usize {
-            // klv uses i16
+            // klv uses i16 (fixed-point, 1/256 scale)
             for _ in 0..lv_len {
-                elts.push(kwg::read_le_u16(buf, r) as i16 as f32 * (1.0 / 256.0));
+                let raw = kwg::read_le_u16(buf, r) as i16 as f32 * (1.0 / 256.0);
+                elts.push((raw * equity::SCALE as f32).round() as i32);
                 r += 2;
             }
         } else {
             // klv2 uses f32
             for _ in 0..lv_len {
-                elts.push(f32::from_bits(kwg::read_le_u32(buf, r)));
+                let raw = f32::from_bits(kwg::read_le_u32(buf, r));
+                elts.push((raw * equity::SCALE as f32).round() as i32);
                 r += 4;
             }
         }
@@ -43,7 +45,7 @@ impl<L: kwg::Node> Klv<L> {
     }
 
     #[inline(always)]
-    pub fn leave(&self, leave_idx: u32) -> f32 {
+    pub fn leave(&self, leave_idx: u32) -> i32 {
         self.leaves[leave_idx as usize]
     }
 
@@ -58,7 +60,7 @@ impl<L: kwg::Node> Klv<L> {
     }
 
     #[inline(always)]
-    pub fn leave_value_from_tally(&self, rack_tally: &[u8]) -> f32 {
+    pub fn leave_value_from_tally(&self, rack_tally: &[u8]) -> i32 {
         let leave_idx = self.kwg.get_word_index_of(
             &self.counts,
             self.kwg[0].arc_index(),
@@ -67,7 +69,7 @@ impl<L: kwg::Node> Klv<L> {
                 .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
         );
         if leave_idx == !0 {
-            0.0
+            0
         } else {
             self.leave(leave_idx)
         }
@@ -211,7 +213,7 @@ impl MultiLeaves {
                             idx -= env.klv.count(p);
                             let node = env.klv.kwg(p);
                             let leave_val = if node.tile() == tile && node.accepts() {
-                                (env.klv.leave(idx) * equity::SCALE as f32).round() as i32
+                                env.klv.leave(idx)
                             } else {
                                 0
                             };
@@ -322,8 +324,7 @@ impl MultiLeaves {
                     env.num_kept += 1;
                     if node.accepts() {
                         let leave_val = (env.adjust_leave_value)(
-                            (env.klv.leave_value_from_tally(env.kept_tally) * equity::SCALE as f32)
-                                .round() as i32,
+                            env.klv.leave_value_from_tally(env.kept_tally),
                         );
                         let num_played = (env.num_tiles_on_rack - env.num_kept) as usize;
                         if num_played < env.best_leave_values.len()
@@ -466,9 +467,7 @@ impl MultiLeaves {
             tile_offset: u8,
         ) {
             if !env.exchange_buffer.is_empty() {
-                let leave_value = (env.klv.leave_value_from_tally(env.rack_tally)
-                    * equity::SCALE as f32)
-                    .round() as i32;
+                let leave_value = env.klv.leave_value_from_tally(env.rack_tally);
                 (env.found_exchange_move)(env.exchange_buffer, leave_value);
             }
             if env.exchange_buffer.len() < env.max_vec_len {
