@@ -20,8 +20,8 @@ codegen-units = 1
 csv = "1.4.0"
 num_cpus = "1.17.0"
 rand = { version = "0.10.0", features = ["chacha"] }
-rustyline = "17.0.2"
-rustyline-derive = "0.11.1"
+rustyline = "18.0.0"
+rustyline-derive = "0.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 shell-words = "1.1.1"
