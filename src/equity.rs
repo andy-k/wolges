@@ -24,12 +24,6 @@ impl Equity {
         Self(v)
     }
 
-    /// Construct from an f32 value (scaled and rounded).
-    #[inline(always)]
-    pub fn from_f32(v: f32) -> Self {
-        Self((v * SCALE as f32).round() as i32)
-    }
-
     /// The raw scaled i32 value (1 unit = 0.001 equity points).
     #[inline(always)]
     pub fn raw(self) -> i32 {

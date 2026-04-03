@@ -121,7 +121,7 @@ impl From<&JsonPlayWithEquity> for movegen::ValuedMove {
     #[inline(always)]
     fn from(play: &JsonPlayWithEquity) -> Self {
         Self {
-            equity: equity::Equity::from_f32(play.equity),
+            equity: equity::Equity::new((play.equity * equity::SCALE as f32).round() as i32),
             play: (&play.play).into(),
         }
     }
