@@ -23,7 +23,7 @@ jobs:
     - name: Format
       run: cargo fmt --check
     - name: Clippy
-      run: cargo clippy --release --verbose
+      run: cargo clippy --release --all-targets --verbose
     - name: Build
       run: cargo build --release --verbose
     - name: Run tests
