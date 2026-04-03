@@ -299,8 +299,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             let state = &self.work_buffer.states[state_idx as usize];
             let blanked_tile =
                 state.placed_tile.tile & !((state.placed_tile.tile as i8) >> 7) as u8;
-            rack_scores[state.placed_tile.whose as usize] -=
-                alphabet.score(blanked_tile) as i32 * equity::SCALE;
+            rack_scores[state.placed_tile.whose as usize] -= alphabet.scaled_score(blanked_tile);
             state_idx = state.parent;
         }
         (rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize]) as f32

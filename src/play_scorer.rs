@@ -376,8 +376,7 @@ impl PlayScorer {
                             tile_multiplier = 1;
                             board_snapshot.board_tiles[strider_at_i]
                         };
-                        let face_value_tile_score =
-                            alphabet.score(placed_tile) as i32 * equity::SCALE;
+                        let face_value_tile_score = alphabet.scaled_score(placed_tile);
                         let tile_score = face_value_tile_score * tile_multiplier as i32;
                         word_score += tile_score;
                     }
@@ -422,8 +421,7 @@ impl PlayScorer {
                             if placed_tile == 0 {
                                 break;
                             }
-                            let face_value_tile_score =
-                                alphabet.score(placed_tile) as i32 * equity::SCALE;
+                            let face_value_tile_score = alphabet.scaled_score(placed_tile);
                             let tile_score = face_value_tile_score * tile_multiplier as i32;
                             word_score += tile_score;
                         }
