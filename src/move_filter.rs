@@ -87,31 +87,33 @@ impl Default for LimitedVocabChecker {
 }
 
 // need more realistic numbers, and should differ by bot level
-static LENGTH_IMPORTANCES: &[f32] = &[
-    0.0, 0.0, 2.0, 1.5, 1.0, 0.75, 0.5, 1.0, 1.0, 0.5, 0.4, 0.3, 0.2, 0.1, 0.1, 0.1,
+pub const IMPORTANCE_DENOM: u64 = 100;
+static LENGTH_IMPORTANCES: &[u8] = &[
+    0, 0, 200, 150, 100, 75, 50, 100, 100, 50, 40, 30, 20, 10, 10, 10,
 ];
 
 #[derive(Clone)]
 pub struct Tilt<'a> {
     word_prob: Box<prob::WordProbability>,
     max_prob_by_len: Box<[u64]>,
-    length_importances: &'a [f32],
-    pub tilt_factor: f32,
+    length_importances: &'a [u8],
+    pub tilt_factor: i32, // 0..=TILT_DENOM
     pub leave_scale: i32, // 0..=LEAVE_SCALE_DENOM
     limited_vocab_checker: LimitedVocabChecker,
 }
 
+pub const TILT_DENOM: i32 = 1024;
 pub const LEAVE_SCALE_DENOM: i32 = 1024;
 
 impl<'a> Tilt<'a> {
-    pub fn length_importances() -> &'a [f32] {
+    pub fn length_importances() -> &'a [u8] {
         LENGTH_IMPORTANCES
     }
 
     pub fn new<N: kwg::Node>(
         game_config: &game_config::GameConfig,
         kwg: &kwg::Kwg<N>,
-        length_importances: &'a [f32],
+        length_importances: &'a [u8],
     ) -> Self {
         let mut word_prob = prob::WordProbability::new(game_config.alphabet());
         let mut max_prob_by_len = Vec::new();
@@ -120,49 +122,60 @@ impl<'a> Tilt<'a> {
             word_prob: Box::new(word_prob),
             max_prob_by_len: max_prob_by_len.into_boxed_slice(),
             length_importances,
-            tilt_factor: 0.0,
+            tilt_factor: 0,
             leave_scale: LEAVE_SCALE_DENOM,
             limited_vocab_checker: LimitedVocabChecker::new(),
         }
     }
 
     #[inline(always)]
-    pub fn tilt_to(&mut self, new_tilt_factor: f32, bot_level: i8) {
-        // 0.0 = untilted (can see all valid moves)
-        // 1.0 = tilted (can see no valid moves)
-        self.tilt_factor = new_tilt_factor.clamp(0.0, 1.0);
-        self.leave_scale = ((bot_level as f32 * 0.1 + (1.0 - self.tilt_factor)).clamp(0.0, 1.0)
-            * LEAVE_SCALE_DENOM as f32)
-            .round() as i32;
+    pub fn tilt_to(&mut self, new_tilt_factor: i32, bot_level: i8) {
+        // 0 = untilted (can see all valid moves)
+        // TILT_DENOM = tilted (can see no valid moves)
+        self.tilt_factor = new_tilt_factor.clamp(0, TILT_DENOM);
+        // 0.1 * 1024 ≈ 102
+        self.leave_scale =
+            (bot_level as i32 * 102 + TILT_DENOM - self.tilt_factor).clamp(0, LEAVE_SCALE_DENOM);
     }
 
     #[inline(always)]
     pub fn tilt_by_rng(&mut self, rng: &mut dyn Rng, bot_level: i8) {
-        self.tilt_to(
-            rng.random_range(0.5 - bot_level as f32 * 0.1..1.0),
-            bot_level,
-        );
+        // range: (0.5 - bot_level * 0.1) .. 1.0, scaled to 0..TILT_DENOM
+        let lo = TILT_DENOM / 2 - bot_level as i32 * 102;
+        self.tilt_to(rng.random_range(lo..TILT_DENOM), bot_level);
     }
 
     #[inline(always)]
     fn word_is_ok(&mut self, word: &[u8]) -> bool {
-        if self.tilt_factor <= 0.0 {
+        if self.tilt_factor <= 0 {
             true
-        } else if self.tilt_factor >= 1.0 {
+        } else if self.tilt_factor >= TILT_DENOM {
             false
         } else {
             let word_len = word.len();
             let this_wp = self.word_prob.count_ways(word);
             let max_wp = self.max_prob_by_len[word_len];
-            let handwavy = self.length_importances[word_len]
-                * (1.0 - (1.0 - (this_wp as f64 / max_wp as f64)).powi(2)) as f32;
-            if handwavy >= self.tilt_factor {
+            // Accept if: importance[len] * p*(2-p) >= tilt_factor,
+            // where p = this_wp / max_wp.
+            //
+            // Rewrite as: importance[len] * this_wp*(2*max_wp - this_wp) / max_wp^2
+            //              >= tilt_factor / TILT_DENOM
+            //
+            // Cross-multiply (all terms non-negative):
+            //   imp * this_wp * (2*max_wp - this_wp) * TILT_DENOM
+            //     >= tilt_factor * IMPORTANCE_DENOM * max_wp * max_wp
+            let imp = self.length_importances[word_len] as u128;
+            let twp = this_wp as u128;
+            let mwp = max_wp as u128;
+            let lhs = imp * twp * (2 * mwp - twp) * TILT_DENOM as u128;
+            let rhs = self.tilt_factor as u128 * IMPORTANCE_DENOM as u128 * mwp * mwp;
+            if lhs >= rhs {
                 true
             } else {
                 if false {
                     println!(
-                        "Rejecting word {:?}, handwavy={} (this={} over max={}), tilt={}",
-                        word, handwavy, this_wp, max_wp, self.tilt_factor
+                        "Rejecting word {:?}, lhs={} rhs={} (this={} over max={}), tilt={}",
+                        word, lhs, rhs, this_wp, max_wp, self.tilt_factor
                     );
                 }
                 false

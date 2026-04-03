@@ -236,9 +236,11 @@ fn do_it<N: kwg::Node>(
                 if let move_filter::GenMoves::Tilt { tilt, bot_level } = filtered_movegen {
                     tilt.tilt_by_rng(&mut rng, *bot_level);
                     println!(
-                        "Effective tilt: tilt factor = {}, leave scale = {}",
+                        "Effective tilt: tilt factor = {}/{}, leave scale = {}/{}",
                         tilt.tilt_factor,
-                        tilt.leave_scale as f64 / move_filter::LEAVE_SCALE_DENOM as f64
+                        move_filter::TILT_DENOM,
+                        tilt.leave_scale,
+                        move_filter::LEAVE_SCALE_DENOM
                     );
                 }
 
