@@ -88,12 +88,19 @@ impl Bag {
         }
     }
 
-    pub fn return_tiles(&mut self, tiles: &[u8]) {
-        self.tiles.extend_from_slice(tiles);
+    pub fn return_tile(&mut self, tile: u8) {
+        if self.fc > 0 {
+            self.fc -= 1;
+            self.tiles[self.fc] = tile;
+        } else {
+            self.tiles.push(tile);
+        }
     }
 
-    pub fn return_tile(&mut self, tile: u8) {
-        self.tiles.push(tile);
+    pub fn return_tiles(&mut self, tiles: &[u8]) {
+        for &tile in tiles {
+            self.return_tile(tile);
+        }
     }
 
     pub fn set_from_iter<I: IntoIterator<Item = u8>>(&mut self, iter: I) {
