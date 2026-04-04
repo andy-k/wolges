@@ -139,6 +139,14 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
+    // Multi-group through-play: TENSIONAL spans two separate board tile groups
+    TestCase {
+        fen: "13V1/13I1/10YEGGS/7PHLOX2U/6GROAN3A/J3OWIE6B/ENNUI2B2A3L/T6UT1N1M1E/E6YO1O1A2/8R1DUI2/7SI1i1D1L/7HI1Z1h1E/1PLECTRA2E1O1A/7WARRIORS/7N4D1E",
+        rack: "AEINOST",
+        max_gen: 15,
+        always_include_pass: false,
+        num_exchanges_by_this_player: i16::MAX, // skip exchanges (bag likely too small)
+    },
     // Large rack (threat analysis: all unseen tiles), MultiLeaves overflow
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
