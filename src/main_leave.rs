@@ -2470,7 +2470,6 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                     saved_game_state.clone_from(&game_state);
                     let saved_rng_state = rng.serialize_state();
-                    let starting_player = (pair_idx % 2) as u8;
 
                     let mut pair_diverged = false;
                     let mut pair_results =
@@ -2481,7 +2480,6 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             game_state.clone_from(&saved_game_state);
                             rng = rand::rngs::ChaCha20Rng::deserialize_state(&saved_rng_state);
                         }
-                        game_state.turn = starting_player;
                         let klv_swapped = game_in_pair != 0;
                         let mut num_turns = 0u32;
                         if !klv_swapped {
