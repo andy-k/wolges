@@ -920,9 +920,7 @@ fn generate_autoplay_logs<
                         game_id.push(BASE62[(num_prior_games / (62 * 62) % 62) as usize] as char);
                         game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
                         game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
-                        let went_first = rng.random_range(0..game_config.num_players());
                         game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                        game_state.turn = went_first;
                         loop {
                             num_moves += 1;
 
@@ -1231,7 +1229,7 @@ fn generate_autoplay_logs<
                                             &final_scores,
                                             &num_bingos,
                                             &num_turns,
-                                            &player_aliases[went_first as usize],
+                                            &player_aliases[0],
                                         ))
                                         .unwrap();
                                     num_batched_games_here += 1;
