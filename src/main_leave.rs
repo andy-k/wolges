@@ -2373,12 +2373,14 @@ impl GameStats {
 
 struct GamePairStats {
     all: GameStats,
+    divergent: GameStats,
 }
 
 impl GamePairStats {
     fn new() -> Self {
         Self {
             all: GameStats::new(),
+            divergent: GameStats::new(),
         }
     }
 
@@ -2388,12 +2390,18 @@ impl GamePairStats {
         p1_final: i32,
         turns: u32,
         end_reason: game_state::CheckGameEnded,
+        divergent: bool,
     ) {
         self.all.add_game(p0_final, p1_final, turns, end_reason);
+        if divergent {
+            self.divergent
+                .add_game(p0_final, p1_final, turns, end_reason);
+        }
     }
 
     fn merge(&mut self, other: &GamePairStats) {
         self.all.merge(&other.all);
+        self.divergent.merge(&other.divergent);
     }
 
     fn print(&self) {
@@ -2404,6 +2412,16 @@ impl GamePairStats {
             plural(all_total, "game", "games"),
             plural(all_pairs, "pair", "pairs"),
         ));
+        let div_total = self.divergent.total_games();
+        if div_total > 0 && div_total < all_total {
+            let div_pairs = div_total / 2;
+            self.divergent.print(&format!(
+                "\n{div_total} divergent {} ({div_pairs} {} = {:.2}%):",
+                plural(div_total, "game", "games"),
+                plural(div_pairs, "pair", "pairs"),
+                div_pairs as f64 / all_pairs as f64 * 100.0,
+            ));
+        }
     }
 }
 
@@ -2442,6 +2460,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 let mut saved_game_state = game_state.clone();
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
                 let mut stats = GamePairStats::new();
+                let mut first_game_moves: Vec<movegen::Play> = Vec::new();
 
                 loop {
                     let pair_idx =
@@ -2455,6 +2474,10 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     let saved_rng_state = rng.serialize_state();
                     let starting_player = (pair_idx % 2) as u8;
 
+                    let mut pair_diverged = false;
+                    let mut pair_results =
+                        [(0i32, 0i32, 0u32, game_state::CheckGameEnded::NotEnded); 2];
+
                     for game_in_pair in 0..2u8 {
                         if game_in_pair > 0 {
                             game_state.clone_from(&saved_game_state);
@@ -2463,6 +2486,9 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         game_state.turn = starting_player;
                         let klv_swapped = game_in_pair != 0;
                         let mut num_turns = 0u32;
+                        if !klv_swapped {
+                            first_game_moves.clear();
+                        }
 
                         let end_reason = loop {
                             let board_snapshot = movegen::BoardSnapshot {
@@ -2485,6 +2511,16 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 always_include_pass: false,
                             });
                             let play = &move_generator.plays[0].play;
+                            if klv_swapped {
+                                if !pair_diverged
+                                    && (num_turns as usize >= first_game_moves.len()
+                                        || first_game_moves[num_turns as usize] != *play)
+                                {
+                                    pair_diverged = true;
+                                }
+                            } else {
+                                first_game_moves.push(play.clone());
+                            }
                             game_state.play(&game_config, &mut rng, play).unwrap();
                             num_turns += 1;
                             let end = game_state.check_game_ended(&game_config, &mut final_scores);
@@ -2501,7 +2537,21 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         } else {
                             (final_scores[0], final_scores[1])
                         };
-                        stats.add_game(klv0_score, klv1_score, num_turns, end_reason);
+                        pair_results[game_in_pair as usize] =
+                            (klv0_score, klv1_score, num_turns, end_reason);
+                    }
+                    // also check if game 1 ended at a different turn
+                    if !pair_diverged && pair_results[0].2 != pair_results[1].2 {
+                        pair_diverged = true;
+                    }
+                    for &(klv0_score, klv1_score, num_turns, end_reason) in &pair_results {
+                        stats.add_game(
+                            klv0_score,
+                            klv1_score,
+                            num_turns,
+                            end_reason,
+                            pair_diverged,
+                        );
                     }
 
                     let secs = t0.elapsed().as_secs();
