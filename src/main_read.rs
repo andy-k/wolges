@@ -2937,8 +2937,7 @@ input/output files can be \"-\" (not advisable for binary files)"
                 )?;
             }
             ret.push('\n');
-            let mut cnd = stats::CumulativeNormalDensity::new();
-            let mut cumulative_normal_density = |x: f64| cnd.get(x);
+            let cumulative_normal_density = stats::NormalDistribution::cumulative_normal_density;
             for y in (35..=50).rev().step_by(5) {
                 let v = y as f32 * -0.1;
                 writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
