@@ -290,6 +290,7 @@ impl GameState {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum CheckGameEnded {
     NotEnded,
     PlayedOut,
