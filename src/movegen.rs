@@ -991,8 +991,6 @@ struct GenPlacePlacementsParams<'a> {
     used_tile_scores_shadowr: &'a mut Vec<i32>,
     shadow_strip_buffer: &'a mut [u8], // not really storing letters here
     cross_set_strip: &'a [CrossSet],
-    left_extension_strip: &'a [u64],
-    right_extension_strip: &'a [u64],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
     perpendicular_word_multipliers_strip: &'a [i8],
@@ -1242,8 +1240,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits =
-                    this_cross_bits & rack_bits & env.params.left_extension_strip[idx as usize];
+                let matching_bits = this_cross_bits & rack_bits;
                 if matching_bits == 0 {
                     break;
                 }
@@ -1348,8 +1345,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
-                let matching_bits =
-                    this_cross_bits & rack_bits & env.params.right_extension_strip[idx as usize];
+                let matching_bits = this_cross_bits & rack_bits;
                 if matching_bits == 0 {
                     break;
                 }
@@ -1410,11 +1406,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         want_raw: bool,
         mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
     ) {
-        if env.params.left_extension_strip[env.anchor as usize] == 0
-            && env.params.right_extension_strip[env.anchor as usize] == 0
-        {
-            // Dead anchor: no tile can extend in either direction.
-        } else if want_raw {
+        if want_raw {
             possible_strip_placement_callback(env.anchor, env.leftmost, env.rightmost, i32::MAX);
         } else {
             env.best_possible_equity = i32::MIN;
@@ -3153,10 +3145,6 @@ fn kurnia_gen_place_moves_iter<
                     [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
-                left_extension_strip: &working_buffer.left_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end],
-                right_extension_strip: &working_buffer.right_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_across_plays
                     [strip_range_start..strip_range_end],
@@ -3209,10 +3197,6 @@ fn kurnia_gen_place_moves_iter<
                 shadow_strip_buffer: &mut working_buffer.word_buffer_for_down_plays
                     [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_down_plays
-                    [strip_range_start..strip_range_end],
-                left_extension_strip: &working_buffer.left_extension_set_for_down_plays
-                    [strip_range_start..strip_range_end],
-                right_extension_strip: &working_buffer.right_extension_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
                     .remaining_word_multipliers_for_down_plays[strip_range_start..strip_range_end],
