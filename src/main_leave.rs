@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
     alphabet, bites, display, equity, error, fash, game_config, game_state, klv, kwg, move_filter,
-    move_picker, movegen, prob,
+    move_picker, movegen, prob, stats,
 };
 
 thread_local! {
@@ -234,6 +234,52 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 )?;
                 Ok(true)
             }
+            "-compare" => {
+                // english-compare CSW24.kwg klv0.klv2 klv1.klv2 10000 [seed]
+                let args3 = if args.len() > 3 { &args[3] } else { "-" };
+                let args4 = if args.len() > 4 { &args[4] } else { "-" };
+                let num_game_pairs = if args.len() > 5 {
+                    u64::from_str(&args[5])?
+                } else {
+                    10_000
+                };
+                let seed = if args.len() > 6 {
+                    Some(u64::from_str(&args[6])?)
+                } else {
+                    None
+                };
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let arc_klv0 = if args3 == "-" {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
+                } else {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
+                };
+                let arc_klv1 = if args3 == args4 {
+                    std::sync::Arc::clone(&arc_klv0)
+                } else if args4 == "-" {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
+                } else {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args4,
+                    )?))
+                };
+                compare_leaves(
+                    make_game_config(),
+                    kwg,
+                    arc_klv0,
+                    arc_klv1,
+                    num_game_pairs,
+                    seed,
+                )?;
+                Ok(true)
+            }
             "-summarize" => {
                 generate_summary(
                     make_game_config(),
@@ -372,6 +418,15 @@ fn main() -> error::Returns<()> {
     same as english-resummarize but sorts differently (by length first)
   english-resummarize-playability-all concat_playabilities.csv playability.csv
     same as english-resummarize but sorts differently (by playability first)
+  english-compare CSW24.kwg klv0.klv2 klv1.klv2 10000 [seed]
+    play game pairs to compare two sets of leaves.
+    each pair: same tile draw, alternating starting player.
+    p0 uses klv0, p1 uses klv1 for move selection (static play, max=1).
+    reports wins/losses/draws, score stats, divergent games, and
+    confidence that one set of leaves is better.
+    if klv is \"-\" or omitted, uses no leave.
+    number of game pairs is optional (default 10000).
+    seed is optional; if provided, uses single thread for reproducibility.
   (english can also be catalan, dutch, french, german, norwegian, polish,
     slovene, spanish, super-english, super-catalan)
   (add -big after language, such as dutch-big-autoplay, to use kbwg)
@@ -2189,4 +2244,335 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     );
 
     Ok(())
+}
+
+fn plural<'a>(n: u64, singular: &'a str, plural: &'a str) -> &'a str {
+    if n == 1 { singular } else { plural }
+}
+
+struct GameStats {
+    p0_wins: u64,
+    p0_losses: u64,
+    p0_draws: u64,
+    p0_score: stats::Stats,
+    p1_score: stats::Stats,
+    turns: stats::Stats,
+    played_out: u64,
+    zero_scores: u64,
+}
+
+impl GameStats {
+    fn new() -> Self {
+        Self {
+            p0_wins: 0,
+            p0_losses: 0,
+            p0_draws: 0,
+            p0_score: stats::Stats::new(),
+            p1_score: stats::Stats::new(),
+            turns: stats::Stats::new(),
+            played_out: 0,
+            zero_scores: 0,
+        }
+    }
+
+    fn add_game(
+        &mut self,
+        p0_final: i32,
+        p1_final: i32,
+        turns: u32,
+        end_reason: game_state::CheckGameEnded,
+    ) {
+        self.p0_score.update(p0_final as f64 / equity::SCALE as f64);
+        self.p1_score.update(p1_final as f64 / equity::SCALE as f64);
+        self.turns.update(turns as f64);
+        match end_reason {
+            game_state::CheckGameEnded::PlayedOut => self.played_out += 1,
+            game_state::CheckGameEnded::ZeroScores => self.zero_scores += 1,
+            game_state::CheckGameEnded::NotEnded => {}
+        }
+        match p0_final.cmp(&p1_final) {
+            std::cmp::Ordering::Greater => self.p0_wins += 1,
+            std::cmp::Ordering::Less => self.p0_losses += 1,
+            std::cmp::Ordering::Equal => self.p0_draws += 1,
+        }
+    }
+
+    fn merge(&mut self, other: &GameStats) {
+        self.p0_wins += other.p0_wins;
+        self.p0_losses += other.p0_losses;
+        self.p0_draws += other.p0_draws;
+        self.p0_score.update_bulk(&other.p0_score);
+        self.p1_score.update_bulk(&other.p1_score);
+        self.turns.update_bulk(&other.turns);
+        self.played_out += other.played_out;
+        self.zero_scores += other.zero_scores;
+    }
+
+    fn total_games(&self) -> u64 {
+        self.p0_wins + self.p0_losses + self.p0_draws
+    }
+
+    fn print(&self, label: &str) {
+        let total = self.total_games();
+        if total == 0 {
+            return;
+        }
+        let p0_total = self.p0_wins as f64 + self.p0_draws as f64 / 2.0;
+        let p1_total = total as f64 - p0_total;
+        println!("{label}");
+        println!(
+            "  turns per game: {:.2} (sd={:.2})",
+            self.turns.mean(),
+            self.turns.standard_deviation(),
+        );
+        println!(
+            "  played out: {} ({:.2}%)  zero scores: {} ({:.2}%)",
+            self.played_out,
+            self.played_out as f64 / total as f64 * 100.0,
+            self.zero_scores,
+            self.zero_scores as f64 / total as f64 * 100.0,
+        );
+        println!(
+            "  p0 (klv0): {:.1} ({:.2}%)  p1 (klv1): {:.1} ({:.2}%)",
+            p0_total,
+            p0_total / total as f64 * 100.0,
+            p1_total,
+            p1_total / total as f64 * 100.0,
+        );
+        println!(
+            "  wins: {} ({:.2}%)  losses: {} ({:.2}%)  draws: {} ({:.2}%)",
+            self.p0_wins,
+            self.p0_wins as f64 / total as f64 * 100.0,
+            self.p0_losses,
+            self.p0_losses as f64 / total as f64 * 100.0,
+            self.p0_draws,
+            self.p0_draws as f64 / total as f64 * 100.0,
+        );
+        println!(
+            "  score: p0={:.2} (sd={:.2})  p1={:.2} (sd={:.2})",
+            self.p0_score.mean(),
+            self.p0_score.standard_deviation(),
+            self.p1_score.mean(),
+            self.p1_score.standard_deviation(),
+        );
+        let corrected_pct = (p0_total.max(p1_total) - 0.5) / total as f64;
+        if corrected_pct > 0.5 {
+            let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
+            let confidence = stats::NormalDistribution::cumulative_normal_density(z) * 100.0;
+            let leading = if p0_total > p1_total {
+                "p0 (klv0)"
+            } else {
+                "p1 (klv1)"
+            };
+            println!("  {leading} leads, confidence: {confidence:.2}%");
+        } else {
+            println!("  no significant difference");
+        }
+    }
+}
+
+struct GamePairStats {
+    all: GameStats,
+    divergent: GameStats,
+}
+
+impl GamePairStats {
+    fn new() -> Self {
+        Self {
+            all: GameStats::new(),
+            divergent: GameStats::new(),
+        }
+    }
+
+    fn add_game(
+        &mut self,
+        p0_final: i32,
+        p1_final: i32,
+        turns: u32,
+        end_reason: game_state::CheckGameEnded,
+        divergent: bool,
+    ) {
+        self.all.add_game(p0_final, p1_final, turns, end_reason);
+        if divergent {
+            self.divergent
+                .add_game(p0_final, p1_final, turns, end_reason);
+        }
+    }
+
+    fn merge(&mut self, other: &GamePairStats) {
+        self.all.merge(&other.all);
+        self.divergent.merge(&other.divergent);
+    }
+
+    fn print(&self) {
+        let all_total = self.all.total_games();
+        let all_pairs = all_total / 2;
+        self.all.print(&format!(
+            "{all_total} {} ({all_pairs} {}):",
+            plural(all_total, "game", "games"),
+            plural(all_pairs, "pair", "pairs"),
+        ));
+        let div_total = self.divergent.total_games();
+        if div_total > 0 && div_total < all_total {
+            let div_pairs = div_total / 2;
+            self.divergent.print(&format!(
+                "\n{div_total} divergent {} ({div_pairs} {} = {:.2}%):",
+                plural(div_total, "game", "games"),
+                plural(div_pairs, "pair", "pairs"),
+                div_pairs as f64 / all_pairs as f64 * 100.0,
+            ));
+        }
+    }
+}
+
+fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    arc_klv0: std::sync::Arc<klv::Klv<L>>,
+    arc_klv1: std::sync::Arc<klv::Klv<L>>,
+    num_game_pairs: u64,
+    seed: Option<u64>,
+) -> error::Returns<()> {
+    let game_config = std::sync::Arc::new(game_config);
+    let kwg = std::sync::Arc::new(kwg);
+    let num_threads = if seed.is_some() { 1 } else { num_cpus::get() };
+    let completed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let reported_secs = std::sync::atomic::AtomicU64::new(0);
+    let t0 = std::time::Instant::now();
+
+    std::thread::scope(|s| -> error::Returns<()> {
+        let mut thread_handles = Vec::new();
+        for _ in 0..num_threads {
+            let game_config = std::sync::Arc::clone(&game_config);
+            let kwg = std::sync::Arc::clone(&kwg);
+            let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
+            let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
+            let completed_pairs = std::sync::Arc::clone(&completed_pairs);
+            let reported_secs = &reported_secs;
+            thread_handles.push(s.spawn(move || {
+                let mut rng = if let Some(seed) = seed {
+                    rand::rngs::ChaCha20Rng::seed_from_u64(seed)
+                } else {
+                    rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap()
+                };
+                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                let mut game_state = game_state::GameState::new(&game_config);
+                let mut saved_game_state = game_state.clone();
+                let mut final_scores = vec![0i32; game_config.num_players() as usize];
+                let mut stats = GamePairStats::new();
+                let mut first_game_moves: Vec<movegen::Play> = Vec::new();
+
+                loop {
+                    let pair_idx =
+                        completed_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if pair_idx >= num_game_pairs {
+                        break;
+                    }
+
+                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    saved_game_state.clone_from(&game_state);
+                    let saved_rng_state = rng.serialize_state();
+                    let starting_player = (pair_idx % 2) as u8;
+
+                    let mut pair_diverged = false;
+                    let mut pair_results =
+                        [(0i32, 0i32, 0u32, game_state::CheckGameEnded::NotEnded); 2];
+
+                    for game_in_pair in 0..2u8 {
+                        if game_in_pair > 0 {
+                            game_state.clone_from(&saved_game_state);
+                            rng = rand::rngs::ChaCha20Rng::deserialize_state(&saved_rng_state);
+                        }
+                        game_state.turn = starting_player;
+                        let klv_swapped = game_in_pair != 0;
+                        let mut num_turns = 0u32;
+                        if !klv_swapped {
+                            first_game_moves.clear();
+                        }
+
+                        let end_reason = loop {
+                            let board_snapshot = movegen::BoardSnapshot {
+                                board_tiles: &game_state.board_tiles,
+                                game_config: &game_config,
+                                kwg: &kwg,
+                                klv: if (game_state.turn == 0) != klv_swapped {
+                                    &arc_klv0
+                                } else {
+                                    &arc_klv1
+                                },
+                            };
+                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot: &board_snapshot,
+                                rack: &game_state.current_player().rack,
+                                max_gen: 1,
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                always_include_pass: false,
+                            });
+                            let play = &move_generator.plays[0].play;
+                            if klv_swapped {
+                                if !pair_diverged
+                                    && (num_turns as usize >= first_game_moves.len()
+                                        || first_game_moves[num_turns as usize] != *play)
+                                {
+                                    pair_diverged = true;
+                                }
+                            } else {
+                                first_game_moves.push(play.clone());
+                            }
+                            game_state.play(&game_config, &mut rng, play).unwrap();
+                            num_turns += 1;
+                            let end = game_state.check_game_ended(&game_config, &mut final_scores);
+                            match end {
+                                game_state::CheckGameEnded::PlayedOut
+                                | game_state::CheckGameEnded::ZeroScores => break end,
+                                game_state::CheckGameEnded::NotEnded => {}
+                            }
+                            game_state.next_turn();
+                        };
+
+                        let (klv0_score, klv1_score) = if klv_swapped {
+                            (final_scores[1], final_scores[0])
+                        } else {
+                            (final_scores[0], final_scores[1])
+                        };
+                        pair_results[game_in_pair as usize] =
+                            (klv0_score, klv1_score, num_turns, end_reason);
+                    }
+                    // also check if game 1 ended at a different turn
+                    if !pair_diverged && pair_results[0].2 != pair_results[1].2 {
+                        pair_diverged = true;
+                    }
+                    for &(klv0_score, klv1_score, num_turns, end_reason) in &pair_results {
+                        stats.add_game(
+                            klv0_score,
+                            klv1_score,
+                            num_turns,
+                            end_reason,
+                            pair_diverged,
+                        );
+                    }
+
+                    let secs = t0.elapsed().as_secs();
+                    let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
+                    if secs > prev {
+                        eprintln!("After {}s: {} pairs", secs, pair_idx + 1);
+                    }
+                }
+
+                stats
+            }));
+        }
+
+        let mut combined = GamePairStats::new();
+        for handle in thread_handles {
+            combined.merge(&handle.join().unwrap());
+        }
+
+        println!();
+        combined.print();
+
+        Ok(())
+    })
 }
