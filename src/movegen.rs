@@ -1501,8 +1501,6 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg:
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
     cross_set_buffer_strip: &'a [CrossSetComputation], // cached GADDAG state per position
-    left_extension_strip: &'a [u64],
-    right_extension_strip: &'a [u64],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
     face_value_scores_strip: &'a [i32],
@@ -1636,11 +1634,6 @@ fn gen_classic_place_moves<
                 this_cross_bits = !1;
                 is_unique = true;
             };
-            // Filter by left extension set (tiles to the right the traversal hasn't seen).
-            this_cross_bits &= env.params.left_extension_strip[idx as usize];
-            if this_cross_bits == 0 {
-                return;
-            }
             let new_word_multiplier = acc.word_multiplier
                 * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
             let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
@@ -1785,11 +1778,6 @@ fn gen_classic_place_moves<
             } else {
                 this_cross_bits = !1;
                 is_unique = true;
-            }
-            // Filter by right extension set (tiles to the left the traversal hasn't seen).
-            this_cross_bits &= env.params.right_extension_strip[idx as usize];
-            if this_cross_bits == 0 {
-                return;
             }
             let new_word_multiplier = acc.word_multiplier
                 * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
@@ -2267,20 +2255,6 @@ fn gen_place_moves_at<
                     [strip_range_start..strip_range_end]
             } else {
                 &working_buffer.cross_set_buffer_for_down_plays[strip_range_start..strip_range_end]
-            },
-            left_extension_strip: if placement.down {
-                &working_buffer.left_extension_set_for_down_plays
-                    [strip_range_start..strip_range_end]
-            } else {
-                &working_buffer.left_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end]
-            },
-            right_extension_strip: if placement.down {
-                &working_buffer.right_extension_set_for_down_plays
-                    [strip_range_start..strip_range_end]
-            } else {
-                &working_buffer.right_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end]
             },
             remaining_word_multipliers_strip: if placement.down {
                 &working_buffer.remaining_word_multipliers_for_down_plays
