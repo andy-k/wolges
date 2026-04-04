@@ -69,10 +69,6 @@ struct WorkingBuffer {
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
     perpendicular_scores_for_down_plays: Box<[i32]>,   // c*r
-    left_extension_set_for_across_plays: Box<[u64]>,   // r*c
-    right_extension_set_for_across_plays: Box<[u64]>,  // r*c
-    left_extension_set_for_down_plays: Box<[u64]>,     // c*r
-    right_extension_set_for_down_plays: Box<[u64]>,    // c*r
     transposed_board_tiles: Box<[u8]>,                 // c*r
     num_tiles_on_board: u16,
     num_tiles_in_bag: i16, // negative when players also have less than full racks
@@ -134,10 +130,6 @@ impl Clone for WorkingBuffer {
                 .perpendicular_scores_for_across_plays
                 .clone(),
             perpendicular_scores_for_down_plays: self.perpendicular_scores_for_down_plays.clone(),
-            left_extension_set_for_across_plays: self.left_extension_set_for_across_plays.clone(),
-            right_extension_set_for_across_plays: self.right_extension_set_for_across_plays.clone(),
-            left_extension_set_for_down_plays: self.left_extension_set_for_down_plays.clone(),
-            right_extension_set_for_down_plays: self.right_extension_set_for_down_plays.clone(),
             transposed_board_tiles: self.transposed_board_tiles.clone(),
             num_tiles_on_board: self.num_tiles_on_board,
             num_tiles_in_bag: self.num_tiles_in_bag,
@@ -204,14 +196,6 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.perpendicular_scores_for_across_plays);
         self.perpendicular_scores_for_down_plays
             .clone_from(&source.perpendicular_scores_for_down_plays);
-        self.left_extension_set_for_across_plays
-            .clone_from(&source.left_extension_set_for_across_plays);
-        self.right_extension_set_for_across_plays
-            .clone_from(&source.right_extension_set_for_across_plays);
-        self.left_extension_set_for_down_plays
-            .clone_from(&source.left_extension_set_for_down_plays);
-        self.right_extension_set_for_down_plays
-            .clone_from(&source.right_extension_set_for_down_plays);
         self.transposed_board_tiles
             .clone_from(&source.transposed_board_tiles);
         self.num_tiles_on_board
@@ -315,10 +299,6 @@ impl WorkingBuffer {
                 .into_boxed_slice(),
             perpendicular_scores_for_across_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
             perpendicular_scores_for_down_plays: vec![0i32; rows_times_cols].into_boxed_slice(),
-            left_extension_set_for_across_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
-            right_extension_set_for_across_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
-            left_extension_set_for_down_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
-            right_extension_set_for_down_plays: vec![!0u64; rows_times_cols].into_boxed_slice(),
             transposed_board_tiles: vec![0u8; rows_times_cols].into_boxed_slice(),
             num_tiles_on_board: 0,
             num_tiles_in_bag: 0,
@@ -580,10 +560,6 @@ impl WorkingBuffer {
             bits: 0,
         });
         self.prev_board_tiles.fill(0xff);
-        self.left_extension_set_for_across_plays.fill(!0u64);
-        self.right_extension_set_for_across_plays.fill(!0u64);
-        self.left_extension_set_for_down_plays.fill(!0u64);
-        self.right_extension_set_for_down_plays.fill(!0u64);
         if let Some(cache) = &mut self.accepts_alpha_cache {
             cache.fill(([0u8; 64], false));
         }
@@ -915,71 +891,6 @@ fn gen_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             output_strider,
             used_letters_tally,
         ),
-    }
-}
-
-// Compute left and right extension sets for a strip in the play direction.
-// Left extension set at position j: which tiles can extend leftward into j,
-// given the board tiles to the right of j.
-// Right extension set at position j: which tiles can extend rightward into j,
-// given the board tiles to the left of j.
-// Non-adjacent empty squares get !0u64 (all bits, no constraint).
-// Collect extension set bits from a GADDAG node's children.
-// Excludes separator (bit 0), then adds blank bit if non-empty.
-#[inline(always)]
-fn collect_extension_bits<N: kwg::Node>(kwg: &kwg::Kwg<N>, p: i32) -> u64 {
-    if p <= 0 {
-        return 0;
-    }
-    let mut arc = kwg[p].arc_index();
-    if arc <= 0 {
-        return 0;
-    }
-    let mut bits = 0u64;
-    loop {
-        let node = kwg[arc];
-        bits |= 1u64 << node.tile();
-        if node.is_end() {
-            break;
-        }
-        arc += 1;
-    }
-    let bits = bits & !1;
-    bits | (bits != 0) as u64
-}
-
-fn gen_extension_sets<N: kwg::Node>(
-    kwg: &kwg::Kwg<N>,
-    cross_set_buffer: &[CrossSetComputation],
-    left_extension_sets: &mut [u64],
-    right_extension_sets: &mut [u64],
-) {
-    let len = cross_set_buffer.len();
-
-    // Read GADDAG state (p) from cross_set_buffer instead of recomputing.
-    let mut group_right_empty: usize = len;
-    for j in (0..len).rev() {
-        if cross_set_buffer[j].b_letter != 0 {
-            if j + 1 == len || cross_set_buffer[j + 1].b_letter == 0 {
-                group_right_empty = j + 1;
-            }
-        } else {
-            if j + 1 < len && cross_set_buffer[j + 1].b_letter != 0 {
-                // Empty square immediately left of a tile group.
-                let p = cross_set_buffer[j + 1].p;
-                left_extension_sets[j] = collect_extension_bits(kwg, p);
-                if group_right_empty < len {
-                    right_extension_sets[group_right_empty] =
-                        collect_extension_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
-                }
-            }
-        }
-    }
-    // Handle group starting at position 0.
-    if len > 0 && cross_set_buffer[0].b_letter != 0 && group_right_empty < len {
-        let p = cross_set_buffer[0].p;
-        right_extension_sets[group_right_empty] =
-            collect_extension_bits(kwg, if p > 0 { kwg.seek(p, 0) } else { -1 });
     }
 }
 
@@ -3067,57 +2978,6 @@ fn kurnia_gen_place_moves_iter<
         }
         working_buffer.cross_set_for_across_plays[dim.at_row_col(star_row, star_col)] =
             CrossSet { bits: !1, score: 0 };
-    }
-    // extension sets: per strip in the play direction
-    // Across extension sets use board_tiles (rows), down use transposed_board_tiles (columns).
-    if matches!(
-        board_snapshot.game_config.game_rules(),
-        game_config::GameRules::Classic
-    ) {
-        // Across extension sets: recompute dirty rows.
-        for row in 0..dim.rows {
-            if dirty_rows & (1 << row) != 0 {
-                let strip_range_start = (row as isize * dim.cols as isize) as usize;
-                let strip_range_end = strip_range_start + dim.cols as usize;
-                working_buffer.left_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end]
-                    .fill(!0u64);
-                working_buffer.right_extension_set_for_across_plays
-                    [strip_range_start..strip_range_end]
-                    .fill(!0u64);
-                gen_extension_sets(
-                    board_snapshot.kwg,
-                    &working_buffer.cross_set_buffer_for_down_plays
-                        [strip_range_start..strip_range_end],
-                    &mut working_buffer.left_extension_set_for_across_plays
-                        [strip_range_start..strip_range_end],
-                    &mut working_buffer.right_extension_set_for_across_plays
-                        [strip_range_start..strip_range_end],
-                );
-            }
-        }
-        // Down extension sets: recompute dirty columns.
-        for col in 0..dim.cols {
-            if dirty_cols & (1 << col) != 0 {
-                let strip_range_start = (col as isize * dim.rows as isize) as usize;
-                let strip_range_end = strip_range_start + dim.rows as usize;
-                working_buffer.left_extension_set_for_down_plays
-                    [strip_range_start..strip_range_end]
-                    .fill(!0u64);
-                working_buffer.right_extension_set_for_down_plays
-                    [strip_range_start..strip_range_end]
-                    .fill(!0u64);
-                gen_extension_sets(
-                    board_snapshot.kwg,
-                    &working_buffer.cross_set_buffer_for_across_plays
-                        [strip_range_start..strip_range_end],
-                    &mut working_buffer.left_extension_set_for_down_plays
-                        [strip_range_start..strip_range_end],
-                    &mut working_buffer.right_extension_set_for_down_plays
-                        [strip_range_start..strip_range_end],
-                );
-            }
-        }
     }
     // Update prev_board after all dirty processing is done.
     if dirty_rows != 0 || dirty_cols != 0 {
