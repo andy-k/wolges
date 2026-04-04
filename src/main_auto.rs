@@ -194,7 +194,6 @@ fn do_it<N: kwg::Node>(
     let mut display_scores = vec![0i32; game_state.players.len()];
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
-        game_state.turn = rng.random_range(0..game_config.num_players());
         final_scores.iter_mut().for_each(|s| *s = 0);
         //timers.reset_to(25 * 60 * 1000);
         timers.reset_to(15 * 1000);
