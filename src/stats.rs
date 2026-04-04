@@ -82,93 +82,46 @@ impl Stats {
 pub struct NormalDistribution {}
 
 impl NormalDistribution {
-    const START: f64 = -8.25;
-    const STEP: f64 = 1.0f64 / 131072.0;
-
-    // https://en.wikipedia.org/wiki/Normal_distribution#Standard_normal_distribution
+    // Abramowitz & Stegun 26.2.17 (5-term rational approximation).
+    // Maximum error ~1.0e-7, sufficient for 4+ decimal places.
+    // https://en.wikipedia.org/wiki/Normal_distribution#Numerical_approximations_for_the_normal_cumulative_distribution_function_and_normal_quantile_function
     #[inline(always)]
-    pub fn normal_density(x: f64) -> f64 {
-        // FRAC_1_SQRT_2PI is nightly-only.
-        (x * x * -0.5).exp()
-            * (std::f64::consts::FRAC_1_SQRT_2 * std::f64::consts::FRAC_2_SQRT_PI * 0.5)
-    }
-
-    // approximate and asymmetrical.
-    #[inline(always)]
-    pub fn sum_normal_density(x_lo: f64, x_hi: f64) -> f64 {
-        let mut ret = 0.0;
-        let mut x = x_lo;
-        while x <= x_hi {
-            ret += Self::normal_density(x);
-            x += Self::STEP;
-        }
-        ret * Self::STEP
-    }
-
-    // exclude unproductive range.
-    // this is a single-use version.
-    #[inline(always)]
-    #[allow(unused)]
     pub fn cumulative_normal_density(x: f64) -> f64 {
-        Self::sum_normal_density(Self::START, x.min(-Self::START))
+        if x >= 0.0 {
+            Self::cnd_positive(x)
+        } else {
+            1.0 - Self::cnd_positive(-x)
+        }
+    }
+
+    #[inline(always)]
+    fn cnd_positive(x: f64) -> f64 {
+        const P: f64 = 0.2316419;
+        const B1: f64 = 0.319381530;
+        const B2: f64 = -0.356563782;
+        const B3: f64 = 1.781477937;
+        const B4: f64 = -1.821255978;
+        const B5: f64 = 1.330274429;
+        let t = 1.0 / (1.0 + P * x);
+        let pdf = (x * x * -0.5).exp()
+            * (std::f64::consts::FRAC_1_SQRT_2 * std::f64::consts::FRAC_2_SQRT_PI * 0.5);
+        1.0 - pdf * t * (B1 + t * (B2 + t * (B3 + t * (B4 + t * B5))))
     }
 
     #[inline(always)]
     pub fn reverse_ci(x: f64) -> f64 {
-        let mut lo = 0.0;
-        let mut hi = -Self::START;
-        loop {
+        let mut lo = 0.0f64;
+        let mut hi = 8.25f64;
+        for _ in 0..64 {
             let mid = (lo + hi) * 0.5;
-            if (hi - lo) < Self::STEP {
-                return mid;
+            let cdf_range =
+                Self::cumulative_normal_density(mid) - Self::cumulative_normal_density(-mid);
+            if cdf_range < x {
+                lo = mid;
+            } else {
+                hi = mid;
             }
-            match Self::sum_normal_density(-mid, mid).partial_cmp(&x) {
-                Some(std::cmp::Ordering::Less) => lo = mid,
-                Some(std::cmp::Ordering::Greater) => hi = mid,
-                _ => return mid,
-            }
         }
-    }
-}
-
-pub struct CumulativeNormalDensity {
-    cache: Vec<f64>, // 2162689 elements worst case.
-    cache_cum: f64,
-}
-
-impl Default for CumulativeNormalDensity {
-    #[inline(always)]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CumulativeNormalDensity {
-    pub fn new() -> Self {
-        Self {
-            cache: Vec::new(),
-            cache_cum: 0.0,
-        }
-    }
-
-    pub fn get(&mut self, x: f64) -> f64 {
-        if x < NormalDistribution::START {
-            return 0.0;
-        }
-        let i = ((x.min(-NormalDistribution::START) - NormalDistribution::START)
-            / NormalDistribution::STEP)
-            .floor() as usize;
-        if i < self.cache.len() {
-            return self.cache[i];
-        }
-        let mut v = self.cache.len() as f64 * NormalDistribution::STEP + NormalDistribution::START;
-        loop {
-            self.cache_cum += NormalDistribution::normal_density(v) * NormalDistribution::STEP;
-            self.cache.push(self.cache_cum);
-            if i < self.cache.len() {
-                return self.cache_cum;
-            }
-            v += NormalDistribution::STEP;
-        }
+        (lo + hi) * 0.5
     }
 }
