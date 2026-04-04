@@ -2433,7 +2433,9 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
-    let num_threads = if seed.is_some() { 1 } else { num_cpus::get() };
+    let seed = seed.unwrap_or_else(rand::random);
+    eprintln!("seed: {seed}");
+    let num_threads = num_cpus::get();
     let completed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
@@ -2448,11 +2450,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let completed_pairs = std::sync::Arc::clone(&completed_pairs);
             let reported_secs = &reported_secs;
             thread_handles.push(s.spawn(move || {
-                let mut rng = if let Some(seed) = seed {
-                    rand::rngs::ChaCha20Rng::seed_from_u64(seed)
-                } else {
-                    rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap()
-                };
+                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut saved_game_state = game_state.clone();
@@ -2467,6 +2465,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         break;
                     }
 
+                    rng.set_stream(pair_idx);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                     saved_game_state.clone_from(&game_state);
                     let saved_rng_state = rng.serialize_state();

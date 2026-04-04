@@ -97,14 +97,11 @@ impl GameState {
     pub fn reset(&mut self) {
         for player in self.players.iter_mut() {
             player.score = 0;
-            self.bag.return_tiles(&player.rack);
             player.rack.clear();
             player.num_exchanges = 0;
         }
-        for &tile in self.board_tiles.iter().filter(|&&tile| tile != 0) {
-            self.bag.return_tile(tile & !((tile as i8) >> 7) as u8);
-        }
         self.board_tiles.iter_mut().for_each(|m| *m = 0);
+        self.bag.reset();
         self.turn = 0;
         self.zero_turns = 0;
         self.pass_turns = 0;

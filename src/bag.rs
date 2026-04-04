@@ -6,6 +6,7 @@ use rand::prelude::*;
 pub struct Bag {
     tiles: Vec<u8>,
     fc: usize, // front cursor: tiles[0..fc] is dead space, tiles[fc..] is playable
+    canonical: Box<[u8]>, // initial tile sequence, for zero-alloc reset
 }
 
 impl Bag {
@@ -19,7 +20,18 @@ impl Bag {
                 tiles.push(tile);
             }
         }
-        Bag { tiles, fc: 0 }
+        let canonical = tiles.clone().into_boxed_slice();
+        Bag {
+            tiles,
+            fc: 0,
+            canonical,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.tiles.clear();
+        self.fc = 0;
+        self.tiles.extend_from_slice(&self.canonical);
     }
 
     pub fn shuffle(&mut self, mut rng: &mut dyn Rng) {
@@ -256,6 +268,7 @@ impl Clone for Bag {
         Self {
             tiles: self.tiles.clone(),
             fc: self.fc,
+            canonical: self.canonical.clone(),
         }
     }
 
@@ -263,5 +276,6 @@ impl Clone for Bag {
     fn clone_from(&mut self, source: &Self) {
         self.tiles.clone_from(&source.tiles);
         self.fc = source.fc;
+        self.canonical.clone_from(&source.canonical);
     }
 }
