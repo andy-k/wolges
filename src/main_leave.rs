@@ -2410,6 +2410,8 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let kwg = std::sync::Arc::new(kwg);
     let num_threads = if seed.is_some() { 1 } else { num_cpus::get() };
     let completed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let reported_secs = std::sync::atomic::AtomicU64::new(0);
+    let t0 = std::time::Instant::now();
 
     std::thread::scope(|s| -> error::Returns<()> {
         let mut thread_handles = Vec::new();
@@ -2419,6 +2421,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
             let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
             let completed_pairs = std::sync::Arc::clone(&completed_pairs);
+            let reported_secs = &reported_secs;
             thread_handles.push(s.spawn(move || {
                 let mut rng = if let Some(seed) = seed {
                     rand::rngs::ChaCha20Rng::seed_from_u64(seed)
@@ -2490,6 +2493,12 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             (final_scores[0], final_scores[1])
                         };
                         stats.add_game(klv0_score, klv1_score, num_turns, end_reason);
+                    }
+
+                    let secs = t0.elapsed().as_secs();
+                    let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
+                    if secs > prev {
+                        eprintln!("After {}s: {} pairs", secs, pair_idx + 1);
                     }
                 }
 
