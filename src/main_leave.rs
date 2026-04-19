@@ -9,12 +9,6 @@ use wolges::{
     move_picker, movegen, prob, stats,
 };
 
-thread_local! {
-    static RNG: std::cell::RefCell<Box<dyn rand::Rng>> = std::cell::RefCell::new(Box::new(
-        rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
-    ));
-}
-
 static BASE62: &[u8; 62] = b"\
 0123456789\
 ABCDEFGHIJKLMNOPQRSTUVWXYZ\
