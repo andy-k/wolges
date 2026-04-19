@@ -365,6 +365,11 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 } else {
                     1_000_000
                 };
+                let seed = if args.len() > 5 {
+                    Some(u64::from_str(&args[5])?)
+                } else {
+                    None
+                };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
                 let klv = if args3 == "-" {
@@ -372,7 +377,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 } else {
                     klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(args3)?)
                 };
-                discover_playability(make_game_config(), kwg, klv, num_games)?;
+                discover_playability(make_game_config(), kwg, klv, num_games, seed)?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -411,9 +416,10 @@ fn main() -> error::Returns<()> {
     generate leaves (no smoothing) up to rack_size
   english-generate-full summary.csv leaves.csv
     generate leaves (with smoothing) up to rack_size
-  english-playability CSW24.kwg leave.klv 1000000
+  english-playability CSW24.kwg leave.klv 1000000 [seed]
     autoplay (not saved) and record prorated found best words (at the end)
     (run fewer number of games and use resummarize to merge to mitigate risks)
+    seed is optional; prints auto-generated seed to stderr if not provided.
   english-resummarize-playability concatenated_playabilities.csv playability.csv
     same as english-resummarize but sorts differently (by length first)
   english-resummarize-playability-all concat_playabilities.csv playability.csv
@@ -1898,10 +1904,13 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     kwg: kwg::Kwg<N>,
     klv: klv::Klv<L>,
     num_games: u64,
+    seed: Option<u64>,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let klv = std::sync::Arc::new(klv);
+    let seed = seed.unwrap_or_else(rand::random);
+    eprintln!("seed: {seed}");
     let num_threads = num_cpus::get();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
@@ -1944,8 +1953,8 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let completed_moves = std::sync::Arc::clone(&completed_moves);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             threads.push(s.spawn(move || {
-                RNG.with(|rng| {
-                    let mut rng = &mut *rng.borrow_mut();
+                {
+                    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                     let mut game_state = game_state::GameState::new(&game_config);
                     let mut final_scores = vec![0; game_config.num_players() as usize];
@@ -1993,6 +2002,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             break;
                         }
+                        rng.set_stream(num_prior_games);
 
                         game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                         loop {
@@ -2183,7 +2193,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 .or_insert(thread_v);
                         }
                     }
-                })
+                }
             }));
         }
 
