@@ -575,7 +575,7 @@ fn generate_autoplay_logs<
         .unwrap()
         .as_secs();
     let run_identifier = std::sync::Arc::new(format!("log-{epoch_secs:08x}"));
-    println!("logging to {run_identifier}");
+    eprintln!("logging to {run_identifier}");
     let mut csv_log = if WRITE_LOGS {
         Some(csv::Writer::from_path(run_identifier.to_string())?)
     } else {
@@ -1255,20 +1255,20 @@ fn generate_autoplay_logs<
                                                 .write_all(&batched_csv_game_buf)
                                                 .unwrap();
                                             if mutex_guard.tick_periods.update(elapsed_time_secs) {
-                                                print!(
+                                                eprint!(
                                                     "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves)"
                                                 );
                                                 if !mutex_guard.undersampling_comment.is_empty() {
-                                                    print!("{}", mutex_guard.undersampling_comment);
+                                                    eprint!("{}", mutex_guard.undersampling_comment);
                                                     let num_todo =
                                                         undersampling_remediation_countdown.load(
                                                             std::sync::atomic::Ordering::Relaxed,
                                                         );
                                                     if num_todo > 0 {
-                                                        print!(" (to do: {num_todo})");
+                                                        eprint!(" (to do: {num_todo})");
                                                     }
                                                 }
-                                                println!(" into {run_identifier}");
+                                                eprintln!(" into {run_identifier}");
                                             }
                                         }
                                         batched_csv_log_buf.clear();
@@ -1338,7 +1338,7 @@ fn generate_autoplay_logs<
 
         for thread in threads {
             if let Err(e) = thread.join() {
-                println!("{e:?}");
+                eprintln!("{e:?}");
             }
         }
     });
@@ -1354,7 +1354,7 @@ fn generate_autoplay_logs<
             row_count += x.count;
         }
 
-        println!(
+        eprintln!(
             "{} records, {} unique racks",
             row_count,
             full_rack_map.len()
@@ -1375,7 +1375,7 @@ fn generate_autoplay_logs<
         }
     }
 
-    println!(
+    eprintln!(
         "After {} seconds, have logged {} games ({} moves) into {}",
         t0.elapsed().as_secs(),
         completed_games.load(std::sync::atomic::Ordering::Relaxed),
@@ -1912,7 +1912,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         .unwrap()
         .as_secs();
     let run_identifier = std::sync::Arc::new(format!("{epoch_secs:08x}"));
-    println!("run identifier is {run_identifier}");
+    eprintln!("run identifier is {run_identifier}");
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2158,7 +2158,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                         mutex_guard.tick_periods.update(elapsed_time_secs)
                                     };
                                     if tick_changed {
-                                        println!(
+                                        eprintln!(
                                             "After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}"
                                         );
                                     }
@@ -2191,7 +2191,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
         for thread in threads {
             if let Err(e) = thread.join() {
-                println!("{e:?}");
+                eprintln!("{e:?}");
             }
         }
     });
@@ -2207,7 +2207,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             row_count += x.count;
         }
 
-        println!(
+        eprintln!(
             "{} records, {} unique words",
             row_count,
             full_word_map.len()
@@ -2233,7 +2233,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         }
     }
 
-    println!(
+    eprintln!(
         "After {} seconds, have played {} games ({} moves) for {}",
         t0.elapsed().as_secs(),
         completed_games.load(std::sync::atomic::Ordering::Relaxed),
