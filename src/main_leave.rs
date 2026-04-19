@@ -394,7 +394,7 @@ fn main() -> error::Returns<()> {
     if leave is \"-\" or omitted, uses no leave.
     number of games is optional.
     min samples per rack is optional, but must be 0 for non-summarize.
-    seed is optional; if provided, uses single thread for reproducibility.
+    seed is optional; prints auto-generated seed to stderr if not provided.
   english-autoplay-summarize CSW24.kwg leave0.klv leave1.klv 1000000 0 [seed]
     same as english-autoplay and also save summary file.
   english-autoplay-summarize-only CSW24.kwg leave0.klv leave1.klv 1000000 0 [seed]
@@ -567,7 +567,9 @@ fn generate_autoplay_logs<
             .map(|x| format!("p{x}"))
             .collect::<Box<[String]>>(),
     );
-    let num_threads = if seed.is_some() { 1 } else { num_cpus::get() };
+    let seed = seed.unwrap_or_else(rand::random);
+    eprintln!("seed: {seed}");
+    let num_threads = num_cpus::get();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let epoch_secs = std::time::SystemTime::now()
@@ -689,13 +691,8 @@ fn generate_autoplay_logs<
                 std::sync::Arc::clone(&undersampling_remediation_generation_id);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             threads.push(s.spawn(move || {
-                RNG.with(|rng| {
-                    if let Some(seed) = seed {
-                        *rng.borrow_mut() = Box::new(
-                            rand::rngs::ChaCha20Rng::seed_from_u64(seed),
-                        );
-                    }
-                    let mut rng = &mut *rng.borrow_mut();
+                {
+                    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                     let mut game_id = String::with_capacity(8);
                     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                     let mut game_state = game_state::GameState::new(&game_config);
@@ -741,6 +738,7 @@ fn generate_autoplay_logs<
                     loop {
                         let mut num_prior_games =
                             num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        rng.set_stream(num_prior_games);
                         if num_prior_games >= num_games {
                             if !undersampling_remediation_thread_begun {
                                 // first time this thread transitions past the first num_games games.
@@ -1332,7 +1330,7 @@ fn generate_autoplay_logs<
                             }
                         }
                     }
-                })
+                }
             }));
         }
 
