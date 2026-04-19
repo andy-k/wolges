@@ -6,6 +6,7 @@ use rand::prelude::*;
 pub struct Bag {
     tiles: Vec<u8>,
     fc: usize, // front cursor: tiles[0..fc] is dead space, tiles[fc..] is playable
+    canonical: Box<[u8]>, // initial tile sequence, for zero-alloc reset
 }
 
 impl Bag {
@@ -19,7 +20,18 @@ impl Bag {
                 tiles.push(tile);
             }
         }
-        Bag { tiles, fc: 0 }
+        let canonical = tiles.clone().into_boxed_slice();
+        Bag {
+            tiles,
+            fc: 0,
+            canonical,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.tiles.clear();
+        self.fc = 0;
+        self.tiles.extend_from_slice(&self.canonical);
     }
 
     pub fn shuffle(&mut self, mut rng: &mut dyn Rng) {
@@ -76,12 +88,19 @@ impl Bag {
         }
     }
 
-    pub fn return_tiles(&mut self, tiles: &[u8]) {
-        self.tiles.extend_from_slice(tiles);
+    pub fn return_tile(&mut self, tile: u8) {
+        if self.fc > 0 {
+            self.fc -= 1;
+            self.tiles[self.fc] = tile;
+        } else {
+            self.tiles.push(tile);
+        }
     }
 
-    pub fn return_tile(&mut self, tile: u8) {
-        self.tiles.push(tile);
+    pub fn return_tiles(&mut self, tiles: &[u8]) {
+        for &tile in tiles {
+            self.return_tile(tile);
+        }
     }
 
     pub fn set_from_iter<I: IntoIterator<Item = u8>>(&mut self, iter: I) {
@@ -256,6 +275,7 @@ impl Clone for Bag {
         Self {
             tiles: self.tiles.clone(),
             fc: self.fc,
+            canonical: self.canonical.clone(),
         }
     }
 
@@ -263,5 +283,6 @@ impl Clone for Bag {
     fn clone_from(&mut self, source: &Self) {
         self.tiles.clone_from(&source.tiles);
         self.fc = source.fc;
+        self.canonical.clone_from(&source.canonical);
     }
 }
