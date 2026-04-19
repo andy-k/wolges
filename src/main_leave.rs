@@ -426,7 +426,7 @@ fn main() -> error::Returns<()> {
     confidence that one set of leaves is better.
     if klv is \"-\" or omitted, uses no leave.
     number of game pairs is optional (default 10000).
-    seed is optional; if provided, uses single thread for reproducibility.
+    seed is optional; prints auto-generated seed to stderr if not provided.
   (english can also be catalan, dutch, french, german, norwegian, polish,
     slovene, spanish, super-english, super-catalan)
   (add -big after language, such as dutch-big-autoplay, to use kbwg)
