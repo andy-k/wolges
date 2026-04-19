@@ -712,8 +712,7 @@ fn generate_autoplay_logs<
                 let mut num_batched_games_here = 0;
                 let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
                 let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
-                let mut thread_full_rack_map =
-                    fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
                 let mut exchange_buffer = if SUMMARIZE && min_samples_per_rack != 0 {
                     Vec::with_capacity(game_config.rack_size() as usize)
                 } else {
@@ -839,29 +838,26 @@ fn generate_autoplay_logs<
                                 &mut thread_full_rack_map,
                                 &mut mutex_guard.full_rack_map,
                             );
-                            mutex_guard.undersampled_racks.retain(
-                                |rack_bytes: &bites::Bites| {
-                                    let rack_freq = thread_full_rack_map
-                                        .get(rack_bytes)
-                                        .map_or(0, |v| v.count);
+                            mutex_guard
+                                .undersampled_racks
+                                .retain(|rack_bytes: &bites::Bites| {
+                                    let rack_freq =
+                                        thread_full_rack_map.get(rack_bytes).map_or(0, |v| v.count);
                                     if rack_freq < min_samples_per_rack {
                                         num_moves_to_force += min_samples_per_rack - rack_freq;
                                         true
                                     } else {
                                         false
                                     }
-                                },
-                            );
+                                });
                             std::mem::swap(
                                 &mut thread_full_rack_map,
                                 &mut mutex_guard.full_rack_map,
                             );
-                            undersampled_thread_racks
-                                .clone_from(&mutex_guard.undersampled_racks);
+                            undersampled_thread_racks.clone_from(&mutex_guard.undersampled_racks);
                             mutex_guard.undersampling_comment.clear();
                             if num_moves_to_force != 0 {
-                                let num_undersampled_racks =
-                                    mutex_guard.undersampled_racks.len();
+                                let num_undersampled_racks = mutex_guard.undersampled_racks.len();
                                 write!(
                                     mutex_guard.undersampling_comment,
                                     " (need to force {num_undersampled_racks} racks over {num_moves_to_force} moves)"
@@ -912,8 +908,7 @@ fn generate_autoplay_logs<
                     }
                     // wrapping sequence number. 62 ** 4 == 14776336.
                     num_prior_games = num_prior_games.wrapping_add(1);
-                    game_id
-                        .push(BASE62[(num_prior_games / (62 * 62 * 62) % 62) as usize] as char);
+                    game_id.push(BASE62[(num_prior_games / (62 * 62 * 62) % 62) as usize] as char);
                     game_id.push(BASE62[(num_prior_games / (62 * 62) % 62) as usize] as char);
                     game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
                     game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
@@ -1042,9 +1037,7 @@ fn generate_autoplay_logs<
                             board_snapshot,
                             rack: cur_rack,
                             max_gen: 1,
-                            num_exchanges_by_this_player: game_state
-                                .current_player()
-                                .num_exchanges,
+                            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
                         });
 
@@ -1107,21 +1100,11 @@ fn generate_autoplay_logs<
                                 } => {
                                     let alphabet = game_config.alphabet();
                                     if *down {
-                                        write!(
-                                            play_fmt,
-                                            "{}{} ",
-                                            display::column(*lane),
-                                            idx + 1
-                                        )
-                                        .unwrap();
+                                        write!(play_fmt, "{}{} ", display::column(*lane), idx + 1)
+                                            .unwrap();
                                     } else {
-                                        write!(
-                                            play_fmt,
-                                            "{}{} ",
-                                            lane + 1,
-                                            display::column(*idx)
-                                        )
-                                        .unwrap();
+                                        write!(play_fmt, "{}{} ", lane + 1, display::column(*idx))
+                                            .unwrap();
                                     }
                                     for &tile in word.iter() {
                                         if tile == 0 {
@@ -1195,13 +1178,13 @@ fn generate_autoplay_logs<
                                 }
                                 _ => game_ended,
                             }
-                        }; match res {
+                        };
+                        match res {
                             game_state::CheckGameEnded::PlayedOut
                             | game_state::CheckGameEnded::ZeroScores => {
                                 let completed_moves = completed_moves
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                completed_games
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                completed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 if WRITE_LOGS {
                                     batched_csv_log
                                         .serialize((
@@ -1244,9 +1227,10 @@ fn generate_autoplay_logs<
                                     {
                                         let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                                         if WRITE_LOGS
-                                            && let Some(c) = &mut mutex_guard.csv_log_writer {
-                                                c.write_all(&batched_csv_log_buf).unwrap()
-                                            }
+                                            && let Some(c) = &mut mutex_guard.csv_log_writer
+                                        {
+                                            c.write_all(&batched_csv_log_buf).unwrap()
+                                        }
                                         mutex_guard
                                             .csv_game_writer
                                             .write_all(&batched_csv_game_buf)
@@ -1257,10 +1241,8 @@ fn generate_autoplay_logs<
                                             );
                                             if !mutex_guard.undersampling_comment.is_empty() {
                                                 eprint!("{}", mutex_guard.undersampling_comment);
-                                                let num_todo =
-                                                    undersampling_remediation_countdown.load(
-                                                        std::sync::atomic::Ordering::Relaxed,
-                                                    );
+                                                let num_todo = undersampling_remediation_countdown
+                                                    .load(std::sync::atomic::Ordering::Relaxed);
                                                 if num_todo > 0 {
                                                     eprint!(" (to do: {num_todo})");
                                                 }
@@ -1269,8 +1251,7 @@ fn generate_autoplay_logs<
                                         }
                                     }
                                     batched_csv_log_buf.clear();
-                                    batched_csv_log =
-                                        csv::Writer::from_writer(batched_csv_log_buf);
+                                    batched_csv_log = csv::Writer::from_writer(batched_csv_log_buf);
                                     batched_csv_game_buf.clear();
                                     batched_csv_game =
                                         csv::Writer::from_writer(batched_csv_game_buf);
@@ -1306,10 +1287,9 @@ fn generate_autoplay_logs<
                 let batched_csv_log_buf = batched_csv_log.into_inner().unwrap();
                 let batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
                 let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                if WRITE_LOGS
-                    && let Some(c) = &mut mutex_guard.csv_log_writer {
-                        c.write_all(&batched_csv_log_buf).unwrap();
-                    }
+                if WRITE_LOGS && let Some(c) = &mut mutex_guard.csv_log_writer {
+                    c.write_all(&batched_csv_log_buf).unwrap();
+                }
                 mutex_guard
                     .csv_game_writer
                     .write_all(&batched_csv_game_buf)
@@ -1950,8 +1930,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0; game_config.num_players() as usize];
                 let mut num_batched_games_here = 0;
-                let mut thread_full_word_map =
-                    fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                let mut thread_full_word_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
                 let mut word_iter = move_filter::LimitedVocabChecker::new();
                 let mut unjumble_buf = match game_config.game_rules() {
                     game_config::GameRules::Classic => Vec::new(),
@@ -2025,11 +2004,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                         .num_exchanges,
                                     always_include_pass: false,
                                 },
-                                |_down: bool,
-                                 _lane: i8,
-                                 _idx: i8,
-                                 _word: &[u8],
-                                 _score: i32| true,
+                                |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
                                 |leave_value: i32| leave_value,
                                 |equity: equity::Equity, play: &movegen::Play| {
                                     match equity.cmp(&best_equity_so_far) {
