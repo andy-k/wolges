@@ -351,6 +351,16 @@ pub fn make_spanish_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/spanish.txt")
 }
 
+// https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Swedish
+// https://en.wikipedia.org/wiki/Swedish_alphabet
+// https://en.wikipedia.org/wiki/Swedish_phonology#Vowels
+// Å Ä Ö are distinct letters sorted after Z; Ü collates after Y ("German y"),
+// Æ as Ä, Ø as Ö (Unicode CLDR sv: &Y<<ü, &z<å<ä<<æ<ö<<ø).
+// also this ordering matches system locale files.
+pub fn make_swedish_alphabet() -> Alphabet {
+    new_static_alphabet_from_file!("alphabets/swedish.txt")
+}
+
 pub struct AlphabetReader {
     supported_tiles: Box<[(u8, bites::Bites)]>,
     by_first_byte: [Option<(usize, usize)>; 256],

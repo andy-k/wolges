@@ -428,7 +428,7 @@ fn main() -> error::Returns<()> {
     number of game pairs is optional (default 10000).
     seed is optional; prints auto-generated seed to stderr if not provided.
   (english can also be catalan, dutch, french, german, norwegian, polish,
-    slovene, spanish, super-english, super-catalan)
+    slovene, spanish, swedish, super-english, super-catalan)
   (add -big after language, such as dutch-big-autoplay, to use kbwg)
   jumbled-english-autoplay CSW24.kad leave0.klv leave1.klv 1000
     (all also take jumbled- prefix, including jumbled-super-;
@@ -532,6 +532,12 @@ when low disk space, note that in bash:
                 &args,
                 "jumbled-spanish",
                 game_config::make_jumbled_spanish_game_config,
+            )?
+            || do_lang(&args, "swedish", game_config::make_swedish_game_config)?
+            || do_lang(
+                &args,
+                "jumbled-swedish",
+                game_config::make_jumbled_swedish_game_config,
             )?
         {
         } else {
