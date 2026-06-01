@@ -2724,7 +2724,7 @@ fn main() -> error::Returns<()> {
   english-make-wmp something.txt something.wmp
     generate .wmp v3
   (english can also be catalan, dutch, french, german, norwegian, polish,
-    slovene, spanish, decimal, hex)
+    slovene, spanish, swedish, decimal, hex)
   (english can also be custom, with an extra alphabet file argument:
     custom-kwg alphabet.txt CSW24.kwg CSW24.txt)
   klv-kwg-extract CSW24.klv2 racks.kwg
@@ -2768,6 +2768,7 @@ input/output files can be \"-\" (not advisable for binary files)"
             || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
             || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
+            || do_lang(&args, "swedish", alphabet::make_swedish_alphabet)?
             || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
             || do_lang(&args, "hex", alphabet::make_hex_alphabet)?
             || do_lang(

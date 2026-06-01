@@ -457,7 +457,7 @@ fn main() -> error::Returns<()> {
     english-legacy-... for legacy (which is the former default),
     this is applicable for kwg, kwg-anything, klv/klv2)
   (english can also be catalan, dutch, french, german, norwegian, polish,
-    slovene, spanish, decimal, hex)
+    slovene, spanish, swedish, decimal, hex)
   (english can also be custom, with an extra alphabet file argument:
     custom-kwg alphabet.txt words.txt out.kwg)
 input/output files can be \"-\" (not advisable for binary files)"
@@ -477,6 +477,7 @@ input/output files can be \"-\" (not advisable for binary files)"
             || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
             || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
             || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
+            || do_lang(&args, "swedish", alphabet::make_swedish_alphabet)?
             || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
             || do_lang(&args, "hex", alphabet::make_hex_alphabet)?
         {
