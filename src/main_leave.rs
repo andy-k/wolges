@@ -1485,6 +1485,10 @@ fn generate_autoplay_logs<
     Ok(())
 }
 
+fn env_usize(name: &str, default: usize) -> usize {
+    env_parse(name, default)
+}
+
 // GillesB's leave generation by board sampling. Produces the same summary CSV
 // as <lang>-autoplay-summarize-only (a leading ("", total_equity, total_count)
 // row then rack,equity_sum,count rows), so its output merges via -resummarize
@@ -1523,13 +1527,24 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         let alphabet = game_config.alphabet();
         (0..alphabet.len()).map(|t| alphabet.freq(t) as u32).sum()
     };
-    let pool_min = (num_tiles / 4) as usize;
-    let pool_max = (num_tiles as usize).saturating_sub(pool_min);
-    let group_size = (2 * rack_size as usize)
-        .saturating_sub(1)
-        .max(rack_size as usize);
-    let num_draws = 10usize;
-    let turn_stride = 3u32;
+    // config-derived defaults, overridable via env vars for experiments.
+    // pool_min defaults to num_tiles/4; pool_max defaults to its mirror
+    // (num_tiles - pool_min), so the default window is symmetric and setting
+    // WOLGES_POOL_MIN alone shifts both edges. setting WOLGES_POOL_MAX alone
+    // does NOT move pool_min (it stays num_tiles/4) -- set both for an
+    // explicit asymmetric window.
+    let pool_min = env_usize("WOLGES_POOL_MIN", (num_tiles / 4) as usize);
+    let pool_max = env_usize(
+        "WOLGES_POOL_MAX",
+        (num_tiles as usize).saturating_sub(pool_min),
+    );
+    let group_size = env_usize(
+        "WOLGES_GILLES_GROUP",
+        (2 * rack_size as usize).saturating_sub(1),
+    )
+    .max(rack_size as usize);
+    let num_draws = env_usize("WOLGES_GILLES_DRAWS", 10);
+    let turn_stride = env_usize("WOLGES_GILLES_STRIDE", 3) as u32;
     eprintln!(
         "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride}"
     );
