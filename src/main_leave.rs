@@ -1678,13 +1678,21 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                 }
 
                                 // enumerate every rack_size rack of the worst group;
-                                // record each rack's best-play equity.
+                                // record each rack's best-play equity, evaluated
+                                // with the turn player's leave file (klv0 for p0,
+                                // klv1 for p1) just like autoplay records the
+                                // turn player's rack. with klv0 == klv1 (the usual
+                                // klv_n vs klv_n run) this is moot.
                                 rack_tally.clone_from(&best_group_tally);
                                 let board_snapshot = movegen::BoardSnapshot {
                                     board_tiles: &game_state.board_tiles,
                                     game_config: &game_config,
                                     kwg: &kwg,
-                                    klv: &arc_klv0,
+                                    klv: if game_state.turn == 0 {
+                                        &arc_klv0
+                                    } else {
+                                        &arc_klv1
+                                    },
                                 };
                                 let move_generator = &mut move_generator;
                                 let thread_map = &mut thread_map;
