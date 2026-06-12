@@ -1580,8 +1580,28 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let growth_cap = env_usize("WOLGES_GILLES_GROWTH", rack_size as usize);
     let max_no_progress = env_usize("WOLGES_GILLES_MAX_NO_PROGRESS", 2) as u32;
     let force_recompute_games = env_usize("WOLGES_GILLES_FORCE_RECOMPUTE_GAMES", 2000) as u64;
+    // reserved-tile-pool remediation (off by default). single-copy rare tiles
+    // (e.g. Q) are usually played before the snapshot window, so racks needing
+    // them stay undersampled and are expensive to reach by normal sampling.
+    // when WOLGES_GILLES_RESERVE is set, each remediation game holds a batch
+    // of still undersampled racks' tiles out of the bag during the draw, so
+    // they remain unseen at the snapshots and become directly drawable -- at
+    // the correct midgame phase and with no impossible-rack sampling. the
+    // batch is filled until reserve_budget tiles are held out, so it scales
+    // with the bag: reserve_budget defaults to what the bag can spare and
+    // still build a board into the snapshot window (num_tiles - pool_min -
+    // opening racks - a rack of slack). left off by default because the
+    // held-out boards are mildly biased; enable for the rare tail and validate
+    // via compare.
+    let reserve_enabled = env_flag("WOLGES_GILLES_RESERVE", false);
+    let reserve_budget = env_usize(
+        "WOLGES_GILLES_RESERVE_BUDGET",
+        (num_tiles as usize).saturating_sub(
+            pool_min + rack_size as usize * game_config.num_players() as usize + rack_size as usize,
+        ),
+    );
     eprintln!(
-        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap}"
+        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget}"
     );
 
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1657,6 +1677,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                 let mut final_scores = vec![0; game_config.num_players() as usize];
                 // remediation thread-local state (used only when min_samples > 0).
                 let mut local_undersampled = fash::MyHashSet::<bites::Bites>::default();
+                let mut reserved_tally = vec![0u8; num_letters];
                 let mut remediation_begun = false;
                 let mut thread_generation_id = 0u64;
                 let mut games_this_gen = 0u64;
@@ -1800,7 +1821,67 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                     }
 
                     rng.set_stream(num_prior_games);
-                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    if remediating && reserve_enabled && !local_undersampled.is_empty() {
+                        // reserved-tile-pool draw: hold a batch of undersampled
+                        // racks' tiles (union, max per tile) out of the bag so they
+                        // stay unseen at the snapshots and the racks become drawable
+                        // midgame. the batch grows until reserve_budget tiles are
+                        // held out (so it scales with the bag); otherwise identical
+                        // to reset_and_draw_tiles_double_ended. scan a bounded slice
+                        // of the undersampled set since it can be huge.
+                        reserved_tally.iter_mut().for_each(|m| *m = 0);
+                        let mut reserved_total = 0usize;
+                        for rack in local_undersampled.iter().take(1024) {
+                            if reserved_total + rack_size as usize > reserve_budget {
+                                break;
+                            }
+                            // max-merge this rack into reserved_tally if it fits.
+                            let mut delta = 0usize;
+                            let mut i = 0;
+                            while i < rack.len() {
+                                let t = rack[i] as usize;
+                                let mut c = 0u8;
+                                while i < rack.len() && rack[i] as usize == t {
+                                    c += 1;
+                                    i += 1;
+                                }
+                                if c > reserved_tally[t] {
+                                    delta += (c - reserved_tally[t]) as usize;
+                                }
+                            }
+                            if reserved_total + delta > reserve_budget {
+                                continue;
+                            }
+                            let mut i = 0;
+                            while i < rack.len() {
+                                let t = rack[i] as usize;
+                                let mut c = 0u8;
+                                while i < rack.len() && rack[i] as usize == t {
+                                    c += 1;
+                                    i += 1;
+                                }
+                                if c > reserved_tally[t] {
+                                    reserved_tally[t] = c;
+                                }
+                            }
+                            reserved_total += delta;
+                        }
+                        game_state.reset();
+                        game_state.bag.shuffle(&mut rng);
+                        for (t, &c) in reserved_tally.iter().enumerate() {
+                            for _ in 0..c {
+                                game_state.bag.remove_tile(t as u8);
+                            }
+                        }
+                        let rsz = game_config.rack_size() as usize;
+                        let bag = &mut game_state.bag;
+                        let players = &mut game_state.players;
+                        for (i, player) in players.iter_mut().enumerate() {
+                            bag.replenish(&mut player.rack, rsz, i);
+                        }
+                    } else {
+                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    }
 
                     let mut turn_idx = 0u32;
                     let mut base_turn: Option<u32> = None;
