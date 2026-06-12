@@ -1617,6 +1617,12 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             GillesRealRack::AllTurns => (true, false, "all-turns"),
             GillesRealRack::InWindow => (true, true, "in-window"),
         };
+    // weight per real-rack sample: count each one this many times. the worst
+    // group floods many synthetic samples per game while the real rack adds
+    // about one per turn, so at weight 1 the real rack is swamped; a large
+    // weight lets the observed mix dominate, to test whether real-rack
+    // sampling improves the leaves at all.
+    let real_rack_weight = env_usize("WOLGES_GILLES_REAL_RACK_WEIGHT", 1) as u64;
     // reserved-tile-pool remediation (off by default). single-copy rare tiles
     // (e.g. Q) are usually played before the snapshot window, so racks needing
     // them stay undersampled and are expensive to reach by normal sampling.
@@ -2208,16 +2214,20 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                 || (pool_count >= pool_min
                                     && pool_count <= pool_max))
                         {
-                            let eq = move_generator.plays[0].equity.as_f64();
+                            let w = real_rack_weight;
+                            let eq = move_generator.plays[0].equity.as_f64() * w as f64;
                             real_rack_buf.clone_from(&game_state.current_player().rack);
                             real_rack_buf.sort_unstable();
                             thread_map
                                 .entry(real_rack_buf[..].into())
                                 .and_modify(|e| {
                                     e.equity += eq;
-                                    e.count += 1;
+                                    e.count += w;
                                 })
-                                .or_insert(Cumulate { equity: eq, count: 1 });
+                                .or_insert(Cumulate {
+                                    equity: eq,
+                                    count: w,
+                                });
                             completed_samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         let play = &move_generator.plays[0];
