@@ -83,8 +83,12 @@ options:
   --smooth      enable smoothing (default without :min_samples_per_rack or with :0)
   --no-smooth   disable smoothing (default with :min_samples_per_rack)
   --gilles      collect samples via gillesb board-sampling instead
-                of autoplay; :min_samples_per_rack is ignored (every rack is
-                enumerated) but :N still toggles smoothing as usual
+                of autoplay. :min_samples_per_rack now drives coverage: after the
+                mandatory games, remediation games direct their samples at racks
+                still seen fewer than that many times until every rack reaches it
+                (or no further progress is possible). :0 (or omitted) is pure
+                board sampling. like autoplay, a nonzero :min_samples_per_rack
+                defaults to no smoothing; use --smooth to override
 EOF
   exit 2
 fi
@@ -196,7 +200,7 @@ while [ "${!i:-}" != "" ]; do
   fi
 
   if [ "$gilles_mode" ]; then
-    time cargo run --release --bin leave -- "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon"
+    time cargo run --release --bin leave -- "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
     summary_file="$(ls -1td gilles-summary-* | head -1)"
     echo "$summary_file"
     mv -fv "$summary_file" "summary${num_processed}.csv"
