@@ -2344,16 +2344,6 @@ fn pool_rare_one(
         .or_insert(Cumulate { equity, count });
 }
 
-#[cfg(test)]
-fn pool_rare(
-    subrack_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
-    rows: &[(bites::Bites, f64, u64)],
-) {
-    for (key, equity, count) in rows {
-        pool_rare_one(subrack_map, key, *equity, *count);
-    }
-}
-
 // shared state guarded by the gilles mutex during min_samples remediation.
 struct GillesMutexed {
     full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
@@ -2839,12 +2829,14 @@ fn generate_leaves<
     // rare rows never key the empty leave, so the mean stays full-rack-only.
     if let Some(fp) = rare_path {
         let mut rare_reader = csv::ReaderBuilder::new().has_headers(false).from_path(fp)?;
-        for result in rare_reader.deserialize::<(String, f64, u64)>() {
-            let (rack_str, equity, count) = result?;
-            if rack_str.is_empty() {
+        for result in rare_reader.records() {
+            let record = result?;
+            if record[0].is_empty() {
                 continue;
             }
-            parse_rack(&rack_reader, &rack_str, &mut rack_bytes)?;
+            let equity = f64::from_str(&record[1])?;
+            let count = u64::from_str(&record[2])?;
+            parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
             pool_rare_one(&mut subrack_map, &rack_bytes, equity, count);
         }
     }
@@ -3761,7 +3753,7 @@ mod tests {
                 count: 2,
             },
         ); // full-rack A, sum10 n2
-        pool_rare(&mut m, &[(b"\x01"[..].into(), 5.0, 3)]); // rare A, sum5 n3
+        pool_rare_one(&mut m, &b"\x01"[..], 5.0, 3); // rare A, sum5 n3
         let a = m.get(&b"\x01"[..]).unwrap();
         assert_eq!(a.count, 5);
         assert!((a.equity - 15.0).abs() < 1e-9); // mean 15/5 = 3.0
