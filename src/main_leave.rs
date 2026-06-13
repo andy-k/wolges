@@ -470,13 +470,13 @@ fn main() -> error::Returns<()> {
     summarize logfile into summary.csv
   english-resummarize concatenated_summaries.csv summary.csv
     combine multiple summaries into one summary.csv and recompute totals
-  english-generate-no-smooth summary.csv leaves.csv
+  english-generate-no-smooth summary.csv leaves.csv [rare.csv]
     generate leaves (no smoothing) up to rack_size - 1
-  english-generate summary.csv leaves.csv
+  english-generate summary.csv leaves.csv [rare.csv]
     generate leaves (with smoothing) up to rack_size - 1
-  english-generate-full-no-smooth summary.csv leaves.csv
+  english-generate-full-no-smooth summary.csv leaves.csv [rare.csv]
     generate leaves (no smoothing) up to rack_size
-  english-generate-full summary.csv leaves.csv
+  english-generate-full summary.csv leaves.csv [rare.csv]
     generate leaves (with smoothing) up to rack_size
     [rare.csv] on any -generate adds direct coverage for undersampled subracks
   english-playability CSW24.kwg leave.klv 1000000 [seed]
