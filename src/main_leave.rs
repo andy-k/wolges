@@ -371,6 +371,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         .has_headers(false)
                         .from_reader(make_reader(&args[2])?),
                     csv::Writer::from_writer(make_writer(&args[3])?),
+                    args.get(4).map(|x| x.as_str()),
                 )?;
                 Ok(true)
             }
@@ -381,6 +382,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         .has_headers(false)
                         .from_reader(make_reader(&args[2])?),
                     csv::Writer::from_writer(make_writer(&args[3])?),
+                    args.get(4).map(|x| x.as_str()),
                 )?;
                 Ok(true)
             }
@@ -391,6 +393,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         .has_headers(false)
                         .from_reader(make_reader(&args[2])?),
                     csv::Writer::from_writer(make_writer(&args[3])?),
+                    args.get(4).map(|x| x.as_str()),
                 )?;
                 Ok(true)
             }
@@ -401,6 +404,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         .has_headers(false)
                         .from_reader(make_reader(&args[2])?),
                     csv::Writer::from_writer(make_writer(&args[3])?),
+                    args.get(4).map(|x| x.as_str()),
                 )?;
                 Ok(true)
             }
@@ -474,6 +478,7 @@ fn main() -> error::Returns<()> {
     generate leaves (no smoothing) up to rack_size
   english-generate-full summary.csv leaves.csv
     generate leaves (with smoothing) up to rack_size
+    [rare.csv] on any -generate adds direct coverage for undersampled subracks
   english-playability CSW24.kwg leave.klv 1000000 [seed]
     autoplay (not saved) and record prorated found best words (at the end)
     (run fewer number of games and use resummarize to merge to mitigate risks)
@@ -2321,6 +2326,34 @@ struct Cumulate {
     count: u64,
 }
 
+// pool one row that already carries its own sample count into subrack_map
+// by plain add.
+#[inline]
+fn pool_rare_one(
+    subrack_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+    key: &[u8],
+    equity: f64,
+    count: u64,
+) {
+    subrack_map
+        .entry(key.into())
+        .and_modify(|v| {
+            v.equity += equity;
+            v.count += count;
+        })
+        .or_insert(Cumulate { equity, count });
+}
+
+#[cfg(test)]
+fn pool_rare(
+    subrack_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+    rows: &[(bites::Bites, f64, u64)],
+) {
+    for (key, equity, count) in rows {
+        pool_rare_one(subrack_map, key, *equity, *count);
+    }
+}
+
 // shared state guarded by the gilles mutex during min_samples remediation.
 struct GillesMutexed {
     full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
@@ -2709,6 +2742,7 @@ fn generate_leaves<
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
+    rare_path: Option<&str>,
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
     let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
@@ -2798,6 +2832,22 @@ fn generate_leaves<
     } = subrack_map
         .remove([][..].into())
         .ok_or("empty-rack entry should not be missing")?;
+
+    // pool rare samples directly into subrack_map.
+    // these rows are keyed by their target subrack and are already on the
+    // sample-count scale, so add them plainly with no ways(R, S) weight.
+    // rare rows never key the empty leave, so the mean stays full-rack-only.
+    if let Some(fp) = rare_path {
+        let mut rare_reader = csv::ReaderBuilder::new().has_headers(false).from_path(fp)?;
+        for result in rare_reader.deserialize::<(String, f64, u64)>() {
+            let (rack_str, equity, count) = result?;
+            if rack_str.is_empty() {
+                continue;
+            }
+            parse_rack(&rack_reader, &rack_str, &mut rack_bytes)?;
+            pool_rare_one(&mut subrack_map, &rack_bytes, equity, count);
+        }
+    }
 
     let threshold_count = if DO_SMOOTHING {
         let total_count = subrack_map.values().fold(0, |a, x| a + x.count);
@@ -3695,4 +3745,25 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rare_pools_by_count_into_subrack_map() {
+        let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+        m.insert(
+            b"\x01"[..].into(),
+            Cumulate {
+                equity: 10.0,
+                count: 2,
+            },
+        ); // full-rack A, sum10 n2
+        pool_rare(&mut m, &[(b"\x01"[..].into(), 5.0, 3)]); // rare A, sum5 n3
+        let a = m.get(&b"\x01"[..]).unwrap();
+        assert_eq!(a.count, 5);
+        assert!((a.equity - 15.0).abs() < 1e-9); // mean 15/5 = 3.0
+    }
 }
