@@ -3300,6 +3300,7 @@ fn generate_census_leaves<N: kwg::Node, L: kwg::Node>(
         sheet.iter_mut().for_each(|v| *v = census::UNPLAYABLE);
         sheet[empty_rank] = 0;
         let ts = std::time::Instant::now();
+        let mut n_cand = 0u64;
         {
             let board_snapshot = &movegen::BoardSnapshot {
                 board_tiles: &game_state.board_tiles,
@@ -3307,38 +3308,46 @@ fn generate_census_leaves<N: kwg::Node, L: kwg::Node>(
                 kwg: &kwg,
                 klv: &arc_klv0,
             };
-            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            let params = movegen::GenMovesParams {
                 board_snapshot,
                 rack: &movegen_rack,
-                max_gen: usize::MAX,
+                max_gen: 1,
                 num_exchanges_by_this_player: 0,
                 always_include_pass: false,
-            });
+            };
+            // Record the best score per played multiset directly in the place
+            // predicate and return false: the play is never stored (no giant plays
+            // Vec -- the pool can yield billions of candidates) and its equity/leave
+            // is never computed. The GADDAG traversal still visits each candidate.
+            move_generator.gen_moves_filtered(
+                &params,
+                |_down, _lane, _idx, word: &[u8], score: i32| {
+                    n_cand += 1;
+                    played_buf.clear();
+                    for &tile in word {
+                        if tile != 0 {
+                            played_buf.push(tile & !((tile as i8) >> 7) as u8);
+                        }
+                    }
+                    if played_buf.len() <= rack_size {
+                        played_buf.sort_unstable();
+                        let pr = lat.rank_bytes(&played_buf);
+                        if pr != !0 && score > sheet[pr as usize] {
+                            sheet[pr as usize] = score;
+                        }
+                    }
+                    false // never keep the move
+                },
+                |leave_value| leave_value,
+                |_equity, _play| false,
+            );
         }
         eprintln!(
-            "  step1 movegen: {} tiles in pool -> {} plays in {:?}",
+            "  step1 sheet: {} tiles in pool -> {} candidate plays (unstored) in {:?}",
             movegen_rack.len(),
-            move_generator.plays.len(),
+            n_cand,
             ts.elapsed(),
         );
-        for vm in &move_generator.plays {
-            if let movegen::Play::Place { word, score, .. } = &vm.play {
-                played_buf.clear();
-                for &tile in word.iter() {
-                    if tile != 0 {
-                        played_buf.push(tile & !((tile as i8) >> 7) as u8);
-                    }
-                }
-                if played_buf.len() > rack_size {
-                    continue; // not reachable from a real rack_size-tile rack.
-                }
-                played_buf.sort_unstable();
-                let pr = lat.rank_bytes(&played_buf);
-                if pr != !0 && *score > sheet[pr as usize] {
-                    sheet[pr as usize] = *score;
-                }
-            }
-        }
 
         // STEP 2 -- best_equity(R) for every rack, max-plus of sheet and leave_cur.
         let ts = std::time::Instant::now();
