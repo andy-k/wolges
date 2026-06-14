@@ -17,8 +17,9 @@ const MAX_LETTERS: usize = 64;
 pub struct MultisetLattice {
     num_letters: usize,
     rack_size: usize,
-    // binom[n][k] = C(n, k) for n in 0..=rack_size+num_letters, k in 0..=num_letters.
-    binom: Vec<Vec<u64>>,
+    // flat Pascal triangle (reused from prob), for the closed-form rank binomials
+    // (a binomial coefficient C(n,k) counts the ways to choose k of n).
+    pascal: crate::prob::Pascal,
     // size_offset[s] = number of multisets of size < s = C(s+L-1, L); len rack_size+2.
     size_offset: Vec<u64>,
 }
@@ -27,66 +28,53 @@ impl MultisetLattice {
     pub fn new(num_letters: usize, rack_size: usize) -> Self {
         assert!((1..=MAX_LETTERS).contains(&num_letters));
         let n_max = rack_size + num_letters;
-        let k_max = num_letters;
-        let mut binom = vec![vec![0u64; k_max + 1]; n_max + 1];
-        for row in binom.iter_mut() {
-            row[0] = 1; // C(n, 0) = 1
-        }
-        for n in 1..=n_max {
-            for k in 1..=k_max.min(n) {
-                // Pascal: C(n,k) = C(n-1,k-1) + C(n-1,k).
-                binom[n][k] = binom[n - 1][k - 1] + binom[n - 1][k];
-            }
-        }
+        // need rows 0..=n_max, i.e. n_max + 1 rows.
+        let pascal = crate::prob::Pascal::with_rows(n_max + 1);
         // size_offset[s] = C(s+L-1, L), the count of multisets of size < s.
         let mut size_offset = vec![0u64; rack_size + 2];
         for (s, slot) in size_offset.iter_mut().enumerate() {
-            let n = s + num_letters - 1;
-            *slot = if num_letters <= n {
-                binom[n][num_letters]
-            } else {
-                0
-            };
+            *slot = pascal.binom(s + num_letters - 1, num_letters);
         }
         Self {
             num_letters,
             rack_size,
-            binom,
+            pascal,
             size_offset,
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn c(&self, n: usize, k: usize) -> u64 {
-        if k > n { 0 } else { self.binom[n][k] }
+        self.pascal.binom(n, k)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.size_offset[self.rack_size + 1] as usize
     }
-    #[inline]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    #[inline]
+    #[inline(always)]
     pub fn num_letters(&self) -> usize {
         self.num_letters
     }
-    #[inline]
+    #[inline(always)]
     pub fn rack_size(&self) -> usize {
         self.rack_size
     }
     /// First lattice index of the full (size == rack_size) racks. The full-rack
     /// block is [full_rack_start(), len()); those are the only entries Step 3's
     /// draw-average reads, so best_equity_table only fills that block.
-    #[inline]
+    #[inline(always)]
     pub fn full_rack_start(&self) -> usize {
         self.size_offset[self.rack_size] as usize
     }
 
     /// Rank of a multiset given as a per-letter tally (len num_letters). Returns
     /// !0 if the total size exceeds rack_size (outside the lattice).
+    #[inline(always)]
     pub fn rank(&self, tally: &[u8]) -> u32 {
         let l = self.num_letters;
         let s: usize = tally.iter().map(|&c| c as usize).sum();
@@ -121,6 +109,7 @@ impl MultisetLattice {
     }
 
     /// Decode `idx` into a per-letter tally written to `out` (len num_letters).
+    #[inline(always)]
     pub fn unrank_into(&self, idx: usize, out: &mut [u8]) {
         let l = self.num_letters;
         let mut s = 0usize;
@@ -270,9 +259,11 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) ->
                 // unplayable P contributes 0 + leave(K) = the exchange-keep-K value.
                 // Without this floor, a leave K is only reachable when a word disposes
                 // exactly R-K, so good leaves collapse to the mean (compression).
-                let sv = self.sheet[pr as usize].max(0);
+                // SAFETY: pr, kr are ranks of sub-multisets of a size<=rack_size rack,
+                // so both are valid lattice indices (< sheet.len() == leave.len()).
+                let sv = unsafe { *self.sheet.get_unchecked(pr as usize) }.max(0);
                 let kr = self.lat.rank(&self.k[..self.n]);
-                let v = sv + self.leave[kr as usize];
+                let v = sv + unsafe { *self.leave.get_unchecked(kr as usize) };
                 if v > *self.best {
                     *self.best = v;
                 }
@@ -383,7 +374,8 @@ pub fn leave_value_by_draw(
                 if ri == !0 {
                     return;
                 }
-                *self.num += w * self.best[ri as usize] as i128;
+                // SAFETY: ri != !0 and r has size rack_size, so ri < best.len().
+                *self.num += w * unsafe { *self.best.get_unchecked(ri as usize) } as i128;
                 *self.den += w;
                 return;
             }

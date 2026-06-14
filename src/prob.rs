@@ -3,7 +3,7 @@
 use super::{alphabet, kwg};
 
 #[derive(Clone)]
-struct Pascal {
+pub struct Pascal {
     raw: Vec<u64>,
     rows: usize,
 }
