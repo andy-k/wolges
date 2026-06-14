@@ -3225,6 +3225,10 @@ fn generate_census_leaves<N: kwg::Node, L: kwg::Node>(
     let mut unseen_tally = vec![0u8; num_letters];
     let mut unseen_pool = Vec::<u8>::new();
     let mut sheet = vec![census::UNPLAYABLE; lat.len()];
+    // best_equity buffer, allocated once and reused every board (best_equity_table
+    // overwrites the full-rack block in place) -- avoids roughly a 21 MB alloc
+    // per board.
+    let mut best = vec![census::UNPLAYABLE; lat.len()];
     let mut movegen_rack = Vec::<u8>::new();
     let mut played_buf = Vec::<u8>::new();
     let mut verify_rack = Vec::<u8>::new();
@@ -3361,7 +3365,7 @@ fn generate_census_leaves<N: kwg::Node, L: kwg::Node>(
 
         // STEP 2 -- best_equity(R) for every rack, max-plus of sheet and leave_cur.
         let ts = std::time::Instant::now();
-        let best = census::best_equity_table(&lat, &sheet, &leave_cur);
+        census::best_equity_table(&lat, &sheet, &leave_cur, &mut best);
         eprintln!("  step2 best_equity_table: {:?}", ts.elapsed());
 
         // NULL-KLV / engine invariant: census best_equity(R) must equal the engine's

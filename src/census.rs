@@ -225,15 +225,16 @@ pub fn naive_best_equity(
 }
 
 /// best_equity(R)=max over P<=R of sheet[P]+leave[R-P], for every FULL rack R
-/// (size == rack_size; the only entries Step 3 reads). Returns a lattice-indexed
-/// flat array with UNPLAYABLE outside the full-rack block. Alloc-free per rack
-/// (stack scratch + closed-form rank), recursing only over R's nonzero letters.
-/// Validated == naive_best_equity on the full-rack block. The kept-side split is
-/// not materialized: the entering attribution comes from the draw-average
-/// in leave_value_by_draw, not from a per-rack argmax.
-pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) -> Vec<i32> {
+/// (size == rack_size; the only entries Step 3 reads). Fills the full-rack block
+/// of `out` (a lattice-length, lattice-indexed buffer); entries outside that block
+/// are left untouched (never read). The buffer is caller-owned so it is allocated
+/// ONCE and reused across boards, not per call. Alloc-free per rack (stack scratch
+/// and closed-form rank), recursing only over R's nonzero letters. Validated to
+/// match naive_best_equity on the full-rack block. The kept-side split is not
+/// materialized: the entering attribution comes from the draw-average in
+/// leave_value_by_draw, not from a per-rack argmax.
+pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], out: &mut [i32]) {
     let n = lat.num_letters();
-    let mut equity = vec![UNPLAYABLE; lat.len()];
     let mut r = [0u8; MAX_LETTERS];
     let mut p = [0u8; MAX_LETTERS];
     let mut k = [0u8; MAX_LETTERS]; // k = r - p, maintained incrementally
@@ -281,7 +282,7 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) ->
     }
     let lo = lat.full_rack_start();
     let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
-    for (off, slot) in equity[lo..].iter_mut().enumerate() {
+    for (off, slot) in out[lo..].iter_mut().enumerate() {
         let ridx = lo + off;
         lat.unrank_into(ridx, &mut r[..n]);
         let mut m = 0;
@@ -310,7 +311,6 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) ->
         }
         *slot = best;
     }
-    equity
 }
 
 /// leave_new(S)=sum_d ways(d)*best[S+d]/sum_d ways(d), where the completion d is
@@ -478,7 +478,8 @@ mod tests {
             leave[idx] = h.rem_euclid(8_000) - 4_000;
         }
         sheet[lat.rank(&[0, 0, 0, 0]) as usize] = 0; // pass always available
-        let best = best_equity_table(&lat, &sheet, &leave);
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best);
         // best_equity_table only fills the full-rack (size == rack_size) block.
         for (idx, &b) in best.iter().enumerate().skip(lat.full_rack_start()) {
             let tally = lat.tally(idx);
