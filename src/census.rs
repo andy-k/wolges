@@ -90,6 +90,89 @@ impl MultisetLattice {
     }
 }
 
+pub const UNPLAYABLE: i32 = i32::MIN / 2;
+
+/// Naive best_equity(R)=max over P<=R of sheet[P]+leave[R-P]; returns
+/// (equity_millipoints, kept_tiles_sorted) where kept=R-P* (entering target).
+pub fn naive_best_equity(
+    lat: &MultisetLattice,
+    sheet: &[i32],
+    leave: &[i32],
+    rack_tally: &[u8],
+) -> (i32, Vec<u8>) {
+    let n = lat.num_letters();
+    let mut played = vec![0u8; n];
+    let mut best = UNPLAYABLE;
+    let mut best_kept = vec![0u8; n];
+    // Constant context for the played-tile recursion, so rec carries only the changing
+    // position -- no clippy::too_many_arguments. played/best/best_kept accumulate the
+    // argmax across the whole descent, so they are borrowed for the driver call.
+    struct Ctx<'a> {
+        n: usize,
+        lat: &'a MultisetLattice,
+        sheet: &'a [i32],
+        leave: &'a [i32],
+        rack: &'a [u8],
+        played: &'a mut [u8],
+        best: &'a mut i32,
+        best_kept: &'a mut [u8],
+    }
+    impl Ctx<'_> {
+        fn rec(&mut self, pos: usize) {
+            if pos == self.n {
+                let pr = self.lat.rank(self.played);
+                if pr == !0 {
+                    return;
+                }
+                let sv = self.sheet[pr as usize];
+                if sv <= UNPLAYABLE {
+                    return;
+                }
+                let mut kept = vec![0u8; self.n];
+                for (k, (&rc, &pc)) in kept
+                    .iter_mut()
+                    .zip(self.rack.iter().zip(self.played.iter()))
+                {
+                    *k = rc - pc;
+                }
+                let kr = self.lat.rank(&kept);
+                if kr == !0 {
+                    return;
+                }
+                let v = sv + self.leave[kr as usize];
+                if v > *self.best {
+                    *self.best = v;
+                    self.best_kept.copy_from_slice(&kept);
+                }
+                return;
+            }
+            for c in 0..=self.rack[pos] {
+                self.played[pos] = c;
+                self.rec(pos + 1);
+            }
+            self.played[pos] = 0;
+        }
+    }
+    Ctx {
+        n,
+        lat,
+        sheet,
+        leave,
+        rack: rack_tally,
+        played: &mut played,
+        best: &mut best,
+        best_kept: &mut best_kept,
+    }
+    .rec(0);
+    let mut kept_tiles = Vec::new();
+    for (t, &c) in best_kept.iter().enumerate() {
+        for _ in 0..c {
+            kept_tiles.push(t as u8);
+        }
+    }
+    (best, kept_tiles)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +187,21 @@ mod tests {
             assert_eq!(lat.rank(tally), idx as u32);
             assert!(tally.iter().map(|&c| c as usize).sum::<usize>() <= 2);
         }
+    }
+
+    #[test]
+    fn naive_best_equity_matches_hand_calc() {
+        let lat = MultisetLattice::new(2, 2);
+        let mut sheet = vec![UNPLAYABLE; lat.len()];
+        sheet[lat.rank(&[0, 0]) as usize] = 0;
+        sheet[lat.rank(&[1, 0]) as usize] = 5_000;
+        sheet[lat.rank(&[0, 1]) as usize] = 3_000;
+        let mut leave = vec![0i32; lat.len()];
+        leave[lat.rank(&[1, 0]) as usize] = 4_000;
+        leave[lat.rank(&[0, 1]) as usize] = 1_000;
+        // rack [1,1]: play0 keep1 =5+1=6 ; play1 keep0 =3+4=7 ; play both = unplayable
+        let (eq, kept) = naive_best_equity(&lat, &sheet, &leave, &[1, 1]);
+        assert_eq!(eq, 7_000);
+        assert_eq!(kept, vec![0u8]);
     }
 }
