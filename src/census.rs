@@ -187,10 +187,9 @@ pub fn naive_best_equity(
                 if pr == !0 {
                     return;
                 }
-                let sv = self.sheet[pr as usize];
-                if sv <= UNPLAYABLE {
-                    return;
-                }
+                // exchange floor: disposing P is worth max(word score, 0). See
+                // best_equity_table.
+                let sv = self.sheet[pr as usize].max(0);
                 let mut kept = vec![0u8; self.n];
                 for (k, (&rc, &pc)) in kept
                     .iter_mut()
@@ -266,10 +265,12 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) ->
         fn rec(&mut self, i: usize) {
             if i == self.nz.len() {
                 let pr = self.lat.rank(&self.p[..self.n]);
-                let sv = self.sheet[pr as usize];
-                if sv <= UNPLAYABLE {
-                    return;
-                }
+                // disposing the played tiles P is worth max(best word score, 0): you
+                // can always EXCHANGE them for 0 (pre-endgame, bag non-empty). So an
+                // unplayable P contributes 0 + leave(K) = the exchange-keep-K value.
+                // Without this floor, a leave K is only reachable when a word disposes
+                // exactly R-K, so good leaves collapse to the mean (compression).
+                let sv = self.sheet[pr as usize].max(0);
                 let kr = self.lat.rank(&self.k[..self.n]);
                 let v = sv + self.leave[kr as usize];
                 if v > *self.best {
