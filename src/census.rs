@@ -1,68 +1,73 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use crate::bites;
-use crate::fash;
+// Reset-board census core: a bounded-multiset lattice with closed-form O(L)
+// ranking (no hashmap, no per-lookup allocation), a play-value sheet, the
+// (max,+) best-equity convolution over that lattice, and no-replacement
+// draw-averaging. All pure; movegen results are fed in as (multiset, score).
 
+pub const UNPLAYABLE: i32 = i32::MIN / 2;
+
+// Stack scratch width for tallies in the hot paths. Alphabets are far smaller.
+const MAX_LETTERS: usize = 64;
+
+/// Every multiset of `num_letters` letters with total size `0..=rack_size`,
+/// indexed to a dense rank and back by a closed-form combinatorial number
+/// system (size-grouped, then lexicographic by ascending per-letter count).
+/// O(L) rank/unrank, no allocation, no stored table of multisets.
 pub struct MultisetLattice {
     num_letters: usize,
     rack_size: usize,
-    tallies: Vec<Vec<u8>>,
-    rank_of: fash::MyHashMap<bites::Bites, u32>,
+    // binom[n][k] = C(n, k) for n in 0..=rack_size+num_letters, k in 0..=num_letters.
+    binom: Vec<Vec<u64>>,
+    // size_offset[s] = number of multisets of size < s = C(s+L-1, L); len rack_size+2.
+    size_offset: Vec<u64>,
 }
 
 impl MultisetLattice {
     pub fn new(num_letters: usize, rack_size: usize) -> Self {
-        let mut tallies = Vec::new();
-        let mut rank_of = fash::MyHashMap::default();
-        let mut tally = vec![0u8; num_letters];
-        fn rec(
-            pos: usize,
-            remaining: usize,
-            num_letters: usize,
-            tally: &mut Vec<u8>,
-            tallies: &mut Vec<Vec<u8>>,
-            rank_of: &mut fash::MyHashMap<bites::Bites, u32>,
-        ) {
-            if pos == num_letters {
-                let idx = tallies.len() as u32;
-                let mut key = Vec::new();
-                for (t, &c) in tally.iter().enumerate() {
-                    for _ in 0..c {
-                        key.push(t as u8);
-                    }
-                }
-                rank_of.insert(key[..].into(), idx);
-                tallies.push(tally.clone());
-                return;
-            }
-            for c in 0..=remaining {
-                tally[pos] = c as u8;
-                rec(pos + 1, remaining - c, num_letters, tally, tallies, rank_of);
-            }
-            tally[pos] = 0;
+        assert!((1..=MAX_LETTERS).contains(&num_letters));
+        let n_max = rack_size + num_letters;
+        let k_max = num_letters;
+        let mut binom = vec![vec![0u64; k_max + 1]; n_max + 1];
+        for row in binom.iter_mut() {
+            row[0] = 1; // C(n, 0) = 1
         }
-        rec(
-            0,
-            rack_size,
-            num_letters,
-            &mut tally,
-            &mut tallies,
-            &mut rank_of,
-        );
+        for n in 1..=n_max {
+            for k in 1..=k_max.min(n) {
+                // Pascal: C(n,k) = C(n-1,k-1) + C(n-1,k).
+                binom[n][k] = binom[n - 1][k - 1] + binom[n - 1][k];
+            }
+        }
+        // size_offset[s] = C(s+L-1, L), the count of multisets of size < s.
+        let mut size_offset = vec![0u64; rack_size + 2];
+        for (s, slot) in size_offset.iter_mut().enumerate() {
+            let n = s + num_letters - 1;
+            *slot = if num_letters <= n {
+                binom[n][num_letters]
+            } else {
+                0
+            };
+        }
         Self {
             num_letters,
             rack_size,
-            tallies,
-            rank_of,
+            binom,
+            size_offset,
         }
     }
+
+    #[inline]
+    fn c(&self, n: usize, k: usize) -> u64 {
+        if k > n { 0 } else { self.binom[n][k] }
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
-        self.tallies.len()
+        self.size_offset[self.rack_size + 1] as usize
     }
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.tallies.is_empty()
+        self.len() == 0
     }
     #[inline]
     pub fn num_letters(&self) -> usize {
@@ -72,28 +77,86 @@ impl MultisetLattice {
     pub fn rack_size(&self) -> usize {
         self.rack_size
     }
+    /// First lattice index of the full (size == rack_size) racks. The full-rack
+    /// block is [full_rack_start(), len()); those are the only entries Step 3's
+    /// draw-average reads, so best_equity_table only fills that block.
     #[inline]
-    pub fn tally(&self, idx: usize) -> &[u8] {
-        &self.tallies[idx]
+    pub fn full_rack_start(&self) -> usize {
+        self.size_offset[self.rack_size] as usize
     }
-    pub fn rank_bytes(&self, sorted_tiles: &[u8]) -> u32 {
-        self.rank_of.get(sorted_tiles).copied().unwrap_or(!0)
-    }
+
+    /// Rank of a multiset given as a per-letter tally (len num_letters). Returns
+    /// !0 if the total size exceeds rack_size (outside the lattice).
     pub fn rank(&self, tally: &[u8]) -> u32 {
-        let mut key = Vec::new();
-        for (t, &c) in tally.iter().enumerate() {
-            for _ in 0..c {
-                key.push(t as u8);
-            }
+        let l = self.num_letters;
+        let s: usize = tally.iter().map(|&c| c as usize).sum();
+        if s > self.rack_size {
+            return !0;
         }
-        self.rank_of.get(&key[..]).copied().unwrap_or(!0)
+        let mut within: u64 = 0;
+        let mut rem = s;
+        for (t, &ct_raw) in tally.iter().enumerate().take(l - 1) {
+            let ct = ct_raw as usize;
+            let parts = l - 1 - t; // letters after position t
+            for j in 0..ct {
+                // compositions of (rem - j) into `parts` letters
+                within += self.c((rem - j) + parts - 1, parts - 1);
+            }
+            rem -= ct;
+        }
+        (self.size_offset[s] + within) as u32
+    }
+
+    /// Rank of a multiset given as sorted tile bytes (e.g. a played word's tiles).
+    pub fn rank_bytes(&self, sorted_tiles: &[u8]) -> u32 {
+        let mut tally = [0u8; MAX_LETTERS];
+        for &t in sorted_tiles {
+            let i = t as usize;
+            if i >= self.num_letters {
+                return !0;
+            }
+            tally[i] += 1;
+        }
+        self.rank(&tally[..self.num_letters])
+    }
+
+    /// Decode `idx` into a per-letter tally written to `out` (len num_letters).
+    pub fn unrank_into(&self, idx: usize, out: &mut [u8]) {
+        let l = self.num_letters;
+        let mut s = 0usize;
+        while s < self.rack_size && (self.size_offset[s + 1] as usize) <= idx {
+            s += 1;
+        }
+        let mut r = idx - self.size_offset[s] as usize;
+        let mut rem = s;
+        for (t, slot) in out.iter_mut().enumerate().take(l - 1) {
+            let parts = l - 1 - t;
+            let mut ct = 0usize;
+            loop {
+                let ways = self.c((rem - ct) + parts - 1, parts - 1) as usize;
+                if r < ways {
+                    break;
+                }
+                r -= ways;
+                ct += 1;
+            }
+            *slot = ct as u8;
+            rem -= ct;
+        }
+        out[l - 1] = rem as u8;
+    }
+
+    /// Owned tally for `idx` (convenience for tests / cold paths).
+    pub fn tally(&self, idx: usize) -> Vec<u8> {
+        let mut out = vec![0u8; self.num_letters];
+        self.unrank_into(idx, &mut out);
+        out
     }
 }
 
-pub const UNPLAYABLE: i32 = i32::MIN / 2;
-
 /// Naive best_equity(R)=max over P<=R of sheet[P]+leave[R-P]; returns
 /// (equity_millipoints, kept_tiles_sorted) where kept=R-P* (entering target).
+/// Reference implementation that best_equity_table is validated against.
 pub fn naive_best_equity(
     lat: &MultisetLattice,
     sheet: &[i32],
@@ -173,40 +236,96 @@ pub fn naive_best_equity(
     (best, kept_tiles)
 }
 
-pub struct BestEquityTable {
-    pub equity: Vec<i32>,     // lattice-indexed best_equity(R)
-    pub played: Vec<Vec<u8>>, // lattice-indexed argmax played tally (kept = R - played)
-}
-
-/// best_equity(R)=max over P<=R of sheet[P]+leave[R-P], for every R in the
-/// lattice, with the argmax played split. Validated == naive_best_equity.
-pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) -> BestEquityTable {
+/// best_equity(R)=max over P<=R of sheet[P]+leave[R-P], for every FULL rack R
+/// (size == rack_size; the only entries Step 3 reads). Returns a lattice-indexed
+/// flat array with UNPLAYABLE outside the full-rack block. Alloc-free per rack
+/// (stack scratch + closed-form rank), recursing only over R's nonzero letters.
+/// Validated == naive_best_equity on the full-rack block. The kept-side split is
+/// not materialized: the entering attribution comes from the draw-average
+/// in leave_value_by_draw, not from a per-rack argmax.
+pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) -> Vec<i32> {
     let n = lat.num_letters();
     let mut equity = vec![UNPLAYABLE; lat.len()];
-    let mut played = vec![vec![0u8; n]; lat.len()];
-    // per-rank best via the slow reference call; kept plain here.
-    for ridx in 0..lat.len() {
-        let r = lat.tally(ridx).to_vec();
-        let (v, kept) = naive_best_equity(lat, sheet, leave, &r);
-        equity[ridx] = v;
-        let mut p = vec![0u8; n];
-        let mut kc = vec![0u8; n];
-        for &kt in &kept {
-            kc[kt as usize] += 1;
-        }
-        for t in 0..n {
-            p[t] = r[t] - kc[t];
-        }
-        played[ridx] = p;
+    let mut r = [0u8; MAX_LETTERS];
+    let mut p = [0u8; MAX_LETTERS];
+    let mut k = [0u8; MAX_LETTERS]; // k = r - p, maintained incrementally
+    // recurse over the (letter, count) of R's nonzero letters only. Constant +
+    // per-rack context, so rec carries only the changing letter index -- no
+    // clippy::too_many_arguments. p/k are the played/kept scratch; best accumulates.
+    struct Ctx<'a> {
+        nz: &'a [(usize, u8)],
+        n: usize,
+        lat: &'a MultisetLattice,
+        sheet: &'a [i32],
+        leave: &'a [i32],
+        p: &'a mut [u8],
+        k: &'a mut [u8],
+        best: &'a mut i32,
     }
-    BestEquityTable { equity, played }
+    impl Ctx<'_> {
+        fn rec(&mut self, i: usize) {
+            if i == self.nz.len() {
+                let pr = self.lat.rank(&self.p[..self.n]);
+                let sv = self.sheet[pr as usize];
+                if sv <= UNPLAYABLE {
+                    return;
+                }
+                let kr = self.lat.rank(&self.k[..self.n]);
+                let v = sv + self.leave[kr as usize];
+                if v > *self.best {
+                    *self.best = v;
+                }
+                return;
+            }
+            let (t, cnt) = self.nz[i];
+            for c in 0..=cnt {
+                self.p[t] = c;
+                self.k[t] = cnt - c;
+                self.rec(i + 1);
+            }
+            self.p[t] = 0;
+            self.k[t] = cnt; // restore for the caller's frame
+        }
+    }
+    let lo = lat.full_rack_start();
+    let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
+    for (off, slot) in equity[lo..].iter_mut().enumerate() {
+        let ridx = lo + off;
+        lat.unrank_into(ridx, &mut r[..n]);
+        let mut m = 0;
+        for (t, &c) in r[..n].iter().enumerate() {
+            if c > 0 {
+                nz[m] = (t, c);
+                k[t] = c; // k starts at r (p == 0)
+                m += 1;
+            }
+        }
+        let mut best = UNPLAYABLE;
+        Ctx {
+            nz: &nz[..m],
+            n,
+            lat,
+            sheet,
+            leave,
+            p: &mut p,
+            k: &mut k,
+            best: &mut best,
+        }
+        .rec(0);
+        // reset k's touched entries back to zero for the next rack.
+        for &(t, _) in &nz[..m] {
+            k[t] = 0;
+        }
+        *slot = best;
+    }
+    equity
 }
 
 /// leave_new(S)=sum_d ways(d)*best[S+d]/sum_d ways(d), where the completion d is
 /// drawn from the unseen pool with the kept S removed, |d|=rack_size-|S| and
 /// ways(d)=prod_t C(unseen[t]-S[t], d[t]). UNPLAYABLE if S is itself undrawable
 /// (more of some letter than the unseen pool holds) or has no feasible completion.
-/// Returns millipoints.
+/// Returns millipoints. Alloc-free (stack scratch).
 pub fn leave_value_by_draw(
     lat: &MultisetLattice,
     best: &[i32],
@@ -226,10 +345,11 @@ pub fn leave_value_by_draw(
     let draw = lat.rack_size() - s_size;
     let mut num: i128 = 0;
     let mut den: i128 = 0;
-    let mut d = vec![0u8; n];
+    let mut d = [0u8; MAX_LETTERS];
+    let mut r = [0u8; MAX_LETTERS];
     // Constant context for the draw enumeration (called once) -- no
     // clippy::too_many_arguments; rec carries only the changing draw position and
-    // remaining count. d is the drawn-tile scratch; num/den accumulate.
+    // remaining count. d/r are the drawn-tile and full-rack scratch; num/den accumulate.
     struct Ctx<'a> {
         n: usize,
         lat: &'a MultisetLattice,
@@ -237,6 +357,7 @@ pub fn leave_value_by_draw(
         unseen: &'a [u8],
         s_tally: &'a [u8],
         d: &'a mut [u8],
+        r: &'a mut [u8],
         num: &'a mut i128,
         den: &'a mut i128,
     }
@@ -250,15 +371,14 @@ pub fn leave_value_by_draw(
                 for t in 0..self.n {
                     w *= n_choose_k((self.unseen[t] - self.s_tally[t]) as u64, self.d[t] as u64)
                         as i128;
+                    if w == 0 {
+                        return;
+                    }
                 }
-                if w == 0 {
-                    return;
+                for t in 0..self.n {
+                    self.r[t] = self.s_tally[t] + self.d[t];
                 }
-                let mut r = vec![0u8; self.n];
-                for (rt, (&st, &dt)) in r.iter_mut().zip(self.s_tally.iter().zip(self.d.iter())) {
-                    *rt = st + dt;
-                }
-                let ri = self.lat.rank(&r);
+                let ri = self.lat.rank(&self.r[..self.n]);
                 if ri == !0 {
                     return;
                 }
@@ -281,6 +401,7 @@ pub fn leave_value_by_draw(
         unseen,
         s_tally,
         d: &mut d,
+        r: &mut r,
         num: &mut num,
         den: &mut den,
     }
@@ -318,8 +439,20 @@ mod tests {
         assert_eq!(lat.len(), 10);
         for idx in 0..lat.len() {
             let tally = lat.tally(idx);
-            assert_eq!(lat.rank(tally), idx as u32);
+            assert_eq!(lat.rank(&tally), idx as u32);
             assert!(tally.iter().map(|&c| c as usize).sum::<usize>() <= 2);
+        }
+    }
+
+    #[test]
+    fn lattice_roundtrips_english_sized() {
+        // English-shaped: 27 letters, rack 7. Verify every rank round-trips.
+        let lat = MultisetLattice::new(27, 7);
+        assert_eq!(lat.len(), 5_379_616);
+        let mut buf = vec![0u8; 27];
+        for idx in (0..lat.len()).step_by(997) {
+            lat.unrank_into(idx, &mut buf);
+            assert_eq!(lat.rank(&buf), idx as u32, "roundtrip idx {idx}");
         }
     }
 
@@ -353,13 +486,12 @@ mod tests {
         }
         sheet[lat.rank(&[0, 0, 0, 0]) as usize] = 0; // pass always available
         let best = best_equity_table(&lat, &sheet, &leave);
-        for idx in 0..lat.len() {
-            let tally = lat.tally(idx).to_vec();
+        // best_equity_table only fills the full-rack (size == rack_size) block.
+        for (idx, &b) in best.iter().enumerate().skip(lat.full_rack_start()) {
+            let tally = lat.tally(idx);
+            assert_eq!(tally.iter().map(|&c| c as usize).sum::<usize>(), 4);
             let (naive, _) = naive_best_equity(&lat, &sheet, &leave, &tally);
-            assert_eq!(
-                best.equity[idx], naive,
-                "mismatch at idx {idx} tally {tally:?}"
-            );
+            assert_eq!(b, naive, "mismatch at idx {idx} tally {tally:?}");
         }
     }
 
