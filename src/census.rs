@@ -173,6 +173,35 @@ pub fn naive_best_equity(
     (best, kept_tiles)
 }
 
+pub struct BestEquityTable {
+    pub equity: Vec<i32>,     // lattice-indexed best_equity(R)
+    pub played: Vec<Vec<u8>>, // lattice-indexed argmax played tally (kept = R - played)
+}
+
+/// best_equity(R)=max over P<=R of sheet[P]+leave[R-P], for every R in the
+/// lattice, with the argmax played split. Validated == naive_best_equity.
+pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) -> BestEquityTable {
+    let n = lat.num_letters();
+    let mut equity = vec![UNPLAYABLE; lat.len()];
+    let mut played = vec![vec![0u8; n]; lat.len()];
+    // per-rank best via the slow reference call; kept plain here.
+    for ridx in 0..lat.len() {
+        let r = lat.tally(ridx).to_vec();
+        let (v, kept) = naive_best_equity(lat, sheet, leave, &r);
+        equity[ridx] = v;
+        let mut p = vec![0u8; n];
+        let mut kc = vec![0u8; n];
+        for &kt in &kept {
+            kc[kt as usize] += 1;
+        }
+        for t in 0..n {
+            p[t] = r[t] - kc[t];
+        }
+        played[ridx] = p;
+    }
+    BestEquityTable { equity, played }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +232,29 @@ mod tests {
         let (eq, kept) = naive_best_equity(&lat, &sheet, &leave, &[1, 1]);
         assert_eq!(eq, 7_000);
         assert_eq!(kept, vec![0u8]);
+    }
+
+    #[test]
+    fn fast_conv_matches_naive() {
+        let lat = MultisetLattice::new(4, 4);
+        let mut sheet = vec![UNPLAYABLE; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for idx in 0..lat.len() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                sheet[idx] = h.rem_euclid(20_000) - 5_000;
+            }
+            leave[idx] = h.rem_euclid(8_000) - 4_000;
+        }
+        sheet[lat.rank(&[0, 0, 0, 0]) as usize] = 0; // pass always available
+        let best = best_equity_table(&lat, &sheet, &leave);
+        for idx in 0..lat.len() {
+            let tally = lat.tally(idx).to_vec();
+            let (naive, _) = naive_best_equity(&lat, &sheet, &leave, &tally);
+            assert_eq!(
+                best.equity[idx], naive,
+                "mismatch at idx {idx} tally {tally:?}"
+            );
+        }
     }
 }
