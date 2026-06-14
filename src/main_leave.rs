@@ -3318,7 +3318,11 @@ fn generate_census_leaves<N: kwg::Node, L: kwg::Node>(
                 board_snapshot,
                 rack: &movegen_rack,
                 max_gen: 1,
-                num_exchanges_by_this_player: 0,
+                // suppress exchange-move generation: over the whole unseen pool it
+                // would enumerate about 2^pool subsets (the actual cost, not the gaddag
+                // word search). The sheet wants place moves only; exchange is
+                // modeled by the convolution's disposal floor.
+                num_exchanges_by_this_player: i16::MAX,
                 always_include_pass: false,
             };
             // Record the best score per played multiset directly in the place
