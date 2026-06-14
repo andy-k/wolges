@@ -3189,6 +3189,7 @@ fn generate_census_leaves<N: kwg::Node, L: kwg::Node>(
     // midgame.)
     let pool_max = env_usize("WOLGES_POOL_MAX", 28);
     let pool_min = env_usize("WOLGES_POOL_MIN", 3 * rack_size);
+    let blank_cap = env_usize("WOLGES_CENSUS_BLANK_CAP", rack_size);
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
     let verify = env_flag("WOLGES_CENSUS_VERIFY", false);
@@ -3293,7 +3294,12 @@ fn generate_census_leaves<N: kwg::Node, L: kwg::Node>(
         // leave term is irrelevant here so any klv works. Pass = empty play, 0.
         movegen_rack.clear();
         for (t, &c) in unseen_tally.iter().enumerate() {
-            for _ in 0..(c as usize).min(rack_size) {
+            // blank (tile 0) plays as any letter, so each blank in the pool
+            // sends the movegen search down every word path the board allows;
+            // cap it separately to probe whether blanks drive the open-board
+            // blowup.
+            let cap = if t == 0 { blank_cap } else { rack_size };
+            for _ in 0..(c as usize).min(cap) {
                 movegen_rack.push(t as u8);
             }
         }
