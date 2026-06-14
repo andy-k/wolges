@@ -9,6 +9,7 @@ pub mod bites;
 pub mod bites_str;
 pub mod board_layout;
 pub mod build;
+pub mod census;
 pub mod display;
 pub mod endgame;
 pub mod equity;
