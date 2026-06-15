@@ -3259,7 +3259,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut sheet = vec![census::UNPLAYABLE; lat_len];
-                let mut best = vec![census::UNPLAYABLE; lat_len];
+                // entering path materializes best[]; the full-rack path fuses step2 into step3.
+                let mut best = if full_rack {
+                    Vec::new()
+                } else {
+                    vec![census::UNPLAYABLE; lat_len]
+                };
                 let mut contrib = vec![census::UNPLAYABLE; lat_len];
                 // full-rack apportionment scratch (num/den per leave); empty unless full_rack.
                 let mut num_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
@@ -3450,11 +3455,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
 
                     // STEP 2 -- best_equity(R) for every rack, max-plus of sheet and
-                    // leave_cur.
+                    // leave_cur. Entering path only: it materializes best[] for the
+                    // draw-average's random best[S+d] reads. The full-rack path fuses
+                    // step 2 into step 3 (apportion_fused) -- no best[] array.
                     let ts = std::time::Instant::now();
-                    census::best_equity_table(&lat, &sheet, &leave_cur, &mut best);
-                    if b == 0 {
-                        eprintln!("  step2 best_equity_table: {:?}", ts.elapsed());
+                    if !full_rack {
+                        census::best_equity_table(&lat, &sheet, &leave_cur, &mut best);
+                        if b == 0 {
+                            eprintln!("  step2 best_equity_table: {:?}", ts.elapsed());
+                        }
                     }
 
                     // NULL-KLV / engine invariant (first board only): census
@@ -3503,7 +3512,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     * equity::SCALE as f64)
                                     .round()
                                     as i32;
-                                let census_mp = best[rr as usize];
+                                let census_mp = if full_rack {
+                                    // best[] is not materialized in the full-rack
+                                    // path; recompute best_equity for this rack.
+                                    tally_buf.iter_mut().for_each(|x| *x = 0);
+                                    for &t in &verify_rack {
+                                        tally_buf[t as usize] += 1;
+                                    }
+                                    census::naive_best_equity(
+                                        &lat, &sheet, &leave_cur, &tally_buf,
+                                    )
+                                    .0
+                                } else {
+                                    best[rr as usize]
+                                };
                                 if engine_mp == census_mp {
                                     ok += 1;
                                 } else {
@@ -3534,9 +3556,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     if full_rack {
                         num_board.iter_mut().for_each(|x| *x = 0.0);
                         den_board.iter_mut().for_each(|x| *x = 0.0);
-                        census::apportion_table(
+                        census::apportion_fused(
                             &lat,
-                            &best,
+                            &sheet,
+                            &leave_cur,
                             &unseen_tally,
                             &mut num_board,
                             &mut den_board,
