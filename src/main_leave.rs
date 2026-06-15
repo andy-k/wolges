@@ -3265,8 +3265,22 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     ));
 
                     // greedy-play fresh games (from this slot's own rng) until one
-                    // lands at a board fill inside the midgame window. The retry cap
-                    // guards against an unreachable window (misconfigured [LOW,HIGH]).
+                    // reaches this slot's random target fill. The target is drawn
+                    // uniformly across [low,high] so recorded boards range across
+                    // game phases (matching autoplay's all-phase leave coverage)
+                    // instead of clustering at the low edge. The retry cap guards
+                    // against an unreachable target. The window is set in POOL
+                    // (unseen-tile) terms via WOLGES_POOL_MAX/MIN, which
+                    // derive [low,high] per game config: low is bounded by step-1
+                    // sheet tractability (a pool property), high by staying
+                    // pre-endgame (bag non-empty, so draws and the exchange floor
+                    // are valid). Since the exchange-skip, even open boards (large
+                    // pool) are tractable, so the window can reach early phases.
+                    let target = if high_tiles > low_tiles {
+                        rng.random_range(low_tiles..=high_tiles)
+                    } else {
+                        low_tiles
+                    };
                     let mut tries = 0u32;
                     let reached = loop {
                         game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
@@ -3274,10 +3288,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         loop {
                             let fill =
                                 game_state.board_tiles.iter().filter(|&&t| t != 0).count();
-                            if fill > high_tiles {
-                                break; // overshot the window; try a fresh game.
-                            }
-                            if fill >= low_tiles {
+                            if fill >= target {
                                 got = true;
                                 break;
                             }
