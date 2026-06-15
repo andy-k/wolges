@@ -176,9 +176,9 @@ pub fn naive_best_equity(
                 if pr == !0 {
                     return;
                 }
-                // exchange floor: disposing P is worth max(word score, 0). See
-                // best_equity_table.
-                let sv = self.sheet[pr as usize].max(0);
+                // the sheet has the exchange floor baked in (entries are >= 0; an
+                // unreached or negative-scoring P is 0). See best_equity_table.
+                let sv = self.sheet[pr as usize];
                 let mut kept = vec![0u8; self.n];
                 for (k, (&rc, &pc)) in kept
                     .iter_mut()
@@ -256,13 +256,15 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
             if i == self.nz.len() {
                 let pr = self.lat.rank(&self.p[..self.n]);
                 // disposing the played tiles P is worth max(best word score, 0): you
-                // can always EXCHANGE them for 0 (pre-endgame, bag non-empty). So an
-                // unplayable P contributes 0 + leave(K) = the exchange-keep-K value.
-                // Without this floor, a leave K is only reachable when a word disposes
-                // exactly R-K, so good leaves collapse to the mean (compression).
+                // can always EXCHANGE them for 0 (pre-endgame, bag non-empty). That
+                // floor is baked into the sheet at build time (init 0; a word only
+                // RAISES an entry), so an unreached or negative-scoring P reads as 0 +
+                // leave(K) = the exchange-keep-K value. Without it a leave K is only
+                // reachable when a word disposes exactly R-K, so good leaves collapse
+                // to the mean (compression).
                 // SAFETY: pr, kr are ranks of sub-multisets of a size<=rack_size rack,
                 // so both are valid lattice indices (< sheet.len() == leave.len()).
-                let sv = unsafe { *self.sheet.get_unchecked(pr as usize) }.max(0);
+                let sv = unsafe { *self.sheet.get_unchecked(pr as usize) };
                 let kr = self.lat.rank(&self.k[..self.n]);
                 let v = sv + unsafe { *self.leave.get_unchecked(kr as usize) };
                 if v > *self.best {
@@ -452,14 +454,15 @@ mod tests {
     #[test]
     fn naive_best_equity_matches_hand_calc() {
         let lat = MultisetLattice::new(2, 2);
-        let mut sheet = vec![UNPLAYABLE; lat.len()];
-        sheet[lat.rank(&[0, 0]) as usize] = 0;
+        // sheet has the exchange floor baked in (init 0; entries non-negative).
+        let mut sheet = vec![0i32; lat.len()];
         sheet[lat.rank(&[1, 0]) as usize] = 5_000;
         sheet[lat.rank(&[0, 1]) as usize] = 3_000;
         let mut leave = vec![0i32; lat.len()];
         leave[lat.rank(&[1, 0]) as usize] = 4_000;
         leave[lat.rank(&[0, 1]) as usize] = 1_000;
-        // rack [1,1]: play0 keep1 =5+1=6 ; play1 keep0 =3+4=7 ; play both = unplayable
+        // rack [1,1]: play0 keep1 = 5+1 = 6 ; play1 keep0 = 3+4 = 7 ;
+        // play both keep nothing = 0 (exchange floor). best = 7.
         let (eq, kept) = naive_best_equity(&lat, &sheet, &leave, &[1, 1]);
         assert_eq!(eq, 7_000);
         assert_eq!(kept, vec![0u8]);
@@ -468,16 +471,17 @@ mod tests {
     #[test]
     fn fast_conv_matches_naive() {
         let lat = MultisetLattice::new(4, 4);
-        let mut sheet = vec![UNPLAYABLE; lat.len()];
+        // sheet has the exchange floor baked in: init 0, entries non-negative
+        // (the empty/pass entry is 0 from the init).
+        let mut sheet = vec![0i32; lat.len()];
         let mut leave = vec![0i32; lat.len()];
         for idx in 0..lat.len() {
             let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
             if (h & 3) != 0 {
-                sheet[idx] = h.rem_euclid(20_000) - 5_000;
+                sheet[idx] = h.rem_euclid(20_000);
             }
             leave[idx] = h.rem_euclid(8_000) - 4_000;
         }
-        sheet[lat.rank(&[0, 0, 0, 0]) as usize] = 0; // pass always available
         let mut best = vec![UNPLAYABLE; lat.len()];
         best_equity_table(&lat, &sheet, &leave, &mut best);
         // best_equity_table only fills the full-rack (size == rack_size) block.

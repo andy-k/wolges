@@ -3357,8 +3357,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             movegen_rack.push(t as u8);
                         }
                     }
-                    sheet.iter_mut().for_each(|v| *v = census::UNPLAYABLE);
-                    sheet[empty_rank] = 0;
+                    // init the sheet to 0 = the exchange floor: every played
+                    // multiset P is worth at least 0 (dispose it via exchange, bag
+                    // non-empty). The build only RAISES an entry when a word scores
+                    // higher, so an unreached or negative-scoring P keeps 0; the
+                    // empty P (pass / keep-all) is 0 too.
+                    sheet.iter_mut().for_each(|v| *v = 0);
                     let ts = std::time::Instant::now();
                     let mut n_cand = 0u64;
                     {
