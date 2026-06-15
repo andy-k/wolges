@@ -3203,6 +3203,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
     let verify = env_flag("WOLGES_CENSUS_VERIFY", false);
+    // Apportionment of a sampled board's value to leaves. Default = entering:
+    // draw-average attribution (leave_value_by_draw), crediting the held-entering
+    // leave. WOLGES_APPORTION=full-rack opts into the full-rack apportionment
+    // (apportion_table): credit best_equity(R) to every subrack of R. One unified
+    // knob, shared with autoplay's entering-leave recording.
+    let full_rack = match std::env::var("WOLGES_APPORTION").ok().as_deref() {
+        None | Some("entering") => false,
+        Some("full-rack") => true,
+        Some(other) => {
+            return Err(
+                format!("WOLGES_APPORTION must be full-rack or entering, got {other:?}").into(),
+            );
+        }
+    };
 
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
@@ -3247,6 +3261,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut sheet = vec![census::UNPLAYABLE; lat_len];
                 let mut best = vec![census::UNPLAYABLE; lat_len];
                 let mut contrib = vec![census::UNPLAYABLE; lat_len];
+                // full-rack apportionment scratch (num/den per leave); empty unless full_rack.
+                let mut num_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
+                let mut den_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
                 let mut tally_buf = vec![0u8; num_letters];
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut unseen_pool = Vec::<u8>::new();
@@ -3505,18 +3522,49 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         );
                     }
 
-                    // STEP 3 -- value each leave by draw-averaging best_equity(S +
-                    // drawn), weighted by how many ways each completion is drawn
-                    // from the unseen pool (no replacement), into this board's
-                    // contribution buffer.
+                    // STEP 3 -- value each leave into this board's contribution
+                    // buffer. Default = entering: draw-average best_equity(S +
+                    // drawn), weighted by how likely each completion is to be
+                    // drawn from the unseen pool (no replacement).
+                    // WOLGES_APPORTION=full-rack switches to full-rack
+                    // apportionment: credit best_equity(R), weighted by
+                    // P(draw R), to every subrack of R; this board's
+                    // leave(S) = num[S]/den[S].
                     let ts = std::time::Instant::now();
-                    for (idx, slot) in contrib.iter_mut().enumerate() {
-                        lat.unrank_into(idx, &mut tally_buf);
-                        *slot =
-                            census::leave_value_by_draw(&lat, &best, &unseen_tally, &tally_buf);
+                    if full_rack {
+                        num_board.iter_mut().for_each(|x| *x = 0.0);
+                        den_board.iter_mut().for_each(|x| *x = 0.0);
+                        census::apportion_table(
+                            &lat,
+                            &best,
+                            &unseen_tally,
+                            &mut num_board,
+                            &mut den_board,
+                        );
+                        for (idx, slot) in contrib.iter_mut().enumerate() {
+                            *slot = if den_board[idx] > 0.0 {
+                                (num_board[idx] / den_board[idx]).round() as i32
+                            } else {
+                                census::UNPLAYABLE
+                            };
+                        }
+                    } else {
+                        for (idx, slot) in contrib.iter_mut().enumerate() {
+                            lat.unrank_into(idx, &mut tally_buf);
+                            *slot = census::leave_value_by_draw(
+                                &lat,
+                                &best,
+                                &unseen_tally,
+                                &tally_buf,
+                            );
+                        }
                     }
                     if b == 0 {
-                        eprintln!("  step3 draw-average: {:?}", ts.elapsed());
+                        eprintln!(
+                            "  step3 {}: {:?}",
+                            if full_rack { "full-rack" } else { "draw-average" },
+                            ts.elapsed(),
+                        );
                     }
 
                     // merge this board's contribution into the shared accumulators.
