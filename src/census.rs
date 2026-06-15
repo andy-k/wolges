@@ -236,50 +236,74 @@ pub fn naive_best_equity(
 pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], out: &mut [i32]) {
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
-    let mut p = [0u8; MAX_LETTERS];
-    let mut k = [0u8; MAX_LETTERS]; // k = r - p, maintained incrementally
-    // recurse over the (letter, count) of R's nonzero letters only. Constant +
-    // per-rack context, so rec carries only the changing letter index -- no
-    // clippy::too_many_arguments. p/k are the played/kept scratch; best accumulates.
+    // Rank BOTH sides of each split incrementally instead of an O(L) lat.rank per
+    // split. The lattice rank of a multiset is size_offset[size] + within, where
+    // within = sum over letters t (except the implicit last one, t == n-1) of a
+    // binomial run whose argument is the SUFFIX size from t (= size - prefix). So
+    // if R's nonzero letters are added HIGH-to-LOW, each letter's contribution is
+    // known the moment it is added (its suffix size is fixed), and within/size are
+    // carried by value down the recursion -- the base case is O(1) and p[]/k[] need
+    // not be materialized. Constant context, so rec carries only the changing letter
+    // index and carried ranks -- no clippy::too_many_arguments. The kept-side split
+    // is not stored: the entering attribution comes from the draw-average in
+    // leave_value_by_draw.
     struct Ctx<'a> {
         nz: &'a [(usize, u8)],
         n: usize,
         lat: &'a MultisetLattice,
         sheet: &'a [i32],
         leave: &'a [i32],
-        p: &'a mut [u8],
-        k: &'a mut [u8],
         best: &'a mut i32,
     }
     impl Ctx<'_> {
-        fn rec(&mut self, i: usize) {
-            if i == self.nz.len() {
-                let pr = self.lat.rank(&self.p[..self.n]);
+        fn rec(&mut self, i: usize, s_p: usize, within_p: u64, s_k: usize, within_k: u64) {
+            if i == 0 {
                 // disposing the played tiles P is worth max(best word score, 0): you
                 // can always EXCHANGE them for 0 (pre-endgame, bag non-empty). That
                 // floor is baked into the sheet at build time (init 0; a word only
                 // RAISES an entry), so an unreached or negative-scoring P reads as 0 +
-                // leave(K) = the exchange-keep-K value. Without it a leave K is only
-                // reachable when a word disposes exactly R-K, so good leaves collapse
-                // to the mean (compression).
-                // SAFETY: pr, kr are ranks of sub-multisets of a size<=rack_size rack,
-                // so both are valid lattice indices (< sheet.len() == leave.len()).
-                let sv = unsafe { *self.sheet.get_unchecked(pr as usize) };
-                let kr = self.lat.rank(&self.k[..self.n]);
-                let v = sv + unsafe { *self.leave.get_unchecked(kr as usize) };
+                // leave(K) = the exchange-keep-K value.
+                // SAFETY: s_p, s_k <= rack_size and within_p, within_k are valid
+                // within-size offsets, so pr, kr are in-range lattice indices
+                // (< sheet.len() == leave.len()).
+                let pr = (self.lat.size_offset[s_p] + within_p) as usize;
+                let kr = (self.lat.size_offset[s_k] + within_k) as usize;
+                let v = unsafe { *self.sheet.get_unchecked(pr) }
+                    + unsafe { *self.leave.get_unchecked(kr) };
                 if v > *self.best {
                     *self.best = v;
                 }
                 return;
             }
-            let (t, cnt) = self.nz[i];
-            for c in 0..=cnt {
-                self.p[t] = c;
-                self.k[t] = cnt - c;
-                self.rec(i + 1);
+            // process R's nonzero letters from highest index (nz is ascending) down.
+            let (t, cnt) = self.nz[i - 1];
+            let parts = self.n - 1 - t;
+            for cp in 0..=cnt {
+                let ck = cnt - cp;
+                // within contribution of this letter to each side. rem_t (the rank's
+                // suffix size from t) = (size from higher letters) + (this count). The
+                // last letter (t == n-1) is the rank's implicit remainder: no within.
+                let (mut dwp, mut dwk) = (0u64, 0u64);
+                if t + 1 < self.n {
+                    let mut a = s_p + cp as usize;
+                    for _ in 0..cp {
+                        dwp += self.lat.c(a + parts - 1, parts - 1);
+                        a -= 1;
+                    }
+                    let mut b = s_k + ck as usize;
+                    for _ in 0..ck {
+                        dwk += self.lat.c(b + parts - 1, parts - 1);
+                        b -= 1;
+                    }
+                }
+                self.rec(
+                    i - 1,
+                    s_p + cp as usize,
+                    within_p + dwp,
+                    s_k + ck as usize,
+                    within_k + dwk,
+                );
             }
-            self.p[t] = 0;
-            self.k[t] = cnt; // restore for the caller's frame
         }
     }
     let lo = lat.full_rack_start();
@@ -291,7 +315,6 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
         for (t, &c) in r[..n].iter().enumerate() {
             if c > 0 {
                 nz[m] = (t, c);
-                k[t] = c; // k starts at r (p == 0)
                 m += 1;
             }
         }
@@ -302,15 +325,9 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
             lat,
             sheet,
             leave,
-            p: &mut p,
-            k: &mut k,
             best: &mut best,
         }
-        .rec(0);
-        // reset k's touched entries back to zero for the next rack.
-        for &(t, _) in &nz[..m] {
-            k[t] = 0;
-        }
+        .rec(m, 0, 0, 0, 0);
         *slot = best;
     }
 }
