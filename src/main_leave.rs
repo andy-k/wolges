@@ -3644,19 +3644,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         }
                     } else {
                         // greedy-play fresh games (from this slot's own rng) until one
-                        // reaches this slot's random target fill. The target is drawn
-                        // uniformly across [low,high] so recorded boards range across
-                        // game phases (matching autoplay's all-phase leave coverage)
-                        // instead of clustering at the low edge. The retry cap guards
-                        // against an unreachable target. The window is set in POOL
-                        // (unseen-tile) terms via WOLGES_POOL_MAX/MIN, which
-                        // derive [low,high] per game config: low is bounded by step-1
-                        // sheet tractability (a pool property), high by staying
-                        // pre-endgame (bag non-empty, so draws and the exchange floor
-                        // are valid). Since the exchange-skip, even open boards (large
+                        // reaches this slot's target fill. The target ROUND-ROBINS across
+                        // [low_tiles, high_tiles] by slot index, so every fill bucket
+                        // gets an equal number of boards (uniform phase coverage) rather
+                        // than the noisy bucket counts a random target gives at low
+                        // board counts. Slot b's greedy games are still seeded by b, so
+                        // boards stay independent and reproducible. The retry cap guards
+                        // an unreachable target. The window is pool-native
+                        // (WOLGES_POOL_MAX/MIN -> [low,high]): low is bounded by
+                        // step-1 sheet tractability, high by the endgame floor (bag
+                        // non-empty). Since the exchange-skip, even open boards (large
                         // pool) are tractable, so the window can reach early phases.
                         let target = if high_tiles > low_tiles {
-                            rng.random_range(low_tiles..=high_tiles)
+                            low_tiles + (b as usize % (high_tiles - low_tiles + 1))
                         } else {
                             low_tiles
                         };
