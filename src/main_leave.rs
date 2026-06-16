@@ -3260,6 +3260,21 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let batch_size = (env_usize("WOLGES_CENSUS_BATCH", num_boards as usize) as u64).max(1);
     let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
     let sgd = batch_size < num_boards;
+    // reset-per-board target granularity. 0 (default) = per-tile: round-robin over
+    // every fill in [low,high]. K >= 2 = round-robin over K fill targets EVENLY SPACED
+    // across [low,high] ("percentage buckets" -- K=11 is 10 intervals + fencepost,
+    // 10% steps): coarser, so each bucket gets more boards (less per-bucket noise at
+    // low board counts), and the spacing is relative to the window so it expresses the
+    // same phases on any board size. Does not change the converged leaves, only the
+    // sampling granularity. The full pre-endgame span is [num_players*rack_size,
+    // num_tiles - num_players*rack_size - 1] (the two racks worth of fill up to a
+    // bag>=1 board); reach it with POOL_MAX = num_tiles - num_players*rack_size and
+    // POOL_MIN = num_players*rack_size + 1 (English: POOL_MAX=86 POOL_MIN=15 -> fill
+    // [14,85]; super-english: POOL_MAX=186 POOL_MIN=15 -> fill [14,185]). The step-1
+    // sheet stays tractable even on the bigger super 21x21 board because the sheet rack
+    // is capped at rack_size per letter (so its size is bounded by the alphabet, not
+    // the pool) and exchange moves are skipped; an emptiest super board takes about 3s.
+    let num_buckets = env_usize("WOLGES_CENSUS_BUCKETS", 0);
 
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
@@ -3760,10 +3775,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         // step-1 sheet tractability, high by the endgame floor (bag
                         // non-empty). Since the exchange-skip, even open boards (large
                         // pool) are tractable, so the window can reach early phases.
-                        let target = if high_tiles > low_tiles {
-                            low_tiles + (b as usize % (high_tiles - low_tiles + 1))
-                        } else {
+                        let target = if high_tiles <= low_tiles {
                             low_tiles
+                        } else if num_buckets >= 2 {
+                            // K fill targets evenly spaced across [low,high]; slot b
+                            // round-robins them. j=0 -> low, j=K-1 -> high.
+                            let span = high_tiles - low_tiles;
+                            let j = b as usize % num_buckets;
+                            low_tiles + (j * span + (num_buckets - 1) / 2) / (num_buckets - 1)
+                        } else {
+                            // per-tile: every fill in [low,high] is its own bucket.
+                            low_tiles + (b as usize % (high_tiles - low_tiles + 1))
                         };
                         let mut tries = 0u32;
                         let reached = loop {
