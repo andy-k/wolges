@@ -104,13 +104,22 @@ impl MultisetLattice {
     /// re-scanning the whole (mostly empty) alphabet tally every variant.
     #[inline]
     pub fn rank_sparse(&self, s: usize, items: &[(u8, u8)]) -> u32 {
+        self.rank_sparse_iter(s, items.iter().copied())
+    }
+
+    /// Iterator form of [`rank_sparse`]: ranks the ascending non-zero
+    /// `(letter, count)` entries without requiring them materialized in a slice,
+    /// so the blank-spelling recorder can rank a variant straight from its blank +
+    /// kept-run iterators with no per-leave stack array.
+    #[inline]
+    pub fn rank_sparse_iter(&self, s: usize, items: impl Iterator<Item = (u8, u8)>) -> u32 {
         if s > self.rack_size {
             return !0;
         }
         let l = self.num_letters;
         let mut within: u64 = 0;
         let mut rem = s;
-        for &(letter, ct_raw) in items {
+        for (letter, ct_raw) in items {
             let t = letter as usize;
             // the last letter (index l-1) has parts == 0 and contributes nothing;
             // items are ascending, so it can only be the final entry.
@@ -883,26 +892,20 @@ pub fn record_blank_variants(
     impl Ctx<'_> {
         fn rec(&mut self, ri: usize, leftover: usize, blanks_total: usize, drop_acc: i32) {
             if ri == self.num_runs {
-                // Build the variant's non-zero (letter, count) list directly -- the
-                // blanks, then each run's kept real count (held in tally[letter]) -- and
-                // rank only those, instead of re-scanning the whole alphabet tally.
-                let mut items = [(0u8, 0u8); MAX_LETTERS];
-                let mut ni = 0;
-                let mut size = 0usize;
-                if blanks_total > 0 {
-                    items[ni] = (0, blanks_total as u8);
-                    ni += 1;
-                    size += blanks_total;
-                }
-                for r in self.runs.iter().take(self.num_runs) {
-                    let real = self.tally[r.0 as usize];
-                    if real > 0 {
-                        items[ni] = (r.0, real);
-                        ni += 1;
-                        size += real as usize;
-                    }
-                }
-                let key = self.lat.rank_sparse(size, &items[..ni]);
+                // Rank the variant straight from its non-zero entries -- the blanks
+                // (letter 0, ascending-first) then each run's kept real count (runs
+                // ascending) -- with no materialized items array. Every placed tile
+                // is either blanked or kept real, so the multiset size is the whole
+                // played word, `placed.len()`.
+                let size = self.placed.len();
+                let items = (blanks_total > 0)
+                    .then_some((0u8, blanks_total as u8))
+                    .into_iter()
+                    .chain(self.runs.iter().take(self.num_runs).filter_map(|r| {
+                        let real = self.tally[r.0 as usize];
+                        (real > 0).then_some((r.0, real))
+                    }));
+                let key = self.lat.rank_sparse_iter(size, items);
                 if key != !0 {
                     let slot = &mut self.sheet[key as usize];
                     let val = self.real_score - drop_acc;
