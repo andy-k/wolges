@@ -3237,6 +3237,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             );
         }
     };
+    // entering step 3: 0 = pull (leave_value_by_draw per leave, the default), 1 =
+    // push (census::entering_fused, one lattice walk for the whole table, about
+    // 20x faster and bit-identical -- both exact i128). The push trades speed for
+    // memory: two i128 lat_len arrays per thread (16 bytes/leave each); cut
+    // WOLGES_THREADS if that is too large. Ignored on the full-rack path.
+    let entering_push = env_flag("WOLGES_CENSUS_ENTERING_PUSH", false);
     // board sampling: 0 = reset-per-board (the default) -- each board slot greedy-
     // plays a fresh game to one random in-window fill, values it, and resets. 1 =
     // per-game -- each slot plays one real game through and values EVERY board whose
@@ -3245,6 +3251,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // reused instead of replayed. In per-game mode num_boards counts GAMES, not
     // boards (one game yields a variable number of in-window boards).
     let per_game = env_flag("WOLGES_CENSUS_PER_GAME", false);
+    // online mini-batch SGD. WOLGES_CENSUS_BATCH = boards per mini-batch (default =
+    // num_boards = one batch = the plain batch-mean path, byte-identical). When BATCH
+    // < num_boards the leaves update ONLINE: after each mini-batch the leader thread
+    // EMA-blends the batch's centered mean into leave_cur at rate WOLGES_CENSUS_ALPHA,
+    // so later mini-batches value with improved leaves and the run converges in fewer
+    // board-evals. The output is then the EMA leave_cur itself (not the batch mean).
+    let batch_size = (env_usize("WOLGES_CENSUS_BATCH", num_boards as usize) as u64).max(1);
+    let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
+    let sgd = batch_size < num_boards;
 
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
@@ -3264,6 +3279,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         lat.unrank_into(idx, &mut tally_buf);
         *slot = arc_klv0.leave_value_from_tally(&tally_buf);
     }
+    // RwLock so the online-SGD path can rewrite leave_cur between mini-batches while
+    // worker threads read it. In the default (one-batch) path it is only ever read.
+    let leave_lock = std::sync::RwLock::new(leave_cur);
 
     // Boards are independent: each is one play-value sheet + best-equity
     // convolution + draw-average pass that values every leave once. Compute them in
@@ -3276,8 +3294,25 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let num_threads = wolges_threads().max(1).min(num_boards.max(1) as usize);
     let lat_len = lat.len();
     let next_board = std::sync::atomic::AtomicU64::new(0);
-    // (accum_sum, accum_cnt, boards_completed, distinct_leaves_valued)
-    let shared = std::sync::Mutex::new((vec![0f64; lat_len], vec![0u64; lat_len], 0u64, 0u64));
+    // (accum_sum, accum_cnt, boards_completed, distinct_leaves_valued, ever_valued).
+    // In SGD, accum_sum/cnt are the CURRENT mini-batch (zeroed by the leader after
+    // each batch's EMA); ever_valued is persistent (which leaves to write at the end).
+    // In the default one-batch path nothing is reset, so accum_sum/cnt accumulate all
+    // boards across the run and ever_valued is unused.
+    let shared = std::sync::Mutex::new((
+        vec![0f64; lat_len],
+        vec![0u64; lat_len],
+        0u64,
+        0u64,
+        if sgd {
+            vec![false; lat_len]
+        } else {
+            Vec::new()
+        },
+    ));
+    // mini-batch barrier (SGD only): all workers finish a batch, the leader EMA-updates
+    // leave_cur, all resume on the next batch with the improved leaves.
+    let barrier = std::sync::Barrier::new(num_threads);
     // Per-pool sample histogram for the per-game pseudo-round-robin sampler: each game
     // steers toward the least-covered pools so coverage across [pool_min, pool_max]
     // stays uniform while reusing one game's plies. Lock-free atomic counters shared
@@ -3311,6 +3346,18 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 // full-rack apportionment scratch (num/den per leave); empty unless full_rack.
                 let mut num_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
                 let mut den_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
+                // entering push-apportion scratch (i128 num/den); empty unless
+                // entering_push.
+                let mut num_e = if !full_rack && entering_push {
+                    vec![0i128; lat_len]
+                } else {
+                    Vec::new()
+                };
+                let mut den_e = if !full_rack && entering_push {
+                    vec![0i128; lat_len]
+                } else {
+                    Vec::new()
+                };
                 let mut tally_buf = vec![0u8; num_letters];
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut unseen_pool = Vec::<u8>::new();
@@ -3545,6 +3592,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 census::UNPLAYABLE
                             };
                         }
+                    } else if entering_push {
+                        // push form: one lattice walk apportions best[] to every leave
+                        // (bit-identical to the per-leave pull below, about 20x faster).
+                        num_e.iter_mut().for_each(|x| *x = 0);
+                        den_e.iter_mut().for_each(|x| *x = 0);
+                        census::entering_fused(&lat, &best, &unseen_tally, &mut num_e, &mut den_e);
+                        for (idx, slot) in contrib.iter_mut().enumerate() {
+                            *slot = if den_e[idx] != 0 {
+                                (num_e[idx] / den_e[idx]) as i32
+                            } else {
+                                census::UNPLAYABLE
+                            };
+                        }
                     } else {
                         for (idx, slot) in contrib.iter_mut().enumerate() {
                             lat.unrank_into(idx, &mut tally_buf);
@@ -3566,7 +3626,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                     // merge this board's contribution into the shared accumulators.
                     let mut g = shared.lock().unwrap();
-                    let (sum, cnt, completed, valued) = &mut *g;
+                    let (sum, cnt, completed, valued, _ever) = &mut *g;
                     for idx in 0..lat_len {
                         let v = contrib[idx];
                         if v != census::UNPLAYABLE {
@@ -3588,11 +3648,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     );
                 };
 
+                // outer loop over mini-batches (one batch = the whole run unless SGD).
+                let mut batch_start = 0u64;
                 loop {
-                    let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if b >= num_boards {
-                        break;
-                    }
+                    let batch_end = (batch_start + batch_size).min(num_boards);
+                    // read-guard the leave table for this batch; the leader rewrites it
+                    // (write-guard) between batches under the barrier, when no reader
+                    // holds it. In the default path this guard is held for the one batch.
+                    {
+                        let leave = leave_lock.read().unwrap();
+                        loop {
+                            let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if b >= batch_end {
+                                break;
+                            }
                     let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
                         seed.wrapping_add(census_mix64(b)),
                     ));
@@ -3640,7 +3709,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     &mut move_generator,
                                     &game_state,
                                     &mut rng,
-                                    &leave_cur,
+                                    &leave,
                                     lf,
                                     verify && lf,
                                 );
@@ -3765,25 +3834,70 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             &mut move_generator,
                             &game_state,
                             &mut rng,
-                            &leave_cur,
+                            &leave,
                             b == 0,
                             verify && b == 0,
                         );
+                    }
+                    }
+                    }
+                    // mini-batch boundary (SGD only): the read guard is dropped above,
+                    // so the leader can write-guard leave_cur with no readers. It
+                    // EMA-blends this batch's centered mean into leave_cur, marks the
+                    // valued leaves, zeroes the accumulators, and resets next_board so
+                    // the next batch re-pulls from batch_end (the inner loop overshoots
+                    // next_board past batch_end by up to num_threads breaking pulls).
+                    if sgd {
+                        if barrier.wait().is_leader() {
+                            let mut g = shared.lock().unwrap();
+                            let (sum, cnt, _completed, _valued, ever) = &mut *g;
+                            let mut lv = leave_lock.write().unwrap();
+                            let base = if cnt[empty_rank] > 0 {
+                                sum[empty_rank] / cnt[empty_rank] as f64
+                            } else {
+                                0.0
+                            };
+                            for idx in 0..lat_len {
+                                if cnt[idx] > 0 {
+                                    ever[idx] = true;
+                                    let centered = sum[idx] / cnt[idx] as f64 - base;
+                                    lv[idx] = ((1.0 - alpha) * lv[idx] as f64 + alpha * centered)
+                                        .round() as i32;
+                                }
+                                sum[idx] = 0.0;
+                                cnt[idx] = 0;
+                            }
+                            next_board.store(batch_end, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        barrier.wait();
+                    }
+                    batch_start = batch_end;
+                    if batch_start >= num_boards {
+                        break;
                     }
                 }
             });
         }
     });
 
-    let (accum_sum, accum_cnt, _, _) = shared.into_inner().unwrap();
+    let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
+    let leave_final = leave_lock.into_inner().unwrap();
 
-    // mean-center on the empty leave (its entering-equity is the average best
-    // full-rack equity = the baseline), then write (leave, value_in_points).
-    let baseline = if accum_cnt[empty_rank] > 0 {
-        accum_sum[empty_rank] / accum_cnt[empty_rank] as f64
-    } else {
-        0.0
+    // Write (leave, value_in_points), mean-centered on the empty leave (its
+    // entering-equity = the average best full-rack equity = the baseline). The
+    // default one-batch path reports each leave's accumulated best-equity mean; the
+    // SGD path reports the online EMA leave_cur itself (already in the same millipoint
+    // frame), restricted to leaves valued in some mini-batch.
+    let value_mp = |idx: usize| -> f64 {
+        if sgd {
+            leave_final[idx] as f64
+        } else if accum_cnt[idx] > 0 {
+            accum_sum[idx] / accum_cnt[idx] as f64
+        } else {
+            0.0
+        }
     };
+    let baseline = value_mp(empty_rank);
     let epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -3802,7 +3916,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
     for idx in 0..lat.len() {
-        if accum_cnt[idx] == 0 {
+        let valued = if sgd { ever[idx] } else { accum_cnt[idx] > 0 };
+        if !valued {
             continue;
         }
         lat.unrank_into(idx, &mut tally_buf);
@@ -3810,8 +3925,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         if size == 0 || size > max_keep {
             continue; // skip empty (baseline), over-size, and (non-full) full racks.
         }
-        let centered_points =
-            (accum_sum[idx] / accum_cnt[idx] as f64 - baseline) / equity::SCALE as f64;
+        let centered_points = (value_mp(idx) - baseline) / equity::SCALE as f64;
         leave_ser.clear();
         for (t, &c) in tally_buf.iter().enumerate() {
             for _ in 0..c {
