@@ -3198,31 +3198,30 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // enumerative builder covers only the pool-bounded window, not the full 25-75%
     // midgame.)
     let pool_max = env_usize("WOLGES_POOL_MAX", 28);
-    let pool_min = env_usize("WOLGES_POOL_MIN", 3 * rack_size);
+    // The window is pool-native: a board is in-window while its unseen pool (tiles not
+    // on the board) lies in [pool_min, pool_max]. movegen and play_scorer both stop
+    // adding the klv leave once the bag is empty (num_tiles_in_bag <= 0 -> endgame
+    // penalty leaves), so a board is klv-relevant only while the bag holds >= 1 tile.
+    // The bag is the pool minus the tiles held in racks (at most num_players *
+    // rack_size), so pool > num_players * rack_size guarantees a non-empty bag for any
+    // rack sizes. Floor pool_min there; a smaller WOLGES_POOL_MIN is raised with a
+    // warning rather than silently valuing endgame boards whose leaves are never used.
+    let min_pool = game_config.num_players() as usize * rack_size + 1;
+    let pool_min = {
+        let req = env_usize("WOLGES_POOL_MIN", 3 * rack_size);
+        if req < min_pool {
+            eprintln!(
+                "census: raising pool_min {req} -> {min_pool} (a smaller unseen pool \
+                 implies an empty bag = endgame, where the klv leave is unused)"
+            );
+            min_pool
+        } else {
+            req
+        }
+    };
     let blank_cap = env_usize("WOLGES_CENSUS_BLANK_CAP", rack_size);
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
-    // A board whose bag is empty is endgame: there are no draws, so the leave model
-    // (which values a leave by its draw-weighted future equity) and the exchange
-    // floor (needs a non-empty bag to dispose tiles) do not apply -- valuing such a
-    // board would leak fictional draw equity into leaves that are then used
-    // pre-endgame. The bag holds >= 1 tile only while every player's full rack
-    // (num_players * rack_size tiles) plus at least one bag tile sit off the board,
-    // i.e. while board fill <= num_tiles - num_players * rack_size - 1 (English:
-    // 100 - 2*7 - 1 = 85). Cap the window high there; a too-high override (a
-    // WOLGES_POOL_MIN below num_players * rack_size) is clamped with a warning
-    // rather than silently producing endgame-polluted leaves.
-    let max_pre_endgame_fill =
-        num_tiles.saturating_sub(game_config.num_players() as usize * rack_size + 1);
-    let high_tiles = if high_tiles > max_pre_endgame_fill {
-        eprintln!(
-            "census: clamping window high {high_tiles} -> {max_pre_endgame_fill} \
-             (a board with that many tiles has an empty bag = endgame; leaves need draws)"
-        );
-        max_pre_endgame_fill
-    } else {
-        high_tiles
-    };
     let verify = env_flag("WOLGES_CENSUS_VERIFY", false);
     // Apportionment of a sampled board's value to leaves. Default = entering:
     // draw-average attribution (leave_value_by_draw), crediting the held-entering
