@@ -775,6 +775,137 @@ fn n_choose_k(n: u64, k: u64) -> u64 {
     (num / den) as u64
 }
 
+/// Blank-spelling sheet recorder: given ONE all-real GADDAG traversal (its recounted
+/// `real_score` and the per-placed-tile `(letter, drop)` list from
+/// `play_scorer::score_and_blank_deltas`, where `drop` is how much the score falls
+/// if that tile becomes a blank), enumerate every feasible blank designation of
+/// that traversal and raise the play-value `sheet` for each resulting played
+/// multiset. This reproduces, without the wildcard descent, exactly what the
+/// wildcard sheet build records: for each placed letter L appearing `placed_L`
+/// times, at least `forced_L = max(0, placed_L - real_avail_L)` of them must be
+/// blanks (too few real copies in the pool), and up to `num_blanks_eff` blanks
+/// total may be used (optionally "wasting" a real tile as a blank, which the
+/// wildcard path also produces). For a given blank count per letter, the best
+/// (max) score blanks that letter's lowest-`drop` positions, so the deltas are
+/// sorted ascending per letter and consumed cheapest-first. The played multiset
+/// for a designation keeps `placed_L - blank_L` real copies of L plus the total
+/// blanks at letter 0 -- matching the wildcard recorder, which keys a blank tile
+/// as 0. `placed` is sorted in place. Pure: only the lattice and arithmetic.
+pub fn record_blank_variants(
+    lat: &MultisetLattice,
+    sheet: &mut [i32],
+    real_score: i32,
+    placed: &mut [(u8, i32)],
+    unseen_tally: &[u8],
+    num_blanks_eff: usize,
+) {
+    let n = placed.len();
+    if n == 0 {
+        return;
+    }
+    let rack_size = lat.rack_size();
+    if n > rack_size {
+        return;
+    }
+    let num_letters = lat.num_letters();
+    // group by letter (ascending), and within a letter by ascending drop so the
+    // cheapest positions are blanked first.
+    placed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    // runs[r] = (letter, start index in `placed`, count, forced blanks).
+    let mut runs = [(0u8, 0u8, 0u8, 0u8); MAX_LETTERS];
+    let mut num_runs = 0;
+    let mut total_forced = 0usize;
+    let mut i = 0;
+    while i < n {
+        let letter = placed[i].0;
+        let start = i;
+        while i < n && placed[i].0 == letter {
+            i += 1;
+        }
+        let count = i - start;
+        let real_avail = (unseen_tally[letter as usize] as usize).min(rack_size);
+        let forced = count.saturating_sub(real_avail);
+        total_forced += forced;
+        runs[num_runs] = (letter, start as u8, count as u8, forced as u8);
+        num_runs += 1;
+    }
+    if total_forced > num_blanks_eff {
+        // not enough blanks to make this word at all.
+        return;
+    }
+    let leftover = num_blanks_eff - total_forced;
+    let mut tally = [0u8; MAX_LETTERS];
+
+    // Constant context for the blank-assignment recursion, so rec carries only the
+    // changing run index, leftover blanks, running blank total and dropped score -- no
+    // clippy::too_many_arguments. tally is the rank scratch; sheet is the output.
+    struct Ctx<'a> {
+        runs: &'a [(u8, u8, u8, u8)],
+        num_runs: usize,
+        placed: &'a [(u8, i32)],
+        tally: &'a mut [u8],
+        lat: &'a MultisetLattice,
+        sheet: &'a mut [i32],
+        real_score: i32,
+    }
+    impl Ctx<'_> {
+        fn rec(&mut self, ri: usize, leftover: usize, blanks_total: usize, drop_acc: i32) {
+            if ri == self.num_runs {
+                self.tally[0] = blanks_total as u8;
+                let key = self.lat.rank(self.tally);
+                if key != !0 {
+                    let slot = &mut self.sheet[key as usize];
+                    let s = self.real_score - drop_acc;
+                    if s > *slot {
+                        *slot = s;
+                    }
+                }
+                self.tally[0] = 0;
+                return;
+            }
+            let (letter, start, count, forced) = self.runs[ri];
+            let (letter, start, count, forced) = (
+                letter as usize,
+                start as usize,
+                count as usize,
+                forced as usize,
+            );
+            let max_extra = (count - forced).min(leftover);
+            // drop for the mandatory `forced` cheapest blanks of this letter.
+            let mut drop_run = 0i32;
+            for e in &self.placed[start..start + forced] {
+                drop_run += e.1;
+            }
+            for extra in 0..=max_extra {
+                if extra > 0 {
+                    // include the next-cheapest position as an optional blank.
+                    drop_run += self.placed[start + forced + extra - 1].1;
+                }
+                let b = forced + extra;
+                self.tally[letter] = (count - b) as u8;
+                self.rec(
+                    ri + 1,
+                    leftover - extra,
+                    blanks_total + b,
+                    drop_acc + drop_run,
+                );
+            }
+            self.tally[letter] = 0;
+        }
+    }
+
+    Ctx {
+        runs: &runs,
+        num_runs,
+        placed,
+        tally: &mut tally[..num_letters],
+        lat,
+        sheet,
+        real_score,
+    }
+    .rec(0, leftover, 0, 0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -978,5 +1109,63 @@ mod tests {
             assert_eq!(num_a[idx], num_b[idx], "num at {idx}");
             assert_eq!(den_a[idx], den_b[idx], "den at {idx}");
         }
+    }
+
+    #[test]
+    fn record_blank_variants_enumerates_designations() {
+        // lattice: blank=0, A=1, B=2, C=3; racks up to 4 tiles.
+        let lat = MultisetLattice::new(4, 4);
+        let key = |tally: &[u8]| lat.rank(tally) as usize;
+        let run = |placed: &mut [(u8, i32)], unseen: &[u8], blanks: usize, real_score: i32| {
+            let mut sheet = vec![0i32; lat.len()];
+            record_blank_variants(&lat, &mut sheet, real_score, placed, unseen, blanks);
+            sheet
+        };
+
+        // two A's placed (drops 4 and 10), 2 real A available, 1 blank: forced 0,
+        // leftover 1 -> {A,A} (no blank) and {blank,A} (blank the cheaper A, drop 4).
+        let sheet = run(&mut [(1, 10), (1, 4)], &[0, 2, 0, 0], 1, 100);
+        assert_eq!(sheet[key(&[0, 2, 0, 0])], 100); // {A,A}
+        assert_eq!(sheet[key(&[1, 1, 0, 0])], 96); // {blank,A}, dropped 4
+        assert_eq!(sheet[key(&[2, 0, 0, 0])], 0); // {blank,blank}: only 1 blank, unreached
+
+        // same word, only 1 real A but 2 blanks: forced 1, leftover 1 -> {blank,A}
+        // and {blank,blank}; the all-real {A,A} is infeasible (one real A).
+        let sheet = run(&mut [(1, 10), (1, 4)], &[0, 1, 0, 0], 2, 100);
+        assert_eq!(sheet[key(&[0, 2, 0, 0])], 0); // {A,A} infeasible
+        assert_eq!(sheet[key(&[1, 1, 0, 0])], 96); // {blank,A}: drop the cheaper (4)
+        assert_eq!(sheet[key(&[2, 0, 0, 0])], 86); // {blank,blank}: drop both (4+10)
+
+        // three distinct unavailable letters, only 2 blanks: forced 3 > 2 -> skip all.
+        let sheet = run(&mut [(1, 8), (2, 5), (3, 3)], &[0, 0, 0, 0], 2, 70);
+        assert!(sheet.iter().all(|&v| v == 0));
+
+        // A + B, one real each, 1 blank: blank at most one of the two.
+        let sheet = run(&mut [(1, 8), (2, 6)], &[0, 1, 1, 0], 1, 50);
+        assert_eq!(sheet[key(&[0, 1, 1, 0])], 50); // {A,B} all real
+        assert_eq!(sheet[key(&[1, 0, 1, 0])], 42); // {blank,B}: A is the blank, drop 8
+        assert_eq!(sheet[key(&[1, 1, 0, 0])], 44); // {blank,A}: B is the blank, drop 6
+        assert_eq!(sheet[key(&[2, 0, 0, 0])], 0); // two blanks unreached (1 blank)
+
+        // max-merge: a higher-scoring word for the same multiset wins.
+        let mut sheet = vec![0i32; lat.len()];
+        record_blank_variants(
+            &lat,
+            &mut sheet,
+            100,
+            &mut [(1, 10), (1, 4)],
+            &[0, 2, 0, 0],
+            1,
+        );
+        record_blank_variants(
+            &lat,
+            &mut sheet,
+            120,
+            &mut [(1, 10), (1, 4)],
+            &[0, 2, 0, 0],
+            1,
+        );
+        assert_eq!(sheet[key(&[0, 2, 0, 0])], 120); // {A,A} from the better word
+        assert_eq!(sheet[key(&[1, 1, 0, 0])], 116); // {blank,A} likewise
     }
 }
