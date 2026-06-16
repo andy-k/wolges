@@ -471,14 +471,61 @@ pub fn apportion_table(
 }
 
 /// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
-/// best_equity(R) inline (max over splits) and immediately apportion it
-/// (weighted by w(R)) to every subrack -- ONE lattice pass, no materialized
-/// best[] array. Equivalent to best_equity_table followed by apportion_table
-/// (proven by apportion_fused_matches_split). The entering path can NOT fuse
-/// this way: its draw-average pulls best[S+d] at random across racks, so it
-/// needs best[] fully materialized. num/den caller-owned, zeroed per board.
+/// best_equity(R) inline (max over splits) and immediately apportion it (weighted by
+/// w(R)) to every subrack -- ONE lattice pass, no materialized best[] array.
+/// Equivalent to best_equity_table followed by apportion_table (proven by
+/// apportion_fused_matches_split). The entering path can NOT fuse this way:
+/// its draw-average pulls best[S+d] at random across racks, so it needs best[]
+/// fully materialized. num/den caller-owned, zeroed per board.
+/// Parent (add-one-tile) index table over the sub-full-rack multisets. For every
+/// lattice index `idx` of size < rack_size and every letter `t`, `add(idx, t)` is
+/// the rank of `multiset(idx)` with one more `t`. [`apportion_fused`] walks each
+/// subrack up from the empty multiset one tile at a time by table lookup, instead
+/// of recomputing the binomial rank-skip (`lat.c(...)`) per rack -- step 3 is about 95%
+/// of a census board, so this is the bigger-pie win. Built once per process and
+/// shared read-only across the board threads. Only sub-full-rack rows are stored
+/// (a subrack never grows past rack_size, so `add` is never called on a full rack):
+/// full_rack_start() * num_letters u32s (about 120 MB english, about 420 MB for a 33-letter
+/// lattice).
+pub struct AddTable {
+    num_letters: usize,
+    add: Vec<u32>,
+}
+
+impl AddTable {
+    pub fn new(lat: &MultisetLattice) -> Self {
+        let n = lat.num_letters();
+        let rows = lat.full_rack_start();
+        let mut add = vec![0u32; rows * n];
+        let mut tally = vec![0u8; n];
+        for (idx, row) in add.chunks_exact_mut(n).enumerate() {
+            lat.unrank_into(idx, &mut tally);
+            for (t, slot) in row.iter_mut().enumerate() {
+                tally[t] += 1;
+                *slot = lat.rank(&tally);
+                tally[t] -= 1;
+            }
+        }
+        Self {
+            num_letters: n,
+            add,
+        }
+    }
+
+    /// Rank of `multiset(idx)` with one more tile of letter `t`. Caller guarantees
+    /// `idx < full_rack_start()` (size < rack_size) and `t < num_letters`.
+    #[inline(always)]
+    pub fn add(&self, idx: usize, t: usize) -> usize {
+        // SAFETY: add holds full_rack_start()*num_letters u32s; the caller's contract is
+        // idx < full_rack_start() and t < num_letters, so idx*num_letters+t is
+        // < add.len().
+        unsafe { *self.add.get_unchecked(idx * self.num_letters + t) as usize }
+    }
+}
+
 pub fn apportion_fused(
     lat: &MultisetLattice,
+    add: &AddTable,
     sheet: &[i32],
     leave: &[i32],
     unseen: &[u8],
@@ -491,8 +538,7 @@ pub fn apportion_fused(
     // and are passed as arguments -- no clippy::too_many_arguments. nz and the num/den
     // accumulators are borrowed per rack; the Ctx is rebuilt for each drawable rack.
     struct Ctx<'a> {
-        n: usize,
-        lat: &'a MultisetLattice,
+        add: &'a AddTable,
         sheet: &'a [i32],
         leave: &'a [i32],
         nz: &'a [(usize, u8)],
@@ -500,75 +546,54 @@ pub fn apportion_fused(
         den: &'a mut [f64],
     }
     impl Ctx<'_> {
-        // max over splits -> best_equity(R) (same incremental rank as best_equity_table).
-        fn rec_max(
-            &self,
-            i: usize,
-            s_p: usize,
-            within_p: u64,
-            s_k: usize,
-            within_k: u64,
-            best: &mut i32,
-        ) {
+        // max over splits -> best_equity(R): build the played P and kept K subracks up
+        // from the empty multiset by add-table lookup (one lookup per tile) instead of
+        // the binomial rank-skip.
+        fn rec_max(&self, i: usize, p_idx: usize, k_idx: usize, best: &mut i32) {
             if i == 0 {
-                let pr = (self.lat.size_offset[s_p] + within_p) as usize;
-                let kr = (self.lat.size_offset[s_k] + within_k) as usize;
-                let v = unsafe { *self.sheet.get_unchecked(pr) }
-                    + unsafe { *self.leave.get_unchecked(kr) };
+                // SAFETY: p_idx and k_idx are the ranks of the played P and kept K subracks
+                // (P+K = R, a full rack), built up from 0 via the add table, so each is
+                // < lat.len(); sheet and leave are lat.len()-sized.
+                let v = unsafe { *self.sheet.get_unchecked(p_idx) }
+                    + unsafe { *self.leave.get_unchecked(k_idx) };
                 if v > *best {
                     *best = v;
                 }
                 return;
             }
             let (t, cnt) = self.nz[i - 1];
-            let parts = self.n - 1 - t;
+            // split cnt tiles of letter t into cp played (-> P) and cnt - cp kept (-> K).
+            let mut pk = p_idx;
             for cp in 0..=cnt {
-                let ck = cnt - cp;
-                let (mut dwp, mut dwk) = (0u64, 0u64);
-                if t + 1 < self.n {
-                    let mut a = s_p + cp as usize;
-                    for _ in 0..cp {
-                        dwp += self.lat.c(a + parts - 1, parts - 1);
-                        a -= 1;
-                    }
-                    let mut b = s_k + ck as usize;
-                    for _ in 0..ck {
-                        dwk += self.lat.c(b + parts - 1, parts - 1);
-                        b -= 1;
-                    }
+                let mut kk = k_idx;
+                for _ in 0..(cnt - cp) {
+                    kk = self.add.add(kk, t);
                 }
-                self.rec_max(
-                    i - 1,
-                    s_p + cp as usize,
-                    within_p + dwp,
-                    s_k + ck as usize,
-                    within_k + dwk,
-                    best,
-                );
+                self.rec_max(i - 1, pk, kk, best);
+                if cp < cnt {
+                    pk = self.add.add(pk, t);
+                }
             }
         }
-        // apportion (w, we) to every subrack (same incremental rank as apportion_table).
-        fn apportion_rec(&mut self, i: usize, s_s: usize, within_s: u64, w: f64, we: f64) {
+        // apportion (w, we) to every subrack: build S up from the empty multiset by
+        // add-table lookup.
+        fn apportion_rec(&mut self, i: usize, s_idx: usize, w: f64, we: f64) {
             if i == 0 {
-                let sr = (self.lat.size_offset[s_s] + within_s) as usize;
+                // SAFETY: s_idx is the rank of a subrack S of a full rack, built up from 0 via
+                // the add table, so < lat.len(); num and den are lat.len()-sized.
                 unsafe {
-                    *self.num.get_unchecked_mut(sr) += we;
-                    *self.den.get_unchecked_mut(sr) += w;
+                    *self.num.get_unchecked_mut(s_idx) += we;
+                    *self.den.get_unchecked_mut(s_idx) += w;
                 }
                 return;
             }
             let (t, cnt) = self.nz[i - 1];
-            let parts = self.n - 1 - t;
+            let mut idx = s_idx;
             for cs in 0..=cnt {
-                let mut dw = 0u64;
-                if t + 1 < self.n {
-                    let mut a = s_s + cs as usize;
-                    for _ in 0..cs {
-                        dw += self.lat.c(a + parts - 1, parts - 1);
-                        a -= 1;
-                    }
+                self.apportion_rec(i - 1, idx, w, we);
+                if cs < cnt {
+                    idx = self.add.add(idx, t);
                 }
-                self.apportion_rec(i - 1, s_s + cs as usize, within_s + dw, w, we);
             }
         }
     }
@@ -595,16 +620,15 @@ pub fn apportion_fused(
         }
         let mut best = UNPLAYABLE;
         let mut ctx = Ctx {
-            n,
-            lat,
+            add,
             sheet,
             leave,
             nz: &nz[..m],
             num: &mut *num,
             den: &mut *den,
         };
-        ctx.rec_max(m, 0, 0, 0, 0, &mut best);
-        ctx.apportion_rec(m, 0, 0, w, w * best as f64);
+        ctx.rec_max(m, 0, 0, &mut best);
+        ctx.apportion_rec(m, 0, w, w * best as f64);
     }
 }
 
@@ -1177,7 +1201,8 @@ mod tests {
         apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
         let mut num_b = vec![0f64; lat.len()];
         let mut den_b = vec![0f64; lat.len()];
-        apportion_fused(&lat, &sheet, &leave, &unseen, &mut num_b, &mut den_b);
+        let add = AddTable::new(&lat);
+        apportion_fused(&lat, &add, &sheet, &leave, &unseen, &mut num_b, &mut den_b);
         for idx in 0..lat.len() {
             assert_eq!(num_a[idx], num_b[idx], "num at {idx}");
             assert_eq!(den_a[idx], den_b[idx], "den at {idx}");

@@ -3385,6 +3385,22 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         lat.len(),
     );
 
+    // Parent (add-tile) index table for apportion_fused's step-3 apportion/max walks --
+    // built once and shared read-only across the board threads (the non-full-rack
+    // paths do not use it, so build only when WOLGES_APPORTION=full-rack is set).
+    let add_table = if full_rack {
+        let t = std::time::Instant::now();
+        let at = census::AddTable::new(&lat);
+        eprintln!(
+            "census: add-table {} rows x {num_letters} letters built in {:?}",
+            lat.full_rack_start(),
+            t.elapsed(),
+        );
+        Some(at)
+    } else {
+        None
+    };
+
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
     let seed = seed.unwrap_or_else(rand::random);
     // current leave table (millipoints), loaded from klv0 by lattice multiset.
@@ -3666,6 +3682,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         den_board.iter_mut().for_each(|x| *x = 0.0);
                         census::apportion_fused(
                             &lat,
+                            add_table.as_ref().unwrap(),
                             &sheet,
                             leave,
                             &unseen_tally,
