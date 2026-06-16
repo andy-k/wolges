@@ -3277,90 +3277,21 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut verify_rack = Vec::<u8>::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
 
-                loop {
-                    let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if b >= num_boards {
-                        break;
-                    }
-                    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
-                        seed.wrapping_add(census_mix64(b)),
-                    ));
-
-                    // greedy-play fresh games (from this slot's own rng) until one
-                    // reaches this slot's random target fill. The target is drawn
-                    // uniformly across [low,high] so recorded boards range across
-                    // game phases (matching autoplay's all-phase leave coverage)
-                    // instead of clustering at the low edge. The retry cap guards
-                    // against an unreachable target. The window is set in POOL
-                    // (unseen-tile) terms via WOLGES_POOL_MAX/MIN, which
-                    // derive [low,high] per game config: low is bounded by step-1
-                    // sheet tractability (a pool property), high by staying
-                    // pre-endgame (bag non-empty, so draws and the exchange floor
-                    // are valid). Since the exchange-skip, even open boards (large
-                    // pool) are tractable, so the window can reach early phases.
-                    let target = if high_tiles > low_tiles {
-                        rng.random_range(low_tiles..=high_tiles)
-                    } else {
-                        low_tiles
-                    };
-                    let mut tries = 0u32;
-                    let reached = loop {
-                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                        let mut got = false;
-                        loop {
-                            let fill =
-                                game_state.board_tiles.iter().filter(|&&t| t != 0).count();
-                            if fill >= target {
-                                got = true;
-                                break;
-                            }
-                            game_state.players[game_state.turn as usize]
-                                .rack
-                                .sort_unstable();
-                            let board_snapshot = &movegen::BoardSnapshot {
-                                board_tiles: &game_state.board_tiles,
-                                game_config: &game_config,
-                                kwg: &kwg,
-                                klv: if game_state.turn == 0 {
-                                    &arc_klv0
-                                } else {
-                                    &arc_klv1
-                                },
-                            };
-                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                board_snapshot,
-                                rack: &game_state.current_player().rack,
-                                max_gen: 1,
-                                num_exchanges_by_this_player: game_state
-                                    .current_player()
-                                    .num_exchanges,
-                                always_include_pass: false,
-                            });
-                            game_state
-                                .play(&game_config, &mut rng, &move_generator.plays[0].play)
-                                .unwrap();
-                            let ended =
-                                game_state.check_game_ended(&game_config, &mut final_scores);
-                            game_state.next_turn();
-                            if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
-                                break; // game ended before the window; try a fresh game.
-                            }
-                        }
-                        if got {
-                            break true;
-                        }
-                        tries += 1;
-                        if tries >= 1_000_000 {
-                            break false;
-                        }
-                    };
-                    if !reached {
-                        eprintln!(
-                            "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping"
-                        );
-                        continue;
-                    }
-
+                // Value one in-window board: build the play-value sheet from one
+                // movegen over the unseen pool, fold it with the current leaves into
+                // best_equity, optionally cross-check the null-klv/engine invariant,
+                // then attribute equity to leaves (entering draw-average or full-rack
+                // apportionment) and merge into the shared accumulators. Factored into a
+                // closure so it reuses this thread's scratch and can be called for
+                // each sampled board; the live move_generator, game_state and rng are
+                // passed in so the sampler can keep driving them. `log_first` emits the
+                // per-step timing diagnostics for the very first valued board;
+                // `do_verify` runs the engine cross-check.
+                let mut value_board = |move_generator: &mut movegen::KurniaMoveGenerator,
+                                       game_state: &game_state::GameState,
+                                       rng: &mut rand::rngs::ChaCha20Rng,
+                                       log_first: bool,
+                                       do_verify: bool| {
                     // unseen pool = full distribution minus tiles on the board
                     // (blank-masked). Opponent racks count as unseen/drawable, as in
                     // gilles -- sampled racks are hypothetical draws from everything
@@ -3445,7 +3376,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             |_equity, _play| false,
                         );
                     }
-                    if b == 0 {
+                    if log_first {
                         eprintln!(
                             "  step1 sheet: {} tiles in pool -> {} candidate plays (unstored) in {:?}",
                             movegen_rack.len(),
@@ -3461,7 +3392,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     let ts = std::time::Instant::now();
                     if !full_rack {
                         census::best_equity_table(&lat, &sheet, &leave_cur, &mut best);
-                        if b == 0 {
+                        if log_first {
                             eprintln!("  step2 best_equity_table: {:?}", ts.elapsed());
                         }
                     }
@@ -3470,7 +3401,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     // best_equity(R) must equal the engine's best-play equity for R
                     // using the SAME leaves (klv0 == leave_cur), since both maximize
                     // score(P) + leave(R-P). Sample real racks and check.
-                    if verify && b == 0 {
+                    if do_verify {
                         unseen_pool.clear();
                         for (t, &c) in unseen_tally.iter().enumerate() {
                             for _ in 0..c {
@@ -3582,7 +3513,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             );
                         }
                     }
-                    if b == 0 {
+                    if log_first {
                         eprintln!(
                             "  step3 {}: {:?}",
                             if full_rack { "full-rack" } else { "draw-average" },
@@ -3611,6 +3542,99 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         t0.elapsed().as_secs(),
                         *valued,
                         lat_len,
+                    );
+                };
+
+                loop {
+                    let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if b >= num_boards {
+                        break;
+                    }
+                    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
+                        seed.wrapping_add(census_mix64(b)),
+                    ));
+
+                    // greedy-play fresh games (from this slot's own rng) until one
+                    // reaches this slot's random target fill. The target is drawn
+                    // uniformly across [low,high] so recorded boards range across
+                    // game phases (matching autoplay's all-phase leave coverage)
+                    // instead of clustering at the low edge. The retry cap guards
+                    // against an unreachable target. The window is set in POOL
+                    // (unseen-tile) terms via WOLGES_POOL_MAX/MIN, which
+                    // derive [low,high] per game config: low is bounded by step-1
+                    // sheet tractability (a pool property), high by staying
+                    // pre-endgame (bag non-empty, so draws and the exchange floor
+                    // are valid). Since the exchange-skip, even open boards (large
+                    // pool) are tractable, so the window can reach early phases.
+                    let target = if high_tiles > low_tiles {
+                        rng.random_range(low_tiles..=high_tiles)
+                    } else {
+                        low_tiles
+                    };
+                    let mut tries = 0u32;
+                    let reached = loop {
+                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                        let mut got = false;
+                        loop {
+                            let fill =
+                                game_state.board_tiles.iter().filter(|&&t| t != 0).count();
+                            if fill >= target {
+                                got = true;
+                                break;
+                            }
+                            game_state.players[game_state.turn as usize]
+                                .rack
+                                .sort_unstable();
+                            let board_snapshot = &movegen::BoardSnapshot {
+                                board_tiles: &game_state.board_tiles,
+                                game_config: &game_config,
+                                kwg: &kwg,
+                                klv: if game_state.turn == 0 {
+                                    &arc_klv0
+                                } else {
+                                    &arc_klv1
+                                },
+                            };
+                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot,
+                                rack: &game_state.current_player().rack,
+                                max_gen: 1,
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                always_include_pass: false,
+                            });
+                            game_state
+                                .play(&game_config, &mut rng, &move_generator.plays[0].play)
+                                .unwrap();
+                            let ended =
+                                game_state.check_game_ended(&game_config, &mut final_scores);
+                            game_state.next_turn();
+                            if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
+                                break; // game ended before the window; try a fresh game.
+                            }
+                        }
+                        if got {
+                            break true;
+                        }
+                        tries += 1;
+                        if tries >= 1_000_000 {
+                            break false;
+                        }
+                    };
+                    if !reached {
+                        eprintln!(
+                            "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping"
+                        );
+                        continue;
+                    }
+
+                    value_board(
+                        &mut move_generator,
+                        &game_state,
+                        &mut rng,
+                        b == 0,
+                        verify && b == 0,
                     );
                 }
             });
