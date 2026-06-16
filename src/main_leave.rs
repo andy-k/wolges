@@ -3332,6 +3332,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut value_board = |move_generator: &mut movegen::KurniaMoveGenerator,
                                        game_state: &game_state::GameState,
                                        rng: &mut rand::rngs::ChaCha20Rng,
+                                       leave: &[i32],
                                        log_first: bool,
                                        do_verify: bool| {
                     // unseen pool = full distribution minus tiles on the board
@@ -3433,7 +3434,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     // step 2 into step 3 (apportion_fused) -- no best[] array.
                     let ts = std::time::Instant::now();
                     if !full_rack {
-                        census::best_equity_table(&lat, &sheet, &leave_cur, &mut best);
+                        census::best_equity_table(&lat, &sheet, leave, &mut best);
                         if log_first {
                             eprintln!("  step2 best_equity_table: {:?}", ts.elapsed());
                         }
@@ -3493,7 +3494,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         tally_buf[t as usize] += 1;
                                     }
                                     census::naive_best_equity(
-                                        &lat, &sheet, &leave_cur, &tally_buf,
+                                        &lat, &sheet, leave, &tally_buf,
                                     )
                                     .0
                                 } else {
@@ -3532,7 +3533,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         census::apportion_fused(
                             &lat,
                             &sheet,
-                            &leave_cur,
+                            leave,
                             &unseen_tally,
                             &mut num_board,
                             &mut den_board,
@@ -3639,6 +3640,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     &mut move_generator,
                                     &game_state,
                                     &mut rng,
+                                    &leave_cur,
                                     lf,
                                     verify && lf,
                                 );
@@ -3763,6 +3765,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             &mut move_generator,
                             &game_state,
                             &mut rng,
+                            &leave_cur,
                             b == 0,
                             verify && b == 0,
                         );
