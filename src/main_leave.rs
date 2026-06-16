@@ -3278,6 +3278,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let next_board = std::sync::atomic::AtomicU64::new(0);
     // (accum_sum, accum_cnt, boards_completed, distinct_leaves_valued)
     let shared = std::sync::Mutex::new((vec![0f64; lat_len], vec![0u64; lat_len], 0u64, 0u64));
+    // Per-pool sample histogram for the per-game pseudo-round-robin sampler: each game
+    // steers toward the least-covered pools so coverage across [pool_min, pool_max]
+    // stays uniform while reusing one game's plies. Lock-free atomic counters shared
+    // across threads -- this makes the per-game sample SET schedule-dependent (NOT
+    // bit-reproducible, unlike reset-per-board), but the leaves converge to the same
+    // seed-independent fixed point, so it is fine for generation. Unused (empty) in
+    // reset-per-board mode, which stays deterministic.
+    let pool_hist: Vec<std::sync::atomic::AtomicU64> = if per_game {
+        (0..=num_tiles)
+            .map(|_| std::sync::atomic::AtomicU64::new(0))
+            .collect()
+    } else {
+        Vec::new()
+    };
     eprintln!("census: {num_threads} threads over {num_boards} boards");
 
     std::thread::scope(|s| {
@@ -3583,21 +3597,41 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     ));
 
                     if per_game {
-                        // Per-game sampling: play one real game through and value EVERY
-                        // board whose fill lands in the window [low_tiles, high_tiles].
-                        // These are consecutive real plies, so recorded boards follow
-                        // the phase mix a real game visits (closer to autoplay's) and
-                        // each ply is reused instead of replayed per board. `num_boards`
-                        // counts GAMES here; a game yields a variable number of boards.
+                        // Per-game pseudo-round-robin sampling: walk one real game and
+                        // sample the plies whose pool bucket is currently least covered,
+                        // driving toward uniform per-pool coverage while reusing the
+                        // game's plies (cheaper than reset-per-board, which replays a
+                        // whole game per board). `goal` = the current minimum bucket
+                        // count + 1, so only buckets sitting at that minimum (the
+                        // laggards) are sampled this game. `deepest` = the lowest-pool
+                        // laggard; the pool only shrinks as the board fills, so once it
+                        // drops below `deepest` no fillable bucket remains -- early-return
+                        // instead of playing out the rest of the game. A pool that is
+                        // only rarely landed on (plays jump several tiles) converges
+                        // slowly but is bounded by the game budget; every pool is
+                        // reachable, so it does not truly starve. `num_boards` counts
+                        // GAMES here. The shared histogram makes the sample set
+                        // schedule-dependent (see pool_hist).
+                        use std::sync::atomic::Ordering::Relaxed;
+                        let goal = 1 + (pool_min..=pool_max)
+                            .map(|p| pool_hist[p].load(Relaxed))
+                            .min()
+                            .unwrap_or(0);
+                        let deepest = (pool_min..=pool_max)
+                            .find(|&p| pool_hist[p].load(Relaxed) < goal)
+                            .unwrap_or(pool_min);
                         game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                         let mut logged = false;
                         loop {
                             let fill =
                                 game_state.board_tiles.iter().filter(|&&t| t != 0).count();
-                            if fill > high_tiles {
-                                break; // past the pre-endgame window; this game is done.
+                            let pool = num_tiles - fill;
+                            if pool < deepest {
+                                break; // no under-goal bucket remains below (and pool
+                                // only shrinks); also subsumes the pool_min floor.
                             }
-                            if fill >= low_tiles {
+                            if pool <= pool_max && pool_hist[pool].load(Relaxed) < goal {
+                                pool_hist[pool].fetch_add(1, Relaxed);
                                 // log step timings once, on the very first valued board.
                                 let lf = b == 0 && !logged;
                                 logged |= lf;
