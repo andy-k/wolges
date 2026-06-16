@@ -3668,7 +3668,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 let fill =
                                     game_state.board_tiles.iter().filter(|&&t| t != 0).count();
                                 if fill >= target {
-                                    got = true;
+                                    // a single play places several tiles at once, so
+                                    // fill can overshoot `target` and even the window's
+                                    // high end (into endgame). Count this board only if
+                                    // it is still in-window (fill <= high_tiles, i.e.
+                                    // pool >= pool_min); otherwise this game missed the
+                                    // window -- retry a fresh game for the same target so
+                                    // the sampled fill stays within [low_tiles,
+                                    // high_tiles] and never reaches an empty bag.
+                                    got = fill <= high_tiles;
                                     break;
                                 }
                                 game_state.players[game_state.turn as usize]
