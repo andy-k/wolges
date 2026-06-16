@@ -3202,6 +3202,27 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let blank_cap = env_usize("WOLGES_CENSUS_BLANK_CAP", rack_size);
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
+    // A board whose bag is empty is endgame: there are no draws, so the leave model
+    // (which values a leave by its draw-weighted future equity) and the exchange
+    // floor (needs a non-empty bag to dispose tiles) do not apply -- valuing such a
+    // board would leak fictional draw equity into leaves that are then used
+    // pre-endgame. The bag holds >= 1 tile only while every player's full rack
+    // (num_players * rack_size tiles) plus at least one bag tile sit off the board,
+    // i.e. while board fill <= num_tiles - num_players * rack_size - 1 (English:
+    // 100 - 2*7 - 1 = 85). Cap the window high there; a too-high override (a
+    // WOLGES_POOL_MIN below num_players * rack_size) is clamped with a warning
+    // rather than silently producing endgame-polluted leaves.
+    let max_pre_endgame_fill =
+        num_tiles.saturating_sub(game_config.num_players() as usize * rack_size + 1);
+    let high_tiles = if high_tiles > max_pre_endgame_fill {
+        eprintln!(
+            "census: clamping window high {high_tiles} -> {max_pre_endgame_fill} \
+             (a board with that many tiles has an empty bag = endgame; leaves need draws)"
+        );
+        max_pre_endgame_fill
+    } else {
+        high_tiles
+    };
     let verify = env_flag("WOLGES_CENSUS_VERIFY", false);
     // Apportionment of a sampled board's value to leaves. Default = entering:
     // draw-average attribution (leave_value_by_draw), crediting the held-entering
