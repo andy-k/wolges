@@ -389,6 +389,35 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 )?;
                 Ok(true)
             }
+            "-rollout" => {
+                // english-rollout CSW24.kwg policy.klv2 num_games [seed]
+                // whole-game Monte-Carlo rollout leaves (a measured negative).
+                // policy.klv2 = the leaves both players use to pick plays ("-" = null).
+                let args3 = if args.len() > 3 { &args[3] } else { "-" };
+                let num_games = if args.len() > 4 {
+                    u64::from_str(&args[4])?
+                } else {
+                    10_000
+                };
+                let seed = if args.len() > 5 {
+                    Some(u64::from_str(&args[5])?)
+                } else {
+                    None
+                };
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let arc_klv = if args3 == "-" {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
+                } else {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
+                };
+                generate_rollout_leaves(make_game_config(), kwg, arc_klv, num_games, seed)?;
+                Ok(true)
+            }
             "-summarize" => {
                 generate_summary(
                     make_game_config(),
@@ -6467,6 +6496,263 @@ impl GamePairStats {
             self.all.print_porcelain();
         }
     }
+}
+
+// Apportion (w, wo) to every subrack S <= R (R given as a per-letter tally):
+// num[rank(S)] += wo, den[rank(S)] += w. Enumerates each present letter's kept
+// count 0..=R[t] (a handful of subracks per rack). The MC rollout analog of
+// apportion_fused's apportion_rec, but the apportioned value is passed in rather than a
+// best_equity, and it runs over one observed rack at a time.
+fn apportion_subracks(
+    lat: &census::MultisetLattice,
+    r_tally: &[u8],
+    w: f64,
+    wo: f64,
+    num: &mut [f64],
+    den: &mut [f64],
+) {
+    const M: usize = 64; // >= any alphabet (MultisetLattice caps num_letters at 64).
+    let num_letters = lat.num_letters();
+    let mut nz = [(0usize, 0u8); M];
+    let mut cnt = 0;
+    for (t, &c) in r_tally.iter().enumerate() {
+        if c > 0 {
+            nz[cnt] = (t, c);
+            cnt += 1;
+        }
+    }
+    let mut s_tally = [0u8; M];
+    // Constant context for the subrack recursion, so rec carries only the changing
+    // position -- no clippy::too_many_arguments.
+    struct Ctx<'a> {
+        nz: &'a [(usize, u8)],
+        cnt: usize,
+        num_letters: usize,
+        s_tally: &'a mut [u8],
+        lat: &'a census::MultisetLattice,
+        w: f64,
+        wo: f64,
+        num: &'a mut [f64],
+        den: &'a mut [f64],
+    }
+    impl Ctx<'_> {
+        fn rec(&mut self, i: usize) {
+            if i == self.cnt {
+                let sr = self.lat.rank(&self.s_tally[..self.num_letters]) as usize;
+                self.num[sr] += self.wo;
+                self.den[sr] += self.w;
+                return;
+            }
+            let (t, c) = self.nz[i];
+            for k in 0..=c {
+                self.s_tally[t] = k;
+                self.rec(i + 1);
+            }
+            self.s_tally[t] = 0;
+        }
+    }
+    Ctx {
+        nz: &nz,
+        cnt,
+        num_letters,
+        s_tally: &mut s_tally,
+        lat,
+        w,
+        wo,
+        num,
+        den,
+    }
+    .rec(0);
+}
+
+// Monte-Carlo rollout leave generation (the raw rollout, a measured negative). The model-free
+// counterpart to the 1-ply full-rack census: play full
+// self-play games with the policy leaves `arc_klv`, then back-attribute each
+// game's final MARGIN (from the holder's perspective) to every rack held during
+// the game, apportioned to all subracks weighted by the draw-ways w(R) =
+// ProdC(unseen, R) (the same weight apportion_fused uses). leave(S) = sum
+// w*margin / sum w over all (game, held-rack R >= S). Pure rollout (strength = 1):
+// no 1-ply bootstrap, so the target is the unbiased multi-ply outcome (high
+// variance -- needs many games to converge). Margin-delta attribution, full-game
+// depth, per the MC decisions 2026-06-17.
+fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    arc_klv: std::sync::Arc<klv::Klv<L>>,
+    num_games: u64,
+    seed: Option<u64>,
+) -> error::Returns<()> {
+    let t0 = std::time::Instant::now();
+    let game_config = std::sync::Arc::new(game_config);
+    let alphabet = game_config.alphabet();
+    let rack_size = game_config.rack_size() as usize;
+    let num_letters = alphabet.len() as usize;
+    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let lat_len = lat.len();
+    let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
+    let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
+    let seed = seed.unwrap_or_else(rand::random);
+    let num_threads = wolges_threads().max(1).min(num_games.max(1) as usize);
+    eprintln!(
+        "rollout: seed {seed}, {num_games} games, {num_threads} threads, lattice {lat_len} leaves"
+    );
+    let kwg = std::sync::Arc::new(kwg);
+    let next_game = std::sync::atomic::AtomicU64::new(0);
+    // (num, den) accumulators over the lattice, merged once per thread at the end.
+    let shared = std::sync::Mutex::new((vec![0f64; lat_len], vec![0f64; lat_len]));
+
+    std::thread::scope(|s| {
+        for _ in 0..num_threads {
+            s.spawn(|| {
+                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                let mut game_state = game_state::GameState::new(&game_config);
+                let mut final_scores = vec![0i32; game_config.num_players() as usize];
+                let mut num_local = vec![0f64; lat_len];
+                let mut den_local = vec![0f64; lat_len];
+                let mut unseen_tally = vec![0u8; num_letters];
+                let mut rack_scratch = vec![0u8; num_letters];
+                // per-game plies: (mover, rack tally, draw-ways weight).
+                let mut plies: Vec<(u8, Vec<u8>, f64)> = Vec::new();
+                loop {
+                    let g = next_game.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if g >= num_games {
+                        break;
+                    }
+                    rng.set_stream(g);
+                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    plies.clear();
+                    let final_margin = loop {
+                        let mover = game_state.turn;
+                        // R = the mover's full rack as a tally (blank = letter 0).
+                        rack_scratch.iter_mut().for_each(|x| *x = 0);
+                        for &t in game_state.current_player().rack.iter() {
+                            rack_scratch[t as usize] += 1;
+                        }
+                        // unseen = full distribution minus tiles on board, so unseen
+                        // contains R -> w(R) = ProdC(unseen, R) is nonzero, matching the
+                        // full-rack census's unseen pool.
+                        unseen_tally.clone_from_slice(&base_freqs);
+                        for &t in game_state.board_tiles.iter() {
+                            if t != 0 {
+                                let base = t & !((t as i8) >> 7) as u8;
+                                unseen_tally[base as usize] =
+                                    unseen_tally[base as usize].saturating_sub(1);
+                            }
+                        }
+                        let mut w = 1.0f64;
+                        for (t, &c) in rack_scratch.iter().enumerate() {
+                            if c > 0 {
+                                w *= n_choose_k(unseen_tally[t] as usize, c as usize) as f64;
+                            }
+                        }
+                        plies.push((mover, rack_scratch.clone(), w));
+                        let board_snapshot = movegen::BoardSnapshot {
+                            board_tiles: &game_state.board_tiles,
+                            game_config: &game_config,
+                            kwg: &kwg,
+                            klv: &arc_klv,
+                        };
+                        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &game_state.current_player().rack,
+                            max_gen: 1,
+                            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                            always_include_pass: false,
+                        });
+                        let play = &move_generator.plays[0].play;
+                        game_state.play(&game_config, &mut rng, play).unwrap();
+                        let end = game_state.check_game_ended(&game_config, &mut final_scores);
+                        match end {
+                            game_state::CheckGameEnded::PlayedOut
+                            | game_state::CheckGameEnded::ZeroScores => {
+                                break (final_scores[0] - final_scores[1]) as f64;
+                            }
+                            game_state::CheckGameEnded::NotEnded => {}
+                        }
+                        game_state.next_turn();
+                    };
+                    // back-attribute the final margin (signed per holder) to each held
+                    // rack's subracks.
+                    for (mover, r_tally, w) in plies.iter() {
+                        let o = if *mover == 0 {
+                            final_margin
+                        } else {
+                            -final_margin
+                        };
+                        apportion_subracks(
+                            &lat,
+                            r_tally,
+                            *w,
+                            *w * o,
+                            &mut num_local,
+                            &mut den_local,
+                        );
+                    }
+                }
+                let mut guard = shared.lock().unwrap();
+                let (gnum, gden) = &mut *guard;
+                for i in 0..lat_len {
+                    gnum[i] += num_local[i];
+                    gden[i] += den_local[i];
+                }
+            });
+        }
+    });
+
+    let (num, den) = shared.into_inner().unwrap();
+    // leave(S) = sum w*margin / sum w, in points; center on the empty leave (its
+    // value = the average game margin = the baseline).
+    let value_pts = |idx: usize| -> f64 {
+        if den[idx] > 0.0 {
+            num[idx] / den[idx]
+        } else {
+            0.0
+        }
+    };
+    let baseline = value_pts(empty_rank);
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let out_name = format!("rollout-leaves-{epoch:08x}.csv");
+    let mut tally_buf = vec![0u8; num_letters];
+    let mut rows: Vec<(usize, String, f64)> = Vec::new();
+    let mut leave_ser = String::new();
+    for (idx, &den_val) in den.iter().enumerate() {
+        if den_val <= 0.0 {
+            continue;
+        }
+        lat.unrank_into(idx, &mut tally_buf);
+        let size: usize = tally_buf.iter().map(|&c| c as usize).sum();
+        if size == 0 || size > rack_size {
+            continue; // skip the empty (baseline) and over-size leaves.
+        }
+        // margins are in millipoints (equity::SCALE); convert the centered leave
+        // value to points for the klv-style CSV, as the census does.
+        let centered = (value_pts(idx) - baseline) / equity::SCALE as f64;
+        leave_ser.clear();
+        for (t, &c) in tally_buf.iter().enumerate() {
+            for _ in 0..c {
+                leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
+            }
+        }
+        rows.push((size, leave_ser.clone(), centered));
+    }
+    rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut csv_out = csv::Writer::from_path(&out_name)?;
+    for (_, leave, value) in &rows {
+        csv_out.serialize((leave, value))?;
+    }
+    csv_out.flush()?;
+    eprintln!(
+        "rollout: wrote {} leaves to {} in {}s (baseline {:.3} pts)",
+        rows.len(),
+        out_name,
+        t0.elapsed().as_secs(),
+        baseline / equity::SCALE as f64,
+    );
+    Ok(())
 }
 
 fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
