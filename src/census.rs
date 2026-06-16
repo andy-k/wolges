@@ -95,6 +95,38 @@ impl MultisetLattice {
         (self.size_offset[s] + within) as u32
     }
 
+    /// Like [`rank`], but over only the NON-ZERO letters: `items` is `(letter,
+    /// count)` ascending by letter, every count > 0, and `s` is their total. The
+    /// zero-count letters [`rank`] iterates contribute nothing to `within` and
+    /// leave `rem` unchanged, so skipping them is identical -- but O(items) instead
+    /// of O(num_letters). The blank-spelling recorder ranks one variant per call with
+    /// only about 1 + (distinct played letters) non-zero entries, so this avoids
+    /// re-scanning the whole (mostly empty) alphabet tally every variant.
+    #[inline]
+    pub fn rank_sparse(&self, s: usize, items: &[(u8, u8)]) -> u32 {
+        if s > self.rack_size {
+            return !0;
+        }
+        let l = self.num_letters;
+        let mut within: u64 = 0;
+        let mut rem = s;
+        for &(letter, ct_raw) in items {
+            let t = letter as usize;
+            // the last letter (index l-1) has parts == 0 and contributes nothing;
+            // items are ascending, so it can only be the final entry.
+            if t >= l - 1 {
+                break;
+            }
+            let ct = ct_raw as usize;
+            let parts = l - 1 - t;
+            for j in 0..ct {
+                within += self.c((rem - j) + parts - 1, parts - 1);
+            }
+            rem -= ct;
+        }
+        (self.size_offset[s] + within) as u32
+    }
+
     /// Rank of a multiset given as sorted tile bytes (e.g. a played word's tiles).
     pub fn rank_bytes(&self, sorted_tiles: &[u8]) -> u32 {
         let mut tally = [0u8; MAX_LETTERS];
@@ -851,16 +883,33 @@ pub fn record_blank_variants(
     impl Ctx<'_> {
         fn rec(&mut self, ri: usize, leftover: usize, blanks_total: usize, drop_acc: i32) {
             if ri == self.num_runs {
-                self.tally[0] = blanks_total as u8;
-                let key = self.lat.rank(self.tally);
-                if key != !0 {
-                    let slot = &mut self.sheet[key as usize];
-                    let s = self.real_score - drop_acc;
-                    if s > *slot {
-                        *slot = s;
+                // Build the variant's non-zero (letter, count) list directly -- the
+                // blanks, then each run's kept real count (held in tally[letter]) -- and
+                // rank only those, instead of re-scanning the whole alphabet tally.
+                let mut items = [(0u8, 0u8); MAX_LETTERS];
+                let mut ni = 0;
+                let mut size = 0usize;
+                if blanks_total > 0 {
+                    items[ni] = (0, blanks_total as u8);
+                    ni += 1;
+                    size += blanks_total;
+                }
+                for r in self.runs.iter().take(self.num_runs) {
+                    let real = self.tally[r.0 as usize];
+                    if real > 0 {
+                        items[ni] = (r.0, real);
+                        ni += 1;
+                        size += real as usize;
                     }
                 }
-                self.tally[0] = 0;
+                let key = self.lat.rank_sparse(size, &items[..ni]);
+                if key != !0 {
+                    let slot = &mut self.sheet[key as usize];
+                    let val = self.real_score - drop_acc;
+                    if val > *slot {
+                        *slot = val;
+                    }
+                }
                 return;
             }
             let (letter, start, count, forced) = self.runs[ri];
@@ -932,6 +981,27 @@ mod tests {
             lat.unrank_into(idx, &mut buf);
             assert_eq!(lat.rank(&buf), idx as u32, "roundtrip idx {idx}");
         }
+    }
+
+    #[test]
+    fn rank_sparse_matches_rank() {
+        // rank_sparse over the non-zero letters must equal rank over the full tally.
+        let lat = MultisetLattice::new(27, 7);
+        let mut buf = vec![0u8; 27];
+        for idx in (0..lat.len()).step_by(733) {
+            lat.unrank_into(idx, &mut buf);
+            let mut items = Vec::new();
+            let mut s = 0usize;
+            for (t, &c) in buf.iter().enumerate() {
+                if c > 0 {
+                    items.push((t as u8, c));
+                    s += c as usize;
+                }
+            }
+            assert_eq!(lat.rank_sparse(s, &items), idx as u32, "sparse idx {idx}");
+        }
+        // empty multiset: rank 0, no items.
+        assert_eq!(lat.rank_sparse(0, &[]), lat.rank(&[0u8; 27]));
     }
 
     #[test]
