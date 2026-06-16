@@ -95,6 +95,13 @@ struct WorkingBuffer {
     used_tile_scores_shadowr: Vec<i32>, // rack.len() (for shadow_play_right, premultiplied by SCALE)
     rack_tally_shadowl: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_left)
     rack_tally_shadowr: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_right)
+    // when set, the place-move descent uses a blank for a letter only if no real
+    // tile of that letter remains (real-before-blank, one branch per letter)
+    // instead of also branching the blank as that letter. Set via set_spell_once; used
+    // by the census's spell-once sheet build, which reconstructs the blank
+    // designations afterwards (so the redundant blank-as-available-letter branches
+    // are skipped). Off for normal generation.
+    spell_once: bool,
 }
 
 impl Clone for WorkingBuffer {
@@ -158,6 +165,7 @@ impl Clone for WorkingBuffer {
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
             rack_tally_shadowl: self.rack_tally_shadowl.clone(),
             rack_tally_shadowr: self.rack_tally_shadowr.clone(),
+            spell_once: self.spell_once,
         }
     }
 
@@ -234,6 +242,7 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.rack_tally_shadowl);
         self.rack_tally_shadowr
             .clone_from(&source.rack_tally_shadowr);
+        self.spell_once = source.spell_once;
     }
 }
 
@@ -334,6 +343,7 @@ impl WorkingBuffer {
             used_tile_scores_shadowr: Vec::new(),
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             rack_tally_shadowr: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
+            spell_once: false,
         }
     }
 
@@ -1435,6 +1445,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg:
     play_out_bonus: i32,
     used_letters_tally: &'a mut [u8], // jumbled mode only
     accepts_alpha_cache: &'a mut [AlphaCacheEntry], // jumbled mode only
+    spell_once: bool, // real-before-blank descent for the census's spell-once sheet build
 }
 
 fn gen_classic_place_moves<
@@ -1600,7 +1611,9 @@ fn gen_classic_place_moves<
                         );
                         env.params.rack_tally[tile as usize] += 1;
                     }
-                    if let Some(blank_acc) = &opt_blank_acc {
+                    if let Some(blank_acc) = &opt_blank_acc
+                        && (!env.params.spell_once || env.params.rack_tally[tile as usize] == 0)
+                    {
                         env.params.rack_tally[0] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                         play_right(
@@ -1745,7 +1758,9 @@ fn gen_classic_place_moves<
                         );
                         env.params.rack_tally[tile as usize] += 1;
                     }
-                    if let Some(blank_acc) = &opt_blank_acc {
+                    if let Some(blank_acc) = &opt_blank_acc
+                        && (!env.params.spell_once || env.params.rack_tally[tile as usize] == 0)
+                    {
                         env.params.rack_tally[0] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                         play_left(
@@ -1966,7 +1981,9 @@ fn gen_jumbled_place_moves<
                             env.params.used_letters_tally[tile as usize] -= 1;
                             env.params.rack_tally[tile as usize] += 1;
                         }
-                        if let Some(blank_acc) = &opt_blank_acc {
+                        if let Some(blank_acc) = &opt_blank_acc
+                            && (!env.params.spell_once || env.params.rack_tally[tile as usize] == 0)
+                        {
                             env.params.rack_tally[0] -= 1;
                             env.params.used_letters_tally[tile as usize] += 1;
                             env.params.word_strip_buffer[idx as usize] = tile | 0x80;
@@ -2071,7 +2088,10 @@ fn gen_jumbled_place_moves<
                                 env.params.used_letters_tally[tile as usize] -= 1;
                                 env.params.rack_tally[tile as usize] += 1;
                             }
-                            if let Some(blank_acc) = &opt_blank_acc {
+                            if let Some(blank_acc) = &opt_blank_acc
+                                && (!env.params.spell_once
+                                    || env.params.rack_tally[tile as usize] == 0)
+                            {
                                 env.params.rack_tally[0] -= 1;
                                 env.params.used_letters_tally[tile as usize] += 1;
                                 env.params.word_strip_buffer[idx as usize] = tile | 0x80;
@@ -2235,6 +2255,7 @@ fn gen_place_moves_at<
                 .accepts_alpha_cache
                 .as_deref_mut()
                 .unwrap_or(&mut []),
+            spell_once: working_buffer.spell_once,
         },
         !placement.down,
     );
@@ -2483,6 +2504,21 @@ impl KurniaMoveGenerator {
             working_buffer: WorkingBuffer::new(game_config),
             plays: Vec::new(),
         }
+    }
+
+    // Real-before-blank place-move descent: when set, the generator uses a blank
+    // for a letter only if no real tile of that letter remains, instead of also
+    // branching the blank as a letter it already has. This emits each feasible word
+    // once (real-preferred) rather than once per real/blank combination -- the
+    // census's spell-once sheet build reconstructs the full set of blank
+    // designations afterwards, so the redundant branches (and the GADDAG blank
+    // wildcard fan-out) are skipped. Leave it off (the default) for normal move
+    // generation, where every distinct blank play and its score is wanted. The flag
+    // persists on the generator; reset it after a spell-once run before reusing the
+    // generator for ordinary generation.
+    #[inline(always)]
+    pub fn set_spell_once(&mut self, spell_once: bool) {
+        self.working_buffer.spell_once = spell_once;
     }
 
     // call this before passing a different kwg.
