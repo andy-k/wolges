@@ -772,7 +772,21 @@ fn generate_autoplay_logs<
     // oppdenial_leave * sum_t S[t] * avg_marginal[t] to each kept subrack S's final leave. Off
     // (oppdenial_leave == 0.0) -> no marginals, no sidecar, byte-identical.
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
-    let opp_on = oppdenial_leave != 0.0;
+    // WOLGES_OPPDENIAL_RACK (experiment, strength): credit for the opponent's
+    // next turn, ported from the census's WOLGES_OPPDENIAL_RACK. Where
+    // oppdenial_leave averages each sampled board's opponent-denial marginals
+    // into the sidecar and leaves the recorded equity untouched,
+    // oppdenial_rack instead folds each recorded full rack R's own
+    // opponent-denial straight into R's equity: recorded_equity(R) +=
+    // oppdenial_rack * sum_t R[t] * marginal[t], where marginal[t] is how much
+    // the opponent's expected best play drops when one tile of letter t leaves
+    // this board's unseen pool (holding those tiles keeps them from the
+    // opponent's draw). It reuses the very same per-board marginals
+    // oppdenial_leave builds, so enabling it only widens the gates below
+    // to build the marginals and adds the fold at the record sites. Off
+    // (oppdenial_rack == 0.0) -> byte-identical.
+    let oppdenial_rack = env_parse::<f64>("WOLGES_OPPDENIAL_RACK", 0.0);
+    let opp_on = oppdenial_leave != 0.0 || oppdenial_rack != 0.0;
     // Build the census lattice, its add-table, and the millipoint leave-value array ONCE
     // (only when an opponent-denial term is on, so the default path allocates nothing and stays
     // byte-identical), shared read-only across the sampling threads exactly as the census
@@ -791,7 +805,7 @@ fn generate_autoplay_logs<
             *slot = arc_klv0.leave_value_from_tally(&tally);
         }
         eprintln!(
-            "autoplay: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} opponent-denial machinery on ({} lattice leaves)",
+            "autoplay: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} opponent-denial machinery on ({} lattice leaves)",
             lat.len(),
         );
         Some((lat, add_table, leave))
@@ -1405,7 +1419,7 @@ fn generate_autoplay_logs<
                                 &mut opp_sheet,
                             );
                             census::best_equity_table(lat, &opp_sheet, leave, &mut opp_best);
-                            if oppdenial_leave != 0.0 {
+                            if oppdenial_leave != 0.0 || oppdenial_rack != 0.0 {
                                 census::opp_denial_marginals(
                                     lat,
                                     add,
@@ -1413,12 +1427,21 @@ fn generate_autoplay_logs<
                                     &opp_unseen,
                                     &mut opp_marginal,
                                 );
-                                for (a, m) in oppdenial_leave_sum_marg.iter_mut().zip(opp_marginal.iter()) {
-                                    *a += *m;
+                                if oppdenial_leave != 0.0 {
+                                    for (a, m) in
+                                        oppdenial_leave_sum_marg.iter_mut().zip(opp_marginal.iter())
+                                    {
+                                        *a += *m;
+                                    }
+                                    oppdenial_leave_boards += 1;
                                 }
-                                oppdenial_leave_boards += 1;
                             }
                         }
+
+                        let knob = KnobFold {
+    oppdenial_rack,
+    opp_marginal: &opp_marginal,
+};
 
                         // supplement the undersampled subracks. pick a target subrack S,
                         // complete it to a full rack with filler drawn from this board's
@@ -1493,7 +1516,10 @@ fn generate_autoplay_logs<
                                     always_include_pass: false,
                                 });
                                 let play = &move_generator.plays[0];
-                                let rounded_equity = play.equity.as_f64(); // no rounding
+                                // fold the opponent-denial of the supplemented full rack the
+                                // same way the main record below does (0 when oppdenial_rack is off), so
+                                // rare forced racks are valued consistently with sampled ones.
+                                let rounded_equity = knob.apply(play.equity, &sample_rack_buf);
                                 // attribute to the target subrack S only, count exactly 1
                                 // (no positional multiplicity): S is the subrack, not a
                                 // positional subset of the built rack.
@@ -1649,7 +1675,9 @@ fn generate_autoplay_logs<
                         game_state.turn = old_turn;
 
                         if SUMMARIZE && old_bag_len > 0 {
-                            let rounded_equity = play.equity.as_f64(); // no rounding
+                            // no rounding; the WOLGES_OPPDENIAL_RACK fold (0.0 when off) adds the
+                            // opponent-denial of the full drawn rack R = cur_rack_as_vec.
+                            let rounded_equity = knob.apply(play.equity, &cur_rack_as_vec);
                             if entering {
                                 // record this turn's equity keyed by the entering
                                 // leave L (what this player walked in holding =
@@ -2136,7 +2164,21 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     // oppdenial_leave * sum_t S[t] * avg_marginal[t] to each kept subrack S's final leave. Off
     // (oppdenial_leave == 0.0) -> no marginals, no sidecar, byte-identical.
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
-    let opp_on = oppdenial_leave != 0.0;
+    // WOLGES_OPPDENIAL_RACK (experiment, strength): credit for the opponent's
+    // next turn, ported from the census's WOLGES_OPPDENIAL_RACK. Where
+    // oppdenial_leave averages each sampled board's opponent-denial marginals
+    // into the sidecar and leaves the recorded equity untouched,
+    // oppdenial_rack instead folds each recorded full rack R's own
+    // opponent-denial straight into R's equity: recorded_equity(R) +=
+    // oppdenial_rack * sum_t R[t] * marginal[t], where marginal[t] is how much
+    // the opponent's expected best play drops when one tile of letter t leaves
+    // this board's unseen pool (holding those tiles keeps them from the
+    // opponent's draw). It reuses the very same per-board marginals
+    // oppdenial_leave builds, so enabling it only widens the gates below
+    // to build the marginals and adds the fold at the record sites. Off
+    // (oppdenial_rack == 0.0) -> byte-identical.
+    let oppdenial_rack = env_parse::<f64>("WOLGES_OPPDENIAL_RACK", 0.0);
+    let opp_on = oppdenial_leave != 0.0 || oppdenial_rack != 0.0;
     // Build the census lattice, its add-table, and the millipoint leave-value array ONCE
     // (only when an opponent-denial term is on, so the default path allocates nothing and stays
     // byte-identical), shared read-only across the sampling threads exactly as the census
@@ -2154,7 +2196,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             *slot = arc_klv0.leave_value_from_tally(&tally);
         }
         eprintln!(
-            "gilles: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} opponent-denial machinery on ({} lattice leaves)",
+            "gilles: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} opponent-denial machinery on ({} lattice leaves)",
             lat.len(),
         );
         Some((lat, add_table, leave))
@@ -2598,7 +2640,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                         leave,
                                         &mut opp_best,
                                     );
-                                    if oppdenial_leave != 0.0 {
+                                    if oppdenial_leave != 0.0 || oppdenial_rack != 0.0 {
                                         census::opp_denial_marginals(
                                             lat,
                                             add,
@@ -2606,14 +2648,21 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                             &unseen_tally,
                                             &mut opp_marginal,
                                         );
-                                        for (a, m) in
-                                            oppdenial_leave_sum_marg.iter_mut().zip(opp_marginal.iter())
-                                        {
-                                            *a += *m;
+                                        if oppdenial_leave != 0.0 {
+                                            for (a, m) in
+                                                oppdenial_leave_sum_marg.iter_mut().zip(opp_marginal.iter())
+                                            {
+                                                *a += *m;
+                                            }
+                                            oppdenial_leave_boards += 1;
                                         }
-                                        oppdenial_leave_boards += 1;
                                     }
                                 }
+
+                                let knob = KnobFold {
+    oppdenial_rack,
+    opp_marginal: &opp_marginal,
+};
 
                                 if !remediating {
                                     // mandatory phase: enumerate every rack of the
@@ -2637,7 +2686,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     always_include_pass: false,
                                                 },
                                             );
-                                            let equity = move_generator.plays[0].equity.as_f64();
+                                            let equity = knob.apply(move_generator.plays[0].equity, rack_bytes);
                                             thread_map
                                                 .entry(rack_bytes.into())
                                                 .and_modify(|e| {
@@ -2679,6 +2728,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                             undersampled_done: &mut undersampled_done,
                                             samples_per_snapshot,
                                             target: samples_per_snapshot,
+                                            knob,
                                         },
                                     );
                                     // step 2: grow the worst group toward
@@ -2734,6 +2784,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     undersampled_done: &mut undersampled_done,
                                                     samples_per_snapshot,
                                                     target: min_undersampled,
+                                                    knob,
                                                 },
                                             );
                                         }
@@ -2774,7 +2825,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     always_include_pass: false,
                                                 },
                                             );
-                                            let equity = move_generator.plays[0].equity.as_f64();
+                                            let equity = knob.apply(move_generator.plays[0].equity, &exchange_buffer);
                                             thread_map
                                                 .entry(exchange_buffer[..].into())
                                                 .and_modify(|e| {
@@ -2794,6 +2845,67 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        // real_rack fold context: when the real rack will be recorded this
+                        // turn, build this board's opponent-denial marginals with the same
+                        // census pipeline the sampled records use, BEFORE the greedy gen_moves
+                        // (build_sheet_spell_once borrows move_generator as scratch and
+                        // overwrites its plays, so it must precede the greedy play we read and
+                        // advance the board with). Off (opp_ctx None) => skipped, byte-
+                        // identical. The sampler's own marginal block above is scoped to the
+                        // sampled-board branch, so this is a fresh build on the actual board;
+                        // real_rack fires every in-window turn, a superset of sampled turns.
+                        let real_rack_here = real_rack_enabled
+                            && !game_state.bag.is_empty()
+                            && (!real_rack_in_window_only
+                                || (pool_count >= pool_min && pool_count <= pool_max));
+                        if real_rack_here
+                            && let Some((lat, add, leave)) = opp_ctx
+                        {
+                            // unseen = full distribution minus tiles on board.
+                            unseen_tally.clone_from_slice(&base_freqs);
+                            for &t in game_state.board_tiles.iter() {
+                                if t != 0 {
+                                    let base = t & !((t as i8) >> 7) as u8;
+                                    unseen_tally[base as usize] =
+                                        unseen_tally[base as usize].saturating_sub(1);
+                                }
+                            }
+                            opp_sheet.iter_mut().for_each(|v| *v = 0);
+                            let num_blanks_eff =
+                                (unseen_tally[0] as usize).min(rack_size as usize);
+                            build_sheet_spell_once(
+                                &mut move_generator,
+                                &game_state.board_tiles,
+                                SpellTables {
+                                    game_config: &game_config,
+                                    kwg: &kwg,
+                                    klv: &arc_klv0,
+                                    lat,
+                                },
+                                SpellPool {
+                                    unseen_tally: &unseen_tally,
+                                    num_blanks_eff,
+                                    rack_size: rack_size as usize,
+                                    blank_cap: rack_size as usize,
+                                },
+                                &mut opp_movegen_rack,
+                                &mut opp_blank_deltas,
+                                &mut opp_sheet,
+                            );
+                            census::best_equity_table(lat, &opp_sheet, leave, &mut opp_best);
+                            // opp_marginal only (no oppdenial_leave sidecar accumulation here: the
+                            // sidecar averages sampled boards, not the real trajectory).
+                            if oppdenial_leave != 0.0 || oppdenial_rack != 0.0 {
+                                census::opp_denial_marginals(
+                                    lat,
+                                    add,
+                                    &opp_best,
+                                    &unseen_tally,
+                                    &mut opp_marginal,
+                                );
                             }
                         }
 
@@ -2819,16 +2931,19 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                         // mix) before playing it. only while the bag is
                         // non-empty, so there is a real leave to value (matches
                         // autoplay).
-                        if real_rack_enabled
-                            && !game_state.bag.is_empty()
-                            && (!real_rack_in_window_only
-                                || (pool_count >= pool_min
-                                    && pool_count <= pool_max))
-                        {
+                        if real_rack_here {
                             let w = real_rack_weight;
-                            let eq = move_generator.plays[0].equity.as_f64() * w as f64;
                             real_rack_buf.clone_from(&game_state.current_player().rack);
                             real_rack_buf.sort_unstable();
+                            // fold the real rack's opponent-denial the same way the sampled
+                            // records do (0 when oppdenial_rack is off). the marginals were built for
+                            // this exact board just above.
+                            let rr_knob = KnobFold {
+    oppdenial_rack,
+    opp_marginal: &opp_marginal,
+};
+                            let eq = rr_knob.apply(move_generator.plays[0].equity, &real_rack_buf)
+                                * w as f64;
                             thread_map
                                 .entry(real_rack_buf[..].into())
                                 .and_modify(|e| {
@@ -3181,6 +3296,9 @@ struct SampleBudget<'a> {
     undersampled_done: &'a mut u32,
     samples_per_snapshot: u32,
     target: u32,
+    // this board's uniform knob-fold, applied to each undersampled
+    // rack's best play so remediation samples match the main pass.
+    knob: KnobFold<'a>,
 }
 
 fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
@@ -3203,6 +3321,7 @@ fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
         undersampled_done,
         samples_per_snapshot,
         target,
+        knob,
     } = budget;
     generate_exchanges(&mut ExchangeEnv {
         found_exchange_move: |rack_bytes: &[u8]| {
@@ -3219,7 +3338,7 @@ fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
                 num_exchanges_by_this_player: 0,
                 always_include_pass: false,
             });
-            let equity = move_generator.plays[0].equity.as_f64();
+            let equity = knob.apply(move_generator.plays[0].equity, rack_bytes);
             thread_map
                 .entry(rack_bytes.into())
                 .and_modify(|e| {
@@ -3563,6 +3682,40 @@ fn load_oppdenial_leave_marginal_sidecar(
     Ok(avg)
 }
 
+// WOLGES_OPPDENIAL_RACK fold in points: oppdenial_rack * (sum over the full
+// rack's tiles of the per-letter opponent-denial marginal) / equity::SCALE.
+// The marginals (from the census's opp_denial_marginals) are in millipoints
+// while the recorded sampler equity is in points, so the fold divides by the
+// millipoint scale. An empty marginal slice (oppdenial_rack off -- so no
+// marginals were built for the board) folds nothing, letting the record sites
+// call this unconditionally without disturbing the byte-identical default
+// output. Summing marginal[t] over each of the rack's tiles equals sum_t R[t]
+// * marginal[t] (R[t] = count of letter t in the full rack R).
+fn oppdenial_rack_fold(oppdenial_rack: f64, marginal: &[f64], rack_bytes: &[u8]) -> f64 {
+    if marginal.is_empty() {
+        return 0.0;
+    }
+    let mut d = 0.0f64;
+    for &t in rack_bytes {
+        d += marginal[t as usize];
+    }
+    oppdenial_rack * d / equity::SCALE as f64
+}
+
+// One board/turn's uniform knob-fold, built once per board and applied at every
+// rack-record site so none can silently omit a fold.
+#[derive(Clone, Copy)]
+struct KnobFold<'a> {
+    oppdenial_rack: f64,
+    opp_marginal: &'a [f64],
+}
+
+impl KnobFold<'_> {
+    fn apply(&self, base: equity::Equity, rack: &[u8]) -> f64 {
+        base.as_f64() + oppdenial_rack_fold(self.oppdenial_rack, self.opp_marginal, rack)
+    }
+}
+
 // Spell-once STEP 1 sheet build: produce the same play-value `sheet` as the wildcard
 // descent without wildcarding blanks over every letter. The generator is put in
 // real-before-blank mode (set_spell_once), so it descends the ACTUAL unseen rack (real
@@ -3827,6 +3980,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // leave already sums the holder's own future; this is the sub-1-ply opponent term
     // it omits. 0 = off (byte-identical to the current census).
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
+    // WOLGES_OPPDENIAL_RACK (strength, full-rack only): credit for the opponent's next turn (opp1).
+    // Unlike oppdenial_leave (which adds strength * sum_t S[t] * marginal[t] linearly to the final
+    // leave S), WOLGES_OPPDENIAL_RACK folds the opponent-denial of the FULL drawn rack R into R's
+    // best-equity SEED and apportions it to subracks, so leave(S) += strength * sum_t
+    // marginal[t] * E_{R>=S}[R[t]] -- the oppdenial_leave is weighted by the EXPECTED full-rack
+    // count of each letter (the opponent draws from U - R, including the tiles I played),
+    // the sound joint placement of the opponent term. Shares oppdenial_leave's marginals. 0 = off
+    // (byte-identical). See census::apportion_fused.
+    let oppdenial_rack = env_parse::<f64>("WOLGES_OPPDENIAL_RACK", 0.0);
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
     let seed = seed.unwrap_or_else(rand::random);
@@ -3912,14 +4074,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 // sheet's subset-max so best_equity is an array read, not a per-rack
                 // descent. Only touched on the null-leave + big-pool (zeta) path.
                 let mut maxsheet = if full_rack { vec![0i32; lat_len] } else { Vec::new() };
-                // opponent tile-denial scratch (WOLGES_OPPDENIAL_LEAVE): materialized
-                // best_equity over the full-rack block + the per-letter oppdenial_leave marginals.
-                let mut oppdenial_leave_best = if full_rack && oppdenial_leave != 0.0 {
+                // opponent-denial scratch (WOLGES_OPPDENIAL_LEAVE or
+                // WOLGES_OPPDENIAL_RACK, which share the marginals):
+                // materialized best_equity over the full-rack block + the
+                // per-letter oppdenial_leave marginals.
+                let opp_term = oppdenial_leave != 0.0 || oppdenial_rack != 0.0;
+                let mut oppdenial_leave_best = if full_rack && opp_term {
                     vec![census::UNPLAYABLE; lat_len]
                 } else {
                     Vec::new()
                 };
-                let mut oppdenial_leave_marginal = if full_rack && oppdenial_leave != 0.0 {
+                let mut oppdenial_leave_marginal = if full_rack && opp_term {
                     vec![0f64; num_letters]
                 } else {
                     Vec::new()
@@ -4125,6 +4290,22 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         num_board.iter_mut().for_each(|x| *x = 0.0);
                         den_board.iter_mut().for_each(|x| *x = 0.0);
                         let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
+                        // opponent-denial marginals (shared by DENIAL and opponent-denial): how much
+                        // each held tile starves the opponent's draw pool. Computed
+                        // BEFORE apportioning because opponent-denial folds them into best_equity's
+                        // seed; DENIAL applies them to the final leave below. Materialize
+                        // best_equity over the full-rack block, then the per-letter
+                        // marginals.
+                        if opp_term {
+                            census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
+                            census::opp_denial_marginals(
+                                &lat,
+                                add_table.as_ref().unwrap(),
+                                &oppdenial_leave_best,
+                                &unseen_tally,
+                                &mut oppdenial_leave_marginal,
+                            );
+                        }
                         census::apportion_fused(
                             &lat,
                             add_table.as_ref().unwrap(),
@@ -4143,20 +4324,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 null_leave,
                                 scatter,
                             },
+                            &census::OppDenialParams {
+                                oppdenial_rack,
+                                marginal: if oppdenial_rack != 0.0 { &oppdenial_leave_marginal } else { &[] },
+                            },
                         );
-                        // opponent tile-denial term: materialize best_equity over the
-                        // full-rack block, then the per-letter oppdenial_leave marginals (how
-                        // much each held tile starves the opponent's draw pool).
-                        if oppdenial_leave != 0.0 {
-                            census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                            census::opp_denial_marginals(
-                                &lat,
-                                add_table.as_ref().unwrap(),
-                                &oppdenial_leave_best,
-                                &unseen_tally,
-                                &mut oppdenial_leave_marginal,
-                            );
-                        }
                         for (idx, slot) in contrib.iter_mut().enumerate() {
                             *slot = if den_board[idx] > 0.0 {
                                 let mut v = (num_board[idx] / den_board[idx]).round() as i32;

@@ -678,6 +678,15 @@ pub struct ApportionMode {
     pub scatter: bool,
 }
 
+/// The opponent-denial opp1 strength and its precomputed per-rack denial marginals (see the
+/// `apportion_fused` doc). Strength 0 with an empty marginal slice is the plain w*best
+/// seed, byte-identical to no opponent term.
+#[derive(Clone, Copy)]
+pub struct OppDenialParams<'a> {
+    pub oppdenial_rack: f64,
+    pub marginal: &'a [f64],
+}
+
 /// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
 /// best_equity(R) inline (max over splits) and account its weighted contribution
 /// w(R)*best(R) to every subrack S <= R -- ONE lattice pass, no materialized best[]
@@ -713,6 +722,17 @@ pub struct ApportionMode {
 /// precomputed-into-`maxsheet` read, but `maxsheet` is built by `scatter_words` (the
 /// leave subset-max seed plus a word-keyed scatter) instead of the per-rack rec_max.
 /// Also `zeta`-gated, and exact; an opt-in alternative to rec_max for big pools.
+///
+/// `oppdenial_rack` (strength, 0 = off) adds the opponent-denial term: the opponent draws their rack from
+/// U - R (the holder's FULL rack R), so holding R denies them R's tiles. Linearized
+/// in R through `marginal` (the per-letter opponent-denial marginals from
+/// opp_denial_marginals, len num_letters), the opponent's expected best play drops by
+/// sum_t R[t]*marginal[t]; folding -opp_value(U-R) into R's seed (the uniform
+/// opp_value(U) constant drops out under centering) and apportioning it to subracks gives
+/// leave(S) += oppdenial_rack * sum_t marginal[t] * E_{R>=S}[R[t]] -- denial weighted by the
+/// EXPECTED full-rack count (played tiles included), the sound joint placement rather
+/// than a linear-in-S term. When oppdenial_rack == 0 the seed is exactly w*best (unchanged when off), so the
+/// num/den are byte-identical (and `marginal` is not read -- pass &[]).
 pub fn apportion_fused(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -720,6 +740,7 @@ pub fn apportion_fused(
     out: ApportionOut,
     maxsheet: &mut [i32],
     mode: ApportionMode,
+    opp_denial: &OppDenialParams,
 ) {
     let ApportionBoard {
         sheet,
@@ -731,6 +752,10 @@ pub fn apportion_fused(
         null_leave,
         scatter,
     } = mode;
+    let OppDenialParams {
+        oppdenial_rack,
+        marginal,
+    } = *opp_denial;
     let n = lat.num_letters();
     // best_equity(R) is precomputed into `maxsheet` for every rack on two paths, both
     // replacing the per-rack rec_max descent with an array read at each drawable rack;
@@ -771,6 +796,8 @@ pub fn apportion_fused(
         zeta: bool,
         best_from_maxsheet: bool,
         maxsheet: &'a [i32],
+        oppdenial_rack: f64,
+        marginal: &'a [f64],
         nz: &'a mut [(usize, u8)],
     }
     impl Ctx<'_> {
@@ -849,16 +876,33 @@ pub fn apportion_fused(
                     self.rec_max(m, 0, 0, &mut b);
                     b
                 };
+                // opponent-denial: fold +oppdenial_rack*sum_t R[t]*marginal[t]
+                // (the opponent-denial of holding the FULL rack R) into the
+                // seed before apportioning. R's nonzero letters are nz[..m].
+                // Skipped (and `marginal` untouched) when oppdenial_rack == 0,
+                // keeping the seed exactly w*best.
+                let best_f = if self.oppdenial_rack != 0.0 {
+                    let mut opp = 0.0f64;
+                    for &(t, c) in &self.nz[..m] {
+                        // SAFETY: t is a rack letter from nz (t < num_letters); reached only when
+                        // oppdenial_rack != 0.0, where the caller passes the num_letters-length denial
+                        // marginals (&[] is passed only when oppdenial_rack == 0, which skips this branch).
+                        opp += c as f64 * unsafe { *self.marginal.get_unchecked(t) };
+                    }
+                    best as f64 + self.oppdenial_rack * opp
+                } else {
+                    best as f64
+                };
                 if self.zeta {
                     // seed the superset-sum source on the full-rack index `idx`.
                     // SAFETY: idx is the full-rack lattice index built up from 0 via the add
                     // table, so < lat.len(); num and den are lat.len()-sized.
                     unsafe {
-                        *self.num.get_unchecked_mut(idx) = w * best as f64;
+                        *self.num.get_unchecked_mut(idx) = w * best_f;
                         *self.den.get_unchecked_mut(idx) = w;
                     }
                 } else {
-                    self.apportion_rec(m, 0, w, w * best as f64);
+                    self.apportion_rec(m, 0, w, w * best_f);
                 }
                 return;
             }
@@ -918,6 +962,8 @@ pub fn apportion_fused(
         zeta,
         best_from_maxsheet,
         maxsheet,
+        oppdenial_rack,
+        marginal,
         nz: &mut nz,
     };
     ctx.enum_drawable(0, rack_size, 1.0, 0, 0);
@@ -1646,6 +1692,10 @@ mod tests {
                         null_leave: false,
                         scatter,
                     },
+                    &OppDenialParams {
+                        oppdenial_rack: 0.0,
+                        marginal: &[],
+                    },
                 );
                 for idx in 0..lat.len() {
                     assert_eq!(
@@ -1709,6 +1759,10 @@ mod tests {
                         null_leave,
                         scatter: false,
                     },
+                    &OppDenialParams {
+                        oppdenial_rack: 0.0,
+                        marginal: &[],
+                    },
                 );
                 for idx in 0..lat.len() {
                     assert_eq!(
@@ -1718,6 +1772,107 @@ mod tests {
                     assert_eq!(
                         den_a[idx], den_b[idx],
                         "den at {idx} (zeta={zeta}, null_leave={null_leave})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn apportion_fused_oppdenial_rack_matches_brute() {
+        // the opponent-denial seed term must apportion like a brute-force reference: for every
+        // drawable full rack R, credit (best(R) + oppdenial_rack*sum_t R[t]*marginal[t]) weighted
+        // by w(R) = prod_t C(unseen[t], R[t]) to every subrack S <= R. oppdenial_rack makes the
+        // seed non-integer, so the zeta fold reorders the f64 sums -- compare within a
+        // relative tolerance rather than exactly. Cover both rec_max/scatter and
+        // push/zeta.
+        let lat = MultisetLattice::new(4, 4);
+        let unseen = [3u8, 2u8, 4u8, 1u8];
+        let mut sheet = vec![0i32; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for idx in 0..lat.len() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                sheet[idx] = h.rem_euclid(20_000);
+            }
+            leave[idx] = h.rem_euclid(8_000) - 4_000;
+        }
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best);
+        let n = lat.num_letters();
+        let marginal = [1.5f64, -0.5, 3.0, 2.0];
+        let oppdenial_rack = 0.75f64;
+        // brute reference.
+        let mut num_ref = vec![0f64; lat.len()];
+        let mut den_ref = vec![0f64; lat.len()];
+        let mut r = [0u8; MAX_LETTERS];
+        let mut s = [0u8; MAX_LETTERS];
+        for (ridx, &brack) in best.iter().enumerate().skip(lat.full_rack_start()) {
+            lat.unrank_into(ridx, &mut r[..n]);
+            let mut w = 1.0f64;
+            let mut drawable = true;
+            let mut opp = 0.0f64;
+            for t in 0..n {
+                if r[t] > unseen[t] {
+                    drawable = false;
+                    break;
+                }
+                w *= lat.c(unseen[t] as usize, r[t] as usize) as f64;
+                opp += r[t] as f64 * marginal[t];
+            }
+            if !drawable {
+                continue;
+            }
+            let val = brack as f64 + oppdenial_rack * opp;
+            for sidx in 0..lat.len() {
+                lat.unrank_into(sidx, &mut s[..n]);
+                if (0..n).all(|t| s[t] <= r[t]) {
+                    num_ref[sidx] += w * val;
+                    den_ref[sidx] += w;
+                }
+            }
+        }
+        let add = AddTable::new(&lat);
+        let mut maxsheet = vec![0i32; lat.len()];
+        for scatter in [false, true] {
+            for zeta in [false, true] {
+                let mut num_b = vec![0f64; lat.len()];
+                let mut den_b = vec![0f64; lat.len()];
+                apportion_fused(
+                    &lat,
+                    &add,
+                    &ApportionBoard {
+                        sheet: &sheet,
+                        leave: &leave,
+                        unseen: &unseen,
+                    },
+                    ApportionOut {
+                        num: &mut num_b,
+                        den: &mut den_b,
+                    },
+                    &mut maxsheet,
+                    ApportionMode {
+                        zeta,
+                        null_leave: false,
+                        scatter,
+                    },
+                    &OppDenialParams {
+                        oppdenial_rack,
+                        marginal: &marginal,
+                    },
+                );
+                for idx in 0..lat.len() {
+                    assert!(
+                        (num_b[idx] - num_ref[idx]).abs() <= 1e-6 * (1.0 + num_ref[idx].abs()),
+                        "num at {idx} (zeta={zeta}, scatter={scatter}): {} vs {}",
+                        num_b[idx],
+                        num_ref[idx],
+                    );
+                    assert!(
+                        (den_b[idx] - den_ref[idx]).abs() <= 1e-6 * (1.0 + den_ref[idx].abs()),
+                        "den at {idx} (zeta={zeta}, scatter={scatter}): {} vs {}",
+                        den_b[idx],
+                        den_ref[idx],
                     );
                 }
             }
