@@ -3434,13 +3434,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let zeta_pool_min = env_usize("WOLGES_CENSUS_ZETA_POOL", 36);
     // WOLGES_CENSUS_SCATTER (gens > 1, big pool): build best_equity by a word-keyed
     // scatter (leave subset-max seed + scatter_words) instead of the per-rack rec_max
-    // descent. Exact (same leaves either way); only the build path differs. Values:
-    // off | on | auto, default auto. While the bandwidth payoff is being measured,
-    // auto means off.
+    // descent. Exact, and net-positive on realistic mixed-pool runs (English +4%,
+    // super-English +5.3%): per-board it wins at large pools (many drawable racks, the
+    // slow boards that dominate wall time) and loses by a small absolute margin at the
+    // smallest zeta-gated pools, so the big-pool wins dominate. Default on; set 0 to
+    // fall back to rec_max (e.g. a run confined to small pools).
+    // Values: off | on | auto, default auto (here auto means on).
     let scatter = match wolges_census_scatter()? {
         Scatter::Off => false,
         Scatter::On => true,
-        Scatter::Auto => false,
+        Scatter::Auto => true,
     };
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
