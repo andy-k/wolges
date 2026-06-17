@@ -516,6 +516,140 @@ impl AddTable {
     }
 }
 
+/// Subset-max (downward zeta): dst[X] = max over all subracks P <= X of src[P], for
+/// every lattice index X. `src` and `dst` are lattice-length. One pass per letter, idx
+/// low->high so each +1-tile superset add(idx, t) -- a strictly higher index (larger
+/// size) -- reads an idx that has already folded in its own lower-count predecessors;
+/// max is idempotent, so composing the n passes yields the full multiset subset-max.
+/// Source indices are the sub-full-rack block (the only ones `add` accepts); writes
+/// may land on full racks. The mirror of the superset-sum fold in apportion_fused.
+/// Collapses a null-leave best_equity to the sheet subset-max, and precomputes
+/// maxleave(R) = max_{K<=R} leave[K] for the word-scatter path.
+pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], dst: &mut [i32]) {
+    let n = lat.num_letters();
+    let lo = lat.full_rack_start();
+    dst.copy_from_slice(src);
+    for t in 0..n {
+        for idx in 0..lo {
+            let sp = add.add(idx, t);
+            // SAFETY: idx ranges 0..full_rack_start() (< lat.len()), so idx < dst.len(); dst
+            // is the lat.len() destination buffer.
+            let v = unsafe { *dst.get_unchecked(idx) };
+            // SAFETY: sp = add.add(idx, t) is the rank of multiset(idx) plus one tile t
+            // (idx < full_rack_start(), t < num_letters), a lattice index < lat.len()
+            // = dst.len().
+            let cur = unsafe { dst.get_unchecked_mut(sp) };
+            if v > *cur {
+                *cur = v;
+            }
+        }
+    }
+}
+
+/// Word-scatter step 2 for the full-rack path (gens > 1): materialize best_equity(R)
+/// for every drawable full rack R into `best`, exactly, by exploiting the exchange
+/// floor (every non-word played multiset is worth 0). best(R) = max(maxleave(R), max
+/// over WORD splits P (sheet[P] > 0) of sheet[P] + leave[R - P]). The caller seeds
+/// `best` with maxleave (subset_max_transform of leave); this folds in each word: for
+/// every P with sheet[P] > 0, scatter sheet[P] + leave[K] into best[P + K] for every
+/// drawable complement K (P + K <= unseen, |P| + |K| == rack_size). Visits only word
+/// splits (about half the subracks of a rack are words), trading the per-rack 2^distinct
+/// rec_max descent for word-keyed scattered writes. `best` is lattice-indexed; only
+/// the full-rack block is meaningful afterwards.
+fn scatter_words(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    sheet: &[i32],
+    leave: &[i32],
+    unseen: &[u8],
+    best: &mut [i32],
+) {
+    let n = lat.num_letters();
+    let rack_size = lat.rack_size();
+    // Enumerate the drawable complement K of a fixed word P: each letter t taken
+    // 0..=min(unseen[t]-P[t], remaining) times, total == rack_size - |P|. Carry K's
+    // lattice index (from 0) for leave[K] and R = P+K's index (from P) for best[R];
+    // both advance one tile at a time by the add table (source size < rack_size). At a
+    // complete K, scatter sheet[P]+leave[K] (max) into best[R]. avail[] = unseen-P, and
+    // suffix_cap prunes branches that cannot still fill `remaining`.
+    // Constant context for one word P's complement walk, so rec_k carries only the
+    // changing draw position and the two lattice indices -- no
+    // clippy::too_many_arguments. avail/suffix_cap/sp_val are fixed for this word; best
+    // is the shared scatter target, reborrowed per word.
+    struct Ctx<'a> {
+        sp_val: i32,
+        n: usize,
+        add: &'a AddTable,
+        leave: &'a [i32],
+        avail: &'a [u8],
+        suffix_cap: &'a [u32],
+        best: &'a mut [i32],
+    }
+    impl Ctx<'_> {
+        fn rec_k(&mut self, t: usize, remaining: usize, k_idx: usize, r_idx: usize) {
+            if remaining == 0 {
+                // SAFETY: k_idx is the rank of the drawn complement K (|K| <= rack_size), built up
+                // from 0 one tile at a time via the add table, so < lat.len(); leave is
+                // lat.len()-sized.
+                let cand = self.sp_val + unsafe { *self.leave.get_unchecked(k_idx) };
+                // SAFETY: r_idx is the rank of R = P+K (|R| = rack_size), built up from the word
+                // index pj via the add table, so < lat.len(); best is lat.len()-sized.
+                let cur = unsafe { self.best.get_unchecked_mut(r_idx) };
+                if cand > *cur {
+                    *cur = cand;
+                }
+                return;
+            }
+            if t == self.n || (self.suffix_cap[t] as usize) < remaining {
+                return;
+            }
+            // c = 0: skip letter t.
+            self.rec_k(t + 1, remaining, k_idx, r_idx);
+            // c >= 1: take c of letter t into both K and R.
+            let cap = (self.avail[t] as usize).min(remaining);
+            let mut kk = k_idx;
+            let mut rr = r_idx;
+            for c in 1..=cap {
+                kk = self.add.add(kk, t);
+                rr = self.add.add(rr, t);
+                self.rec_k(t + 1, remaining - c, kk, rr);
+            }
+        }
+    }
+    let mut p_tally = [0u8; MAX_LETTERS];
+    let mut avail = [0u8; MAX_LETTERS];
+    let mut suffix_cap = [0u32; MAX_LETTERS + 1];
+    // Words live only at sizes 1..=rack_size (sheet[empty] is the 0 exchange floor).
+    for pj in 1..lat.len() {
+        // SAFETY: pj is the loop index over 1..lat.len(), so pj < lat.len() = sheet.len().
+        let sp_val = unsafe { *sheet.get_unchecked(pj) };
+        if sp_val <= 0 {
+            continue;
+        }
+        lat.unrank_into(pj, &mut p_tally[..n]);
+        let psize: usize = p_tally[..n].iter().map(|&c| c as usize).sum();
+        let krem = rack_size - psize;
+        // drawable complement budget per letter, and its suffix sums for pruning.
+        for t in 0..n {
+            avail[t] = unseen[t].saturating_sub(p_tally[t]);
+        }
+        suffix_cap[n] = 0;
+        for t in (0..n).rev() {
+            suffix_cap[t] = suffix_cap[t + 1] + (avail[t] as u32).min(krem as u32);
+        }
+        Ctx {
+            sp_val,
+            n,
+            add,
+            leave,
+            avail: &avail,
+            suffix_cap: &suffix_cap,
+            best: &mut *best,
+        }
+        .rec_k(0, krem, 0, pj);
+    }
+}
+
 /// The read-only per-board arrays [`apportion_fused`] consumes: the play-value sheet,
 /// the current leave table, and the unseen draw pool. Grouped into one struct so the
 /// function stays under the argument-count lint without an allow.
@@ -536,11 +670,12 @@ pub struct ApportionOut<'a> {
 
 /// Which best_equity / apportion strategy [`apportion_fused`] takes (see its doc): `zeta`
 /// folds with the superset-sum transform instead of the per-rack push; `null_leave`
-/// takes the gen-1 subset-max fast path.
+/// takes the gen-1 subset-max; `scatter` the gens > 1 word-scatter.
 #[derive(Clone, Copy)]
 pub struct ApportionMode {
     pub zeta: bool,
     pub null_leave: bool,
+    pub scatter: bool,
 }
 
 /// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
@@ -572,8 +707,12 @@ pub struct ApportionMode {
 /// cost) with an array read at each drawable rack. `maxsheet` is a caller-owned
 /// lattice-length scratch, written only on this path. The scan is the same fixed cost
 /// as the apportionment zeta, so it pays off on the same big pools; it is taken only
-/// when `null_leave && zeta` (small pools keep the cheaper per-rack rec_max). On gens >
-/// 1 (leave != 0) the split no longer separates and rec_max stays.
+/// when `null_leave && zeta` (small pools keep the cheaper per-rack rec_max).
+///
+/// `scatter` requests the gens > 1 (leave != 0) analog: best_equity uses the same
+/// precomputed-into-`maxsheet` read, but `maxsheet` is built by `scatter_words` (the
+/// leave subset-max seed plus a word-keyed scatter) instead of the per-rack rec_max.
+/// Also `zeta`-gated, and exact; an opt-in alternative to rec_max for big pools.
 pub fn apportion_fused(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -587,34 +726,29 @@ pub fn apportion_fused(
         leave,
         unseen,
     } = *board;
-    let ApportionMode { zeta, null_leave } = mode;
+    let ApportionMode {
+        zeta,
+        null_leave,
+        scatter,
+    } = mode;
     let n = lat.num_letters();
-    // Gen-1 (null leave) fast path: best_equity(R) = max_{P <= R} sheet[P]. Fill
-    // `maxsheet` with the sheet's subset-max in one pass per letter -- iterating idx
-    // low->high so the +1-tile superset add(idx, t) (a strictly higher index, larger
-    // size) reads an idx that already folded in its own lower-t-count predecessors;
-    // composing the n passes gives the full multiset subset-max. Source indices are the
-    // sub-full-rack block [0, full_rack_start) (the only ones `add` accepts); the write
-    // target sp may be a full rack. Worth its fixed cost only on big pools, so gate it
-    // with `zeta`; otherwise enum_drawable's per-rack rec_max runs as before.
+    // best_equity(R) is precomputed into `maxsheet` for every rack on two paths, both
+    // replacing the per-rack rec_max descent with an array read at each drawable rack;
+    // each rides the big-pool `zeta` gate (the per-rack rec_max is cheaper on small
+    // pools, where few racks are drawable):
+    //   * subset_max -- gen-1 null leave: best(R) = max_{P<=R} sheet[P], a single
+    //     subset-max of the sheet.
+    //   * scatter -- gens > 1: best(R) = max(maxleave(R), over word splits), seeded by
+    //     the subset-max of the leave and folded by scatter_words.
     let subset_max = null_leave && zeta;
+    let scatter_active = scatter && !null_leave && zeta;
     if subset_max {
-        maxsheet.copy_from_slice(sheet);
-        let lo = lat.full_rack_start();
-        for t in 0..n {
-            for idx in 0..lo {
-                let sp = add.add(idx, t);
-                // SAFETY: idx < lo == full_rack_start <= lat.len(); sp = add.add(idx, t)
-                // is the +1-tile superset lattice index < lat.len(); maxsheet is
-                // lat.len()-sized.
-                let v = unsafe { *maxsheet.get_unchecked(idx) };
-                let cur = unsafe { maxsheet.get_unchecked_mut(sp) };
-                if v > *cur {
-                    *cur = v;
-                }
-            }
-        }
+        subset_max_transform(lat, add, sheet, maxsheet);
+    } else if scatter_active {
+        subset_max_transform(lat, add, leave, maxsheet);
+        scatter_words(lat, add, sheet, leave, unseen, maxsheet);
     }
+    let best_from_maxsheet = subset_max || scatter_active;
     // Constant context for the per-rack recursions and the drawable-rack enumeration;
     // best/w vary per rack and are passed as arguments -- no clippy::too_many_arguments.
     // nz is the incrementally-built rack buffer; num/den accumulate across racks.
@@ -635,7 +769,7 @@ pub fn apportion_fused(
         num: &'a mut [f64],
         den: &'a mut [f64],
         zeta: bool,
-        subset_max: bool,
+        best_from_maxsheet: bool,
         maxsheet: &'a [i32],
         nz: &'a mut [(usize, u8)],
     }
@@ -703,9 +837,10 @@ pub fn apportion_fused(
         // (no subrack walk) while the push path apportions from the empty multiset.
         fn enum_drawable(&mut self, t: usize, remaining: usize, w: f64, idx: usize, m: usize) {
             if remaining == 0 {
-                // best_equity(R): the precomputed sheet subset-max at R's full-rack index
-                // on the gen-1 null-leave path, else the per-rack max-over-splits descent.
-                let best = if self.subset_max {
+                // best_equity(R): precomputed at R's full-rack index in `maxsheet` on the
+                // subset-max (gen-1) and word-scatter (gens > 1) paths, else the per-rack
+                // max-over-splits descent.
+                let best = if self.best_from_maxsheet {
                     // SAFETY: idx is the full-rack lattice index built up from 0 via the add
                     // table, so < lat.len(); maxsheet is lat.len()-sized (filled above).
                     unsafe { *self.maxsheet.get_unchecked(idx) }
@@ -781,7 +916,7 @@ pub fn apportion_fused(
         num: out.num,
         den: out.den,
         zeta,
-        subset_max,
+        best_from_maxsheet,
         maxsheet,
         nz: &mut nz,
     };
@@ -1363,31 +1498,42 @@ mod tests {
         apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
         let add = AddTable::new(&lat);
         let mut maxsheet = vec![0i32; lat.len()];
-        for zeta in [false, true] {
-            let mut num_b = vec![0f64; lat.len()];
-            let mut den_b = vec![0f64; lat.len()];
-            // leave is nonzero here, so null_leave is false (the general rec_max path).
-            apportion_fused(
-                &lat,
-                &add,
-                &ApportionBoard {
-                    sheet: &sheet,
-                    leave: &leave,
-                    unseen: &unseen,
-                },
-                ApportionOut {
-                    num: &mut num_b,
-                    den: &mut den_b,
-                },
-                &mut maxsheet,
-                ApportionMode {
-                    zeta,
-                    null_leave: false,
-                },
-            );
-            for idx in 0..lat.len() {
-                assert_eq!(num_a[idx], num_b[idx], "num at {idx} (zeta={zeta})");
-                assert_eq!(den_a[idx], den_b[idx], "den at {idx} (zeta={zeta})");
+        // leave is nonzero here, so null_leave is false. Cover the per-rack rec_max
+        // path (scatter=false) and the word-scatter path (scatter=true, engages only
+        // with zeta); both must reproduce the reference exactly.
+        for scatter in [false, true] {
+            for zeta in [false, true] {
+                let mut num_b = vec![0f64; lat.len()];
+                let mut den_b = vec![0f64; lat.len()];
+                apportion_fused(
+                    &lat,
+                    &add,
+                    &ApportionBoard {
+                        sheet: &sheet,
+                        leave: &leave,
+                        unseen: &unseen,
+                    },
+                    ApportionOut {
+                        num: &mut num_b,
+                        den: &mut den_b,
+                    },
+                    &mut maxsheet,
+                    ApportionMode {
+                        zeta,
+                        null_leave: false,
+                        scatter,
+                    },
+                );
+                for idx in 0..lat.len() {
+                    assert_eq!(
+                        num_a[idx], num_b[idx],
+                        "num at {idx} (zeta={zeta}, scatter={scatter})"
+                    );
+                    assert_eq!(
+                        den_a[idx], den_b[idx],
+                        "den at {idx} (zeta={zeta}, scatter={scatter})"
+                    );
+                }
             }
         }
     }
@@ -1435,7 +1581,11 @@ mod tests {
                         den: &mut den_b,
                     },
                     &mut maxsheet,
-                    ApportionMode { zeta, null_leave },
+                    ApportionMode {
+                        zeta,
+                        null_leave,
+                        scatter: false,
+                    },
                 );
                 for idx in 0..lat.len() {
                     assert_eq!(

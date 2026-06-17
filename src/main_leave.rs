@@ -3276,6 +3276,27 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
     n_cand
 }
 
+// how WOLGES_CENSUS_SCATTER builds best_equity on a big multi-generation pool:
+// off, on, or auto (decide from the lattice size). parse it once into a typed
+// value so an unknown setting fails loud instead of silently picking a mode.
+#[derive(Clone, Copy)]
+enum Scatter {
+    Off,
+    On,
+    Auto,
+}
+
+fn wolges_census_scatter() -> error::Returns<Scatter> {
+    match std::env::var("WOLGES_CENSUS_SCATTER").ok().as_deref() {
+        None | Some("auto") => Ok(Scatter::Auto),
+        Some("off") => Ok(Scatter::Off),
+        Some("on") => Ok(Scatter::On),
+        Some(other) => {
+            Err(format!("WOLGES_CENSUS_SCATTER must be off, on, or auto, got {other:?}").into())
+        }
+    }
+}
+
 fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -3411,6 +3432,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // full_rack_start*num_letters transform outweighs touching the few drawable
     // racks) and loses above it; 36 keeps every expensive (big-pool) board on the zeta.
     let zeta_pool_min = env_usize("WOLGES_CENSUS_ZETA_POOL", 36);
+    // WOLGES_CENSUS_SCATTER (gens > 1, big pool): build best_equity by a word-keyed
+    // scatter (leave subset-max seed + scatter_words) instead of the per-rack rec_max
+    // descent. Exact (same leaves either way); only the build path differs. Values:
+    // off | on | auto, default auto. While the bandwidth payoff is being measured,
+    // auto means off.
+    let scatter = match wolges_census_scatter()? {
+        Scatter::Off => false,
+        Scatter::On => true,
+        Scatter::Auto => false,
+    };
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
     let seed = seed.unwrap_or_else(rand::random);
@@ -3713,6 +3744,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             census::ApportionMode {
                                 zeta: pool >= zeta_pool_min,
                                 null_leave,
+                                scatter,
                             },
                         );
                         for (idx, slot) in contrib.iter_mut().enumerate() {
