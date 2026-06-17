@@ -926,6 +926,129 @@ pub fn apportion_fused(
     }
 }
 
+/// Opponent tile-denial marginals -- the sub-1-ply opponent term. A marginal
+/// here is how much the opponent's expected best play drops when one copy of a
+/// tile leaves the unseen pool. The 1-ply leave fixed point already sums the
+/// holder's own future plies but ignores the opponent; holding a kept subrack
+/// S sequesters S's tiles from the opponent's draw pool, lowering the
+/// opponent's expected best play by approximately sum_t S[t]*marginal[t]. This
+/// is a pool externality on the SAME board (no second board, no reply to an
+/// actual play), so the caller folds it into the static leave table: leave(S)
+/// += strength * sum_t S[t]*marginal[t], for every subrack S (the leave-table
+/// index; a kept leave K = R - P is one such S).
+///
+/// opp_value(pool) = E_{full rack R drawn from pool}[best_equity(R)].
+/// best_equity is pool-INDEPENDENT (max over splits of sheet + leave), so
+/// removing one tile of letter t from pool U reweights each drawable rack R
+/// only by (U[t] - R[t]) / U[t]. Hence
+///   num_t := sum_R w(R) best(R) (U[t]-R[t])/U[t] = num_u - swb[t]/U[t],
+///   den_t := sum_R w(R) (U[t]-R[t])/U[t]         = den_u - tw[t]/U[t],
+/// with num_u = sum_R w*best, den_u = sum_R w, swb[t] = sum_R w*best*R[t],
+/// tw[t] = sum_R w*R[t]. One enumeration over the drawable full racks
+/// accumulates num_u, den_u and (touching only each rack's nonzero letters)
+/// swb[t], tw[t]; then marginal[t] = num_u/den_u - num_t/den_t =
+/// opp_value(U) - opp_value(U - one t) (>= 0, modulo rare negative best).
+/// `best` holds best_equity over the full-rack block (fill with
+/// best_equity_table first); `marginal` is caller-owned, len num_letters.
+pub fn opp_denial_marginals(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    best: &[i32],
+    unseen: &[u8],
+    marginal: &mut [f64],
+) {
+    let n = lat.num_letters();
+    let rack_size = lat.rack_size();
+    let mut suffix_cap = [0u32; MAX_LETTERS + 1];
+    for t in (0..n).rev() {
+        suffix_cap[t] = suffix_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
+    }
+    let mut num_u = 0f64;
+    let mut den_u = 0f64;
+    let mut swb = [0f64; MAX_LETTERS]; // swb[t] = sum_R w*best*R[t]
+    let mut tw = [0f64; MAX_LETTERS]; // tw[t] = sum_R w*R[t]
+    // Constant context for the drawable-rack enumeration, so rec carries only the
+    // changing draw position, weight, index, and rack length -- no
+    // clippy::too_many_arguments. num_u/den_u/swb/tw accumulate over every rack; nz is
+    // the shared nonzero-letter scratch.
+    struct Ctx<'a> {
+        n: usize,
+        unseen: &'a [u8],
+        suffix_cap: &'a [u32],
+        add: &'a AddTable,
+        best: &'a [i32],
+        num_u: &'a mut f64,
+        den_u: &'a mut f64,
+        swb: &'a mut [f64],
+        tw: &'a mut [f64],
+        nz: &'a mut [(usize, u8)],
+    }
+    impl Ctx<'_> {
+        fn rec(&mut self, t: usize, remaining: usize, w: f64, idx: usize, m: usize) {
+            if remaining == 0 {
+                // SAFETY: idx is a full-rack lattice index built up via the add table (size ==
+                // rack_size at remaining == 0), < lat.len(); best is the lat.len()
+                // best_equity buffer.
+                let b = unsafe { *self.best.get_unchecked(idx) } as f64;
+                let wb = w * b;
+                *self.num_u += wb;
+                *self.den_u += w;
+                for &(letter, cnt) in &self.nz[..m] {
+                    let c = cnt as f64;
+                    // SAFETY: letter is a rack letter from nz (letter <
+                    // num_letters <= MAX_LETTERS); swb and tw are
+                    // MAX_LETTERS-length stack arrays.
+                    unsafe {
+                        *self.swb.get_unchecked_mut(letter) += wb * c;
+                        *self.tw.get_unchecked_mut(letter) += w * c;
+                    }
+                }
+                return;
+            }
+            if t == self.n || (self.suffix_cap[t] as usize) < remaining {
+                return;
+            }
+            self.rec(t + 1, remaining, w, idx, m);
+            let nt = self.unseen[t] as usize;
+            let cap = nt.min(remaining);
+            let mut binom = 1.0f64;
+            let mut idx_c = idx;
+            for c in 1..=cap {
+                binom = binom * (nt - c + 1) as f64 / c as f64;
+                idx_c = self.add.add(idx_c, t);
+                self.nz[m] = (t, c as u8);
+                self.rec(t + 1, remaining - c, w * binom, idx_c, m + 1);
+            }
+        }
+    }
+    let mut nz = [(0usize, 0u8); MAX_LETTERS];
+    Ctx {
+        n,
+        unseen,
+        suffix_cap: &suffix_cap,
+        add,
+        best,
+        num_u: &mut num_u,
+        den_u: &mut den_u,
+        swb: &mut swb,
+        tw: &mut tw,
+        nz: &mut nz,
+    }
+    .rec(0, rack_size, 1.0, 0, 0);
+    let baseline = if den_u > 0.0 { num_u / den_u } else { 0.0 };
+    for t in 0..n {
+        let u = unseen[t] as f64;
+        let opp_t = if u > 0.0 {
+            let nt = num_u - swb[t] / u;
+            let dt = den_u - tw[t] / u;
+            if dt > 0.0 { nt / dt } else { baseline }
+        } else {
+            baseline
+        };
+        marginal[t] = baseline - opp_t;
+    }
+}
+
 /// Push form of `leave_value_by_draw` for the whole leave table at once. For
 /// every full rack R and every split R = S (kept) + P (played), credit best[R]
 /// to leave S weighted by the ways to draw the played part P from the unseen
@@ -1598,6 +1721,72 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn opp_denial_marginals_matches_brute() {
+        // the fast marginals must equal a brute-force opp_value(U) - opp_value(U - t)
+        // over every drawable full rack.
+        let lat = MultisetLattice::new(4, 4);
+        let add = AddTable::new(&lat);
+        let unseen = [5u8, 4u8, 6u8, 3u8];
+        let mut sheet = vec![0i32; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for idx in 0..lat.len() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                sheet[idx] = h.rem_euclid(20_000);
+            }
+            leave[idx] = h.rem_euclid(8_000) - 4_000;
+        }
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best);
+        let mut marginal = vec![0f64; 4];
+        opp_denial_marginals(&lat, &add, &best, &unseen, &mut marginal);
+        fn binom(n: u64, k: u64) -> f64 {
+            if k > n {
+                return 0.0;
+            }
+            let mut r = 1.0;
+            for i in 0..k {
+                r = r * (n - i) as f64 / (i + 1) as f64;
+            }
+            r
+        }
+        let opp_value = |pool: &[u8; 4]| -> f64 {
+            let mut num = 0.0;
+            let mut den = 0.0;
+            for (idx, &b) in best.iter().enumerate().skip(lat.full_rack_start()) {
+                let tally = lat.tally(idx);
+                let mut w = 1.0;
+                let mut ok = true;
+                for t in 0..4 {
+                    if tally[t] > pool[t] {
+                        ok = false;
+                        break;
+                    }
+                    w *= binom(pool[t] as u64, tally[t] as u64);
+                }
+                if !ok || w == 0.0 {
+                    continue;
+                }
+                num += w * b as f64;
+                den += w;
+            }
+            if den > 0.0 { num / den } else { 0.0 }
+        };
+        let base = opp_value(&unseen);
+        for t in 0..4 {
+            let mut pool = unseen;
+            pool[t] -= 1;
+            let expect = base - opp_value(&pool);
+            assert!(
+                (marginal[t] - expect).abs() < 1e-6,
+                "marginal[{t}] = {} expected {}",
+                marginal[t],
+                expect
+            );
         }
     }
 
