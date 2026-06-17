@@ -6499,7 +6499,9 @@ impl GamePairStats {
 }
 
 // Apportion (w, wo) to every subrack S <= R (R given as a per-letter tally):
-// num[rank(S)] += wo, den[rank(S)] += w. Enumerates each present letter's kept
+// num[rank(S)] += wo, den[rank(S)] += w, scnt[rank(S)] += 1 (the unweighted
+// sample count, used by the prior-blend to trust well-sampled leaves and
+// fall back to the prior on sparse ones). Enumerates each present letter's kept
 // count 0..=R[t] (a handful of subracks per rack). The MC rollout analog of
 // apportion_fused's apportion_rec, but the apportioned value is passed in rather than a
 // best_equity, and it runs over one observed rack at a time.
@@ -6510,15 +6512,16 @@ fn apportion_subracks(
     wo: f64,
     num: &mut [f64],
     den: &mut [f64],
+    scnt: &mut [f64],
 ) {
     const M: usize = 64; // >= any alphabet (MultisetLattice caps num_letters at 64).
     let num_letters = lat.num_letters();
     let mut nz = [(0usize, 0u8); M];
-    let mut cnt = 0;
+    let mut ndistinct = 0;
     for (t, &c) in r_tally.iter().enumerate() {
         if c > 0 {
-            nz[cnt] = (t, c);
-            cnt += 1;
+            nz[ndistinct] = (t, c);
+            ndistinct += 1;
         }
     }
     let mut s_tally = [0u8; M];
@@ -6526,7 +6529,7 @@ fn apportion_subracks(
     // position -- no clippy::too_many_arguments.
     struct Ctx<'a> {
         nz: &'a [(usize, u8)],
-        cnt: usize,
+        ndistinct: usize,
         num_letters: usize,
         s_tally: &'a mut [u8],
         lat: &'a census::MultisetLattice,
@@ -6534,13 +6537,15 @@ fn apportion_subracks(
         wo: f64,
         num: &'a mut [f64],
         den: &'a mut [f64],
+        scnt: &'a mut [f64],
     }
     impl Ctx<'_> {
         fn rec(&mut self, i: usize) {
-            if i == self.cnt {
+            if i == self.ndistinct {
                 let sr = self.lat.rank(&self.s_tally[..self.num_letters]) as usize;
                 self.num[sr] += self.wo;
                 self.den[sr] += self.w;
+                self.scnt[sr] += 1.0;
                 return;
             }
             let (t, c) = self.nz[i];
@@ -6553,7 +6558,7 @@ fn apportion_subracks(
     }
     Ctx {
         nz: &nz,
-        cnt,
+        ndistinct,
         num_letters,
         s_tally: &mut s_tally,
         lat,
@@ -6561,20 +6566,29 @@ fn apportion_subracks(
         wo,
         num,
         den,
+        scnt,
     }
     .rec(0);
 }
 
-// Monte-Carlo rollout leave generation (the raw rollout, a measured negative). The model-free
-// counterpart to the 1-ply full-rack census: play full
-// self-play games with the policy leaves `arc_klv`, then back-attribute each
-// game's final MARGIN (from the holder's perspective) to every rack held during
-// the game, apportioned to all subracks weighted by the draw-ways w(R) =
-// ProdC(unseen, R) (the same weight apportion_fused uses). leave(S) = sum
-// w*margin / sum w over all (game, held-rack R >= S). Pure rollout (strength = 1):
-// no 1-ply bootstrap, so the target is the unbiased multi-ply outcome (high
-// variance -- needs many games to converge). Margin-delta attribution, full-game
-// depth, per the MC decisions 2026-06-17.
+// Monte-Carlo rollout leave generation. The model-free counterpart to the
+// 1-ply full-rack census: play full self-play games with the policy leaves
+// `arc_klv`, then back-attribute each game's final MARGIN (from the holder's
+// perspective) to every rack held during the game, apportioned to all
+// subracks weighted by the draw-ways w(R) = ProdC(unseen, R) (the same weight
+// apportion_fused uses). rollout(S) = sum w*margin / sum w over all (game,
+// held-rack R >= S), centered on the empty leave. Margin-delta attribution,
+// full-game depth, per the MC decisions 2026-06-17.
+//
+// With WOLGES_ROLLOUT_SHRINK = 0 (the default) the raw rollout value is used,
+// which fails badly -- rare multi-tile leaves get few samples, hence huge
+// noisy values that sabotage play. WOLGES_ROLLOUT_SHRINK = K > 0 pulls the
+// value toward the prior `arc_klv` (pass the 1-ply census leaves as both the
+// play policy and the prior):
+//   leave(S) = prior(S) + trust(S) * (rollout(S) - prior(S)),
+//   trust(S) = scnt(S) / (scnt(S) + K)
+// so sparse leaves keep the census's exact (low-variance) value and only
+// well-sampled leaves take the rollout's multi-ply correction.
 fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -6598,8 +6612,13 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     );
     let kwg = std::sync::Arc::new(kwg);
     let next_game = std::sync::atomic::AtomicU64::new(0);
-    // (num, den) accumulators over the lattice, merged once per thread at the end.
-    let shared = std::sync::Mutex::new((vec![0f64; lat_len], vec![0f64; lat_len]));
+    // (num, den, scnt) accumulators over the lattice, merged once per thread at
+    // the end; scnt is the unweighted sample count per leave (for the prior-blend).
+    let shared = std::sync::Mutex::new((
+        vec![0f64; lat_len],
+        vec![0f64; lat_len],
+        vec![0f64; lat_len],
+    ));
 
     std::thread::scope(|s| {
         for _ in 0..num_threads {
@@ -6610,6 +6629,7 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
                 let mut num_local = vec![0f64; lat_len];
                 let mut den_local = vec![0f64; lat_len];
+                let mut cnt_local = vec![0f64; lat_len];
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut rack_scratch = vec![0u8; num_letters];
                 // per-game plies: (mover, rack tally, draw-ways weight).
@@ -6687,30 +6707,42 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             *w * o,
                             &mut num_local,
                             &mut den_local,
+                            &mut cnt_local,
                         );
                     }
                 }
                 let mut guard = shared.lock().unwrap();
-                let (gnum, gden) = &mut *guard;
+                let (gnum, gden, gcnt) = &mut *guard;
                 for i in 0..lat_len {
                     gnum[i] += num_local[i];
                     gden[i] += den_local[i];
+                    gcnt[i] += cnt_local[i];
                 }
             });
         }
     });
 
-    let (num, den) = shared.into_inner().unwrap();
-    // leave(S) = sum w*margin / sum w, in points; center on the empty leave (its
-    // value = the average game margin = the baseline).
-    let value_pts = |idx: usize| -> f64 {
+    let (num, den, scnt) = shared.into_inner().unwrap();
+    // rollout(S) = sum w*margin / sum w (millipoints), centered on the empty leave
+    // (its value = the average game margin = the baseline).
+    let value_mp = |idx: usize| -> f64 {
         if den[idx] > 0.0 {
             num[idx] / den[idx]
         } else {
             0.0
         }
     };
-    let baseline = value_pts(empty_rank);
+    let baseline = value_mp(empty_rank);
+    // prior-blend toward the prior klv: K = 0 -> raw rollout; K > 0 ->
+    // trust = scnt/(scnt+K), blending sparse leaves back to the prior (pass the
+    // 1-ply census leaves as the prior to floor rare leaves at their exact value).
+    let shrink_k = std::env::var("WOLGES_ROLLOUT_SHRINK")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    if shrink_k > 0.0 {
+        eprintln!("rollout: shrinking toward prior klv with K={shrink_k}");
+    }
     let epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -6728,9 +6760,18 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         if size == 0 || size > rack_size {
             continue; // skip the empty (baseline) and over-size leaves.
         }
-        // margins are in millipoints (equity::SCALE); convert the centered leave
-        // value to points for the klv-style CSV, as the census does.
-        let centered = (value_pts(idx) - baseline) / equity::SCALE as f64;
+        // rollout value centered on the empty leave (millipoints). the prior-blend blends it
+        // toward the prior klv by sample-count trust; the raw rollout (K=0) keeps it as-is.
+        // Convert to points for the klv-style CSV (margins are millipoints), as
+        // the census does.
+        let rollout_mp = value_mp(idx) - baseline;
+        let centered = if shrink_k > 0.0 {
+            let prior_mp = arc_klv.leave_value_from_tally(&tally_buf) as f64;
+            let trust = scnt[idx] / (scnt[idx] + shrink_k);
+            (prior_mp + trust * (rollout_mp - prior_mp)) / equity::SCALE as f64
+        } else {
+            rollout_mp / equity::SCALE as f64
+        };
         leave_ser.clear();
         for (t, &c) in tally_buf.iter().enumerate() {
             for _ in 0..c {
