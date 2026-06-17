@@ -533,17 +533,26 @@ pub fn apportion_fused(
     den: &mut [f64],
 ) {
     let n = lat.num_letters();
-    let mut r = [0u8; MAX_LETTERS];
-    // Constant context shared by the two per-rack recursions; best/w/we vary per rack
-    // and are passed as arguments -- no clippy::too_many_arguments. nz and the num/den
-    // accumulators are borrowed per rack; the Ctx is rebuilt for each drawable rack.
+    // Constant context for the per-rack recursions and the drawable-rack enumeration;
+    // best/w vary per rack and are passed as arguments -- no clippy::too_many_arguments.
+    // nz is the incrementally-built rack buffer; num/den accumulate across racks.
+    let rack_size = lat.rack_size();
+    // suffix_cap[t] = total unseen tiles (capped at rack_size) from letter t onward;
+    // prunes enum_drawable branches that can no longer fill a full rack.
+    let mut suffix_cap = [0u32; MAX_LETTERS + 1];
+    for t in (0..n).rev() {
+        suffix_cap[t] = suffix_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
+    }
     struct Ctx<'a> {
+        n: usize,
+        unseen: &'a [u8],
+        suffix_cap: &'a [u32],
         add: &'a AddTable,
         sheet: &'a [i32],
         leave: &'a [i32],
-        nz: &'a [(usize, u8)],
         num: &'a mut [f64],
         den: &'a mut [f64],
+        nz: &'a mut [(usize, u8)],
     }
     impl Ctx<'_> {
         // max over splits -> best_equity(R): build the played P and kept K subracks up
@@ -596,40 +605,50 @@ pub fn apportion_fused(
                 }
             }
         }
-    }
-    let lo = lat.full_rack_start();
-    for ridx in lo..lat.len() {
-        lat.unrank_into(ridx, &mut r[..n]);
-        let mut w = 1.0f64;
-        let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
-        let mut m = 0;
-        let mut drawable = true;
-        for (t, &c) in r[..n].iter().enumerate() {
-            if c > 0 {
-                nz[m] = (t, c);
-                m += 1;
-                w *= n_choose_k(unseen[t] as u64, c as u64) as f64;
-                if w == 0.0 {
-                    drawable = false;
-                    break;
-                }
+        // Enumerate ONLY the full racks drawable from `unseen` (each letter t taken
+        // 0..=min(unseen[t], remaining) times, total == rack_size), building the nz list
+        // and draw-ways weight w(R) = prod_t C(unseen[t], R[t]) incrementally with f64
+        // binomials -- no per-rack n_choose_k and no multiplying out a weight only to
+        // find a later factor is zero. Impossible racks are never visited: a big win on
+        // small-pool boards (most of lat.len() is undrawable there), and elsewhere it
+        // trades the unrank for an incremental build. suffix_cap prunes branches that
+        // cannot still reach a full rack.
+        fn enum_drawable(&mut self, t: usize, remaining: usize, w: f64, m: usize) {
+            if remaining == 0 {
+                let mut best = UNPLAYABLE;
+                self.rec_max(m, 0, 0, &mut best);
+                self.apportion_rec(m, 0, w, w * best as f64);
+                return;
+            }
+            if t == self.n || (self.suffix_cap[t] as usize) < remaining {
+                return;
+            }
+            // c = 0: skip letter t.
+            self.enum_drawable(t + 1, remaining, w, m);
+            // c >= 1: take c of letter t; C(nt, c) built incrementally from C(nt, c-1).
+            let nt = self.unseen[t] as usize;
+            let cap = nt.min(remaining);
+            let mut binom = 1.0f64;
+            for c in 1..=cap {
+                binom = binom * (nt - c + 1) as f64 / c as f64;
+                self.nz[m] = (t, c as u8);
+                self.enum_drawable(t + 1, remaining - c, w * binom, m + 1);
             }
         }
-        if !drawable {
-            continue;
-        }
-        let mut best = UNPLAYABLE;
-        let mut ctx = Ctx {
-            add,
-            sheet,
-            leave,
-            nz: &nz[..m],
-            num: &mut *num,
-            den: &mut *den,
-        };
-        ctx.rec_max(m, 0, 0, &mut best);
-        ctx.apportion_rec(m, 0, w, w * best as f64);
     }
+    let mut nz = [(0usize, 0u8); MAX_LETTERS];
+    let mut ctx = Ctx {
+        n,
+        unseen,
+        suffix_cap: &suffix_cap,
+        add,
+        sheet,
+        leave,
+        num,
+        den,
+        nz: &mut nz,
+    };
+    ctx.enum_drawable(0, rack_size, 1.0, 0);
 }
 
 /// Push form of `leave_value_by_draw` for the whole leave table at once. For
