@@ -6621,6 +6621,21 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             "rollout: baseline-subtraction mode (credit margin - play equity, add prior back)"
         );
     }
+    // The next-turn blend (WOLGES_ROLLOUT_LAMBDA in [0,1]): instead of crediting each leave
+    // the whole game margin (which counts pre-leave plays), credit the forward
+    // blended return G_t = r_t + (1-strength) V(s_{t+1}) + strength G_{t+1}, where r_t is the
+    // mover's signed score this turn and V(s_t) = sign(mover) * e_t is the 1-ply census
+    // value. strength = 1 is the future-only signed margin (a leave influences
+    // only plays from when it is held); toward 0 it leans one step on
+    // the census value. The hope is multi-ply option value the 1-ply census cannot see, at
+    // lower variance than the full rollout. Overrides cv. Pass the 1-ply census as policy.
+    let td_lambda = std::env::var("WOLGES_ROLLOUT_LAMBDA")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|l| (0.0..=1.0).contains(l));
+    if let Some(l) = td_lambda {
+        eprintln!("rollout: next-turn-blend mode, strength={l} (forward return, census value)");
+    }
     let kwg = std::sync::Arc::new(kwg);
     let next_game = std::sync::atomic::AtomicU64::new(0);
     // (num, den, scnt) accumulators over the lattice, merged once per thread at
@@ -6643,8 +6658,13 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                 let mut cnt_local = vec![0f64; lat_len];
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut rack_scratch = vec![0u8; num_letters];
-                // per-game plies: (mover, rack tally, draw-ways weight, play equity).
-                let mut plies: Vec<(u8, Vec<u8>, f64, f64)> = Vec::new();
+                // per-game plies: (mover, draw-ways weight, play equity, realized
+                // score this turn). The score feeds the next-turn-blend return. The
+                // per-ply rack tally lives in a reused buffer pool indexed by ply, so
+                // a game's tallies reuse the prior game's allocations instead of
+                // freeing them each game; the logical length is plies.len().
+                let mut plies: Vec<(u8, f64, f64, i32)> = Vec::new();
+                let mut ply_tallies: Vec<Vec<u8>> = Vec::new();
                 loop {
                     let g = next_game.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if g >= num_games {
@@ -6691,11 +6711,24 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             always_include_pass: false,
                         });
                         // the mover's best-play equity = the census's 1-ply value of R,
-                        // the baseline's prediction of this turn's worth.
+                        // the baseline's prediction of this turn's worth, and the
+                        // next-turn-blended value V(s_t) of holding R this turn.
                         let e_t = move_generator.plays[0].equity.as_f64();
-                        plies.push((mover, rack_scratch.clone(), w, e_t));
+                        let score_before = game_state.players[mover as usize].score;
                         let play = &move_generator.plays[0].play;
                         game_state.play(&game_config, &mut rng, play).unwrap();
+                        // realized points this turn (the per-step reward).
+                        let score_t = game_state.players[mover as usize].score - score_before;
+                        // stash this ply's rack tally in a pooled buffer (clone_from
+                        // keeps the existing allocation), growing the pool only when a
+                        // game runs longer than every prior game on this thread.
+                        let ply = plies.len();
+                        if ply < ply_tallies.len() {
+                            ply_tallies[ply].clone_from(&rack_scratch);
+                        } else {
+                            ply_tallies.push(rack_scratch.clone());
+                        }
+                        plies.push((mover, w, e_t, score_t));
                         let end = game_state.check_game_ended(&game_config, &mut final_scores);
                         match end {
                             game_state::CheckGameEnded::PlayedOut
@@ -6706,26 +6739,64 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                         }
                         game_state.next_turn();
                     };
-                    // back-attribute to each held rack's subracks. the raw rollout/the prior-blend apportion the
-                    // raw outcome (margin, signed per holder); CV apportions the residual
-                    // outcome - 1-ply play equity (the census prior is added back at
-                    // output, so this carries only the multi-ply correction).
-                    for (mover, r_tally, w, e_t) in plies.iter() {
-                        let g = if *mover == 0 {
-                            final_margin
-                        } else {
-                            -final_margin
-                        };
-                        let v = if cv { g - *e_t } else { g };
-                        apportion_subracks(
-                            &lat,
-                            r_tally,
-                            *w,
-                            *w * v,
-                            &mut num_local,
-                            &mut den_local,
-                            &mut cnt_local,
-                        );
+                    // back-attribute to each held rack's subracks.
+                    if let Some(strength) = td_lambda {
+                        // Next-turn blend: credit the forward per-ply return. Work in
+                        // p0-perspective margin, then flip to the mover's perspective when
+                        // crediting (a leave's value is "good for whoever holds it"). The
+                        // sum of signed per-turn scores misses the end-of-game tile
+                        // adjustment (rack-out bonus / unplayed-tile penalties); fold that
+                        // residual in as the terminal reward so strength = 1 reproduces the
+                        // true final margin.
+                        let scored: f64 = plies
+                            .iter()
+                            .map(|(m, _, _, s)| if *m == 0 { *s as f64 } else { -(*s as f64) })
+                            .sum();
+                        let endgame_adj = final_margin - scored;
+                        let mut g_next = endgame_adj; // terminal reward after the last play
+                        let mut v_next = 0.0f64; // terminal state value
+                        for t in (0..plies.len()).rev() {
+                            let (mover, w, e_t, score_t) = &plies[t];
+                            let r_tally = &ply_tallies[t];
+                            let sgn = if *mover == 0 { 1.0 } else { -1.0 };
+                            let r = sgn * (*score_t as f64);
+                            let g_t = r + (1.0 - strength) * v_next + strength * g_next;
+                            apportion_subracks(
+                                &lat,
+                                r_tally,
+                                *w,
+                                *w * sgn * g_t, // mover-perspective return
+                                &mut num_local,
+                                &mut den_local,
+                                &mut cnt_local,
+                            );
+                            g_next = g_t;
+                            v_next = sgn * *e_t;
+                        }
+                    } else {
+                        // the raw-margin modes credit the raw outcome (margin,
+                        // signed per holder); CV credits the residual outcome
+                        // - 1-ply play equity (the census prior is added back
+                        // at output, carrying only the multi-ply correction).
+                        for (r_tally, (mover, w, e_t, _score_t)) in
+                            ply_tallies.iter().zip(plies.iter())
+                        {
+                            let g = if *mover == 0 {
+                                final_margin
+                            } else {
+                                -final_margin
+                            };
+                            let v = if cv { g - *e_t } else { g };
+                            apportion_subracks(
+                                &lat,
+                                r_tally,
+                                *w,
+                                *w * v,
+                                &mut num_local,
+                                &mut den_local,
+                                &mut cnt_local,
+                            );
+                        }
                     }
                 }
                 let mut guard = shared.lock().unwrap();
