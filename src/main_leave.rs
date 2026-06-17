@@ -6610,6 +6610,17 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     eprintln!(
         "rollout: seed {seed}, {num_games} games, {num_threads} threads, lattice {lat_len} leaves"
     );
+    // Baseline subtraction (WOLGES_ROLLOUT_CV=1), a control variate -- subtract a
+    // quantity with a known average to cut noise: credit (margin - 1-ply play
+    // equity) and add the census prior back, instead of the raw margin. Removes the
+    // rack-quality variance the census already explains, leaving the multi-ply
+    // residual; pass the 1-ply census as both policy and prior. Overrides the prior-blend.
+    let cv = env_flag("WOLGES_ROLLOUT_CV", false);
+    if cv {
+        eprintln!(
+            "rollout: baseline-subtraction mode (credit margin - play equity, add prior back)"
+        );
+    }
     let kwg = std::sync::Arc::new(kwg);
     let next_game = std::sync::atomic::AtomicU64::new(0);
     // (num, den, scnt) accumulators over the lattice, merged once per thread at
@@ -6632,8 +6643,8 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                 let mut cnt_local = vec![0f64; lat_len];
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut rack_scratch = vec![0u8; num_letters];
-                // per-game plies: (mover, rack tally, draw-ways weight).
-                let mut plies: Vec<(u8, Vec<u8>, f64)> = Vec::new();
+                // per-game plies: (mover, rack tally, draw-ways weight, play equity).
+                let mut plies: Vec<(u8, Vec<u8>, f64, f64)> = Vec::new();
                 loop {
                     let g = next_game.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if g >= num_games {
@@ -6666,7 +6677,6 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                 w *= n_choose_k(unseen_tally[t] as usize, c as usize) as f64;
                             }
                         }
-                        plies.push((mover, rack_scratch.clone(), w));
                         let board_snapshot = movegen::BoardSnapshot {
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
@@ -6680,6 +6690,10 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
                         });
+                        // the mover's best-play equity = the census's 1-ply value of R,
+                        // the baseline's prediction of this turn's worth.
+                        let e_t = move_generator.plays[0].equity.as_f64();
+                        plies.push((mover, rack_scratch.clone(), w, e_t));
                         let play = &move_generator.plays[0].play;
                         game_state.play(&game_config, &mut rng, play).unwrap();
                         let end = game_state.check_game_ended(&game_config, &mut final_scores);
@@ -6692,19 +6706,22 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                         }
                         game_state.next_turn();
                     };
-                    // back-attribute the final margin (signed per holder) to each held
-                    // rack's subracks.
-                    for (mover, r_tally, w) in plies.iter() {
-                        let o = if *mover == 0 {
+                    // back-attribute to each held rack's subracks. the raw rollout/the prior-blend apportion the
+                    // raw outcome (margin, signed per holder); CV apportions the residual
+                    // outcome - 1-ply play equity (the census prior is added back at
+                    // output, so this carries only the multi-ply correction).
+                    for (mover, r_tally, w, e_t) in plies.iter() {
+                        let g = if *mover == 0 {
                             final_margin
                         } else {
                             -final_margin
                         };
+                        let v = if cv { g - *e_t } else { g };
                         apportion_subracks(
                             &lat,
                             r_tally,
                             *w,
-                            *w * o,
+                            *w * v,
                             &mut num_local,
                             &mut den_local,
                             &mut cnt_local,
@@ -6760,17 +6777,29 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         if size == 0 || size > rack_size {
             continue; // skip the empty (baseline) and over-size leaves.
         }
-        // rollout value centered on the empty leave (millipoints). the prior-blend blends it
-        // toward the prior klv by sample-count trust; the raw rollout (K=0) keeps it as-is.
-        // Convert to points for the klv-style CSV (margins are millipoints), as
-        // the census does.
-        let rollout_mp = value_mp(idx) - baseline;
-        let centered = if shrink_k > 0.0 {
+        // value centered on the empty leave (millipoints), converted to points
+        // as the census does (margins are millipoints). Three modes:
+        // - CV: add the census prior back to the centered residual.
+        // - Prior-blend: blend toward the prior by sample-count trust.
+        // - Raw: the raw centered rollout.
+        let centered_mp = value_mp(idx) - baseline;
+        let centered = if cv {
+            // CV: census prior + the centered residual, sample-count shrunk so rare
+            // leaves (whose residual is still full-game-margin noise) fall back to
+            // the prior. WOLGES_ROLLOUT_SHRINK=0 -> trust=1 (no shrink).
+            let prior_mp = arc_klv.leave_value_from_tally(&tally_buf) as f64;
+            let trust = if shrink_k > 0.0 {
+                scnt[idx] / (scnt[idx] + shrink_k)
+            } else {
+                1.0
+            };
+            (prior_mp + trust * centered_mp) / equity::SCALE as f64
+        } else if shrink_k > 0.0 {
             let prior_mp = arc_klv.leave_value_from_tally(&tally_buf) as f64;
             let trust = scnt[idx] / (scnt[idx] + shrink_k);
-            (prior_mp + trust * (rollout_mp - prior_mp)) / equity::SCALE as f64
+            (prior_mp + trust * (centered_mp - prior_mp)) / equity::SCALE as f64
         } else {
-            rollout_mp / equity::SCALE as f64
+            centered_mp / equity::SCALE as f64
         };
         leave_ser.clear();
         for (t, &c) in tally_buf.iter().enumerate() {
