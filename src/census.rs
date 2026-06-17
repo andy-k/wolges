@@ -470,13 +470,6 @@ pub fn apportion_table(
     }
 }
 
-/// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
-/// best_equity(R) inline (max over splits) and immediately apportion it (weighted by
-/// w(R)) to every subrack -- ONE lattice pass, no materialized best[] array.
-/// Equivalent to best_equity_table followed by apportion_table (proven by
-/// apportion_fused_matches_split). The entering path can NOT fuse this way:
-/// its draw-average pulls best[S+d] at random across racks, so it needs best[]
-/// fully materialized. num/den caller-owned, zeroed per board.
 /// Parent (add-one-tile) index table over the sub-full-rack multisets. For every
 /// lattice index `idx` of size < rack_size and every letter `t`, `add(idx, t)` is
 /// the rank of `multiset(idx)` with one more `t`. [`apportion_fused`] walks each
@@ -523,14 +516,42 @@ impl AddTable {
     }
 }
 
+/// Output accumulators for [`apportion_fused`]: the per-board num/den arrays the
+/// weighted rack values are summed into, bundled so the signature stays under the
+/// argument-count lint. Both are lat.len()-sized and caller-owned.
+pub struct ApportionOut<'a> {
+    pub num: &'a mut [f64],
+    pub den: &'a mut [f64],
+}
+
+/// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
+/// best_equity(R) inline (max over splits) and account its weighted contribution
+/// w(R)*best(R) to every subrack S <= R -- ONE lattice pass, no materialized best[]
+/// array. Equivalent to best_equity_table followed by apportion_table (proven
+/// by apportion_fused_matches_split). The entering path can NOT fuse this
+/// way: its draw-average pulls best[S+d] at random across racks, so it needs best[]
+/// fully materialized. num/den caller-owned, zeroed per board.
+///
+/// Two ways to apportion each rack's contribution to its subracks, selected by `zeta`:
+///   * `zeta == false` -- PUSH: each drawable rack walks its own subrack lattice and
+///     adds (w, w*best) to each. Cost scales with the number of drawable racks times
+///     subracks-per-rack, so it is cheap when few racks are drawable (small pool).
+///   * `zeta == true` -- ZETA (superset-sum) transform: seed num[R]=w*best, den[R]=w
+///     on the full-rack block, then fold each rack into all its subracks with one
+///     pass per letter (a single +1-tile suffix-sum via the add table, indices
+///     high->low so each +1-tile superset is finalized first; composing over letters
+///     yields num[S]=sum_{full R>=S} w*best, den[S]=sum w). Cost is the FIXED
+///     O(full_rack_start * num_letters) regardless of pool -- a big win on full pools
+///     (about 10x fewer subrack touches than the push) but wasteful on tiny pools (where
+///     the push visits only a handful of racks). The caller picks `zeta` by pool size.
 pub fn apportion_fused(
     lat: &MultisetLattice,
     add: &AddTable,
     sheet: &[i32],
     leave: &[i32],
     unseen: &[u8],
-    num: &mut [f64],
-    den: &mut [f64],
+    out: ApportionOut,
+    zeta: bool,
 ) {
     let n = lat.num_letters();
     // Constant context for the per-rack recursions and the drawable-rack enumeration;
@@ -552,6 +573,7 @@ pub fn apportion_fused(
         leave: &'a [i32],
         num: &'a mut [f64],
         den: &'a mut [f64],
+        zeta: bool,
         nz: &'a mut [(usize, u8)],
     }
     impl Ctx<'_> {
@@ -612,27 +634,67 @@ pub fn apportion_fused(
         // find a later factor is zero. Impossible racks are never visited: a big win on
         // small-pool boards (most of lat.len() is undrawable there), and elsewhere it
         // trades the unrank for an incremental build. suffix_cap prunes branches that
-        // cannot still reach a full rack.
-        fn enum_drawable(&mut self, t: usize, remaining: usize, w: f64, m: usize) {
+        // cannot still reach a full rack. `idx` is the lattice rank of the partial rack
+        // chosen so far, advanced one tile at a time by the add table; at a complete
+        // rack it is the full-rack index, so the zeta path seeds num/den there directly
+        // (no subrack walk) while the push path apportions from the empty multiset.
+        fn enum_drawable(&mut self, t: usize, remaining: usize, w: f64, idx: usize, m: usize) {
             if remaining == 0 {
                 let mut best = UNPLAYABLE;
                 self.rec_max(m, 0, 0, &mut best);
-                self.apportion_rec(m, 0, w, w * best as f64);
+                if self.zeta {
+                    // seed the superset-sum source on the full-rack index `idx`.
+                    // SAFETY: idx is the full-rack lattice index built up from 0 via the add
+                    // table, so < lat.len(); num and den are lat.len()-sized.
+                    unsafe {
+                        *self.num.get_unchecked_mut(idx) = w * best as f64;
+                        *self.den.get_unchecked_mut(idx) = w;
+                    }
+                } else {
+                    self.apportion_rec(m, 0, w, w * best as f64);
+                }
                 return;
             }
             if t == self.n || (self.suffix_cap[t] as usize) < remaining {
                 return;
             }
-            // c = 0: skip letter t.
-            self.enum_drawable(t + 1, remaining, w, m);
-            // c >= 1: take c of letter t; C(nt, c) built incrementally from C(nt, c-1).
+            // c = 0: skip letter t (idx unchanged).
+            self.enum_drawable(t + 1, remaining, w, idx, m);
+            // c >= 1: take c of letter t; C(nt, c) built incrementally from C(nt, c-1)
+            // and idx advanced one t at a time (source size < rack_size, so add is valid).
             let nt = self.unseen[t] as usize;
             let cap = nt.min(remaining);
             let mut binom = 1.0f64;
+            let mut idx_c = idx;
             for c in 1..=cap {
                 binom = binom * (nt - c + 1) as f64 / c as f64;
+                idx_c = self.add.add(idx_c, t);
                 self.nz[m] = (t, c as u8);
-                self.enum_drawable(t + 1, remaining - c, w * binom, m + 1);
+                self.enum_drawable(t + 1, remaining - c, w * binom, idx_c, m + 1);
+            }
+        }
+        // Superset-sum (zeta) transform: fold every full rack's seeded (num, den) into
+        // all of its subracks. One pass per letter t turns the arrays into the suffix-sum
+        // along t's count (a single +1-tile step via the add table); iterating idx
+        // high->low means the +1-tile superset add(idx, t) -- a strictly higher index
+        // (larger size) -- is already finalized for the letters done so far, so composing
+        // the n passes gives the full multiset superset-sum. Only sub-full-rack indices
+        // are written; the full-rack seeds are the maximal elements and stay as
+        // w*best / w (== best for a full-rack "leave").
+        fn fold_zeta(&mut self, lo: usize) {
+            for t in 0..self.n {
+                for idx in (0..lo).rev() {
+                    let sp = self.add.add(idx, t);
+                    // SAFETY: sp = add.add(idx, t) with idx in 0..lo and t < num_letters is a
+                    // lattice index < lat.len(); num and den are lat.len()-sized.
+                    let (sn, sd) =
+                        unsafe { (*self.num.get_unchecked(sp), *self.den.get_unchecked(sp)) };
+                    // SAFETY: idx ranges 0..lo (< lat.len()); num and den are lat.len()-sized.
+                    unsafe {
+                        *self.num.get_unchecked_mut(idx) += sn;
+                        *self.den.get_unchecked_mut(idx) += sd;
+                    }
+                }
             }
         }
     }
@@ -644,11 +706,15 @@ pub fn apportion_fused(
         add,
         sheet,
         leave,
-        num,
-        den,
+        num: out.num,
+        den: out.den,
+        zeta,
         nz: &mut nz,
     };
-    ctx.enum_drawable(0, rack_size, 1.0, 0);
+    ctx.enum_drawable(0, rack_size, 1.0, 0, 0);
+    if zeta {
+        ctx.fold_zeta(lat.full_rack_start());
+    }
 }
 
 /// Push form of `leave_value_by_draw` for the whole leave table at once. For
@@ -1201,7 +1267,10 @@ mod tests {
     #[test]
     fn apportion_fused_matches_split() {
         // the fused step2+step3 must equal best_equity_table then
-        // apportion_table, bit-for-bit (same ops, same order).
+        // apportion_table for BOTH modes (push and zeta). The push adds
+        // in the same order as the reference; the zeta reorders the sums, but every
+        // term is an integer (w * best) far below 2^53, so f64 addition is exact and
+        // order-free -- exact equality still holds.
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
@@ -1218,13 +1287,26 @@ mod tests {
         let mut num_a = vec![0f64; lat.len()];
         let mut den_a = vec![0f64; lat.len()];
         apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
-        let mut num_b = vec![0f64; lat.len()];
-        let mut den_b = vec![0f64; lat.len()];
         let add = AddTable::new(&lat);
-        apportion_fused(&lat, &add, &sheet, &leave, &unseen, &mut num_b, &mut den_b);
-        for idx in 0..lat.len() {
-            assert_eq!(num_a[idx], num_b[idx], "num at {idx}");
-            assert_eq!(den_a[idx], den_b[idx], "den at {idx}");
+        for zeta in [false, true] {
+            let mut num_b = vec![0f64; lat.len()];
+            let mut den_b = vec![0f64; lat.len()];
+            apportion_fused(
+                &lat,
+                &add,
+                &sheet,
+                &leave,
+                &unseen,
+                ApportionOut {
+                    num: &mut num_b,
+                    den: &mut den_b,
+                },
+                zeta,
+            );
+            for idx in 0..lat.len() {
+                assert_eq!(num_a[idx], num_b[idx], "num at {idx} (zeta={zeta})");
+                assert_eq!(den_a[idx], den_b[idx], "den at {idx} (zeta={zeta})");
+            }
         }
     }
 

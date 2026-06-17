@@ -3400,6 +3400,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         None
     };
+    // apportion_fused step-3 method: ZETA (superset-sum) transform when the
+    // board's unseen pool has at least this many tiles, else the per-rack PUSH. The
+    // zeta cost is fixed (about full_rack_start * num_letters), so it wins on big pools
+    // (the push touches about 2^distinct subracks per drawable rack, of which there are
+    // millions) but loses on tiny pools (few drawable racks -> the push is cheaper
+    // than the fixed transform). The default crossover is tuned on English; 0 forces
+    // zeta always, a value above num_tiles forces the push always. English crossover:
+    // the per-rack push beats the zeta below about a 35-tile pool (where the zeta's fixed
+    // full_rack_start*num_letters transform outweighs touching the few drawable
+    // racks) and loses above it; 36 keeps every expensive (big-pool) board on the zeta.
+    let zeta_pool_min = env_usize("WOLGES_CENSUS_ZETA_POOL", 36);
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
     let seed = seed.unwrap_or_else(rand::random);
@@ -3680,14 +3691,18 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     if full_rack {
                         num_board.iter_mut().for_each(|x| *x = 0.0);
                         den_board.iter_mut().for_each(|x| *x = 0.0);
+                        let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
                         census::apportion_fused(
                             &lat,
                             add_table.as_ref().unwrap(),
                             &sheet,
                             leave,
                             &unseen_tally,
-                            &mut num_board,
-                            &mut den_board,
+                            census::ApportionOut {
+                                num: &mut num_board,
+                                den: &mut den_board,
+                            },
+                            pool >= zeta_pool_min,
                         );
                         for (idx, slot) in contrib.iter_mut().enumerate() {
                             *slot = if den_board[idx] > 0.0 {
