@@ -516,12 +516,31 @@ impl AddTable {
     }
 }
 
+/// The read-only per-board arrays [`apportion_fused`] consumes: the play-value sheet,
+/// the current leave table, and the unseen draw pool. Grouped into one struct so the
+/// function stays under the argument-count lint without an allow.
+#[derive(Clone, Copy)]
+pub struct ApportionBoard<'a> {
+    pub sheet: &'a [i32],
+    pub leave: &'a [i32],
+    pub unseen: &'a [u8],
+}
+
 /// Output accumulators for [`apportion_fused`]: the per-board num/den arrays the
 /// weighted rack values are summed into, bundled so the signature stays under the
 /// argument-count lint. Both are lat.len()-sized and caller-owned.
 pub struct ApportionOut<'a> {
     pub num: &'a mut [f64],
     pub den: &'a mut [f64],
+}
+
+/// Which best_equity / apportion strategy [`apportion_fused`] takes (see its doc): `zeta`
+/// folds with the superset-sum transform instead of the per-rack push; `null_leave`
+/// takes the gen-1 subset-max fast path.
+#[derive(Clone, Copy)]
+pub struct ApportionMode {
+    pub zeta: bool,
+    pub null_leave: bool,
 }
 
 /// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
@@ -544,16 +563,58 @@ pub struct ApportionOut<'a> {
 ///     O(full_rack_start * num_letters) regardless of pool -- a big win on full pools
 ///     (about 10x fewer subrack touches than the push) but wasteful on tiny pools (where
 ///     the push visits only a handful of racks). The caller picks `zeta` by pool size.
+///
+/// `null_leave` flags the gen-1 bootstrap where every leave is 0 (a null klv). Then
+/// best_equity(R) = max over splits of sheet[P] + leave[R-P] collapses to the pure
+/// SUBSET-MAX max_{P <= R} sheet[P], which one downward (subset-max) scan over
+/// `maxsheet` computes for every rack in a single shared O(full_rack_start *
+/// num_letters) pass -- replacing the per-rack `rec_max` descent (the dominant big-pool
+/// cost) with an array read at each drawable rack. `maxsheet` is a caller-owned
+/// lattice-length scratch, written only on this path. The scan is the same fixed cost
+/// as the apportionment zeta, so it pays off on the same big pools; it is taken only
+/// when `null_leave && zeta` (small pools keep the cheaper per-rack rec_max). On gens >
+/// 1 (leave != 0) the split no longer separates and rec_max stays.
 pub fn apportion_fused(
     lat: &MultisetLattice,
     add: &AddTable,
-    sheet: &[i32],
-    leave: &[i32],
-    unseen: &[u8],
+    board: &ApportionBoard,
     out: ApportionOut,
-    zeta: bool,
+    maxsheet: &mut [i32],
+    mode: ApportionMode,
 ) {
+    let ApportionBoard {
+        sheet,
+        leave,
+        unseen,
+    } = *board;
+    let ApportionMode { zeta, null_leave } = mode;
     let n = lat.num_letters();
+    // Gen-1 (null leave) fast path: best_equity(R) = max_{P <= R} sheet[P]. Fill
+    // `maxsheet` with the sheet's subset-max in one pass per letter -- iterating idx
+    // low->high so the +1-tile superset add(idx, t) (a strictly higher index, larger
+    // size) reads an idx that already folded in its own lower-t-count predecessors;
+    // composing the n passes gives the full multiset subset-max. Source indices are the
+    // sub-full-rack block [0, full_rack_start) (the only ones `add` accepts); the write
+    // target sp may be a full rack. Worth its fixed cost only on big pools, so gate it
+    // with `zeta`; otherwise enum_drawable's per-rack rec_max runs as before.
+    let subset_max = null_leave && zeta;
+    if subset_max {
+        maxsheet.copy_from_slice(sheet);
+        let lo = lat.full_rack_start();
+        for t in 0..n {
+            for idx in 0..lo {
+                let sp = add.add(idx, t);
+                // SAFETY: idx < lo == full_rack_start <= lat.len(); sp = add.add(idx, t)
+                // is the +1-tile superset lattice index < lat.len(); maxsheet is
+                // lat.len()-sized.
+                let v = unsafe { *maxsheet.get_unchecked(idx) };
+                let cur = unsafe { maxsheet.get_unchecked_mut(sp) };
+                if v > *cur {
+                    *cur = v;
+                }
+            }
+        }
+    }
     // Constant context for the per-rack recursions and the drawable-rack enumeration;
     // best/w vary per rack and are passed as arguments -- no clippy::too_many_arguments.
     // nz is the incrementally-built rack buffer; num/den accumulate across racks.
@@ -574,6 +635,8 @@ pub fn apportion_fused(
         num: &'a mut [f64],
         den: &'a mut [f64],
         zeta: bool,
+        subset_max: bool,
+        maxsheet: &'a [i32],
         nz: &'a mut [(usize, u8)],
     }
     impl Ctx<'_> {
@@ -640,8 +703,17 @@ pub fn apportion_fused(
         // (no subrack walk) while the push path apportions from the empty multiset.
         fn enum_drawable(&mut self, t: usize, remaining: usize, w: f64, idx: usize, m: usize) {
             if remaining == 0 {
-                let mut best = UNPLAYABLE;
-                self.rec_max(m, 0, 0, &mut best);
+                // best_equity(R): the precomputed sheet subset-max at R's full-rack index
+                // on the gen-1 null-leave path, else the per-rack max-over-splits descent.
+                let best = if self.subset_max {
+                    // SAFETY: idx is the full-rack lattice index built up from 0 via the add
+                    // table, so < lat.len(); maxsheet is lat.len()-sized (filled above).
+                    unsafe { *self.maxsheet.get_unchecked(idx) }
+                } else {
+                    let mut b = UNPLAYABLE;
+                    self.rec_max(m, 0, 0, &mut b);
+                    b
+                };
                 if self.zeta {
                     // seed the superset-sum source on the full-rack index `idx`.
                     // SAFETY: idx is the full-rack lattice index built up from 0 via the add
@@ -709,6 +781,8 @@ pub fn apportion_fused(
         num: out.num,
         den: out.den,
         zeta,
+        subset_max,
+        maxsheet,
         nz: &mut nz,
     };
     ctx.enum_drawable(0, rack_size, 1.0, 0, 0);
@@ -1288,24 +1362,91 @@ mod tests {
         let mut den_a = vec![0f64; lat.len()];
         apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
         let add = AddTable::new(&lat);
+        let mut maxsheet = vec![0i32; lat.len()];
         for zeta in [false, true] {
             let mut num_b = vec![0f64; lat.len()];
             let mut den_b = vec![0f64; lat.len()];
+            // leave is nonzero here, so null_leave is false (the general rec_max path).
             apportion_fused(
                 &lat,
                 &add,
-                &sheet,
-                &leave,
-                &unseen,
+                &ApportionBoard {
+                    sheet: &sheet,
+                    leave: &leave,
+                    unseen: &unseen,
+                },
                 ApportionOut {
                     num: &mut num_b,
                     den: &mut den_b,
                 },
-                zeta,
+                &mut maxsheet,
+                ApportionMode {
+                    zeta,
+                    null_leave: false,
+                },
             );
             for idx in 0..lat.len() {
                 assert_eq!(num_a[idx], num_b[idx], "num at {idx} (zeta={zeta})");
                 assert_eq!(den_a[idx], den_b[idx], "den at {idx} (zeta={zeta})");
+            }
+        }
+    }
+
+    #[test]
+    fn apportion_fused_null_leave_matches() {
+        // gen-1 bootstrap: with an all-zero leave, best_equity(R) = max_{P<=R} sheet[P].
+        // The subset-max fast path (null_leave=true, zeta=true) must equal the reference
+        // (best_equity_table + apportion_table) AND the general rec_max path
+        // (null_leave=false), confirming the subset-max is an exact stand-in for the
+        // per-rack descent on a null leave.
+        let lat = MultisetLattice::new(4, 4);
+        let unseen = [3u8, 2u8, 4u8, 1u8];
+        let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
+        let leave = vec![0i32; lat.len()]; // null klv -> all zero
+        for (idx, slot) in sheet.iter_mut().enumerate() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                *slot = h.rem_euclid(20_000);
+            }
+        }
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best);
+        let mut num_a = vec![0f64; lat.len()];
+        let mut den_a = vec![0f64; lat.len()];
+        apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
+        let add = AddTable::new(&lat);
+        let mut maxsheet = vec![0i32; lat.len()];
+        // subset_max engages only when null_leave && zeta; the other three combinations
+        // fall back to rec_max. All four must reproduce the reference exactly.
+        for null_leave in [false, true] {
+            for zeta in [false, true] {
+                let mut num_b = vec![0f64; lat.len()];
+                let mut den_b = vec![0f64; lat.len()];
+                apportion_fused(
+                    &lat,
+                    &add,
+                    &ApportionBoard {
+                        sheet: &sheet,
+                        leave: &leave,
+                        unseen: &unseen,
+                    },
+                    ApportionOut {
+                        num: &mut num_b,
+                        den: &mut den_b,
+                    },
+                    &mut maxsheet,
+                    ApportionMode { zeta, null_leave },
+                );
+                for idx in 0..lat.len() {
+                    assert_eq!(
+                        num_a[idx], num_b[idx],
+                        "num at {idx} (zeta={zeta}, null_leave={null_leave})"
+                    );
+                    assert_eq!(
+                        den_a[idx], den_b[idx],
+                        "den at {idx} (zeta={zeta}, null_leave={null_leave})"
+                    );
+                }
             }
         }
     }

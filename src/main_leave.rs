@@ -3492,6 +3492,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 // full-rack apportionment scratch (num/den per leave); empty unless full_rack.
                 let mut num_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
                 let mut den_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
+                // gen-1 (null-leave) subset-max scratch for apportion_fused: holds the
+                // sheet's subset-max so best_equity is an array read, not a per-rack
+                // descent. Only touched on the null-leave + big-pool (zeta) path.
+                let mut maxsheet = if full_rack { vec![0i32; lat_len] } else { Vec::new() };
                 // entering push-apportion scratch (i128 num/den); empty unless
                 // entering_push.
                 let mut num_e = if !full_rack && entering_push {
@@ -3525,6 +3529,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                        game_state: &game_state::GameState,
                                        rng: &mut rand::rngs::ChaCha20Rng,
                                        leave: &[i32],
+                                       null_leave: bool,
                                        log_first: bool,
                                        do_verify: bool| {
                     // unseen pool = full distribution minus tiles on the board
@@ -3695,14 +3700,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         census::apportion_fused(
                             &lat,
                             add_table.as_ref().unwrap(),
-                            &sheet,
-                            leave,
-                            &unseen_tally,
+                            &census::ApportionBoard {
+                                sheet: &sheet,
+                                leave,
+                                unseen: &unseen_tally,
+                            },
                             census::ApportionOut {
                                 num: &mut num_board,
                                 den: &mut den_board,
                             },
-                            pool >= zeta_pool_min,
+                            &mut maxsheet,
+                            census::ApportionMode {
+                                zeta: pool >= zeta_pool_min,
+                                null_leave,
+                            },
                         );
                         for (idx, slot) in contrib.iter_mut().enumerate() {
                             *slot = if den_board[idx] > 0.0 {
@@ -3776,6 +3787,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     // holds it. In the default path this guard is held for the one batch.
                     {
                         let leave = leave_lock.read().unwrap();
+                        // gen-1 bootstrap: an all-zero leave lets apportion_fused take
+                        // the subset-max fast path. Checked once per batch (the leave is
+                        // constant within a batch; the SGD leader only rewrites it under
+                        // the barrier between batches).
+                        let null_leave = leave.iter().all(|&x| x == 0);
                         loop {
                             let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if b >= batch_end {
@@ -3829,6 +3845,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     &game_state,
                                     &mut rng,
                                     &leave,
+                                    null_leave,
                                     lf,
                                     verify && lf,
                                 );
@@ -3961,6 +3978,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             &game_state,
                             &mut rng,
                             &leave,
+                            null_leave,
                             b == 0,
                             verify && b == 0,
                         );
