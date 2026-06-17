@@ -3434,16 +3434,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let zeta_pool_min = env_usize("WOLGES_CENSUS_ZETA_POOL", 36);
     // WOLGES_CENSUS_SCATTER (gens > 1, big pool): build best_equity by a word-keyed
     // scatter (leave subset-max seed + scatter_words) instead of the per-rack rec_max
-    // descent. Exact, and net-positive on realistic mixed-pool runs (English +4%,
-    // super-English +5.3%): per-board it wins at large pools (many drawable racks, the
-    // slow boards that dominate wall time) and loses by a small absolute margin at the
-    // smallest zeta-gated pools, so the big-pool wins dominate. Default on; set 0 to
-    // fall back to rec_max (e.g. a run confined to small pools).
-    // Values: off | on | auto, default auto (here auto means on).
+    // descent. Exact. Net-positive on realistic mixed-pool runs for the 27-29 letter
+    // lattices (English +4%, French +7%, super-English +5.3%, Spanish +5%): it wins at
+    // large pools (many drawable racks, the slow boards that dominate wall time) and
+    // loses only a small absolute margin at the smallest zeta-gated pools. But it is
+    // net-NEGATIVE on the 33-letter lattices (Polish/Norwegian, about 19M leaves: -5%),
+    // where the larger maxleave subset-max pass and the scattered best[] writes over a
+    // 3x bigger array outweigh the eval savings. So the default is on only below
+    // a lattice-size cutoff (between Spanish's 8.35M and Polish's 18.6M); off or on
+    // force it either way (on to try a big lattice, off for rec_max).
+    // Values: off | on | auto, default auto.
     let scatter = match wolges_census_scatter()? {
         Scatter::Off => false,
         Scatter::On => true,
-        Scatter::Auto => true,
+        Scatter::Auto => lat.len() <= 12_000_000,
     };
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
