@@ -1095,6 +1095,141 @@ pub fn opp_denial_marginals(
     }
 }
 
+struct DrawCtx<'a> {
+    n: usize,
+    pool: &'a [u8],
+    suffix_cap: &'a [u32],
+    add: &'a AddTable,
+    best: &'a [i32],
+}
+impl DrawCtx<'_> {
+    // Starting from the partial rack `ridx` (size rack_size - remaining) with draw-weight
+    // `w`, draw `remaining` more tiles from the fixed pool and accumulate num/den over the
+    // resulting full racks. The constant context (pool, caps, tables) lives in self, so
+    // the walk carries only its changing state -- no clippy::too_many_arguments.
+    fn aggregate(
+        &self,
+        t: usize,
+        remaining: usize,
+        w: f64,
+        ridx: usize,
+        num: &mut f64,
+        den: &mut f64,
+    ) {
+        if remaining == 0 {
+            // SAFETY: at remaining == 0, ridx is a complete full-rack lattice index (the
+            // caller's start advanced one tile at a time via the add table), <
+            // lat.len(); best is the lat.len() best_equity buffer.
+            let b = unsafe { *self.best.get_unchecked(ridx) } as f64;
+            *num += w * b;
+            *den += w;
+            return;
+        }
+        if t == self.n || (self.suffix_cap[t] as usize) < remaining {
+            return;
+        }
+        self.aggregate(t + 1, remaining, w, ridx, num, den);
+        let nt = self.pool[t] as usize;
+        let cap = nt.min(remaining);
+        let mut binom = 1.0f64;
+        let mut idx = ridx;
+        for c in 1..=cap {
+            binom = binom * (nt - c + 1) as f64 / c as f64;
+            idx = self.add.add(idx, t);
+            self.aggregate(t + 1, remaining - c, w * binom, idx, num, den);
+        }
+    }
+}
+
+/// Joint opponent value per depleting rack -- the exact-model opponent term.
+/// For every drawable full rack R (the holder's full drawn rack), out[rank(R)]
+/// = opp_value(U-R) = E_{R' drawn from U-R}[best_equity(R')] = the opponent's
+/// expected best play after R is removed from the pool. best holds best_equity
+/// (= sheet[p]+leave[k]) over the full-rack block. This is EXACT and JOINT:
+/// the opponent draws a full rack from the jointly-depleted pool, with no
+/// per-tile linearization (leaves are non-additive, so any sum_t
+/// marginal[t]*R[t] is only an approximation, not the exact joint value). Cost
+/// is about (drawable racks)^2 -- an inner draw-aggregate per outer R -- so
+/// the caller gates it to small pools. out is caller-owned, len lat.len(),
+/// written only on drawable full-rack indices.
+pub fn opp_value_per_rack(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    best: &[i32],
+    unseen: &[u8],
+    out: &mut [f64],
+) {
+    let n = lat.num_letters();
+    let rack_size = lat.rack_size();
+    // The depleting outer walk and the inner aggregate (module-level DrawCtx::aggregate)
+    // share a constant context, so outer carries only its changing state -- no
+    // clippy::too_many_arguments. Enumerate the depleting rack R from `unseen`, carrying
+    // its index r_idx and a mutable pool = unseen - (R so far); at a complete R the pool
+    // is U-R, so run the inner aggregate and store opp_value(U-R) = num/den.
+    struct Ctx<'a> {
+        n: usize,
+        unseen: &'a [u8],
+        pool: &'a mut [u8],
+        outer_cap: &'a [u32],
+        add: &'a AddTable,
+        best: &'a [i32],
+        rack_size: usize,
+        out: &'a mut [f64],
+    }
+    impl Ctx<'_> {
+        fn outer(&mut self, t: usize, remaining: usize, r_idx: usize) {
+            if remaining == 0 {
+                let mut suffix = [0u32; MAX_LETTERS + 1];
+                for tt in (0..self.n).rev() {
+                    suffix[tt] = suffix[tt + 1] + (self.pool[tt] as u32).min(self.rack_size as u32);
+                }
+                let (mut num, mut den) = (0.0f64, 0.0f64);
+                DrawCtx {
+                    n: self.n,
+                    pool: &*self.pool,
+                    suffix_cap: &suffix,
+                    add: self.add,
+                    best: self.best,
+                }
+                .aggregate(0, self.rack_size, 1.0, 0, &mut num, &mut den);
+                self.out[r_idx] = if den > 0.0 { num / den } else { 0.0 };
+                return;
+            }
+            if t == self.n || (self.outer_cap[t] as usize) < remaining {
+                return;
+            }
+            // c = 0: skip letter t.
+            self.outer(t + 1, remaining, r_idx);
+            let nt = self.unseen[t] as usize;
+            let cap = nt.min(remaining);
+            let mut idx = r_idx;
+            for c in 1..=cap {
+                idx = self.add.add(idx, t);
+                self.pool[t] -= 1;
+                self.outer(t + 1, remaining - c, idx);
+            }
+            self.pool[t] += cap as u8; // restore the c tiles removed in the loop
+        }
+    }
+    let mut outer_cap = [0u32; MAX_LETTERS + 1];
+    for t in (0..n).rev() {
+        outer_cap[t] = outer_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
+    }
+    let mut pool = [0u8; MAX_LETTERS];
+    pool[..n].copy_from_slice(&unseen[..n]);
+    Ctx {
+        n,
+        unseen,
+        pool: &mut pool,
+        outer_cap: &outer_cap,
+        add,
+        best,
+        rack_size,
+        out,
+    }
+    .outer(0, rack_size, 0);
+}
+
 /// Push form of `leave_value_by_draw` for the whole leave table at once. For
 /// every full rack R and every split R = S (kept) + P (played), credit best[R]
 /// to leave S weighted by the ways to draw the played part P from the unseen
@@ -1876,6 +2011,63 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn opp_value_per_rack_matches_brute() {
+        // opp_value_per_rack(R) must equal the brute-force opp_value(U-R) =
+        // sum_{R'<=U-R} prod_t C((U-R)[t], R'[t]) * best[R'] / sum_t C(...), the
+        // opponent's expected best_equity over a full rack drawn from the
+        // R-depleted pool. f64 sums reorder, so compare within a relative tolerance.
+        let lat = MultisetLattice::new(4, 3);
+        let unseen = [3u8, 2u8, 4u8, 1u8];
+        let n = lat.num_letters();
+        let mut sheet = vec![0i32; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for idx in 0..lat.len() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                sheet[idx] = h.rem_euclid(20_000);
+            }
+            leave[idx] = h.rem_euclid(8_000) - 4_000;
+        }
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best);
+        let add = AddTable::new(&lat);
+        let mut out = vec![0f64; lat.len()];
+        opp_value_per_rack(&lat, &add, &best, &unseen, &mut out);
+        let mut r = [0u8; MAX_LETTERS];
+        let mut s = [0u8; MAX_LETTERS];
+        for (ridx, &produced) in out.iter().enumerate().skip(lat.full_rack_start()) {
+            lat.unrank_into(ridx, &mut r[..n]);
+            if (0..n).any(|t| r[t] > unseen[t]) {
+                continue; // R not drawable from unseen
+            }
+            let mut pool = [0u8; MAX_LETTERS];
+            for t in 0..n {
+                pool[t] = unseen[t] - r[t];
+            }
+            let (mut num, mut den) = (0f64, 0f64);
+            for (r2, &b2) in best.iter().enumerate().skip(lat.full_rack_start()) {
+                lat.unrank_into(r2, &mut s[..n]);
+                if (0..n).any(|t| s[t] > pool[t]) {
+                    continue;
+                }
+                let mut w = 1.0f64;
+                for t in 0..n {
+                    w *= lat.c(pool[t] as usize, s[t] as usize) as f64;
+                }
+                num += w * b2 as f64;
+                den += w;
+            }
+            let expect = if den > 0.0 { num / den } else { 0.0 };
+            assert!(
+                (produced - expect).abs() <= 1e-6 * (1.0 + expect.abs()),
+                "opp_value(U-R) at {ridx}: {} vs brute {}",
+                produced,
+                expect,
+            );
         }
     }
 
