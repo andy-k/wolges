@@ -4073,6 +4073,10 @@ fn wolges_census_scatter() -> error::Returns<Scatter> {
     }
 }
 
+// Per-board reuse cache for the score sheet plus its unseen tally, shared across
+// generations (Mutex so the first gen's writer publishes to later gens' readers).
+type SheetCacheSlot = std::sync::Mutex<Option<(Vec<i32>, Vec<u8>)>>;
+
 fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -4173,6 +4177,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let batch_size = (env_usize("WOLGES_CENSUS_BATCH", board_counts[0] as usize) as u64).max(1);
     let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
     let sgd = !multigen && batch_size < board_counts[0];
+    // WOLGES_CENSUS_SHEET_REUSE (default on; multi-gen + reset-per-board + uniform
+    // spec only): the step-1 play-value sheet depends only on the board and the unseen
+    // pool, NOT on the leaves, so with the deterministic reset-per-board sampler (same
+    // board per slot every gen, the play policy held fixed) gen 0's sheets are valid for
+    // every later gen. Cache (sheet, unseen) per board in gen 0 and reuse them in gens
+    // 1.., skipping the dominant movegen sheet build -- gens 1.. then run only
+    // best-equity + apportion. Byte-identical to recomputing; set to 0 to A/B. Disabled
+    // under the per-game sampler (different boards each gen would make the cache stale)
+    // and under a non-uniform spec (a later gen's different board count would not line
+    // up with gen 0's cached slots).
+    let uniform_boards = board_counts.iter().all(|&c| c == board_counts[0]);
+    let sheet_reuse =
+        multigen && uniform_boards && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
     // reset-per-board target granularity. 0 (default) = per-tile: round-robin over
     // every fill in [low,high]. K >= 2 = round-robin over K fill targets EVENLY SPACED
     // across [low,high] ("percentage buckets" -- K=11 is 10 intervals + fencepost,
@@ -4329,6 +4346,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         Vec::new()
     };
+    // per-board (sheet, unseen) cache for sheet-reuse: filled in gen 0, read in gens 1..
+    // (the multi-gen barrier orders all gen-0 writes before any gen-1 read; each board
+    // slot is written once, by whichever thread pulls it). Empty unless sheet_reuse.
+    let sheet_cache: Vec<SheetCacheSlot> = if sheet_reuse {
+        (0..board_counts[0])
+            .map(|_| std::sync::Mutex::new(None))
+            .collect()
+    } else {
+        Vec::new()
+    };
     eprintln!("census: {num_threads} threads over {board_counts:?} boards/gen");
 
     std::thread::scope(|s| {
@@ -4427,7 +4454,18 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                        null_leave: bool,
                                        log_first: bool,
                                        do_verify: bool,
+                                       cache_slot: Option<&SheetCacheSlot>,
+                                       reuse: bool,
                                        cur_boards: u64| {
+                    // sheet-reuse: in gens 1.. the sheet + unseen for this board were
+                    // cached in gen 0 (same board, same pool -- the leaves do not affect
+                    // the sheet), so load them and skip the whole step-1 build below.
+                    if reuse {
+                        let g = cache_slot.unwrap().lock().unwrap();
+                        let (cs, cu) = g.as_ref().expect("sheet-reuse: gen 0 must cache");
+                        sheet.copy_from_slice(cs);
+                        unseen_tally.copy_from_slice(cu);
+                    } else {
                     // unseen pool = full distribution minus tiles on the board
                     // (blank-masked). Opponent racks count as unseen/drawable, as in
                     // gilles -- sampled racks are hypothetical draws from everything
@@ -4489,6 +4527,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             ts.elapsed(),
                         );
                     }
+                    // sheet-reuse: cache this board's sheet + unseen for the later gens.
+                    if let Some(slot) = cache_slot {
+                        *slot.lock().unwrap() = Some((sheet.clone(), unseen_tally.clone()));
+                    }
+                    } // end of the !reuse step-1 build branch
 
                     // STEP 2 -- best_equity(R) for every rack, max-plus of sheet and
                     // leave_cur. Entering path only: it materializes best[] for the
@@ -4834,6 +4877,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     null_leave,
                                     lf,
                                     verify && lf,
+                                    None, // per-game path never reuses (sheet_reuse gates on !per_game)
+                                    false,
                                     num_boards,
                                 );
                             }
@@ -4871,6 +4916,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                         }
                     } else {
+                        // sheet-reuse gens 1..: board + sheet are cached from gen 0, so
+                        // skip the game replay entirely and re-value from the cache.
+                        let reuse_board = sheet_reuse && gen_idx > 0;
+                        if !reuse_board {
                         // greedy-play fresh games (from this slot's own rng) until one
                         // reaches this slot's target fill. The target ROUND-ROBINS across
                         // [low_tiles, high_tiles] by slot index, so every fill bucket
@@ -4960,6 +5009,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             );
                             continue;
                         }
+                        } // end of the !reuse_board game replay
                         value_board(
                             &mut move_generator,
                             &game_state,
@@ -4967,7 +5017,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             &leave,
                             null_leave,
                             b == 0,
-                            verify && b == 0,
+                            verify && b == 0 && !reuse_board,
+                            if sheet_reuse {
+                                Some(&sheet_cache[b as usize])
+                            } else {
+                                None
+                            },
+                            reuse_board,
                             num_boards,
                         );
                     }
