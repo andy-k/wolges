@@ -678,61 +678,81 @@ pub struct ApportionMode {
     pub scatter: bool,
 }
 
-/// The opponent-denial opp1 strength and its precomputed per-rack denial marginals (see the
-/// `apportion_fused` doc). Strength 0 with an empty marginal slice is the plain w*best
-/// seed, byte-identical to no opponent term.
+/// The opponent-denial strengths (WOLGES_OPPDENIAL_RACK, _EXACT) and their
+/// precomputed per-rack terms (see the `apportion_fused` doc). Both strengths
+/// 0 with empty term slices is the plain w*best seed, byte-identical to no
+/// opponent term.
 #[derive(Clone, Copy)]
 pub struct OppDenialParams<'a> {
     pub oppdenial_rack: f64,
     pub marginal: &'a [f64],
+    pub oppdenial_exact: f64,
+    pub oppdenial_exact_term: &'a [f64],
 }
 
 /// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
-/// best_equity(R) inline (max over splits) and account its weighted contribution
-/// w(R)*best(R) to every subrack S <= R -- ONE lattice pass, no materialized best[]
-/// array. Equivalent to best_equity_table followed by apportion_table (proven
-/// by apportion_fused_matches_split). The entering path can NOT fuse this
-/// way: its draw-average pulls best[S+d] at random across racks, so it needs best[]
-/// fully materialized. num/den caller-owned, zeroed per board.
+/// best_equity(R) inline (max over splits) and account its weighted
+/// contribution w(R)*best(R) to every subrack S <= R -- ONE lattice pass, no
+/// materialized best[] array. Equivalent to best_equity_table followed by
+/// apportion_table (proven by apportion_fused_matches_split). The entering
+/// path can NOT fuse this way: its draw-average pulls best[S+d] at random
+/// across racks, so it needs best[] fully materialized. num/den caller-owned,
+/// zeroed per board.
 ///
-/// Two ways to apportion each rack's contribution to its subracks, selected by `zeta`:
-///   * `zeta == false` -- PUSH: each drawable rack walks its own subrack lattice and
-///     adds (w, w*best) to each. Cost scales with the number of drawable racks times
-///     subracks-per-rack, so it is cheap when few racks are drawable (small pool).
-///   * `zeta == true` -- ZETA (superset-sum) transform: seed num[R]=w*best, den[R]=w
-///     on the full-rack block, then fold each rack into all its subracks with one
-///     pass per letter (a single +1-tile suffix-sum via the add table, indices
-///     high->low so each +1-tile superset is finalized first; composing over letters
-///     yields num[S]=sum_{full R>=S} w*best, den[S]=sum w). Cost is the FIXED
-///     O(full_rack_start * num_letters) regardless of pool -- a big win on full pools
-///     (about 10x fewer subrack touches than the push) but wasteful on tiny pools (where
-///     the push visits only a handful of racks). The caller picks `zeta` by pool size.
+/// Two ways to apportion each rack's contribution to its subracks, selected by
+/// `zeta`:
+///   * `zeta == false` -- PUSH: each drawable rack walks its own subrack
+///     lattice and adds (w, w*best) to each. Cost scales with the number of
+///     drawable racks times subracks-per-rack, so it is cheap when few racks
+///     are drawable (small pool).
+///   * `zeta == true` -- ZETA (superset-sum) transform: seed num[R]=w*best,
+///     den[R]=w on the full-rack block, then fold each rack into all its
+///     subracks with one pass per letter (a single +1-tile suffix-sum via the
+///     add table, indices high->low so each +1-tile superset is finalized
+///     first; composing over letters yields num[S]=sum_{full R>=S} w*best,
+///     den[S]=sum w). Cost is the FIXED O(full_rack_start * num_letters)
+///     regardless of pool -- a big win on full pools (about 10x fewer subrack
+///     touches than the push) but wasteful on tiny pools (where the push
+///     visits only a handful of racks). The caller picks `zeta` by pool size.
 ///
-/// `null_leave` flags the gen-1 bootstrap where every leave is 0 (a null klv). Then
-/// best_equity(R) = max over splits of sheet[P] + leave[R-P] collapses to the pure
-/// SUBSET-MAX max_{P <= R} sheet[P], which one downward (subset-max) scan over
-/// `maxsheet` computes for every rack in a single shared O(full_rack_start *
-/// num_letters) pass -- replacing the per-rack `rec_max` descent (the dominant big-pool
-/// cost) with an array read at each drawable rack. `maxsheet` is a caller-owned
-/// lattice-length scratch, written only on this path. The scan is the same fixed cost
-/// as the apportionment zeta, so it pays off on the same big pools; it is taken only
-/// when `null_leave && zeta` (small pools keep the cheaper per-rack rec_max).
+/// `null_leave` flags the gen-1 bootstrap where every leave is 0 (a null klv).
+/// Then best_equity(R) = max over splits of sheet[P] + leave[R-P] collapses to
+/// the pure SUBSET-MAX max_{P <= R} sheet[P], which one downward (subset-max)
+/// scan over `maxsheet` computes for every rack in a single shared
+/// O(full_rack_start * num_letters) pass -- replacing the per-rack `rec_max`
+/// descent (the dominant big-pool cost) with an array read at each drawable
+/// rack. `maxsheet` is a caller-owned lattice-length scratch, written only on
+/// this path. The scan is the same fixed cost as the apportionment zeta, so it
+/// pays off on the same big pools; it is taken only when `null_leave && zeta`
+/// (small pools keep the cheaper per-rack rec_max).
 ///
-/// `scatter` requests the gens > 1 (leave != 0) analog: best_equity uses the same
-/// precomputed-into-`maxsheet` read, but `maxsheet` is built by `scatter_words` (the
-/// leave subset-max seed plus a word-keyed scatter) instead of the per-rack rec_max.
-/// Also `zeta`-gated, and exact; an opt-in alternative to rec_max for big pools.
+/// `scatter` requests the gens > 1 (leave != 0) analog: best_equity uses the
+/// same precomputed-into-`maxsheet` read, but `maxsheet` is built by
+/// `scatter_words` (the leave subset-max seed plus a word-keyed scatter)
+/// instead of the per-rack rec_max. Also `zeta`-gated, and exact; an opt-in
+/// alternative to rec_max for big pools.
 ///
-/// `oppdenial_rack` (strength, 0 = off) adds the opponent-denial term: the opponent draws their rack from
-/// U - R (the holder's FULL rack R), so holding R denies them R's tiles. Linearized
-/// in R through `marginal` (the per-letter opponent-denial marginals from
-/// opp_denial_marginals, len num_letters), the opponent's expected best play drops by
-/// sum_t R[t]*marginal[t]; folding -opp_value(U-R) into R's seed (the uniform
-/// opp_value(U) constant drops out under centering) and apportioning it to subracks gives
-/// leave(S) += oppdenial_rack * sum_t marginal[t] * E_{R>=S}[R[t]] -- denial weighted by the
-/// EXPECTED full-rack count (played tiles included), the sound joint placement rather
-/// than a linear-in-S term. When oppdenial_rack == 0 the seed is exactly w*best (unchanged when off), so the
-/// num/den are byte-identical (and `marginal` is not read -- pass &[]).
+/// `oppdenial_rack` (strength, 0 = off) adds the opponent-denial term: the
+/// opponent draws their rack from U - R (the holder's FULL rack R), so holding
+/// R denies them R's tiles. Linearized in R through `marginal` (the per-letter
+/// opponent-denial marginals from opp_denial_marginals, len num_letters), the
+/// opponent's expected best play drops by sum_t R[t]*marginal[t]; folding
+/// -opp_value(U-R) into R's seed (the uniform opp_value(U) constant drops out
+/// under centering) and apportioning it to subracks gives
+/// leave(S) += oppdenial_rack * sum_t marginal[t] * E_{R>=S}[R[t]] -- denial
+/// weighted by the EXPECTED full-rack count (played tiles included), the sound
+/// joint placement rather than a linear-in-S term. When oppdenial_rack == 0
+/// the seed is exactly w*best (unchanged when off), so the num/den are
+/// byte-identical (and `marginal` is not read -- pass &[]).
+///
+/// `oppdenial_exact` is the exact-model strength (a different, joint model):
+/// the seed gets an extra -oppdenial_exact * oppdenial_exact_term[R], where
+/// oppdenial_exact_term[R] = opp_value(U-R) - my_next_value(K*, U-R) is
+/// precomputed per full rack R by opp_me2_per_rack (the full-rack opponent
+/// value minus my own next-turn value on the same depleted pool, no per-tile
+/// term). When oppdenial_exact == 0 the seed is unchanged and
+/// `oppdenial_exact_term` is not read (pass &[]). oppdenial_rack and
+/// oppdenial_exact are independent models; set one at a time.
 pub fn apportion_fused(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -755,6 +775,8 @@ pub fn apportion_fused(
     let OppDenialParams {
         oppdenial_rack,
         marginal,
+        oppdenial_exact,
+        oppdenial_exact_term,
     } = *opp_denial;
     let n = lat.num_letters();
     // best_equity(R) is precomputed into `maxsheet` for every rack on two paths, both
@@ -798,6 +820,8 @@ pub fn apportion_fused(
         maxsheet: &'a [i32],
         oppdenial_rack: f64,
         marginal: &'a [f64],
+        oppdenial_exact: f64,
+        oppdenial_exact_term: &'a [f64],
         nz: &'a mut [(usize, u8)],
     }
     impl Ctx<'_> {
@@ -881,18 +905,33 @@ pub fn apportion_fused(
                 // seed before apportioning. R's nonzero letters are nz[..m].
                 // Skipped (and `marginal` untouched) when oppdenial_rack == 0,
                 // keeping the seed exactly w*best.
-                let best_f = if self.oppdenial_rack != 0.0 {
+                let mut best_f = best as f64;
+                if self.oppdenial_rack != 0.0 {
                     let mut opp = 0.0f64;
                     for &(t, c) in &self.nz[..m] {
-                        // SAFETY: t is a rack letter from nz (t < num_letters); reached only when
-                        // oppdenial_rack != 0.0, where the caller passes the num_letters-length denial
-                        // marginals (&[] is passed only when oppdenial_rack == 0, which skips this branch).
+                        // SAFETY: t is a rack letter from nz (t <
+                        // num_letters); reached only when oppdenial_rack !=
+                        // 0.0, where the caller passes the num_letters-length
+                        // denial marginals (&[] is passed only when
+                        // oppdenial_rack == 0, which skips this branch).
                         opp += c as f64 * unsafe { *self.marginal.get_unchecked(t) };
                     }
-                    best as f64 + self.oppdenial_rack * opp
-                } else {
-                    best as f64
-                };
+                    best_f += self.oppdenial_rack * opp;
+                }
+                // exact model: subtract oppdenial_exact * (opp_value(U-R) -
+                // my_next_value(K*, U-R)), the joint opponent-minus-me
+                // coming-turns term precomputed per full rack R (at this
+                // full-rack index `idx`) in `oppdenial_exact_term`. Untouched
+                // when oppdenial_exact == 0.
+                if self.oppdenial_exact != 0.0 {
+                    // SAFETY: idx is the full-rack lattice index (<
+                    // lat.len()); reached only when oppdenial_exact != 0.0,
+                    // where the caller passes the lat.len() per-rack term (&[]
+                    // is passed only when oppdenial_exact == 0, which skips
+                    // this branch).
+                    best_f -= self.oppdenial_exact
+                        * unsafe { *self.oppdenial_exact_term.get_unchecked(idx) };
+                }
                 if self.zeta {
                     // seed the superset-sum source on the full-rack index `idx`.
                     // SAFETY: idx is the full-rack lattice index built up from 0 via the add
@@ -964,6 +1003,8 @@ pub fn apportion_fused(
         maxsheet,
         oppdenial_rack,
         marginal,
+        oppdenial_exact,
+        oppdenial_exact_term,
         nz: &mut nz,
     };
     ctx.enum_drawable(0, rack_size, 1.0, 0, 0);
@@ -1226,6 +1267,224 @@ pub fn opp_value_per_rack(
         best,
         rack_size,
         out,
+    }
+    .outer(0, rack_size, 0);
+}
+
+/// Like best_equity_table, but also records the argmax kept subrack K* = R - P* for
+/// every full rack R: out_kept_idx[rank(R)] = rank(K*), out_kept_size[rank(R)] = |K*|.
+/// Used by the exact model's recovery (me2) term, which refills K* from the depleted pool. Ties
+/// resolve to the first split reaching the max (same high-to-low enumeration order as
+/// best_equity_table, so out_best is identical to that function's output). The kept
+/// side's lattice index falls straight out of the incremental rank already tracked for
+/// the split (size_offset[s_k] + within_k); the kept size is s_k.
+pub fn best_equity_argmax_table(
+    lat: &MultisetLattice,
+    sheet: &[i32],
+    leave: &[i32],
+    out_best: &mut [i32],
+    out_kept_idx: &mut [u32],
+    out_kept_size: &mut [u8],
+) {
+    let n = lat.num_letters();
+    let mut r = [0u8; MAX_LETTERS];
+    // Constant context for the incremental-rank split walk, so rec carries only the
+    // changing per-side size/offset -- no clippy::too_many_arguments. best/best_kr/best_ks
+    // are this rack's argmax (value, kept index, kept size), borrowed for one descent.
+    struct Ctx<'a> {
+        nz: &'a [(usize, u8)],
+        n: usize,
+        lat: &'a MultisetLattice,
+        sheet: &'a [i32],
+        leave: &'a [i32],
+        best: &'a mut i32,
+        best_kr: &'a mut usize,
+        best_ks: &'a mut usize,
+    }
+    impl Ctx<'_> {
+        fn rec(&mut self, i: usize, s_p: usize, within_p: u64, s_k: usize, within_k: u64) {
+            if i == 0 {
+                let pr = (self.lat.size_offset[s_p] + within_p) as usize;
+                let kr = (self.lat.size_offset[s_k] + within_k) as usize;
+                // SAFETY: pr = size_offset[s_p]+within_p and kr = size_offset[s_k]+within_k are
+                // the ranks of the played P and kept K subracks (s_p, s_k <= rack_size),
+                // so each is < lat.len(); sheet and leave are lat.len()-sized.
+                let v = unsafe { *self.sheet.get_unchecked(pr) }
+                    + unsafe { *self.leave.get_unchecked(kr) };
+                if v > *self.best {
+                    *self.best = v;
+                    *self.best_kr = kr;
+                    *self.best_ks = s_k;
+                }
+                return;
+            }
+            let (t, cnt) = self.nz[i - 1];
+            let parts = self.n - 1 - t;
+            for cp in 0..=cnt {
+                let ck = cnt - cp;
+                let (mut dwp, mut dwk) = (0u64, 0u64);
+                if t + 1 < self.n {
+                    let mut a = s_p + cp as usize;
+                    for _ in 0..cp {
+                        dwp += self.lat.c(a + parts - 1, parts - 1);
+                        a -= 1;
+                    }
+                    let mut b = s_k + ck as usize;
+                    for _ in 0..ck {
+                        dwk += self.lat.c(b + parts - 1, parts - 1);
+                        b -= 1;
+                    }
+                }
+                self.rec(
+                    i - 1,
+                    s_p + cp as usize,
+                    within_p + dwp,
+                    s_k + ck as usize,
+                    within_k + dwk,
+                );
+            }
+        }
+    }
+    let lo = lat.full_rack_start();
+    let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
+    for ridx in lo..out_best.len() {
+        lat.unrank_into(ridx, &mut r[..n]);
+        let mut m = 0;
+        for (t, &c) in r[..n].iter().enumerate() {
+            if c > 0 {
+                nz[m] = (t, c);
+                m += 1;
+            }
+        }
+        let mut best = UNPLAYABLE;
+        let mut best_kr = 0usize;
+        let mut best_ks = 0usize;
+        Ctx {
+            nz: &nz[..m],
+            n,
+            lat,
+            sheet,
+            leave,
+            best: &mut best,
+            best_kr: &mut best_kr,
+            best_ks: &mut best_ks,
+        }
+        .rec(m, 0, 0, 0, 0);
+        out_best[ridx] = best;
+        out_kept_idx[ridx] = best_kr as u32;
+        out_kept_size[ridx] = best_ks as u8;
+    }
+}
+
+/// Exact model (opponent value minus my next-turn recovery) per depleting rack. For every drawable full rack R, with kept
+/// argmax K* = K*(R) from best_equity_argmax_table (kept_idx[rank(R)] = rank(K*),
+/// kept_size[rank(R)] = |K*|), writes
+///   out_diff[rank(R)] = opp_value(U-R) - my_next_value(K*, U-R)
+/// where opp_value(U-R) = E_{R' from U-R}[best_equity(R')] is the opponent's expected
+/// best play on a fresh rack drawn from the R-depleted pool, and
+/// my_next_value(K*, U-R) = E_{fill from U-R}[best_equity(K* + fill)] is my own next
+/// turn keeping K* and refilling from the SAME depleted pool. Both expectations are
+/// EXACT and JOINT (full-rack draws, no per-tile linearization -- the lesson behind
+/// dropping the per-tile denial/exact terms). The caller folds best_equity(R) -
+/// strength*out_diff[R] into R's apportion seed and iterates. opp_value(U-R) and
+/// my_next_value share the same U-R pool, so the suffix cap and the depleting outer
+/// walk are computed once per R and the two draw-aggregates run back to back. Cost is
+/// the depleting walk over R times two inner aggregates -- O(drawable^2)-ish -- so the
+/// caller gates it to small pools. `best` holds best_equity over the full-rack block;
+/// out_diff is caller-owned, len lat.len(), written only on drawable full-rack indices.
+pub fn opp_me2_per_rack(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    best: &[i32],
+    kept_idx: &[u32],
+    kept_size: &[u8],
+    unseen: &[u8],
+    out_diff: &mut [f64],
+) {
+    let n = lat.num_letters();
+    let rack_size = lat.rack_size();
+    // The depleting outer walk and its two inner aggregates (module-level
+    // DrawCtx::aggregate) share a constant context, so outer carries only its changing
+    // state -- no clippy::too_many_arguments.
+    struct Ctx<'a> {
+        n: usize,
+        unseen: &'a [u8],
+        pool: &'a mut [u8],
+        outer_cap: &'a [u32],
+        add: &'a AddTable,
+        best: &'a [i32],
+        kept_idx: &'a [u32],
+        kept_size: &'a [u8],
+        rack_size: usize,
+        out_diff: &'a mut [f64],
+    }
+    impl Ctx<'_> {
+        fn outer(&mut self, t: usize, remaining: usize, r_idx: usize) {
+            if remaining == 0 {
+                // pool is now U-R; both expectations draw from it.
+                let mut suffix = [0u32; MAX_LETTERS + 1];
+                for tt in (0..self.n).rev() {
+                    suffix[tt] = suffix[tt + 1] + (self.pool[tt] as u32).min(self.rack_size as u32);
+                }
+                let draw = DrawCtx {
+                    n: self.n,
+                    pool: &*self.pool,
+                    suffix_cap: &suffix,
+                    add: self.add,
+                    best: self.best,
+                };
+                // opp1 = opp_value(U-R): opponent draws a fresh full rack.
+                let (mut on, mut od) = (0.0f64, 0.0f64);
+                draw.aggregate(0, self.rack_size, 1.0, 0, &mut on, &mut od);
+                let opp1 = if od > 0.0 { on / od } else { 0.0 };
+                // me2 = my_next_value(K*, U-R): keep K*, refill the rest from the same pool.
+                let ks = self.kept_size[r_idx] as usize;
+                let (mut mn, mut md) = (0.0f64, 0.0f64);
+                draw.aggregate(
+                    0,
+                    self.rack_size - ks,
+                    1.0,
+                    self.kept_idx[r_idx] as usize,
+                    &mut mn,
+                    &mut md,
+                );
+                let me2 = if md > 0.0 { mn / md } else { 0.0 };
+                self.out_diff[r_idx] = opp1 - me2;
+                return;
+            }
+            if t == self.n || (self.outer_cap[t] as usize) < remaining {
+                return;
+            }
+            // c = 0: skip letter t.
+            self.outer(t + 1, remaining, r_idx);
+            let nt = self.unseen[t] as usize;
+            let cap = nt.min(remaining);
+            let mut idx = r_idx;
+            for c in 1..=cap {
+                idx = self.add.add(idx, t);
+                self.pool[t] -= 1;
+                self.outer(t + 1, remaining - c, idx);
+            }
+            self.pool[t] += cap as u8; // restore the c tiles removed in the loop
+        }
+    }
+    let mut outer_cap = [0u32; MAX_LETTERS + 1];
+    for t in (0..n).rev() {
+        outer_cap[t] = outer_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
+    }
+    let mut pool = [0u8; MAX_LETTERS];
+    pool[..n].copy_from_slice(&unseen[..n]);
+    Ctx {
+        n,
+        unseen,
+        pool: &mut pool,
+        outer_cap: &outer_cap,
+        add,
+        best,
+        kept_idx,
+        kept_size,
+        rack_size,
+        out_diff,
     }
     .outer(0, rack_size, 0);
 }
@@ -1830,6 +2089,8 @@ mod tests {
                     &OppDenialParams {
                         oppdenial_rack: 0.0,
                         marginal: &[],
+                        oppdenial_exact: 0.0,
+                        oppdenial_exact_term: &[],
                     },
                 );
                 for idx in 0..lat.len() {
@@ -1897,6 +2158,8 @@ mod tests {
                     &OppDenialParams {
                         oppdenial_rack: 0.0,
                         marginal: &[],
+                        oppdenial_exact: 0.0,
+                        oppdenial_exact_term: &[],
                     },
                 );
                 for idx in 0..lat.len() {
@@ -1994,6 +2257,8 @@ mod tests {
                     &OppDenialParams {
                         oppdenial_rack,
                         marginal: &marginal,
+                        oppdenial_exact: 0.0,
+                        oppdenial_exact_term: &[],
                     },
                 );
                 for idx in 0..lat.len() {
@@ -2067,6 +2332,222 @@ mod tests {
                 "opp_value(U-R) at {ridx}: {} vs brute {}",
                 produced,
                 expect,
+            );
+        }
+    }
+
+    #[test]
+    fn apportion_fused_oppdenial_exact_matches_brute() {
+        // the exact-model seed term must apportion like a brute reference: for
+        // every drawable full rack R, credit (best(R) - oppdenial_exact *
+        // (opp_value(U-R) - my_next_value(K*,U-R))) weighted by w(R) = prod_t
+        // C(unseen[t], R[t]) to every subrack S <= R. The per-rack term is
+        // opp_me2_per_rack's output; cover rec_max/scatter x push/zeta.
+        // oppdenial_exact makes the seed non-integer, so compare within
+        // a relative tolerance.
+        let lat = MultisetLattice::new(4, 4);
+        let unseen = [3u8, 2u8, 4u8, 1u8];
+        let n = lat.num_letters();
+        let mut sheet = vec![0i32; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for idx in 0..lat.len() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                sheet[idx] = h.rem_euclid(20_000);
+            }
+            leave[idx] = h.rem_euclid(8_000) - 4_000;
+        }
+        let add = AddTable::new(&lat);
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        let mut kept_idx = vec![0u32; lat.len()];
+        let mut kept_size = vec![0u8; lat.len()];
+        best_equity_argmax_table(
+            &lat,
+            &sheet,
+            &leave,
+            &mut best,
+            &mut kept_idx,
+            &mut kept_size,
+        );
+        let mut term = vec![0f64; lat.len()];
+        opp_me2_per_rack(&lat, &add, &best, &kept_idx, &kept_size, &unseen, &mut term);
+        let oppdenial_exact = 0.5f64;
+        let mut num_ref = vec![0f64; lat.len()];
+        let mut den_ref = vec![0f64; lat.len()];
+        let mut r = [0u8; MAX_LETTERS];
+        let mut s = [0u8; MAX_LETTERS];
+        for ridx in lat.full_rack_start()..lat.len() {
+            lat.unrank_into(ridx, &mut r[..n]);
+            let mut w = 1.0f64;
+            let mut drawable = true;
+            for t in 0..n {
+                if r[t] > unseen[t] {
+                    drawable = false;
+                    break;
+                }
+                w *= lat.c(unseen[t] as usize, r[t] as usize) as f64;
+            }
+            if !drawable {
+                continue;
+            }
+            let val = best[ridx] as f64 - oppdenial_exact * term[ridx];
+            for sidx in 0..lat.len() {
+                lat.unrank_into(sidx, &mut s[..n]);
+                if (0..n).all(|t| s[t] <= r[t]) {
+                    num_ref[sidx] += w * val;
+                    den_ref[sidx] += w;
+                }
+            }
+        }
+        let mut maxsheet = vec![0i32; lat.len()];
+        for scatter in [false, true] {
+            for zeta in [false, true] {
+                let mut num_b = vec![0f64; lat.len()];
+                let mut den_b = vec![0f64; lat.len()];
+                apportion_fused(
+                    &lat,
+                    &add,
+                    &ApportionBoard {
+                        sheet: &sheet,
+                        leave: &leave,
+                        unseen: &unseen,
+                    },
+                    ApportionOut {
+                        num: &mut num_b,
+                        den: &mut den_b,
+                    },
+                    &mut maxsheet,
+                    ApportionMode {
+                        zeta,
+                        null_leave: false,
+                        scatter,
+                    },
+                    &OppDenialParams {
+                        oppdenial_rack: 0.0,
+                        marginal: &[],
+                        oppdenial_exact,
+                        oppdenial_exact_term: &term,
+                    },
+                );
+                for idx in 0..lat.len() {
+                    assert!(
+                        (num_b[idx] - num_ref[idx]).abs() <= 1e-6 * (1.0 + num_ref[idx].abs()),
+                        "num at {idx} (zeta={zeta}, scatter={scatter}): {} vs {}",
+                        num_b[idx],
+                        num_ref[idx],
+                    );
+                    assert!(
+                        (den_b[idx] - den_ref[idx]).abs() <= 1e-6 * (1.0 + den_ref[idx].abs()),
+                        "den at {idx} (zeta={zeta}, scatter={scatter}): {} vs {}",
+                        den_b[idx],
+                        den_ref[idx],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn opp_me2_per_rack_matches_brute() {
+        // out_diff(R) must equal opp_value(U-R) - my_next_value(K*, U-R), each a
+        // brute-force full-rack expectation of best_equity over draws from the
+        // R-depleted pool: opp draws a fresh rack, me2 keeps the table's argmax K* and
+        // refills the rest. K* comes from best_equity_argmax_table (whose argmax is
+        // first verified to achieve best_equity(R)), so the brute uses the SAME K* --
+        // independent tie-breaks would pick a different valid argmax and diverge. f64
+        // sums reorder, so compare within a relative tolerance.
+        let lat = MultisetLattice::new(4, 3);
+        let unseen = [3u8, 2u8, 4u8, 1u8];
+        let n = lat.num_letters();
+        let mut sheet = vec![0i32; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for idx in 0..lat.len() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                sheet[idx] = h.rem_euclid(20_000);
+            }
+            leave[idx] = h.rem_euclid(8_000) - 4_000;
+        }
+        let add = AddTable::new(&lat);
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        let mut kept_idx = vec![0u32; lat.len()];
+        let mut kept_size = vec![0u8; lat.len()];
+        best_equity_argmax_table(
+            &lat,
+            &sheet,
+            &leave,
+            &mut best,
+            &mut kept_idx,
+            &mut kept_size,
+        );
+        // the argmax table's `best` column must match best_equity_table exactly.
+        let mut best_ref = vec![UNPLAYABLE; lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best_ref);
+        for idx in lat.full_rack_start()..lat.len() {
+            assert_eq!(best[idx], best_ref[idx], "best mismatch at {idx}");
+        }
+        let mut out = vec![0f64; lat.len()];
+        opp_me2_per_rack(&lat, &add, &best, &kept_idx, &kept_size, &unseen, &mut out);
+        let mut r = [0u8; MAX_LETTERS];
+        let mut s = [0u8; MAX_LETTERS];
+        for ridx in lat.full_rack_start()..lat.len() {
+            lat.unrank_into(ridx, &mut r[..n]);
+            if (0..n).any(|t| r[t] > unseen[t]) {
+                continue; // R not drawable from unseen
+            }
+            let mut pool = [0u8; MAX_LETTERS];
+            for t in 0..n {
+                pool[t] = unseen[t] - r[t];
+            }
+            // K* recorded by the argmax table; verify it is a true argmax of R.
+            let kr = kept_idx[ridx] as usize;
+            let ks = kept_size[ridx] as usize;
+            let mut kstar = [0u8; MAX_LETTERS];
+            lat.unrank_into(kr, &mut kstar[..n]);
+            assert_eq!(
+                kstar[..n].iter().map(|&c| c as usize).sum::<usize>(),
+                ks,
+                "kept size at {ridx}"
+            );
+            assert!((0..n).all(|t| kstar[t] <= r[t]), "K* not <= R at {ridx}");
+            let mut played = [0u8; MAX_LETTERS];
+            for t in 0..n {
+                played[t] = r[t] - kstar[t];
+            }
+            let pr = lat.rank(&played[..n]) as usize;
+            assert_eq!(sheet[pr] + leave[kr], best[ridx], "K* not argmax at {ridx}");
+            // opp1 = E_{R' from pool}[best[R']]; me2 = E_{fill from pool}[best[K*+fill]].
+            let (mut on, mut od) = (0f64, 0f64);
+            let (mut mn, mut md) = (0f64, 0f64);
+            for (r2, &b2) in best.iter().enumerate().skip(lat.full_rack_start()) {
+                lat.unrank_into(r2, &mut s[..n]);
+                if (0..n).all(|t| s[t] <= pool[t]) {
+                    let mut w = 1.0f64;
+                    for t in 0..n {
+                        w *= lat.c(pool[t] as usize, s[t] as usize) as f64;
+                    }
+                    on += w * b2 as f64;
+                    od += w;
+                }
+                if (0..n).all(|t| s[t] >= kstar[t] && s[t] - kstar[t] <= pool[t]) {
+                    let mut w = 1.0f64;
+                    for t in 0..n {
+                        w *= lat.c(pool[t] as usize, (s[t] - kstar[t]) as usize) as f64;
+                    }
+                    mn += w * b2 as f64;
+                    md += w;
+                }
+            }
+            let opp1 = if od > 0.0 { on / od } else { 0.0 };
+            let me2 = if md > 0.0 { mn / md } else { 0.0 };
+            let expect = opp1 - me2;
+            assert!(
+                (out[ridx] - expect).abs() <= 1e-6 * (1.0 + expect.abs()),
+                "opp-me2 at {ridx}: {} vs brute {} (opp1 {} me2 {})",
+                out[ridx],
+                expect,
+                opp1,
+                me2,
             );
         }
     }
