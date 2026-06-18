@@ -27,6 +27,20 @@ fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error
     })
 }
 
+// A per-run stamp shared by every file one run writes, so a run's outputs stay
+// grouped under one id. It is the wall-clock time at 1/65536-second resolution
+// as a fixed-width hex string: 32 bits of whole seconds (good until the year
+// 2106) followed by 16 bits of sub-second fraction. The sub-second part makes
+// two runs collide only if they start within about fifteen microseconds of each
+// other.
+fn run_stamp() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let ticks = (d.as_secs() << 16) | (d.subsec_nanos() as u64 * 65536 / 1_000_000_000);
+    format!("{ticks:012x}")
+}
+
 // when using "-" as output filename, print things to stderr.
 fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
     if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
@@ -4077,6 +4091,80 @@ fn wolges_census_scatter() -> error::Returns<Scatter> {
 // generations (Mutex so the first gen's writer publishes to later gens' readers).
 type SheetCacheSlot = std::sync::Mutex<Option<(Vec<i32>, Vec<u8>)>>;
 
+// Serialize the valued leaves to a klv2 file -- the same DawgOnly/Wolges build as
+// `buildlex <lang>-klv2` runs on the csv, but in-process. The machine word is the
+// leave's sorted tile bytes; the value is (value_mp(idx) - baseline_mp) points as f32.
+// Used for the final output and for the per-gen resume snapshots. Layout mirrors
+// build_leaves_f32: [u32 kwg_len_in_u32][kwg bytes][u32 num_values][f32 values LE].
+fn write_census_klv2(
+    lat: &census::MultisetLattice,
+    value_mp: &dyn Fn(usize) -> f64,
+    baseline_mp: f64,
+    is_valued: &dyn Fn(usize) -> bool,
+    full: bool,
+    path: &str,
+) -> error::Returns<usize> {
+    let n = lat.num_letters();
+    let rack_size = lat.rack_size();
+    // non-full (default) drops the length-rack_size full-rack values (the "pass"
+    // leaves play never consults) for a smaller, play-identical table; full keeps
+    // them so the resume snapshots can carry the length-rack "pass" leaves into a
+    // later gen's re-valuation.
+    let max_keep = if full {
+        rack_size
+    } else {
+        rack_size.saturating_sub(1)
+    };
+    let mut leaves_map = fash::MyHashMap::<bites::Bites, f32>::default();
+    let mut tally = vec![0u8; n];
+    let mut word_buf = Vec::<u8>::new();
+    for idx in 0..lat.len() {
+        if !is_valued(idx) {
+            continue;
+        }
+        lat.unrank_into(idx, &mut tally);
+        let size: usize = tally.iter().map(|&c| c as usize).sum();
+        if size == 0 || size > max_keep {
+            continue; // skip empty (baseline), over-size, and (non-full) full racks.
+        }
+        word_buf.clear();
+        for (t, &c) in tally.iter().enumerate() {
+            for _ in 0..c {
+                word_buf.push(t as u8);
+            }
+        }
+        // word_buf is sorted (t ascending) -- the machine-word form klv2 indexes by.
+        let pts = (value_mp(idx) - baseline_mp) / equity::SCALE as f64;
+        leaves_map.insert(word_buf[..].into(), pts as f32);
+    }
+    let mut sorted_words = leaves_map.keys().cloned().collect::<Box<_>>();
+    sorted_words.sort_unstable();
+    let leaves_kwg = build::build(
+        build::BuildContent::DawgOnly,
+        build::BuildLayout::Wolges,
+        &sorted_words,
+    )?;
+    let leave_values = sorted_words
+        .iter()
+        .map(|s| leaves_map[s])
+        .collect::<Box<_>>();
+    let mut bin = vec![0u8; 2 * 4 + leaves_kwg.len() + leave_values.len() * 4];
+    let mut w = 0;
+    bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+    w += 4;
+    bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
+    w += leaves_kwg.len();
+    bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
+    w += 4;
+    for v in &leave_values[..] {
+        bin[w..w + 4].copy_from_slice(&v.to_le_bytes());
+        w += 4;
+    }
+    assert_eq!(w, bin.len());
+    std::fs::write(path, &bin)?;
+    Ok(leave_values.len())
+}
+
 fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -4190,6 +4278,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let uniform_boards = board_counts.iter().all(|&c| c == board_counts[0]);
     let sheet_reuse =
         multigen && uniform_boards && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
+    // WOLGES_CENSUS_PERSIST_GENS (default on for multi-gen): write each completed gen's
+    // leaves to census-gen-<stamp>-<NN>.klv2, so a crash loses no completed gens and
+    // WOLGES_CENSUS_RESUME can continue. One in-process klv2 build per gen (cheap vs the
+    // board pass). WOLGES_CENSUS_RESUME (default off): on start, load the latest
+    // census-gen-<stamp>-<NN>.klv2 as leave_cur and continue from the next gen.
+    let persist_gens = multigen && env_flag("WOLGES_CENSUS_PERSIST_GENS", true);
+    let resume = multigen && env_flag("WOLGES_CENSUS_RESUME", false);
     // reset-per-board target granularity. 0 (default) = per-tile: round-robin over
     // every fill in [low,high]. K >= 2 = round-robin over K fill targets EVENLY SPACED
     // across [low,high] ("percentage buckets" -- K=11 is 10 intervals + fencepost,
@@ -4297,6 +4392,55 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     for (idx, slot) in leave_cur.iter_mut().enumerate() {
         lat.unrank_into(idx, &mut tally_buf);
         *slot = arc_klv0.leave_value_from_tally(&tally_buf);
+    }
+    // resume: load the latest persisted gen klv2 into leave_cur and continue from the
+    // next gen (0-based gen_idx == the 1-based count of completed gens).
+    // The snapshots share one per-run stamp (census-gen-<stamp>-<generation>.klv2) so a
+    // run's gens stay grouped; a resume reuses the stamp of the family it continues.
+    // NOTE: the stamp is the wall-clock time at 1/65536-second resolution, so two runs
+    // started within about fifteen microseconds of each other still share it and would
+    // overwrite -- enough for crash-resume, not yet safe for two runs sharing a
+    // directory at once (there is no write-time guard here yet).
+    let mut start_gen = 0usize;
+    let census_run_epoch;
+    let mut resumed: Option<(String, usize, std::path::PathBuf)> = None;
+    if resume && let Ok(rd) = std::fs::read_dir(".") {
+        for e in rd.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if let Some((stamp, gg)) = name
+                .strip_prefix("census-gen-")
+                .and_then(|r| r.strip_suffix(".klv2"))
+                .and_then(|r| r.split_once('-'))
+                && u64::from_str_radix(stamp, 16).is_ok()
+                && let Ok(gg) = gg.parse::<usize>()
+                && resumed
+                    .as_ref()
+                    .is_none_or(|(bs, bg, _)| (gg, stamp) > (*bg, bs.as_str()))
+            {
+                resumed = Some((stamp.to_owned(), gg, e.path()));
+            }
+        }
+    }
+    if let Some((stamp, num, path)) = resumed {
+        census_run_epoch = stamp;
+        let bytes = std::fs::read(&path)?;
+        let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes);
+        for (idx, slot) in leave_cur.iter_mut().enumerate() {
+            lat.unrank_into(idx, &mut tally_buf);
+            *slot = resume_klv.leave_value_from_tally(&tally_buf);
+        }
+        start_gen = num;
+        eprintln!(
+            "census: resuming from {} (gen {num} done) -> starting gen {}",
+            path.display(),
+            num + 1
+        );
+    } else {
+        if resume {
+            eprintln!("census: resume requested but no census-gen-*.klv2 found; fresh start");
+        }
+        census_run_epoch = run_stamp();
     }
     // RwLock so the online-SGD path can rewrite leave_cur between mini-batches while
     // worker threads read it. In the default (one-batch) path it is only ever read.
@@ -4799,7 +4943,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 // outer loop over mini-batches (one batch = the whole run unless SGD),
                 // wrapped by the multi-gen pass counter (`gen`; one pass unless multigen).
                 let mut batch_start = 0u64;
-                let mut gen_idx = 0usize;
+                let mut gen_idx = start_gen;
                 // boards for the current gen; advances with gen_idx at the
                 // multi-gen boundary below.
                 let mut num_boards = board_counts[gen_idx];
@@ -4916,9 +5060,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                         }
                     } else {
-                        // sheet-reuse gens 1..: board + sheet are cached from gen 0, so
-                        // skip the game replay entirely and re-value from the cache.
-                        let reuse_board = sheet_reuse && gen_idx > 0;
+                        // sheet-reuse: board + sheet are cached from this process's FIRST
+                        // gen (gen_idx == start_gen), so later gens skip the game replay
+                        // and re-value from the cache. On resume the cache starts empty,
+                        // so the first resumed gen rebuilds (hence > start_gen, not > 0).
+                        let reuse_board = sheet_reuse && gen_idx > start_gen;
                         if !reuse_board {
                         // greedy-play fresh games (from this slot's own rng) until one
                         // reaches this slot's target fill. The target ROUND-ROBINS across
@@ -5069,40 +5215,71 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         // last gen leaves leave_cur holding the answer.
                         if multigen {
                             if barrier.wait().is_leader() {
-                                let mut g = shared.lock().unwrap();
-                                let (sum, cnt, completed, valued, ever) = &mut *g;
-                                let mut lv = leave_lock.write().unwrap();
-                                let base = if cnt[empty_rank] > 0 {
-                                    sum[empty_rank] / cnt[empty_rank] as f64
-                                } else {
-                                    0.0
-                                };
-                                for idx in 0..lat_len {
-                                    if cnt[idx] > 0 {
-                                        ever[idx] = true;
-                                        lv[idx] =
-                                            (sum[idx] / cnt[idx] as f64 - base).round() as i32;
+                                // center this gen's mean into leave_cur (own lock scope so
+                                // the guards drop before the persist re-locks for reading).
+                                {
+                                    let mut g = shared.lock().unwrap();
+                                    let (sum, cnt, completed, valued, ever) = &mut *g;
+                                    let mut lv = leave_lock.write().unwrap();
+                                    let base = if cnt[empty_rank] > 0 {
+                                        sum[empty_rank] / cnt[empty_rank] as f64
+                                    } else {
+                                        0.0
+                                    };
+                                    for idx in 0..lat_len {
+                                        if cnt[idx] > 0 {
+                                            ever[idx] = true;
+                                            lv[idx] = (sum[idx] / cnt[idx] as f64 - base).round()
+                                                as i32;
+                                        }
+                                    }
+                                    eprintln!(
+                                        "census: gen {}/{} done ({} of {} leaves valued)",
+                                        gen_idx + 1,
+                                        gens,
+                                        *valued,
+                                        lat_len,
+                                    );
+                                    if gen_idx + 1 < gens {
+                                        // reset accumulators + the board cursor + the
+                                        // per-pool sampler so the next gen re-runs fresh.
+                                        for idx in 0..lat_len {
+                                            sum[idx] = 0.0;
+                                            cnt[idx] = 0;
+                                        }
+                                        *completed = 0;
+                                        *valued = 0;
+                                        next_board
+                                            .store(0, std::sync::atomic::Ordering::Relaxed);
+                                        for h in &pool_hist {
+                                            h.store(0, std::sync::atomic::Ordering::Relaxed);
+                                        }
                                     }
                                 }
-                                eprintln!(
-                                    "census: gen {}/{} done ({} of {} leaves valued)",
-                                    gen_idx + 1,
-                                    gens,
-                                    *valued,
-                                    lat_len,
-                                );
-                                if gen_idx + 1 < gens {
-                                    // reset accumulators + the board cursor + the per-pool
-                                    // sampler so the next gen re-runs fresh boards.
-                                    for idx in 0..lat_len {
-                                        sum[idx] = 0.0;
-                                        cnt[idx] = 0;
-                                    }
-                                    *completed = 0;
-                                    *valued = 0;
-                                    next_board.store(0, std::sync::atomic::Ordering::Relaxed);
-                                    for h in &pool_hist {
-                                        h.store(0, std::sync::atomic::Ordering::Relaxed);
+                                // persist this gen's leaves as a klv2 snapshot (resume
+                                // safety). Re-lock as shared reads -- the write guard above
+                                // is dropped, and the other workers are parked on the
+                                // barrier below, so there is no contention.
+                                if persist_gens {
+                                    let g = shared.lock().unwrap();
+                                    let lv = leave_lock.read().unwrap();
+                                    let p = format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
+                                    match write_census_klv2(
+                                        &lat,
+                                        &|i| lv[i] as f64,
+                                        0.0,
+                                        &|i| g.4[i],
+                                        true, // resume snapshots stay full
+                                        &p,
+                                    ) {
+                                        Ok(nk) => eprintln!(
+                                            "census: persisted gen {} -> {p} ({nk} leaves)",
+                                            gen_idx + 1
+                                        ),
+                                        Err(e) => eprintln!(
+                                            "census: gen {} klv2 persist failed: {e}",
+                                            gen_idx + 1
+                                        ),
                                     }
                                 }
                             }
@@ -5156,10 +5333,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     };
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
-    // also assemble the leave -> value map for the in-process klv2 emit below (skips the
-    // external buildlex round-trip): the machine word is the leave's sorted tile bytes.
-    let mut leaves_map = fash::MyHashMap::<bites::Bites, f32>::default();
-    let mut word_buf = Vec::<u8>::new();
     for idx in 0..lat.len() {
         let valued = if sgd || multigen {
             ever[idx]
@@ -5176,15 +5349,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         }
         let centered_points = (value_mp(idx) - baseline) / equity::SCALE as f64;
         leave_ser.clear();
-        word_buf.clear();
         for (t, &c) in tally_buf.iter().enumerate() {
             for _ in 0..c {
                 leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
-                word_buf.push(t as u8);
             }
         }
-        // word_buf is sorted (t ascending) -- the machine-word form klv2 indexes by.
-        leaves_map.insert(word_buf[..].into(), centered_points as f32);
         rows.push((size, leave_ser.clone(), centered_points));
     }
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
@@ -5201,40 +5370,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         baseline / equity::SCALE as f64,
     );
 
-    // Emit the klv2 in-process -- the same DawgOnly/Wolges build that
-    // `buildlex <lang>-klv2 <csv> <klv2>` runs on the csv, but without the csv
-    // round-trip or a separate process. Mirrors build_leaves_f32's serialization:
-    // [u32 kwg_len_in_u32][kwg bytes][u32 num_values][f32 values, little-endian].
+    // Emit the klv2 in-process (skips the external buildlex; same DawgOnly/Wolges build).
     let klv_name = format!("census-leaves-{epoch:08x}.klv2");
-    let mut sorted_words = leaves_map.keys().cloned().collect::<Box<_>>();
-    sorted_words.sort_unstable();
-    let leaves_kwg = build::build(
-        build::BuildContent::DawgOnly,
-        build::BuildLayout::Wolges,
-        &sorted_words,
-    )?;
-    let leave_values = sorted_words
-        .iter()
-        .map(|s| leaves_map[s])
-        .collect::<Box<_>>();
-    let mut bin = vec![0u8; 2 * 4 + leaves_kwg.len() + leave_values.len() * 4];
-    let mut w = 0;
-    bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
-    w += 4;
-    bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
-    w += leaves_kwg.len();
-    bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
-    w += 4;
-    for v in &leave_values[..] {
-        bin[w..w + 4].copy_from_slice(&v.to_le_bytes());
-        w += 4;
-    }
-    assert_eq!(w, bin.len());
-    std::fs::write(&klv_name, &bin)?;
-    eprintln!(
-        "census: wrote klv2 to {klv_name} ({} leaves)",
-        leave_values.len()
-    );
+    let is_valued = |idx: usize| {
+        if sgd || multigen {
+            ever[idx]
+        } else {
+            accum_cnt[idx] > 0
+        }
+    };
+    let n_klv = write_census_klv2(&lat, &value_mp, baseline, &is_valued, emit_full, &klv_name)?;
+    eprintln!("census: wrote klv2 to {klv_name} ({n_klv} leaves)");
     Ok(())
 }
 
