@@ -281,13 +281,16 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 Ok(true)
             }
             "-census" => {
-                // english-census CSW24.kwg leave0.klv leave1.klv 500 [seed]
+                // english-census CSW24.kwg leave0.klv leave1.klv <boards> [seed]
+                // <boards> = comma-separated per-generation board counts, each
+                // `N` or `KxN` (K gens of N), e.g. 100,2x200,300,3x500; the gen
+                // count is the expanded length. seed is optional (arg6).
                 let args3 = if args.len() > 3 { &args[3] } else { "-" };
                 let args4 = if args.len() > 4 { &args[4] } else { "-" };
-                let num_boards = if args.len() > 5 {
-                    u64::from_str(&args[5])?
+                let board_counts = if args.len() > 5 {
+                    parse_board_counts(&args[5])?
                 } else {
-                    500
+                    vec![500]
                 };
                 let seed = if args.len() > 6 {
                     Some(u64::from_str(&args[6])?)
@@ -321,7 +324,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     kwg,
                     arc_klv0,
                     arc_klv1,
-                    num_boards,
+                    board_counts,
                     seed,
                 )?;
                 Ok(true)
@@ -2113,6 +2116,37 @@ fn wolges_gilles_real_rack() -> error::Returns<GillesRealRack> {
         .into()),
     }
 }
+
+// Parse the census's per-generation board-count spec: a comma-separated list
+// where each element is `N` (one generation of N boards) or `KxN` (K
+// generations of N boards each), e.g. "100,2x200,300,3x500" expands to
+// [100, 200, 200, 300, 500, 500, 500]. The generation count is the expanded
+// length, so the census derives its gens from this and needs no env. A bare
+// number (no comma) is a single generation. Whitespace around elements is
+// tolerated so a quoted "100, 2x200" also works.
+fn parse_board_counts(spec: &str) -> error::Returns<Vec<u64>> {
+    let mut out = Vec::new();
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return Err("census board-count spec has an empty element".into());
+        }
+        if let Some((k, n)) = part.split_once('x') {
+            let k: u64 = k.trim().parse()?;
+            let n: u64 = n.trim().parse()?;
+            for _ in 0..k {
+                out.push(n);
+            }
+        } else {
+            out.push(part.parse()?);
+        }
+    }
+    if out.is_empty() {
+        return Err("census board-count spec is empty".into());
+    }
+    Ok(out)
+}
+
 // GillesB's leave generation by board sampling. Produces the same summary CSV
 // as <lang>-autoplay-summarize-only (a leading ("", total_equity, total_count)
 // row then rack,equity_sum,count rows), so its output merges via -resummarize
@@ -4044,7 +4078,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     kwg: kwg::Kwg<N>,
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
-    num_boards: u64,
+    board_counts: Vec<u64>,
     seed: Option<u64>,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
@@ -4111,19 +4145,34 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // plays a fresh game to one random in-window fill, values it, and resets. 1 =
     // per-game -- each slot plays one real game through and values EVERY board whose
     // fill lands in the window (consecutive real plies), so the sampled boards
-    // follow a real game's phase mix (closer to autoplay's) and plies are
-    // reused instead of replayed. In per-game mode num_boards counts GAMES, not
-    // boards (one game yields a variable number of in-window boards).
+    // follow a real-game phase mix (closer to autoplay's) and plies are
+    // reused instead of replayed. In per-game mode the gen's board count counts
+    // GAMES, not boards (one game yields a variable number of in-window boards).
     let per_game = env_flag("WOLGES_CENSUS_PER_GAME", false);
-    // online mini-batch SGD. WOLGES_CENSUS_BATCH = boards per mini-batch (default =
-    // num_boards = one batch = the plain batch-mean path, byte-identical). When BATCH
-    // < num_boards the leaves update ONLINE: after each mini-batch the leader thread
-    // EMA-blends the batch's centered mean into leave_cur at rate WOLGES_CENSUS_ALPHA,
-    // so later mini-batches value with improved leaves and the run converges in fewer
-    // board-evals. The output is then the EMA leave_cur itself (not the batch mean).
-    let batch_size = (env_usize("WOLGES_CENSUS_BATCH", num_boards as usize) as u64).max(1);
+    // gens (the number of board passes) and their board counts both come from
+    // the CLI spec (parse_board_counts): one list entry per gen, so gens =
+    // board_counts.len() -- no env sets it and the count can differ per gen.
+    // Each gen re-runs its own board count, re-centers its full-batch mean and
+    // REPLACEs leave_cur (alpha = 1, the non-EMA sibling of the SGD path below),
+    // so the next gen values with the improved leaves -- the leave fixed-point
+    // iteration. One process amortizes the lattice + add-table build, the spin-up
+    // and the external buildlex across gens (one invocation), and keeps the
+    // iterated leaves in RAM. Output is the final gen's leaves, over every leave
+    // valued in any gen. The worker tracks the current gen's board count as
+    // gen_idx advances.
+    let gens = board_counts.len();
+    let multigen = gens > 1;
+    // online mini-batch SGD (single-generation only). WOLGES_CENSUS_BATCH = boards
+    // per mini-batch (default = the gen's board count = one batch = the plain
+    // batch-mean path, byte-identical). When BATCH is below it the leaves update
+    // ONLINE: after each mini-batch the leader thread EMA-blends the batch's
+    // centered mean into leave_cur at rate WOLGES_CENSUS_ALPHA, so later mini-
+    // batches value with improved leaves and the run converges in fewer board-
+    // evals. The output is then the EMA leave_cur itself (not the batch mean). A
+    // multi-gen spec always takes the full-batch iterated path (BATCH ignored).
+    let batch_size = (env_usize("WOLGES_CENSUS_BATCH", board_counts[0] as usize) as u64).max(1);
     let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
-    let sgd = batch_size < num_boards;
+    let sgd = !multigen && batch_size < board_counts[0];
     // reset-per-board target granularity. 0 (default) = per-tile: round-robin over
     // every fill in [low,high]. K >= 2 = round-robin over K fill targets EVENLY SPACED
     // across [low,high] ("percentage buckets" -- K=11 is 10 intervals + fencepost,
@@ -4244,7 +4293,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // compute (tens of seconds) is the cost, so lock contention is negligible.
     // Each board slot seeds its own rng deterministically from (seed, slot index)
     // so the produced board set is reproducible and independent of scheduling.
-    let num_threads = wolges_threads().max(1).min(num_boards.max(1) as usize);
+    let num_threads = wolges_threads().max(1).min(board_counts[0].max(1) as usize);
     let lat_len = lat.len();
     let next_board = std::sync::atomic::AtomicU64::new(0);
     // (accum_sum, accum_cnt, boards_completed, distinct_leaves_valued, ever_valued).
@@ -4257,7 +4306,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         vec![0u64; lat_len],
         0u64,
         0u64,
-        if sgd {
+        if sgd || multigen {
             vec![false; lat_len]
         } else {
             Vec::new()
@@ -4280,7 +4329,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         Vec::new()
     };
-    eprintln!("census: {num_threads} threads over {num_boards} boards");
+    eprintln!("census: {num_threads} threads over {board_counts:?} boards/gen");
 
     std::thread::scope(|s| {
         for _ in 0..num_threads {
@@ -4377,7 +4426,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                        leave: &[i32],
                                        null_leave: bool,
                                        log_first: bool,
-                                       do_verify: bool| {
+                                       do_verify: bool,
+                                       cur_boards: u64| {
                     // unseen pool = full distribution minus tiles on the board
                     // (blank-masked). Opponent racks count as unseen/drawable, as in
                     // gilles -- sampled racks are hypothetical draws from everything
@@ -4696,17 +4746,28 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     eprintln!(
                         "census: board {}/{} done ({}s), {} of {} leaves valued so far",
                         *completed,
-                        num_boards,
+                        cur_boards,
                         t0.elapsed().as_secs(),
                         *valued,
                         lat_len,
                     );
                 };
 
-                // outer loop over mini-batches (one batch = the whole run unless SGD).
+                // outer loop over mini-batches (one batch = the whole run unless SGD),
+                // wrapped by the multi-gen pass counter (`gen`; one pass unless multigen).
                 let mut batch_start = 0u64;
+                let mut gen_idx = 0usize;
+                // boards for the current gen; advances with gen_idx at the
+                // multi-gen boundary below.
+                let mut num_boards = board_counts[gen_idx];
                 loop {
-                    let batch_end = (batch_start + batch_size).min(num_boards);
+                    // SGD slices one gen into mini-batches; otherwise a single
+                    // batch covers the whole gen (num_boards = this gen's count).
+                    let batch_end = if sgd {
+                        (batch_start + batch_size).min(num_boards)
+                    } else {
+                        num_boards
+                    };
                     // read-guard the leave table for this batch; the leader rewrites it
                     // (write-guard) between batches under the barrier, when no reader
                     // holds it. In the default path this guard is held for the one batch.
@@ -4773,6 +4834,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     null_leave,
                                     lf,
                                     verify && lf,
+                                    num_boards,
                                 );
                             }
                             // advance the board by one greedy (leave-modified) ply.
@@ -4906,6 +4968,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             null_leave,
                             b == 0,
                             verify && b == 0,
+                            num_boards,
                         );
                     }
                     }
@@ -4942,6 +5005,59 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
                     batch_start = batch_end;
                     if batch_start >= num_boards {
+                        // multi-gen boundary (gens > 1): re-center this gen's
+                        // full-batch mean and REPLACE leave_cur with it (alpha = 1,
+                        // not the SGD EMA above), under the barrier so the leader writes
+                        // with no readers. ever[] marks every leave valued in any gen (the
+                        // output set). Then reset and run the next gen, or finish -- the
+                        // last gen leaves leave_cur holding the answer.
+                        if multigen {
+                            if barrier.wait().is_leader() {
+                                let mut g = shared.lock().unwrap();
+                                let (sum, cnt, completed, valued, ever) = &mut *g;
+                                let mut lv = leave_lock.write().unwrap();
+                                let base = if cnt[empty_rank] > 0 {
+                                    sum[empty_rank] / cnt[empty_rank] as f64
+                                } else {
+                                    0.0
+                                };
+                                for idx in 0..lat_len {
+                                    if cnt[idx] > 0 {
+                                        ever[idx] = true;
+                                        lv[idx] =
+                                            (sum[idx] / cnt[idx] as f64 - base).round() as i32;
+                                    }
+                                }
+                                eprintln!(
+                                    "census: gen {}/{} done ({} of {} leaves valued)",
+                                    gen_idx + 1,
+                                    gens,
+                                    *valued,
+                                    lat_len,
+                                );
+                                if gen_idx + 1 < gens {
+                                    // reset accumulators + the board cursor + the per-pool
+                                    // sampler so the next gen re-runs fresh boards.
+                                    for idx in 0..lat_len {
+                                        sum[idx] = 0.0;
+                                        cnt[idx] = 0;
+                                    }
+                                    *completed = 0;
+                                    *valued = 0;
+                                    next_board.store(0, std::sync::atomic::Ordering::Relaxed);
+                                    for h in &pool_hist {
+                                        h.store(0, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                            barrier.wait();
+                            if gen_idx + 1 < gens {
+                                gen_idx += 1;
+                                num_boards = board_counts[gen_idx];
+                                batch_start = 0;
+                                continue;
+                            }
+                        }
                         break;
                     }
                 }
@@ -4954,11 +5070,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     // Write (leave, value_in_points), mean-centered on the empty leave (its
     // entering-equity = the average best full-rack equity = the baseline). The
-    // default one-batch path reports each leave's accumulated best-equity mean; the
-    // SGD path reports the online EMA leave_cur itself (already in the same millipoint
-    // frame), restricted to leaves valued in some mini-batch.
+    // default one-batch path reports each leave's accumulated best-equity mean; the SGD
+    // and multi-gen paths report leave_cur itself (the EMA / final-gen leaves, in the
+    // same millipoint frame), restricted to leaves valued in some mini-batch / gen.
     let value_mp = |idx: usize| -> f64 {
-        if sgd {
+        if sgd || multigen {
             leave_final[idx] as f64
         } else if accum_cnt[idx] > 0 {
             accum_sum[idx] / accum_cnt[idx] as f64
@@ -4985,7 +5101,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
     for idx in 0..lat.len() {
-        let valued = if sgd { ever[idx] } else { accum_cnt[idx] > 0 };
+        let valued = if sgd || multigen {
+            ever[idx]
+        } else {
+            accum_cnt[idx] > 0
+        };
         if !valued {
             continue;
         }
@@ -6091,6 +6211,32 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_board_counts_expands_repeats() {
+        assert_eq!(parse_board_counts("256").unwrap(), vec![256]);
+        assert_eq!(
+            parse_board_counts("100,200,200,300,500,500,500").unwrap(),
+            vec![100, 200, 200, 300, 500, 500, 500]
+        );
+        // KxN repeat shorthand (count-first) expands to the same list.
+        assert_eq!(
+            parse_board_counts("100,2x200,300,3x500").unwrap(),
+            vec![100, 200, 200, 300, 500, 500, 500]
+        );
+        assert_eq!(
+            parse_board_counts("4x256").unwrap(),
+            vec![256, 256, 256, 256]
+        );
+        // whitespace around elements tolerated (a quoted spec).
+        assert_eq!(
+            parse_board_counts("100, 2x200").unwrap(),
+            vec![100, 200, 200]
+        );
+        assert!(parse_board_counts("").is_err());
+        assert!(parse_board_counts("abc").is_err());
+        assert!(parse_board_counts("1,,2").is_err());
+    }
 
     #[test]
     fn per_rack_decompose_weights_by_mean_not_count() {
