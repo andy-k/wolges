@@ -4202,7 +4202,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // paths do not use it, so build only when WOLGES_APPORTION=full-rack is set).
     let add_table = if full_rack {
         let t = std::time::Instant::now();
-        let at = census::AddTable::new(&lat);
+        let at = census::AddTable::new_with_threads(&lat, wolges_threads());
         eprintln!(
             "census: add-table {} rows x {num_letters} letters built in {:?}",
             lat.full_rack_start(),
