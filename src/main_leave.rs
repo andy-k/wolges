@@ -5,8 +5,8 @@ use std::fmt::Write;
 use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
-    alphabet, bites, census, display, equity, error, fash, game_config, game_state, klv, kwg,
-    move_filter, move_picker, movegen, play_scorer, prob, stats,
+    alphabet, bites, build, census, display, equity, error, fash, game_config, game_state, klv,
+    kwg, move_filter, move_picker, movegen, play_scorer, prob, stats,
 };
 
 static BASE62: &[u8; 62] = b"\
@@ -5156,6 +5156,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     };
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
+    // also assemble the leave -> value map for the in-process klv2 emit below (skips the
+    // external buildlex round-trip): the machine word is the leave's sorted tile bytes.
+    let mut leaves_map = fash::MyHashMap::<bites::Bites, f32>::default();
+    let mut word_buf = Vec::<u8>::new();
     for idx in 0..lat.len() {
         let valued = if sgd || multigen {
             ever[idx]
@@ -5172,11 +5176,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         }
         let centered_points = (value_mp(idx) - baseline) / equity::SCALE as f64;
         leave_ser.clear();
+        word_buf.clear();
         for (t, &c) in tally_buf.iter().enumerate() {
             for _ in 0..c {
                 leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
+                word_buf.push(t as u8);
             }
         }
+        // word_buf is sorted (t ascending) -- the machine-word form klv2 indexes by.
+        leaves_map.insert(word_buf[..].into(), centered_points as f32);
         rows.push((size, leave_ser.clone(), centered_points));
     }
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
@@ -5191,6 +5199,41 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         out_name,
         t0.elapsed().as_secs(),
         baseline / equity::SCALE as f64,
+    );
+
+    // Emit the klv2 in-process -- the same DawgOnly/Wolges build that
+    // `buildlex <lang>-klv2 <csv> <klv2>` runs on the csv, but without the csv
+    // round-trip or a separate process. Mirrors build_leaves_f32's serialization:
+    // [u32 kwg_len_in_u32][kwg bytes][u32 num_values][f32 values, little-endian].
+    let klv_name = format!("census-leaves-{epoch:08x}.klv2");
+    let mut sorted_words = leaves_map.keys().cloned().collect::<Box<_>>();
+    sorted_words.sort_unstable();
+    let leaves_kwg = build::build(
+        build::BuildContent::DawgOnly,
+        build::BuildLayout::Wolges,
+        &sorted_words,
+    )?;
+    let leave_values = sorted_words
+        .iter()
+        .map(|s| leaves_map[s])
+        .collect::<Box<_>>();
+    let mut bin = vec![0u8; 2 * 4 + leaves_kwg.len() + leave_values.len() * 4];
+    let mut w = 0;
+    bin[w..w + 4].copy_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+    w += 4;
+    bin[w..w + leaves_kwg.len()].copy_from_slice(&leaves_kwg);
+    w += leaves_kwg.len();
+    bin[w..w + 4].copy_from_slice(&(leave_values.len() as u32).to_le_bytes());
+    w += 4;
+    for v in &leave_values[..] {
+        bin[w..w + 4].copy_from_slice(&v.to_le_bytes());
+        w += 4;
+    }
+    assert_eq!(w, bin.len());
+    std::fs::write(&klv_name, &bin)?;
+    eprintln!(
+        "census: wrote klv2 to {klv_name} ({} leaves)",
+        leave_values.len()
     );
     Ok(())
 }
