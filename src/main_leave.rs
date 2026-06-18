@@ -4410,6 +4410,32 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         Vec::new()
     };
+    // WOLGES_CENSUS_WITHHOLD_FRAC = f in (0,1] (default 1.0 = every board, the rarity-driven
+    // behavior): the fraction of boards that are withhold-boards. f < 1.0 dedicates only
+    // every (1/f)-th board to rare-rack coverage and leaves the rest natural, so the
+    // common-rack leaves keep an unbiased board mix while the rare tail still gets
+    // covered. This fractioning cuts the every-board pass's all-boards mix shift
+    // (every board had the rare tiles withheld, biasing every leave). The withhold boards
+    // are chosen phase-balanced (every f-th board WITHIN each fill bucket, not every f-th
+    // board overall) so the withheld racks are sampled across the whole pool window rather
+    // than clustering in one game phase.
+    let withhold_frac = env_parse::<f64>("WOLGES_CENSUS_WITHHOLD_FRAC", 1.0);
+    let withhold_frac = if withhold_frac > 0.0 {
+        withhold_frac
+    } else {
+        1.0
+    };
+    let withhold_period = if withhold_frac >= 1.0 {
+        1
+    } else {
+        (1.0 / withhold_frac).round().max(1.0) as usize
+    };
+    if !withhold_tally.is_empty() && withhold_period > 1 {
+        eprintln!(
+            "census: withhold fraction {:.3} -> 1 in {} boards (phase-balanced) is a withhold board",
+            withhold_frac, withhold_period,
+        );
+    }
     let seed = seed.unwrap_or_else(rand::random);
     // current leave table (millipoints), loaded from klv0 by lattice multiset.
     // null klv -> all zero -> best_equity is pure best score (gen-1 bootstrap).
@@ -5116,9 +5142,27 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             // per-tile: every fill in [low,high] is its own bucket.
                             low_tiles + (b as usize % (high_tiles - low_tiles + 1))
                         };
+                        // is this slot a withhold board? Active iff withhold is on and this
+                        // slot falls in the withhold fraction. Slot b's phase bucket is
+                        // b % phase_buckets (mirrors the target round-robin above), so
+                        // b / phase_buckets is b's round number; withholding whole rounds
+                        // (round % withhold_period == 0) makes the withhold boards
+                        // phase-balanced (each withhold round spans every fill bucket) and a
+                        // clean 1/withhold_period fraction. Decided once per board so it is
+                        // stable across the retry loop (and across gens under sheet-reuse,
+                        // since the cached sheet must match the board that built it).
+                        let phase_buckets = if high_tiles <= low_tiles {
+                            1
+                        } else if num_buckets >= 2 {
+                            num_buckets
+                        } else {
+                            high_tiles - low_tiles + 1
+                        };
+                        let do_withhold = !withhold_tally.is_empty()
+                            && (b as usize / phase_buckets).is_multiple_of(withhold_period);
                         let mut tries = 0u32;
                         let reached = loop {
-                            if withhold_tally.is_empty() {
+                            if !do_withhold {
                                 game_state
                                     .reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                             } else {
