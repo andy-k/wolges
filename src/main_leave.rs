@@ -4384,6 +4384,32 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let oppdenial_exact_pool_max = env_usize("WOLGES_OPPDENIAL_EXACT_POOL_MAX", 32);
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
+    // WOLGES_CENSUS_WITHHOLD = B (default 0 = off, byte-identical): rare-rack
+    // coverage remediation. Single-copy tiles (Q, Z, J, ...) are usually
+    // played before the sampling window, so racks needing them are rarely
+    // drawable and their leaves are starved / phase-skewed. Hold the B rarest
+    // tiles out of the bag for the whole game (reset-per-board only) so they
+    // stay unseen -> in the snapshot's drawable pool -> their racks get
+    // board-coverage. This pass is rarity-driven (the rarest B tiles, one
+    // each) and applies the same withheld set to every board. Off by default
+    // (the withheld boards shift the board mix -- a quality trade to validate,
+    // not a free byte-identical win like the perf levers).
+    let withhold_budget = env_usize("WOLGES_CENSUS_WITHHOLD", 0);
+    let withhold_tally: Vec<u8> = if withhold_budget > 0 && !per_game {
+        let mut tiles: Vec<usize> = (0..num_letters).filter(|&t| base_freqs[t] > 0).collect();
+        tiles.sort_by_key(|&t| base_freqs[t]);
+        let mut wt = vec![0u8; num_letters];
+        for &t in tiles.iter().take(withhold_budget) {
+            wt[t] = 1;
+        }
+        eprintln!(
+            "census: withholding {} rarest tiles from the bag for rare-rack coverage",
+            wt.iter().filter(|&&c| c > 0).count(),
+        );
+        wt
+    } else {
+        Vec::new()
+    };
     let seed = seed.unwrap_or_else(rand::random);
     // current leave table (millipoints), loaded from klv0 by lattice multiset.
     // null klv -> all zero -> best_equity is pure best score (gen-1 bootstrap).
@@ -5092,7 +5118,27 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         };
                         let mut tries = 0u32;
                         let reached = loop {
-                            game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                            if withhold_tally.is_empty() {
+                                game_state
+                                    .reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                            } else {
+                                // withhold draw: deal the opening racks from a bag with the
+                                // rare tiles removed, so they never enter play and stay in
+                                // the snapshot's unseen (drawable) pool all game.
+                                game_state.reset();
+                                game_state.bag.shuffle(&mut rng);
+                                for (t, &c) in withhold_tally.iter().enumerate() {
+                                    for _ in 0..c {
+                                        game_state.bag.remove_tile(t as u8);
+                                    }
+                                }
+                                let rsz = game_config.rack_size() as usize;
+                                let bag = &mut game_state.bag;
+                                let players = &mut game_state.players;
+                                for (i, player) in players.iter_mut().enumerate() {
+                                    bag.replenish(&mut player.rack, rsz, i);
+                                }
+                            }
                             let mut got = false;
                             loop {
                                 let fill =
