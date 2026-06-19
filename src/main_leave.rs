@@ -4264,6 +4264,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let batch_size = (env_usize("WOLGES_CENSUS_BATCH", board_counts[0] as usize) as u64).max(1);
     let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
     let sgd = !multigen && batch_size < board_counts[0];
+    // WOLGES_CENSUS_GLOBAL_APPORTION (default 0 = the coupled per-board apportionment,
+    // byte-identical). When 1 (full-rack + single full-batch gen only): decouple the
+    // board-averaging from the draw-weighting. Per board, value best_equity(R) for
+    // EVERY full rack from board CONTEXT (board-independent, drawable or not) and
+    // accumulate a simple board mean v(R) = mean_b best_equity(R, board); then run ONE
+    // apportionment over the GLOBAL bag: leave(S) = sum_{R>=S} v(R) * G(R\S) /
+    // sum_{R>=S} G(R\S), where G(R\S) = ways to draw the completion R\S from the full
+    // bag minus S -- via the entering push (census::entering_fused fed v(R) and
+    // the full bag). This makes the completion-weighting unconditional (not each board's
+    // depleted pool) and gives rare racks full board-context coverage. Ignored under SGD
+    // / multi-gen (iterate via separate invocations).
+    let global_apportion =
+        full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION", false);
     // WOLGES_CENSUS_SHEET_REUSE (default on; multi-gen + reset-per-board + uniform
     // spec only): the step-1 play-value sheet depends only on the board and the unseen
     // pool, NOT on the leaves, so with the deterministic reset-per-board sampler (same
@@ -4302,6 +4315,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
+    let full_rack_start = lat.full_rack_start();
     eprintln!(
         "census: lattice {} leaves (letters {num_letters}, rack_size {rack_size}), \
          window [{low_tiles},{high_tiles}] of {num_tiles} tiles",
@@ -4586,7 +4600,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 // best_equity is materialized for the marginal terms
                 // (oppdenial_leave/oppdenial_rack) and for the oppdenial_exact
                 // term, so allocate it for either.
-                let mut oppdenial_leave_best = if full_rack && (opp_term || oppdenial_exact != 0.0) {
+                let mut oppdenial_leave_best = if full_rack && (opp_term || oppdenial_exact != 0.0 || global_apportion) {
                     vec![census::UNPLAYABLE; lat_len]
                 } else {
                     Vec::new()
@@ -4827,7 +4841,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     // drawn), weighted with no replacement over completions from the
                     // unseen pool.
                     let ts = std::time::Instant::now();
-                    if full_rack {
+                    if full_rack && !global_apportion {
                         num_board.iter_mut().for_each(|x| *x = 0.0);
                         den_board.iter_mut().for_each(|x| *x = 0.0);
                         let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
@@ -4931,6 +4945,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     v += (oppdenial_leave * d).round() as i32;
                                 }
                                 v
+                            } else {
+                                census::UNPLAYABLE
+                            };
+                        }
+                    } else if full_rack && global_apportion {
+                        // board-context v(R): best_equity(R) for EVERY full rack,
+                        // valued from board context regardless of bag drawability,
+                        // accumulated below as a simple board mean (sum/cnt) and
+                        // apportioned once over the global bag at the finalize. The
+                        // per-board pool draw-apportion is skipped entirely.
+                        census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
+                        for (idx, slot) in contrib.iter_mut().enumerate() {
+                            *slot = if idx >= full_rack_start {
+                                unsafe { *oppdenial_leave_best.get_unchecked(idx) }
                             } else {
                                 census::UNPLAYABLE
                             };
@@ -5390,13 +5418,41 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
     let leave_final = leave_lock.into_inner().unwrap();
 
+    // global-apportion: the across-board accumulators hold a per-rack board mean
+    // v(R) = accum_sum[R]/accum_cnt[R] (board-context best_equity, every full rack
+    // valued every board). Apportion it ONCE over the global bag to form
+    // every leave -- leave(S) = sum_{R>=S} v(R)*G(R\S) / sum_{R>=S} G(R\S) -- via the
+    // entering push fed v(R) as the "best" table and the full bag as the
+    // "unseen" pool. (ga_num, ga_den) are then this run's num/den per leave.
+    let (ga_num, ga_den) = if global_apportion {
+        let mut vr = vec![census::UNPLAYABLE; lat_len];
+        for idx in full_rack_start..lat_len {
+            if accum_cnt[idx] > 0 {
+                vr[idx] = (accum_sum[idx] / accum_cnt[idx] as f64).round() as i32;
+            }
+        }
+        let mut gn = vec![0i128; lat_len];
+        let mut gd = vec![0i128; lat_len];
+        census::entering_fused(&lat, &vr, &base_freqs, &mut gn, &mut gd);
+        (gn, gd)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     // Write (leave, value_in_points), mean-centered on the empty leave (its
     // entering-equity = the average best full-rack equity = the baseline). The
     // default one-batch path reports each leave's accumulated best-equity mean; the SGD
     // and multi-gen paths report leave_cur itself (the EMA / final-gen leaves, in the
-    // same millipoint frame), restricted to leaves valued in some mini-batch / gen.
+    // same millipoint frame), restricted to leaves valued in some mini-batch / gen; the
+    // global-apportion path reports the single global-bag apportionment ga_num/ga_den.
     let value_mp = |idx: usize| -> f64 {
-        if sgd || multigen {
+        if global_apportion {
+            if ga_den[idx] != 0 {
+                (ga_num[idx] / ga_den[idx]) as f64
+            } else {
+                0.0
+            }
+        } else if sgd || multigen {
             leave_final[idx] as f64
         } else if accum_cnt[idx] > 0 {
             accum_sum[idx] / accum_cnt[idx] as f64
@@ -5423,7 +5479,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
     for idx in 0..lat.len() {
-        let valued = if sgd || multigen {
+        let valued = if global_apportion {
+            ga_den[idx] != 0
+        } else if sgd || multigen {
             ever[idx]
         } else {
             accum_cnt[idx] > 0
