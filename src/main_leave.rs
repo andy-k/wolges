@@ -2379,6 +2379,41 @@ impl GameStats {
             println!("  no significant difference");
         }
     }
+
+    // Machine-readable summary block (opt-in, WOLGES_COMPARE_PORCELAIN). One
+    // `KEY VALUE` per line, the value the only token (no parens) so a driver can
+    // grep it unambiguously, e.g. `awk '/^WCMP_P0_PCT /{print $2}'`. This is the
+    // root-cause fix for the greedy `.*\(...\)` that misread the human-readable
+    // "p0 ... (X%)  p1 ... (Y%)" line (grabbing p1's percent instead of p0's).
+    fn print_porcelain(&self) {
+        let total = self.total_games();
+        if total == 0 {
+            return;
+        }
+        let p0_total = self.p0_wins as f64 + self.p0_draws as f64 / 2.0;
+        let p1_total = total as f64 - p0_total;
+        let corrected_pct = (p0_total.max(p1_total) - 0.5) / total as f64;
+        let confidence = if corrected_pct > 0.5 {
+            let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
+            stats::NormalDistribution::cumulative_normal_density(z) * 100.0
+        } else {
+            0.0
+        };
+        println!("WCMP_P0_PCT {:.4}", p0_total / total as f64 * 100.0);
+        println!("WCMP_P1_PCT {:.4}", p1_total / total as f64 * 100.0);
+        println!(
+            "WCMP_P0_WINS_PCT {:.4}",
+            self.p0_wins as f64 / total as f64 * 100.0
+        );
+        println!(
+            "WCMP_DRAWS_PCT {:.4}",
+            self.p0_draws as f64 / total as f64 * 100.0
+        );
+        println!("WCMP_CONF_PCT {confidence:.4}");
+        println!("WCMP_LEADER {}", if p0_total >= p1_total { 0 } else { 1 });
+        println!("WCMP_GAMES {total}");
+        println!("WCMP_PAIRS {}", total / 2);
+    }
 }
 
 struct GamePairStats {
@@ -2431,6 +2466,16 @@ impl GamePairStats {
                 plural(div_pairs, "pair", "pairs"),
                 div_pairs as f64 / all_pairs as f64 * 100.0,
             ));
+        }
+        // Opt-in machine-readable summary of the full set (not the divergent subset); trails
+        // the human output so default behavior is unchanged.
+        let porcelain = std::env::var("WOLGES_COMPARE_PORCELAIN")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0)
+            != 0;
+        if porcelain {
+            self.all.print_porcelain();
         }
     }
 }
