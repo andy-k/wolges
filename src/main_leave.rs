@@ -4213,25 +4213,24 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
     let verify = env_flag("WOLGES_CENSUS_VERIFY", false);
-    // Apportionment of a sampled board's value to leaves. Default = entering:
-    // draw-average attribution (leave_value_by_draw), crediting the held-entering
-    // leave. WOLGES_APPORTION=full-rack opts into the full-rack apportionment
-    // (apportion_table): credit best_equity(R) to every subrack of R. One unified
-    // knob, shared with autoplay's entering-leave recording.
-    let full_rack = match std::env::var("WOLGES_APPORTION").ok().as_deref() {
-        None | Some("entering") => false,
-        Some("full-rack") => true,
-        Some(other) => {
-            return Err(
-                format!("WOLGES_APPORTION must be full-rack or entering, got {other:?}").into(),
-            );
-        }
+    // Apportionment of a sampled board's value to leaves. Default = full-rack
+    // (apportion_table): credit best_equity(R) to every subrack of R -- the
+    // complete attribution the census computes inline. On CSW24 this and the
+    // entering way come out even in our runs, so full-rack is the default by
+    // design, not by play strength. WOLGES_APPORTION=entering opts into the
+    // entering path (leave_value_by_draw): draw-average attribution crediting
+    // only the held-entering leave. One unified knob, shared with autoplay's
+    // entering-leave recording.
+    let full_rack = match wolges_apportion()? {
+        Apportion::FullRack => true,
+        Apportion::Entering => false,
     };
-    // entering step 3: 0 = pull (leave_value_by_draw per leave, the default), 1 =
-    // push (census::entering_fused, one lattice walk for the whole table, about
-    // 20x faster and bit-identical -- both exact i128). The push trades speed for
-    // memory: two i128 lat_len arrays per thread (16 bytes/leave each); cut
-    // WOLGES_THREADS if that is too large. Ignored on the full-rack path.
+    // entering step 3 (only used on the opt-in WOLGES_APPORTION=entering path):
+    // 0 = pull (leave_value_by_draw per leave, the default), 1 = push
+    // (census::entering_fused, one lattice walk for the whole table, about 20x faster
+    // and bit-identical -- both exact i128). The push trades speed for memory: two
+    // i128 lat_len arrays per thread (16 bytes/leave each); cut WOLGES_THREADS
+    // if that is too large. Ignored on the (default) full-rack path.
     let entering_push = env_flag("WOLGES_CENSUS_ENTERING_PUSH", false);
     // board sampling: 0 = reset-per-board (the default) -- each board slot greedy-
     // plays a fresh game to one random in-window fill, values it, and resets. 1 =
@@ -4309,9 +4308,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         lat.len(),
     );
 
-    // Parent (add-tile) index table for apportion_fused's step-3 apportion/max walks --
-    // built once and shared read-only across the board threads (the non-full-rack
-    // paths do not use it, so build only when WOLGES_APPORTION=full-rack is set).
+    // Parent (add-tile) index table for apportion_fused's step-3 max/add walks --
+    // built once and shared read-only across the board threads. The full-rack path is
+    // the default, so this builds by default; the opt-in entering path
+    // (WOLGES_APPORTION=entering) does not use it, so it is skipped there.
     let add_table = if full_rack {
         let t = std::time::Instant::now();
         let at = census::AddTable::new_with_threads(&lat, wolges_threads());
@@ -4820,13 +4820,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
 
                     // STEP 3 -- value each leave into this board's contribution
-                    // buffer. Default = entering: draw-average best_equity(S +
-                    // drawn), weighted by how likely each completion is to be
-                    // drawn from the unseen pool (no replacement).
-                    // WOLGES_APPORTION=full-rack switches to full-rack
-                    // apportionment: credit best_equity(R), weighted by
-                    // P(draw R), to every subrack of R; this board's
-                    // leave(S) = num[S]/den[S].
+                    // buffer. Default (full-rack apportionment): credit
+                    // best_equity(R), weighted by P(draw R), to every subrack of
+                    // R; this board's leave(S) = num[S]/den[S]. WOLGES_APPORTION=entering
+                    // instead does the entering draw-average: best_equity(S +
+                    // drawn), weighted with no replacement over completions from the
+                    // unseen pool.
                     let ts = std::time::Instant::now();
                     if full_rack {
                         num_board.iter_mut().for_each(|x| *x = 0.0);
