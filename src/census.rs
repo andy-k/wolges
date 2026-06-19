@@ -1592,6 +1592,13 @@ pub fn entering_fused(
         // SAFETY: ridx ranges over lo..lat.len() (lo = full_rack_start()), so ridx <
         // lat.len(); best is the lat.len() best_equity buffer.
         let b = unsafe { *best.get_unchecked(ridx) };
+        // Skip racks left UNPLAYABLE. best_equity always has the exchange floor so
+        // it never produces UNPLAYABLE -- a no-op for the normal path -- but the
+        // global-apportion drawable-only mode marks never-sampled racks UNPLAYABLE
+        // to exclude them from the apportionment.
+        if b == UNPLAYABLE {
+            continue;
+        }
         lat.unrank_into(ridx, &mut r[..n]);
         let mut m = 0;
         for (t, &c) in r[..n].iter().enumerate() {
@@ -1610,6 +1617,71 @@ pub fn entering_fused(
         };
         ctx.apportion_rec(m, 0, 0, 1, b as i128);
     }
+}
+
+/// For the global-apportion drawable-only path: copy best[R] into out[R] for
+/// every full rack R drawable from `unseen` (each letter t taken
+/// 0..=min(unseen[t], remaining), total == rack_size), leaving non-drawable racks
+/// at their prior value (the caller pre-fills UNPLAYABLE). The rack's lattice index
+/// is carried incrementally by the add table -- the same enumeration as
+/// apportion_fused, without the weight or the apportionment.
+pub fn mark_drawable_best(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    best: &[i32],
+    unseen: &[u8],
+    out: &mut [i32],
+) {
+    let n = lat.num_letters();
+    let rack_size = lat.rack_size();
+    let mut suffix_cap = [0u32; MAX_LETTERS + 1];
+    for t in (0..n).rev() {
+        suffix_cap[t] = suffix_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
+    }
+    // Constant context for the drawable-rack copy (called once) -- no
+    // clippy::too_many_arguments; rec carries only the changing draw position and index.
+    struct Ctx<'a> {
+        n: usize,
+        unseen: &'a [u8],
+        suffix_cap: &'a [u32],
+        add: &'a AddTable,
+        best: &'a [i32],
+        out: &'a mut [i32],
+    }
+    impl Ctx<'_> {
+        fn rec(&mut self, t: usize, remaining: usize, idx: usize) {
+            if remaining == 0 {
+                // SAFETY: at remaining == 0, idx is a full-rack lattice index (built up one tile
+                // at a time via the add table), < lat.len(); best and out are both
+                // lat.len()-sized.
+                unsafe {
+                    *self.out.get_unchecked_mut(idx) = *self.best.get_unchecked(idx);
+                }
+                return;
+            }
+            if t == self.n || (self.suffix_cap[t] as usize) < remaining {
+                return;
+            }
+            // c = 0: skip letter t.
+            self.rec(t + 1, remaining, idx);
+            // c >= 1: take c of letter t, advancing the lattice index one t at a time.
+            let cap = (self.unseen[t] as usize).min(remaining);
+            let mut idx_c = idx;
+            for c in 1..=cap {
+                idx_c = self.add.add(idx_c, t);
+                self.rec(t + 1, remaining - c, idx_c);
+            }
+        }
+    }
+    Ctx {
+        n,
+        unseen,
+        suffix_cap: &suffix_cap,
+        add,
+        best,
+        out,
+    }
+    .rec(0, rack_size, 0);
 }
 
 /// leave_new(S)=sum_d ways(d)*best[S+d]/sum_d ways(d), where the completion d is
@@ -2056,6 +2128,30 @@ mod tests {
                 den[idx],
                 den_naive[idx]
             );
+        }
+    }
+
+    #[test]
+    fn mark_drawable_best_copies_drawable() {
+        // 3 letters, rack 3. mark_drawable_best copies best[R] for racks drawable
+        // from `unseen` and leaves every other index UNPLAYABLE.
+        let lat = MultisetLattice::new(3, 3);
+        let add = AddTable::new(&lat);
+        let unseen = [4u8, 1u8, 2u8];
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        for (idx, slot) in best.iter_mut().enumerate().skip(lat.full_rack_start()) {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            *slot = h.rem_euclid(20_000) - 5_000;
+        }
+        let mut out = vec![UNPLAYABLE; lat.len()];
+        mark_drawable_best(&lat, &add, &best, &unseen, &mut out);
+        let n = lat.num_letters();
+        for idx in 0..lat.len() {
+            let rk = lat.tally(idx);
+            let size: usize = rk.iter().map(|&c| c as usize).sum();
+            let drawable = size == lat.rack_size() && (0..n).all(|t| rk[t] <= unseen[t]);
+            let want = if drawable { best[idx] } else { UNPLAYABLE };
+            assert_eq!(out[idx], want, "mismatch at {idx}");
         }
     }
 

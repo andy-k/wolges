@@ -4277,6 +4277,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // / multi-gen (iterate via separate invocations).
     let global_apportion =
         full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION", false);
+    // WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE (default 0; only under GLOBAL_APPORTION):
+    // restrict v(R) to racks DRAWABLE from each board's unseen pool instead of valuing
+    // every rack from board context. 0 = value v(R) for EVERY rack (full coverage). 1 =
+    // accumulate v(R) only from boards where R is drawable; racks never drawable on any
+    // sampled board stay unvalued and are masked out of the global apportionment.
+    let ga_drawable =
+        global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE", false);
     // WOLGES_CENSUS_SHEET_REUSE (default on; multi-gen + reset-per-board + uniform
     // spec only): the step-1 play-value sheet depends only on the board and the unseen
     // pool, NOT on the leaves, so with the deterministic reset-per-board sampler (same
@@ -4950,18 +4957,29 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             };
                         }
                     } else if full_rack && global_apportion {
-                        // board-context v(R): best_equity(R) for EVERY full rack,
-                        // valued from board context regardless of bag drawability,
-                        // accumulated below as a simple board mean (sum/cnt) and
-                        // apportioned once over the global bag at the finalize. The
-                        // per-board pool draw-apportion is skipped entirely.
+                        // board-context v(R): best_equity(R) for full racks valued
+                        // from board context, accumulated below as a simple board mean
+                        // (sum/cnt) and apportioned once over the global bag at the
+                        // finalize. The per-board pool draw-apportion is skipped.
                         census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                        for (idx, slot) in contrib.iter_mut().enumerate() {
-                            *slot = if idx >= full_rack_start {
-                                unsafe { *oppdenial_leave_best.get_unchecked(idx) }
-                            } else {
-                                census::UNPLAYABLE
-                            };
+                        contrib.iter_mut().for_each(|x| *x = census::UNPLAYABLE);
+                        if ga_drawable {
+                            // drawable-only: only racks drawable from this board's pool
+                            // contribute to v(R); the rest stay UNPLAYABLE (masked out
+                            // of the global apportionment by entering_fused).
+                            census::mark_drawable_best(
+                                &lat,
+                                add_table.as_ref().unwrap(),
+                                &oppdenial_leave_best,
+                                &unseen_tally,
+                                &mut contrib,
+                            );
+                        } else {
+                            // every full rack valued regardless of drawability.
+                            contrib[full_rack_start..]
+                                .iter_mut()
+                                .zip(oppdenial_leave_best[full_rack_start..].iter())
+                                .for_each(|(slot, &b)| *slot = b);
                         }
                     } else if entering_push {
                         // push form: one lattice walk apportions best[] to every leave
