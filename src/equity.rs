@@ -13,6 +13,28 @@ pub const OPENING_HOTSPOT_PENALTY: i32 = 700; // 0.7 * SCALE
 // Endgame penalty base for unplayed tiles (10 points).
 pub const ENDGAME_PENALTY_BASE: i32 = 10_000; // 10 * SCALE
 
+/// Whole-point score from a premultiplied (millipoint) integer score.
+///
+/// Scores are accumulated in millipoints: the alphabet tile values are
+/// premultiplied by SCALE so movegen sums them straight into the equity scale,
+/// saving a multiply at equity construction. A score is therefore always a
+/// whole multiple of SCALE, so this division is exact. Use it at every display
+/// or log boundary that emits a score (as opposed to an equity), so the
+/// conversion lives in one place and is not missed.
+#[inline(always)]
+pub fn descale_score(millipoints: i32) -> i32 {
+    millipoints / SCALE
+}
+
+/// Premultiplied (millipoint) score from a whole-point score. The inverse of
+/// descale_score: use it at every input boundary that supplies a score in
+/// points (a parsed position, a hardcoded fixture, a clock adjustment) so the
+/// internal millipoint scale never leaks into caller-facing values.
+#[inline(always)]
+pub fn scale_score(points: i32) -> i32 {
+    points * SCALE
+}
+
 impl Equity {
     pub const NEG_INFINITY: Self = Self(i32::MIN);
     pub const INFINITY: Self = Self(i32::MAX);
