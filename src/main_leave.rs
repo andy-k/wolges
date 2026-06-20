@@ -3110,6 +3110,22 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     Ok(())
 }
 
+// per-rack contribution to a subrack's running (equity, count) accumulator
+// during `-generate` decomposition. `fv` is the full rack's (equity_sum,
+// sample_count); `w` is completion_draw_ways (global-bag combos for the drawn
+// completion). Per-occurrence (per_rack false) folds the sampled count(R) into
+// the weight, so a rack drawn often pulls on the common subracks it shares by
+// that draw count on top of its average -- double-counting the draw frequency.
+// per_rack weights the rack's MEAN by the global-bag combos alone, so a rack
+// counts once at its average and its draw count never inflates the weight.
+fn decompose_contribution(fv: &Cumulate, w: u64, per_rack: bool) -> (f64, u64) {
+    if per_rack {
+        (fv.equity / fv.count as f64 * w as f64, w)
+    } else {
+        (fv.equity * w as f64, fv.count * w)
+    }
+}
+
 fn generate_leaves<
     Readable: std::io::Read,
     W: std::io::Write,
@@ -3122,6 +3138,11 @@ fn generate_leaves<
     rare_path: Option<&str>,
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
+    // per-rack decomposition (opt-in, off = byte-identical). Default
+    // off weights each rack by its sampled count; on weights each rack's mean by
+    // the global-bag combos alone so a rack's draw count does not inflate its
+    // pull on shared subracks. See decompose_contribution.
+    let per_rack = env_flag("WOLGES_GENERATE_PER_RACK", false);
     let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
     let mut exchange_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let mut rack_bytes = Vec::new();
@@ -3173,15 +3194,16 @@ fn generate_leaves<
                         &subrack_tally,
                         word_prob.bag(),
                     );
+                    let (add_equity, add_count) = decompose_contribution(fv, w, per_rack);
                     subrack_map
                         .entry(subrack_bytes.into())
                         .and_modify(|v| {
-                            v.equity += fv.equity * w as f64;
-                            v.count += fv.count * w;
+                            v.equity += add_equity;
+                            v.count += add_count;
                         })
                         .or_insert_with(|| Cumulate {
-                            equity: fv.equity * w as f64,
-                            count: fv.count * w,
+                            equity: add_equity,
+                            count: add_count,
                         });
                 },
                 rack_tally: &mut rack_tally,
@@ -4129,6 +4151,27 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_rack_decompose_weights_by_mean_not_count() {
+        // full rack R: equity_sum 10 over count 2 (mean 5), completion ways w = 3.
+        let fv = Cumulate {
+            equity: 10.0,
+            count: 2,
+        };
+        // per-occurrence: contribute equity_sum*w and count*w, so the
+        // sampled count enters both, then -generate divides them back out ->
+        // per-occurrence mean. a rack's draw count inflates its pull here.
+        let (eq, cnt) = decompose_contribution(&fv, 3, false);
+        assert!((eq - 30.0).abs() < 1e-9); // 10 * 3
+        assert_eq!(cnt, 6); // 2 * 3
+        // per-rack: contribute mean*w and w, so the sampled count drops
+        // out of the weight -> leave(S) = sum mean(R)*w / sum w. a rack
+        // counts once at its mean, never inflated by its draw count.
+        let (eq, cnt) = decompose_contribution(&fv, 3, true);
+        assert!((eq - 15.0).abs() < 1e-9); // (10/2) * 3
+        assert_eq!(cnt, 3); // w only
+    }
 
     #[test]
     fn rare_pools_by_count_into_subrack_map() {
