@@ -718,6 +718,10 @@ fn generate_autoplay_logs<
                 let mut play_fmt = String::new();
                 let mut equity_fmt = String::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
+                // final_scores in whole points for the game log: the raw scores
+                // are premultiplied millipoints, so descale at this boundary.
+                // reused per game like final_scores.
+                let mut final_scores_pts = vec![0; game_config.num_players() as usize];
                 let mut num_bingos = vec![0; game_config.num_players() as usize];
                 let mut num_turns = vec![0; game_config.num_players() as usize];
                 let mut num_moves;
@@ -1186,6 +1190,13 @@ fn generate_autoplay_logs<
                                 game_state::CheckGameEnded::NotEnded
                                     if !WRITE_LOGS && old_bag_len == 0 =>
                                 {
+                                    // aborted before a real end (summarize stops
+                                    // at the empty bag), so check_game_ended left
+                                    // final_scores holding the previous game's
+                                    // values. report THIS game's running scores.
+                                    for (i, p) in game_state.players.iter().enumerate() {
+                                        final_scores[i] = p.score;
+                                    }
                                     game_state::CheckGameEnded::PlayedOut
                                 }
                                 _ => game_ended,
@@ -1205,20 +1216,29 @@ fn generate_autoplay_logs<
                                             num_moves,
                                             &cur_rack_ser,
                                             &play_fmt,
-                                            play_score,
-                                            final_scores[old_turn as usize],
+                                            equity::descale_score(play_score),
+                                            equity::descale_score(
+                                                final_scores[old_turn as usize],
+                                            ),
                                             tiles_played,
                                             &aft_rack_ser,
                                             &equity_fmt,
                                             old_bag_len,
-                                            final_scores[new_turn as usize],
+                                            equity::descale_score(
+                                                final_scores[new_turn as usize],
+                                            ),
                                         ))
                                         .unwrap();
+                                }
+                                for (pts, &mp) in
+                                    final_scores_pts.iter_mut().zip(final_scores.iter())
+                                {
+                                    *pts = equity::descale_score(mp);
                                 }
                                 batched_csv_game
                                     .serialize((
                                         &game_id,
-                                        &final_scores,
+                                        &final_scores_pts,
                                         &num_bingos,
                                         &num_turns,
                                         &player_aliases[0],
@@ -1281,13 +1301,17 @@ fn generate_autoplay_logs<
                                     num_moves,
                                     &cur_rack_ser,
                                     &play_fmt,
-                                    play_score,
-                                    game_state.players[old_turn as usize].score,
+                                    equity::descale_score(play_score),
+                                    equity::descale_score(
+                                        game_state.players[old_turn as usize].score,
+                                    ),
                                     tiles_played,
                                     &aft_rack_ser,
                                     &equity_fmt,
                                     old_bag_len,
-                                    game_state.players[new_turn as usize].score,
+                                    equity::descale_score(
+                                        game_state.players[new_turn as usize].score,
+                                    ),
                                 ))
                                 .unwrap();
                         }
@@ -2268,8 +2292,8 @@ impl GameStats {
         turns: u32,
         end_reason: game_state::CheckGameEnded,
     ) {
-        self.p0_score.update(p0_final as f64 / equity::SCALE as f64);
-        self.p1_score.update(p1_final as f64 / equity::SCALE as f64);
+        self.p0_score.update(equity::descale_score(p0_final) as f64);
+        self.p1_score.update(equity::descale_score(p1_final) as f64);
         self.turns.update(turns as f64);
         match end_reason {
             game_state::CheckGameEnded::PlayedOut => self.played_out += 1,
