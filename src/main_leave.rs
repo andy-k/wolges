@@ -803,9 +803,9 @@ fn generate_autoplay_logs<
     // min_samples) instead of undersampled subracks. The forced rack is built
     // impossible-tolerantly (pair with WOLGES_IMPOSSIBLE_OK=1) and recorded keyed
     // by R into the main full-rack map, like a natural sample. Sound only with the
-    // per-rack `-generate` decompose (WOLGES_GENERATE_PER_RACK=1): there each
-    // rack's MEAN is weighted by global-bag combos alone, so a force-covered rack
-    // never inflates the common subracks it shares. Off (default) = the
+    // per-rack `-generate` decompose (now the default): there each rack's MEAN
+    // is weighted by global-bag combos alone, so a force-covered rack never
+    // inflates the common subracks it shares. Off (default) = the
     // subrack-targeted path, byte-identical to before.
     let full_rack_forcing = env_flag("WOLGES_AUTOPLAY_FULL_RACK_FORCING", false);
 
@@ -5688,11 +5688,13 @@ fn generate_leaves<
     rare_path: Option<&str>,
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
-    // per-rack decomposition (opt-in, off = byte-identical). Default
-    // off weights each rack by its sampled count; on weights each rack's mean by
-    // the global-bag combos alone so a rack's draw count does not inflate its
-    // pull on shared subracks. See decompose_contribution.
-    let per_rack = env_flag("WOLGES_GENERATE_PER_RACK", false);
+    // per-rack decomposition (default on; the right thing). It weights each
+    // rack's mean by the global-bag combos alone, so force-covered racks do not
+    // pollute the common subracks they share. Set WOLGES_GENERATE_PER_RACK=0 to
+    // opt out to the per-occurrence decompose (each rack weighted by its
+    // sampled count, which double-counts draw frequency; kept for reproducing
+    // pre-flip leaves). See decompose_contribution.
+    let per_rack = env_flag("WOLGES_GENERATE_PER_RACK", true);
     let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
     let mut exchange_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let mut rack_bytes = Vec::new();
