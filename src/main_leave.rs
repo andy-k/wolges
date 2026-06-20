@@ -4363,6 +4363,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // valued in any gen. The worker tracks the current gen's board count as
     // gen_idx advances.
     let gens = board_counts.len();
+    // shared allocations (the thread cap, the per-board sheet cache) are sized
+    // to the largest gen so every gen of a non-uniform spec is covered.
+    let max_boards = board_counts.iter().copied().max().unwrap_or(1).max(1);
     let multigen = gens > 1;
     // online mini-batch SGD (single-generation only). WOLGES_CENSUS_BATCH = boards
     // per mini-batch (default = the gen's board count = one batch = the plain
@@ -4638,7 +4641,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // compute (tens of seconds) is the cost, so lock contention is negligible.
     // Each board slot seeds its own rng deterministically from (seed, slot index)
     // so the produced board set is reproducible and independent of scheduling.
-    let num_threads = wolges_threads().max(1).min(board_counts[0].max(1) as usize);
+    let num_threads = wolges_threads().max(1).min(max_boards as usize);
     let lat_len = lat.len();
     let next_board = std::sync::atomic::AtomicU64::new(0);
     // (accum_sum, accum_cnt, boards_completed, distinct_leaves_valued, ever_valued).
@@ -4678,7 +4681,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // (the multi-gen barrier orders all gen-0 writes before any gen-1 read; each board
     // slot is written once, by whichever thread pulls it). Empty unless sheet_reuse.
     let sheet_cache: Vec<SheetCacheSlot> = if sheet_reuse {
-        (0..board_counts[0])
+        (0..max_boards)
             .map(|_| std::sync::Mutex::new(None))
             .collect()
     } else {
