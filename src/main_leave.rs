@@ -4289,16 +4289,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let num_letters = alphabet.len() as usize;
     let rack_size = game_config.rack_size() as usize;
     let num_tiles: usize = (0..alphabet.len()).map(|t| alphabet.freq(t) as usize).sum();
-    // Board-fill window. The play-value sheet is one movegen over the WHOLE unseen
-    // pool, whose play count explodes super-linearly with pool size (duplicate tile
-    // assignments + blank wildcards): pool 27 -> about 2.3M plays (fast), pool 44 ->
-    // about 3 BILLION plays (intractable). So default to LATE-midgame boards where the
-    // unseen pool (= num_tiles - board) stays small but the bag is still non-empty
-    // (pre-endgame, klv-applicable). pool_max keeps it tractable; pool_min keeps it
-    // pre-endgame. Tune via WOLGES_POOL_MIN/MAX (the board edges follow). (This
-    // enumerative builder covers only the pool-bounded window, not the full 25-75%
-    // midgame.)
-    let pool_max = env_usize("WOLGES_POOL_MAX", 28);
+    let racks_tiles = game_config.num_players() as usize * rack_size;
+    // Board-fill window. A board is sampled iff its unseen pool (tiles not on
+    // the board = bag + both racks) lies in [pool_min, pool_max], both derived
+    // from the config (not lexicon-specific). pool_min = num_players*rack_size
+    // + 1 is the smallest pool with a non-empty bag (below it the bag is empty
+    // = endgame, where the klv leave is unused -- already the floor, see
+    // min_pool below). The algo supports up to pool_max = num_tiles - 1 (every
+    // board but the all-unseen empty one), but sampling near-empty boards (only
+    // a few tiles down) is of open soundness for leave values, so the default
+    // targets a reasonable useful window: pool_max = num_tiles -
+    // num_players*rack_size, i.e. boards with at least that many tiles down.
+    // Classic 2-player English -> [15, 86]. WOLGES_POOL_MIN/MAX override (e.g.
+    // widen pool_max toward num_tiles - 1).
+    let pool_max = env_usize("WOLGES_POOL_MAX", num_tiles.saturating_sub(racks_tiles));
     // The window is pool-native: a board is in-window while its unseen pool (tiles not
     // on the board) lies in [pool_min, pool_max]. movegen and play_scorer both stop
     // adding the klv leave once the bag is empty (num_tiles_in_bag <= 0 -> endgame
@@ -4307,9 +4311,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // rack_size), so pool > num_players * rack_size guarantees a non-empty bag for any
     // rack sizes. Floor pool_min there; a smaller WOLGES_POOL_MIN is raised with a
     // warning rather than silently valuing endgame boards whose leaves are never used.
-    let min_pool = game_config.num_players() as usize * rack_size + 1;
+    let min_pool = racks_tiles + 1;
     let pool_min = {
-        let req = env_usize("WOLGES_POOL_MIN", 3 * rack_size);
+        let req = env_usize("WOLGES_POOL_MIN", min_pool);
         if req < min_pool {
             eprintln!(
                 "census: raising pool_min {req} -> {min_pool} (a smaller unseen pool \
