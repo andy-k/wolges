@@ -4629,6 +4629,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         }
         census_run_epoch = run_stamp();
     }
+    // a resume must have at least as many gens as the snapshots already on
+    // disk, else gen_idx would index past the spec; fail with a clear error.
+    if start_gen >= gens {
+        return Err(format!(
+            "census resume: {start_gen} generation(s) already completed but the \
+             spec has only {gens}; extend the board-count spec or remove \
+             census-gen*.klv2"
+        )
+        .into());
+    }
     // RwLock so the online-SGD path can rewrite leave_cur between mini-batches while
     // worker threads read it. In the default (one-batch) path it is only ever read.
     let leave_lock = std::sync::RwLock::new(leave_cur);
