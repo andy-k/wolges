@@ -4402,6 +4402,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // sampled board stay unvalued and are masked out of the global apportionment.
     let ga_drawable =
         global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE", false);
+    // WOLGES_CENSUS_GLOBAL_WEIGHTS (default 0 = the board-coupled, drawable-
+    // only full-rack method = byte-identical): the deliberately unphysical
+    // global-weighted census. Weight each rack R by the GLOBAL bag combos
+    // prod_t C(base_freqs[t], R[t]) instead of this board's depleted unseen
+    // pool, and build the step-1 sheet over the global rack pool so
+    // best_equity(R) exists for racks not drawable on this board. Globally-
+    // impossible racks (R[t] > base_freqs[t], e.g. QQ with one Q) still get
+    // weight 0 and drop out, so the valued set is exactly the globally-
+    // possible racks -- this computes that impossible-tolerant average
+    // exactly (no sample noise). Plain full-rack path (no denial / oppdenial_rack /
+    // global-apportionment).
+    let global_weights =
+        full_rack && !global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
     // WOLGES_CENSUS_SHEET_REUSE (default on; multi-gen + reset-per-board + uniform
     // spec only): the step-1 play-value sheet depends only on the board and the unseen
     // pool, NOT on the leaves, so with the deterministic reset-per-board sampler (same
@@ -4836,7 +4849,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     // word scores higher, so an unreached or negative-scoring
                     // P keeps 0; the empty P (pass / keep-all) is 0 too.
                     sheet.iter_mut().for_each(|v| *v = 0);
-                    let num_blanks_eff = (unseen_tally[0] as usize).min(blank_cap);
+                    // GLOBAL_WEIGHTS: build over the global bag pool (each letter
+                    // capped at rack_size) so plays exist for tiles depleted from this
+                    // board's unseen pool, giving best_equity for racks not drawable
+                    // here. Off = the board's unseen pool (byte-identical).
+                    let sheet_pool: &[u8] = if global_weights {
+                        &base_freqs
+                    } else {
+                        &unseen_tally
+                    };
+                    let num_blanks_eff = (sheet_pool[0] as usize).min(blank_cap);
                     let ts = std::time::Instant::now();
                     // STEP 1 build: a real-before-blank descent emits each feasible word
                     // once (a blank stands in for a letter only when no real copy is
@@ -4855,7 +4877,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             lat: &lat,
                         },
                         SpellPool {
-                            unseen_tally: &unseen_tally,
+                            unseen_tally: sheet_pool,
                             num_blanks_eff,
                             rack_size,
                             blank_cap,
@@ -4979,7 +5001,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     if full_rack && !global_apportion {
                         num_board.iter_mut().for_each(|x| *x = 0.0);
                         den_board.iter_mut().for_each(|x| *x = 0.0);
-                        let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
+                        // GLOBAL_WEIGHTS: weight racks by the board-independent global
+                        // bag, not this board's depleted unseen pool. best_equity is
+                        // pool-independent, so only the weight (and the sheet coverage
+                        // above) change. Off = the unseen pool (byte-identical).
+                        let weight_pool: &[u8] = if global_weights {
+                            &base_freqs
+                        } else {
+                            &unseen_tally
+                        };
+                        let pool: usize = weight_pool.iter().map(|&c| c as usize).sum();
                         // opponent terms (off unless a strength knob is set).
                         // The marginal terms (oppdenial_leave/oppdenial_rack)
                         // and the oppdenial_exact term both need best_equity
@@ -5039,7 +5070,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             &census::ApportionBoard {
                                 sheet: &sheet,
                                 leave,
-                                unseen: &unseen_tally,
+                                unseen: weight_pool,
                             },
                             census::ApportionOut {
                                 num: &mut num_board,
