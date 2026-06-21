@@ -8,6 +8,7 @@ logs_mode=""
 smooth_mode=""
 no_smooth_mode=""
 gilles_mode=""
+no_forcing_mode=""
 while :; do
   if [ "${1:-}" = "--" ]; then
     shift
@@ -43,8 +44,26 @@ while :; do
     shift
     continue
   fi
+  if [ "${1:-}" = "--no-forcing" ]; then
+    no_forcing_mode=1
+    shift
+    continue
+  fi
   break
 done
+
+# Full-rack impossible-tolerant forcing is on by default for the autoplay path
+# (the strongest static recipe). It forces each undersampled full rack to the
+# per-gen :min (defaulting :min to 1 = cover each globally-possible rack once)
+# and places racks impossible-tolerantly. Pairs with the per-rack
+# -generate decompose (also the default). --gilles uses its own sampler (never
+# forced); --no-forcing reverts to plain natural sampling.
+forcing_on=""
+if [ -z "$gilles_mode" ] && [ -z "$no_forcing_mode" ]; then
+  forcing_on=1
+  export WOLGES_AUTOPLAY_FULL_RACK_FORCING=1
+  export WOLGES_IMPOSSIBLE_OK=1
+fi
 
 if [ "$#" -lt 3 ]; then
   cat <<"EOF"
@@ -82,6 +101,12 @@ options:
   --logs        log complete games (not recommended if not needed)
   --smooth      enable smoothing (default without :min_samples_per_rack or with :0)
   --no-smooth   disable smoothing (default with :min_samples_per_rack)
+  --no-forcing  disable full-rack forcing (on by default for autoplay). by
+                default the autoplay path forces each undersampled full rack to
+                the per-gen :min (defaulting :min to 1 = cover each
+                globally-possible rack once) with impossible-tolerant placement.
+                --no-forcing reverts to plain natural-rack sampling. ignored
+                under --gilles.
   --gilles      collect samples via gillesb board-sampling instead
                 of autoplay. :min_samples_per_rack now drives coverage: after the
                 mandatory games, remediation games direct their samples at racks
@@ -176,8 +201,13 @@ while [ "${!i:-}" != "" ]; do
   if [ "${full_arg}" != "${before_colon}" ]; then
     after_colon="${full_arg#*:}"
   else
-    # default
-    after_colon="0"
+    # default: with forcing on (the autoplay default), :1 covers each
+    # globally-possible rack at least once; plain :0 otherwise.
+    if [ "$forcing_on" ]; then
+      after_colon="1"
+    else
+      after_colon="0"
+    fi
   fi
 
   should_smooth=0
