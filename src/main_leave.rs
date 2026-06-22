@@ -4456,6 +4456,35 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // occur in the opening), to A/B whether un-swamping the opening context
     // closes the gap. W=1 keeps the faithful design.
     let opening_weight = env_usize("WOLGES_OPENING_WEIGHT", 1).max(1) as u64;
+    // WOLGES_CENSUS_CI_REPORT (off | rack, default off; diagnostic for the fixed-width / CI-driven
+    // sampling idea): track each valued entry's sum-of-squares across boards so the
+    // run can report the per-entry confidence-interval half-width (z * sd / sqrt(n),
+    // n = boards that valued it) at the end. The census's per-board best_equity is
+    // EXACT, so this variance is the across-BOARD scatter -- how tightly num_boards
+    // pins each value -- and the report says what fraction of entries already sit
+    // under a target accuracy and how many boards it would take to pin a
+    // given fraction. Diagnostic only: it changes no leaves and
+    // is byte-identical to default with the knob off. CI = PRECISION, not bias --
+    // it assumes the board mix is the right one (off-mix boards tighten the CI
+    // around a shifted mean).
+    let ci_report = full_rack
+        && match std::env::var("WOLGES_CENSUS_CI_REPORT").as_deref() {
+            Ok("off") | Err(_) => false,
+            Ok("rack") => true,
+            Ok(other) => {
+                return Err(
+                    format!("WOLGES_CENSUS_CI_REPORT must be off or rack (got {other:?})").into(),
+                );
+            }
+        };
+    let ci_conf = env_parse::<f64>("WOLGES_CENSUS_CI_CONF", 0.999);
+    let ci_conf = if ci_conf > 0.0 && ci_conf < 1.0 {
+        ci_conf
+    } else {
+        0.999
+    };
+    // target CI half-width in millipoints for the "boards needed" estimate.
+    let ci_target_mp = env_usize("WOLGES_CENSUS_CI_TARGET", 500) as f64;
     // WOLGES_CENSUS_SHEET_REUSE (default on; multi-gen + reset-per-board + uniform
     // spec only): the step-1 play-value sheet depends only on the board and the unseen
     // pool, NOT on the leaves, so with the deterministic reset-per-board sampler (same
@@ -4728,6 +4757,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             Vec::new()
         },
     ));
+    // per-entry sum-of-squares across boards for the CI diagnostic (WOLGES_CENSUS_
+    // CI_REPORT); empty (no alloc) unless the diagnostic is on. Kept out of the
+    // `shared` tuple so the hot merge and every accumulator destructure are untouched
+    // by default; updated under its own lock, nested inside the shared lock.
+    let ci_sumsq = std::sync::Mutex::new(if ci_report {
+        vec![0f64; lat_len]
+    } else {
+        Vec::new()
+    });
     // mini-batch barrier (SGD only): all workers finish a batch, the leader EMA-updates
     // leave_cur, all resume on the next batch with the improved leaves.
     let barrier = std::sync::Barrier::new(num_threads);
@@ -5222,6 +5260,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     // merge this board's contribution into the shared accumulators.
                     let mut g = shared.lock().unwrap();
                     let (sum, cnt, completed, valued, _ever) = &mut *g;
+                    let mut sq = if ci_report {
+                        Some(ci_sumsq.lock().unwrap())
+                    } else {
+                        None
+                    };
                     for idx in 0..lat_len {
                         let v = contrib[idx];
                         if v != census::UNPLAYABLE {
@@ -5230,6 +5273,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                             sum[idx] += v as f64;
                             cnt[idx] += 1;
+                            if let Some(sq) = sq.as_mut() {
+                                sq[idx] += (v as f64) * (v as f64);
+                            }
                         }
                     }
                     *completed += 1;
@@ -5674,6 +5720,76 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
     let leave_final = leave_lock.into_inner().unwrap();
+
+    // CI diagnostic (WOLGES_CENSUS_CI_REPORT): summarize the across-board scatter of
+    // every valued entry (full racks under rack_summary, leaves on the apportioned
+    // path) as a confidence-interval half-width z * sqrt(var / n), and estimate how
+    // many boards it would take to pin a given fraction of entries to
+    // ci_target_mp. Pure report; no leaves change.
+    if ci_report {
+        let sumsq = ci_sumsq.into_inner().unwrap();
+        let z = stats::NormalDistribution::reverse_ci(ci_conf);
+        let mut ci_halves = Vec::new();
+        let mut boards_needed = Vec::new();
+        let mut n_under = 0usize;
+        let mut sum_n = 0u64;
+        // rack_summary values full racks (the per-rack CI target); the apportioned
+        // path forms leaves. Report over each path's own emitted set.
+        let report_lo = if rack_summary { full_rack_start } else { 0 };
+        for idx in report_lo..lat_len {
+            let n = accum_cnt[idx];
+            if n >= 2 {
+                // sample variance of best_equity over the n boards that valued idx.
+                let var = ((sumsq[idx] - accum_sum[idx] * accum_sum[idx] / n as f64)
+                    / (n as f64 - 1.0))
+                    .max(0.0);
+                let ci_half = z * (var / n as f64).sqrt();
+                if ci_half <= ci_target_mp {
+                    n_under += 1;
+                }
+                // ci_half scales as 1/sqrt(n), so n*(ci_half/target)^2 boards reach target.
+                boards_needed.push(n as f64 * (ci_half / ci_target_mp.max(1.0)).powi(2));
+                ci_halves.push(ci_half);
+                sum_n += n;
+            }
+        }
+        ci_halves.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        boards_needed.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let pctl = |v: &[f64], p: f64| -> f64 {
+            if v.is_empty() {
+                0.0
+            } else {
+                v[(((v.len() - 1) as f64) * p) as usize]
+            }
+        };
+        let m = ci_halves.len();
+        eprintln!(
+            "census CI report (conf {:.3}, z {:.3}, {m} entries with n>=2, avg n {:.1}):",
+            ci_conf,
+            z,
+            if m > 0 { sum_n as f64 / m as f64 } else { 0.0 },
+        );
+        eprintln!(
+            "  per-entry CI half-width (mp): p50 {:.1}  p90 {:.1}  p99 {:.1}  max {:.1}",
+            pctl(&ci_halves, 0.5),
+            pctl(&ci_halves, 0.9),
+            pctl(&ci_halves, 0.99),
+            ci_halves.last().copied().unwrap_or(0.0),
+        );
+        eprintln!(
+            "  {:.1}% of entries within target {:.0} mp at the current count; \
+             boards to pin a fraction: p50 {:.0}  p90 {:.0}  p99 {:.0}",
+            if m > 0 {
+                100.0 * n_under as f64 / m as f64
+            } else {
+                0.0
+            },
+            ci_target_mp,
+            pctl(&boards_needed, 0.5),
+            pctl(&boards_needed, 0.9),
+            pctl(&boards_needed, 0.99),
+        );
+    }
 
     // global-apportion: the across-board accumulators hold a per-rack board mean
     // v(R) = accum_sum[R]/accum_cnt[R] (board-context best_equity, every full rack
