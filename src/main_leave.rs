@@ -4432,6 +4432,30 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // global-apportionment).
     let global_weights =
         full_rack && !global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
+    // WOLGES_OPENING_SAMPLES (default 0; only with rack_summary on the
+    // reset-per-board sampler): graft autoplay-style opening coverage onto the
+    // exhaustive census. While greedily playing each board slot's game UP TO its
+    // in-window target board, record the real rack actually held at every
+    // pre-target ply (opening + earlier-window) as a weight-1 summary row -- its
+    // greedy best-play equity, in the same millipoint units value_board
+    // accumulates. The target board itself stays census-valued (every rack,
+    // exactly); its real rack is never recorded (the play-up loop stops before
+    // valuing it), so there is no double count. This adds the opening-phase
+    // leaves the census's [low,high] window never samples -- the one identified
+    // census-vs-autoplay coverage gap. Ignored by the per-game sampler.
+    let opening_samples = rack_summary && env_flag("WOLGES_OPENING_SAMPLES", false);
+    // WOLGES_OPENING_WEIGHT (default 1 = the faithful weight-1 row): count each
+    // opening sample W times in the summary accumulator. The catch is that the
+    // rack-summary census already values EVERY rack on EVERY of the num_boards
+    // target boards, so a rack carries count = num_boards from the census; one
+    // weight-1 opening row (a rack occurs in the opening at most about
+    // natural_freq*num_boards < 1 time) barely shifts its mean -- the opening
+    // signal is swamped num_boards:1. W lets an opening occurrence weigh up
+    // toward the census's per-rack count (W about num_boards makes a single
+    // opening row count as much as the whole midgame valuation for racks that DO
+    // occur in the opening), to A/B whether un-swamping the opening context
+    // closes the gap. W=1 keeps the faithful design.
+    let opening_weight = env_usize("WOLGES_OPENING_WEIGHT", 1).max(1) as u64;
     // WOLGES_CENSUS_SHEET_REUSE (default on; multi-gen + reset-per-board + uniform
     // spec only): the step-1 play-value sheet depends only on the board and the unseen
     // pool, NOT on the leaves, so with the deterministic reset-per-board sampler (same
@@ -4811,6 +4835,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut movegen_rack = Vec::<u8>::new();
                 let mut verify_rack = Vec::<u8>::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
+                // opening-sample buffer (WOLGES_OPENING_SAMPLES): this board
+                // slot's pre-target real racks as (lattice rank, millipoint best-play
+                // equity). Filled during the play-up to the window target, committed to
+                // the shared accumulators only when the game reaches its window, so a
+                // discarded retry game leaves no trace. Stays empty (no alloc) by default.
+                let mut open_buf = Vec::<(u32, i32)>::new();
 
                 // Value one in-window board: build the play-value sheet from one
                 // movegen over the unseen pool, fold it with the current leaves into
@@ -5405,6 +5435,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 }
                             }
                             let mut got = false;
+                            if opening_samples {
+                                // fresh attempt: drop any prior game's pre-target racks.
+                                open_buf.clear();
+                            }
                             loop {
                                 let fill =
                                     game_state.board_tiles.iter().filter(|&&t| t != 0).count();
@@ -5442,6 +5476,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         .num_exchanges,
                                     always_include_pass: false,
                                 });
+                                if opening_samples
+                                    && game_state.current_player().rack.len() == rack_size
+                                {
+                                    // pre-target ply: the rack is already sorted (above),
+                                    // so rank it directly. plays[0] is the greedy best play
+                                    // (max_gen 1); its equity is the weight-1 observation.
+                                    let rank = lat.rank_bytes(&game_state.current_player().rack);
+                                    if rank != !0 {
+                                        open_buf.push((rank, move_generator.plays[0].equity.raw()));
+                                    }
+                                }
                                 game_state
                                     .play(&game_config, &mut rng, &move_generator.plays[0].play)
                                     .unwrap();
@@ -5483,6 +5528,24 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             reuse_board,
                             num_boards,
                         );
+                        if opening_samples && !open_buf.is_empty() {
+                            // commit this slot's pre-target opening racks (weight-1) to
+                            // the shared accumulators, alongside the target board's
+                            // exhaustive valuation value_board just merged. Same
+                            // millipoint units, so a rack seen both as a real opening
+                            // rack and as an exhaustively-valued target rack averages
+                            // the two contexts -- the opening one is the new coverage.
+                            let mut g = shared.lock().unwrap();
+                            let (sum, cnt, _completed, valued, _ever) = &mut *g;
+                            for &(rank, milli) in &open_buf {
+                                let idx = rank as usize;
+                                if cnt[idx] == 0 {
+                                    *valued += 1;
+                                }
+                                sum[idx] += milli as f64 * opening_weight as f64;
+                                cnt[idx] += opening_weight;
+                            }
+                        }
                     }
                     }
                     }
