@@ -4382,6 +4382,23 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let batch_size = (env_usize("WOLGES_CENSUS_BATCH", board_counts[0] as usize) as u64).max(1);
     let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
     let sgd = !multigen && batch_size < board_counts[0];
+    // WOLGES_CENSUS_RACK_SUMMARY (default 0): autoplay-faithful emit. Value each
+    // full rack once per board (exact best_equity, NO per-rack draw-ways weight
+    // w(R)) and write the per-rack board-mean as an autoplay-format summary CSV;
+    // feed it to the standard `-generate` (draw-ways completion decompose) --
+    // exactly the autoplay sampler's average, but with exact per-board best in
+    // place of sampled racks. Reuses the global-apportion accumulation (board-
+    // mean v(R)); only the final emit differs (a summary, not the w(R) apportion
+    // / klv). WOLGES_IMPOSSIBLE_OK (the shared impossible-ok knob, on by default,
+    // same as autoplay's forced-rare coverage) covers the board-impossible racks
+    // too, each at weight 1: the step-1 sheet is built over the global rack pool
+    // so a board-impossible rack (its tiles depleted from this board's unseen
+    // pool) still gets a real best_equity -- its tiles are playable -- and the
+    // emit skips only the GLOBALLY-impossible racks (zero completion combos). Set
+    // IMPOSSIBLE_OK=0 for drawable racks only.
+    let rack_summary =
+        full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_RACK_SUMMARY", false);
+    let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
     // WOLGES_CENSUS_GLOBAL_APPORTION (default 0 = the coupled per-board apportionment,
     // byte-identical). When 1 (full-rack + single full-batch gen only): decouple the
     // board-averaging from the draw-weighting. Per board, value best_equity(R) for
@@ -4393,15 +4410,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // the full bag). This makes the completion-weighting unconditional (not each board's
     // depleted pool) and gives rare racks full board-context coverage. Ignored under SGD
     // / multi-gen (iterate via separate invocations).
-    let global_apportion =
-        full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION", false);
+    let global_apportion = rack_summary
+        || (full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION", false));
     // WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE (default 0; only under GLOBAL_APPORTION):
     // restrict v(R) to racks DRAWABLE from each board's unseen pool instead of valuing
     // every rack from board context. 0 = value v(R) for EVERY rack (full coverage). 1 =
     // accumulate v(R) only from boards where R is drawable; racks never drawable on any
     // sampled board stay unvalued and are masked out of the global apportionment.
-    let ga_drawable =
-        global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE", false);
+    let ga_drawable = (rack_summary && !impossible_ok)
+        || (global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE", false));
     // WOLGES_CENSUS_GLOBAL_WEIGHTS (default 0 = the board-coupled, drawable-
     // only full-rack method = byte-identical): the deliberately unphysical
     // global-weighted census. Weight each rack R by the GLOBAL bag combos
@@ -4853,7 +4870,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     // capped at rack_size) so plays exist for tiles depleted from this
                     // board's unseen pool, giving best_equity for racks not drawable
                     // here. Off = the board's unseen pool (byte-identical).
-                    let sheet_pool: &[u8] = if global_weights {
+                    let sheet_pool: &[u8] = if global_weights || (rack_summary && impossible_ok) {
                         &base_freqs
                     } else {
                         &unseen_tally
@@ -5601,7 +5618,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // every leave -- leave(S) = sum_{R>=S} v(R)*G(R\S) / sum_{R>=S} G(R\S) -- via the
     // entering push fed v(R) as the "best" table and the full bag as the
     // "unseen" pool. (ga_num, ga_den) are then this run's num/den per leave.
-    let (ga_num, ga_den) = if global_apportion {
+    let (ga_num, ga_den) = if global_apportion && !rack_summary {
         let mut vr = vec![census::UNPLAYABLE; lat_len];
         for idx in full_rack_start..lat_len {
             if accum_cnt[idx] > 0 {
@@ -5637,6 +5654,62 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             0.0
         }
     };
+    if rack_summary {
+        // autoplay-faithful: emit a full-rack summary (rack, equity_sum_points,
+        // board_count) -- each board contributes best(R,B) ONCE (no w(R) weight) --
+        // for the standard `-generate` draw-ways decompose. accum_sum is in
+        // millipoints; descale to points to match the autoplay summary convention.
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let summary_name = format!("census-summary-{epoch:08x}.csv");
+        let mut sw = csv::Writer::from_path(&summary_name)?;
+        let mut tally_buf = vec![0u8; num_letters];
+        let mut leave_ser = String::new();
+        // skip globally-impossible racks (a tile beyond its bag frequency, e.g. 7
+        // Z's): their completion combos are 0, so `-generate` gives them no weight
+        // and drops them anyway. A no-op for the drawable racks (always globally
+        // possible); removes the impossible rows that IMPOSSIBLE_OK values. The
+        // closure unranks into tally (reused by the row body below).
+        let globally_possible = |idx: usize, tally: &mut [u8]| -> bool {
+            lat.unrank_into(idx, tally);
+            (0..num_letters).all(|t| tally[t] <= base_freqs[t])
+        };
+        let mut tot_e = 0f64;
+        let mut tot_c = 0u64;
+        for idx in full_rack_start..lat.len() {
+            if accum_cnt[idx] > 0 && globally_possible(idx, &mut tally_buf) {
+                tot_e += accum_sum[idx] / equity::SCALE as f64;
+                tot_c += accum_cnt[idx];
+            }
+        }
+        sw.serialize(("", tot_e, tot_c))?;
+        let mut nrows = 0usize;
+        for idx in full_rack_start..lat.len() {
+            if accum_cnt[idx] == 0 || !globally_possible(idx, &mut tally_buf) {
+                continue;
+            }
+            leave_ser.clear();
+            for (t, &c) in tally_buf.iter().enumerate() {
+                for _ in 0..c {
+                    leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
+                }
+            }
+            sw.serialize((
+                &leave_ser,
+                accum_sum[idx] / equity::SCALE as f64,
+                accum_cnt[idx],
+            ))?;
+            nrows += 1;
+        }
+        sw.flush()?;
+        eprintln!(
+            "census: wrote autoplay-faithful summary ({nrows} full racks) to {summary_name} in {}s",
+            t0.elapsed().as_secs(),
+        );
+        return Ok(());
+    }
     let baseline = value_mp(empty_rank);
     let epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
