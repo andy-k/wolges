@@ -858,6 +858,9 @@ fn generate_autoplay_logs<
     // byte-identical.
     let oppdenial_exact = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT", 0.0);
     let oppdenial_exact_pool_max = env_usize("WOLGES_OPPDENIAL_EXACT_POOL_MAX", 32);
+    // WOLGES_OPPDENIAL_EXACT_ME2 (default 1.0) scales the my-next (me2) term in the joint opponent
+    // correction; 0.0 drops the double-count.
+    let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
     let opp_on = oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0;
     // Build the census lattice, its add-table, and the millipoint leave-value array ONCE
     // (only when an opponent-denial term is on, so the default path allocates nothing and stays
@@ -1557,9 +1560,12 @@ fn generate_autoplay_logs<
                                     lat,
                                     add,
                                     &opp_best,
-                                    &oppdenial_exact_kept_idx,
-                                    &oppdenial_exact_kept_size,
+                                    &census::KeptArgmax {
+                                        idx: &oppdenial_exact_kept_idx,
+                                        size: &oppdenial_exact_kept_size,
+                                    },
                                     &opp_unseen,
+                                    oppdenial_exact_me2,
                                     &mut oppdenial_exact_term,
                                 );
                             }
@@ -2382,6 +2388,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     // byte-identical.
     let oppdenial_exact = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT", 0.0);
     let oppdenial_exact_pool_max = env_usize("WOLGES_OPPDENIAL_EXACT_POOL_MAX", 32);
+    // WOLGES_OPPDENIAL_EXACT_ME2 (default 1.0) scales the my-next (me2) term in the joint opponent
+    // correction; 0.0 drops the double-count.
+    let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
     let opp_on = oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0;
     // Build the census lattice, its add-table, and the millipoint leave-value array ONCE
     // (only when an opponent-denial term is on, so the default path allocates nothing and stays
@@ -2909,9 +2918,12 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                             lat,
                                             add,
                                             &opp_best,
-                                            &oppdenial_exact_kept_idx,
-                                            &oppdenial_exact_kept_size,
+                                            &census::KeptArgmax {
+                                                idx: &oppdenial_exact_kept_idx,
+                                                size: &oppdenial_exact_kept_size,
+                                            },
                                             &unseen_tally,
+                                            oppdenial_exact_me2,
                                             &mut oppdenial_exact_term,
                                         );
                                     }
@@ -3193,9 +3205,12 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     lat,
                                     add,
                                     &opp_best,
-                                    &oppdenial_exact_kept_idx,
-                                    &oppdenial_exact_kept_size,
+                                    &census::KeptArgmax {
+                                        idx: &oppdenial_exact_kept_idx,
+                                        size: &oppdenial_exact_kept_size,
+                                    },
                                     &unseen_tally,
+                                    oppdenial_exact_me2,
                                     &mut oppdenial_exact_term,
                                 );
                             }
@@ -4428,7 +4443,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // impossible racks (R[t] > base_freqs[t], e.g. QQ with one Q) still get
     // weight 0 and drop out, so the valued set is exactly the globally-
     // possible racks -- this computes that impossible-tolerant average
-    // exactly (no sample noise). Plain full-rack path (no denial / oppdenial_rack /
+    // exactly (no sample noise). Plain full-rack path (no oppdenial_leave / oppdenial_rack /
     // global-apportionment).
     let global_weights =
         full_rack && !global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
@@ -4604,6 +4619,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // unseen pool skip the term. 0 = off (byte-identical).
     let oppdenial_exact = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT", 0.0);
     let oppdenial_exact_pool_max = env_usize("WOLGES_OPPDENIAL_EXACT_POOL_MAX", 32);
+    // WOLGES_OPPDENIAL_EXACT_ME2 (default 1.0): scales the my-next (me2) term
+    // inside the WOLGES_OPPDENIAL_EXACT seed -- seed = best(R) -
+    // oppdenial_exact * (opp_value(U-R) - me2_scale * my_next_value(K*, U-R)).
+    // 1.0 = the full opponent-minus-recovery model. 0.0 = DROP me2 and fold
+    // the exact opponent-only opponent-denial opp_value(U-R): the full-rack
+    // fixed point already unrolls my own future, so me2 double-counts;
+    // opponent-only is the sound exact opponent-denial. No-op when
+    // WOLGES_OPPDENIAL_EXACT = 0.
+    let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
     // WOLGES_CENSUS_WITHHOLD = B (default 0 = off, byte-identical): rare-rack
@@ -5139,9 +5163,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 &lat,
                                 add_table.as_ref().unwrap(),
                                 &oppdenial_leave_best,
-                                &oppdenial_exact_kept_idx,
-                                &oppdenial_exact_kept_size,
+                                &census::KeptArgmax {
+                                    idx: &oppdenial_exact_kept_idx,
+                                    size: &oppdenial_exact_kept_size,
+                                },
                                 &unseen_tally,
+                                oppdenial_exact_me2,
                                 &mut oppdenial_exact_term,
                             );
                         } else if oppdenial_exact != 0.0 && log_first {

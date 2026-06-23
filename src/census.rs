@@ -1399,31 +1399,47 @@ pub fn best_equity_argmax_table(
     }
 }
 
-/// Exact model (opponent value minus my next-turn recovery) per depleting rack. For every drawable full rack R, with kept
-/// argmax K* = K*(R) from best_equity_argmax_table (kept_idx[rank(R)] = rank(K*),
-/// kept_size[rank(R)] = |K*|), writes
+/// The per-rack kept-subrack argmax from best_equity_argmax_table, paired so
+/// opp_me2_per_rack stays under clippy's argument-count limit: idx[rank(R)] = rank(K*),
+/// size[rank(R)] = |K*|.
+#[derive(Clone, Copy)]
+pub struct KeptArgmax<'a> {
+    pub idx: &'a [u32],
+    pub size: &'a [u8],
+}
+
+/// Exact model (opponent value minus my next-turn recovery) per depleting
+/// rack. For every drawable full rack R, with kept argmax K* = K*(R) from
+/// best_equity_argmax_table, writes
 ///   out_diff[rank(R)] = opp_value(U-R) - my_next_value(K*, U-R)
-/// where opp_value(U-R) = E_{R' from U-R}[best_equity(R')] is the opponent's expected
-/// best play on a fresh rack drawn from the R-depleted pool, and
-/// my_next_value(K*, U-R) = E_{fill from U-R}[best_equity(K* + fill)] is my own next
-/// turn keeping K* and refilling from the SAME depleted pool. Both expectations are
-/// EXACT and JOINT (full-rack draws, no per-tile linearization -- the lesson behind
-/// dropping the per-tile denial/exact terms). The caller folds best_equity(R) -
-/// strength*out_diff[R] into R's apportion seed and iterates. opp_value(U-R) and
-/// my_next_value share the same U-R pool, so the suffix cap and the depleting outer
-/// walk are computed once per R and the two draw-aggregates run back to back. Cost is
-/// the depleting walk over R times two inner aggregates -- O(drawable^2)-ish -- so the
-/// caller gates it to small pools. `best` holds best_equity over the full-rack block;
-/// out_diff is caller-owned, len lat.len(), written only on drawable full-rack indices.
+/// where opp_value(U-R) = E_{R' from U-R}[best_equity(R')] is the opponent's
+/// expected best play on a fresh rack drawn from the R-depleted pool, and
+/// my_next_value(K*, U-R) = E_{fill from U-R}[best_equity(K* + fill)] is my
+/// own next turn keeping K* and refilling from the SAME depleted pool. Both
+/// expectations are EXACT and JOINT (full-rack draws, no per-tile
+/// linearization -- the lesson behind dropping the per-tile denial/exact
+/// terms). The caller folds best_equity(R) - strength*out_diff[R] into R's
+/// apportion seed and iterates. opp_value(U-R) and my_next_value share the
+/// same U-R pool, so the suffix cap and the depleting outer walk are computed
+/// once per R and the two draw-aggregates run back to back. Cost is the
+/// depleting walk over R times two inner aggregates -- O(drawable^2)-ish -- so
+/// the caller gates it to small pools. `best` holds best_equity over the
+/// full-rack block; out_diff is caller-owned, len lat.len(), written only on
+/// drawable full-rack indices.
 pub fn opp_me2_per_rack(
     lat: &MultisetLattice,
     add: &AddTable,
     best: &[i32],
-    kept_idx: &[u32],
-    kept_size: &[u8],
+    kept: &KeptArgmax,
     unseen: &[u8],
+    me2_scale: f64,
     out_diff: &mut [f64],
 ) {
+    // Unpack the kept-argmax pair into the locals the body uses (signature-only change).
+    let KeptArgmax {
+        idx: kept_idx,
+        size: kept_size,
+    } = *kept;
     let n = lat.num_letters();
     let rack_size = lat.rack_size();
     // The depleting outer walk and its two inner aggregates (module-level
@@ -1439,6 +1455,7 @@ pub fn opp_me2_per_rack(
         kept_idx: &'a [u32],
         kept_size: &'a [u8],
         rack_size: usize,
+        me2_scale: f64,
         out_diff: &'a mut [f64],
     }
     impl Ctx<'_> {
@@ -1472,7 +1489,7 @@ pub fn opp_me2_per_rack(
                     &mut md,
                 );
                 let me2 = if md > 0.0 { mn / md } else { 0.0 };
-                self.out_diff[r_idx] = opp1 - me2;
+                self.out_diff[r_idx] = opp1 - self.me2_scale * me2;
                 return;
             }
             if t == self.n || (self.outer_cap[t] as usize) < remaining {
@@ -1507,6 +1524,7 @@ pub fn opp_me2_per_rack(
         kept_idx,
         kept_size,
         rack_size,
+        me2_scale,
         out_diff,
     }
     .outer(0, rack_size, 0);
@@ -2456,6 +2474,61 @@ mod tests {
     }
 
     #[test]
+    fn opp_me2_per_rack_me2_scale_zero_is_opp_value() {
+        // me2_scale = 0 drops the my-next (me2) double-count, so the exact-model term
+        // reduces to the exact opponent-only denial opp_value(U-R) -- it must match the
+        // standalone opp_value_per_rack primitive on every drawable full rack. (The
+        // full-rack fixed point already unrolls my own future, so me2 double-counts;
+        // opponent-only is the sound exact opponent-denial.)
+        let lat = MultisetLattice::new(4, 3);
+        let unseen = [3u8, 2u8, 4u8, 1u8];
+        let mut sheet = vec![0i32; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for idx in 0..lat.len() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                sheet[idx] = h.rem_euclid(20_000);
+            }
+            leave[idx] = h.rem_euclid(8_000) - 4_000;
+        }
+        let add = AddTable::new(&lat);
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        let mut kept_idx = vec![0u32; lat.len()];
+        let mut kept_size = vec![0u8; lat.len()];
+        best_equity_argmax_table(
+            &lat,
+            &sheet,
+            &leave,
+            &mut best,
+            &mut kept_idx,
+            &mut kept_size,
+        );
+        let mut diff0 = vec![0f64; lat.len()];
+        opp_me2_per_rack(
+            &lat,
+            &add,
+            &best,
+            &KeptArgmax {
+                idx: &kept_idx,
+                size: &kept_size,
+            },
+            &unseen,
+            0.0,
+            &mut diff0,
+        );
+        let mut opp1 = vec![0f64; lat.len()];
+        opp_value_per_rack(&lat, &add, &best, &unseen, &mut opp1);
+        for ridx in lat.full_rack_start()..lat.len() {
+            assert!(
+                (diff0[ridx] - opp1[ridx]).abs() <= 1e-6 * (1.0 + opp1[ridx].abs()),
+                "me2_scale=0 at {ridx}: opp_me2 {} vs opp_value {}",
+                diff0[ridx],
+                opp1[ridx],
+            );
+        }
+    }
+
+    #[test]
     fn apportion_fused_oppdenial_exact_matches_brute() {
         // the exact-model seed term must apportion like a brute reference: for
         // every drawable full rack R, credit (best(R) - oppdenial_exact *
@@ -2489,7 +2562,18 @@ mod tests {
             &mut kept_size,
         );
         let mut term = vec![0f64; lat.len()];
-        opp_me2_per_rack(&lat, &add, &best, &kept_idx, &kept_size, &unseen, &mut term);
+        opp_me2_per_rack(
+            &lat,
+            &add,
+            &best,
+            &KeptArgmax {
+                idx: &kept_idx,
+                size: &kept_size,
+            },
+            &unseen,
+            1.0,
+            &mut term,
+        );
         let oppdenial_exact = 0.5f64;
         let mut num_ref = vec![0f64; lat.len()];
         let mut den_ref = vec![0f64; lat.len()];
@@ -2606,7 +2690,18 @@ mod tests {
             assert_eq!(best[idx], best_ref[idx], "best mismatch at {idx}");
         }
         let mut out = vec![0f64; lat.len()];
-        opp_me2_per_rack(&lat, &add, &best, &kept_idx, &kept_size, &unseen, &mut out);
+        opp_me2_per_rack(
+            &lat,
+            &add,
+            &best,
+            &KeptArgmax {
+                idx: &kept_idx,
+                size: &kept_size,
+            },
+            &unseen,
+            1.0,
+            &mut out,
+        );
         let mut r = [0u8; MAX_LETTERS];
         let mut s = [0u8; MAX_LETTERS];
         for ridx in lat.full_rack_start()..lat.len() {
