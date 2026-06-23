@@ -760,6 +760,28 @@ fn wolges_apportion() -> error::Returns<Apportion> {
     }
 }
 
+// WOLGES_CENSUS_CI_REPORT picks the across-board scatter diagnostic to print:
+// off, rack-level, or leave-level. parse it once into a typed value so an
+// unknown setting fails loud instead of silently printing nothing.
+#[derive(Clone, Copy)]
+enum CiReport {
+    Off,
+    Rack,
+    Leave,
+}
+
+fn wolges_census_ci_report() -> error::Returns<CiReport> {
+    match std::env::var("WOLGES_CENSUS_CI_REPORT").ok().as_deref() {
+        None | Some("off") => Ok(CiReport::Off),
+        Some("rack") => Ok(CiReport::Rack),
+        Some("leave") => Ok(CiReport::Leave),
+        Some(other) => Err(format!(
+            "WOLGES_CENSUS_CI_REPORT must be off, rack, or leave, got {other:?}"
+        )
+        .into()),
+    }
+}
+
 fn generate_autoplay_logs<
     const WRITE_LOGS: bool,
     const SUMMARIZE: bool,
@@ -4471,27 +4493,24 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // occur in the opening), to A/B whether un-swamping the opening context
     // closes the gap. W=1 keeps the faithful design.
     let opening_weight = env_usize("WOLGES_OPENING_WEIGHT", 1).max(1) as u64;
-    // WOLGES_CENSUS_CI_REPORT (off | rack, default off; diagnostic for the fixed-width / CI-driven
-    // sampling idea): track each valued entry's sum-of-squares across boards so the
-    // run can report the per-entry confidence-interval half-width (z * sd / sqrt(n),
-    // n = boards that valued it) at the end. The census's per-board best_equity is
-    // EXACT, so this variance is the across-BOARD scatter -- how tightly num_boards
-    // pins each value -- and the report says what fraction of entries already sit
-    // under a target accuracy and how many boards it would take to pin a
-    // given fraction. Diagnostic only: it changes no leaves and
-    // is byte-identical to default with the knob off. CI = PRECISION, not bias --
-    // it assumes the board mix is the right one (off-mix boards tighten the CI
-    // around a shifted mean).
-    let ci_report = full_rack
-        && match std::env::var("WOLGES_CENSUS_CI_REPORT").as_deref() {
-            Ok("off") | Err(_) => false,
-            Ok("rack") => true,
-            Ok(other) => {
-                return Err(
-                    format!("WOLGES_CENSUS_CI_REPORT must be off or rack (got {other:?})").into(),
-                );
-            }
-        };
+    // WOLGES_CENSUS_CI_REPORT (off | rack | leave, default off; diagnostic for
+    // the fixed-width / CI-driven sampling idea): track each valued entry's
+    // sum-of-squares across boards so the run can report the per-entry
+    // confidence-interval half-width (z * sd / sqrt(n), n = boards that valued
+    // it) at the end. The census's per-board best_equity is EXACT, so this
+    // variance is the across-BOARD scatter -- how tightly num_boards pins each
+    // value -- and the report says what fraction of entries already sit under
+    // a target accuracy and how many boards it would take to pin a given
+    // fraction. Diagnostic only: it changes no leaves and is byte-identical to
+    // default with the knob off. CI = PRECISION, not bias -- it assumes the
+    // board mix is the right one (off-mix boards tighten the CI around a
+    // shifted mean).
+    let ci_report_level = match wolges_census_ci_report()? {
+        CiReport::Off => 0usize,
+        CiReport::Rack => 1,
+        CiReport::Leave => 2,
+    };
+    let ci_report = full_rack && ci_report_level != 0;
     let ci_conf = env_parse::<f64>("WOLGES_CENSUS_CI_CONF", 0.999);
     let ci_conf = if ci_conf > 0.0 && ci_conf < 1.0 {
         ci_conf
@@ -5816,6 +5835,69 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             pctl(&boards_needed, 0.9),
             pctl(&boards_needed, 0.99),
         );
+        // CI_REPORT=leave: leave-level CI. The per-rack CI above is too conservative -- a leave
+        // is a draw-ways-weighted average over many full racks, so propagating the
+        // per-rack variances through the SAME draw-ways completion weight the -generate
+        // decompose uses gives a far tighter per-LEAVE CI: leave_var(S) = sum_R (cw/D)^2 *
+        // var(R)/n(R), via entering_leave_ci_fused. This is the tighter accuracy target.
+        if ci_report_level >= 2 && rack_summary {
+            let mut varr = vec![-1.0f64; lat_len]; // -1 = never valued -> excluded
+            for idx in full_rack_start..lat_len {
+                let n = accum_cnt[idx];
+                varr[idx] = if n >= 2 {
+                    let var = ((sumsq[idx] - accum_sum[idx] * accum_sum[idx] / n as f64)
+                        / (n as f64 - 1.0))
+                        .max(0.0);
+                    var / n as f64
+                } else if n == 1 {
+                    0.0 // single sample: across-board variance unknown, treated as 0
+                } else {
+                    -1.0 // never valued
+                };
+            }
+            let mut den = vec![0.0f64; lat_len];
+            let mut w2v = vec![0.0f64; lat_len];
+            census::entering_leave_ci_fused(&lat, &varr, &base_freqs, &mut den, &mut w2v);
+            let mut leave_ci = Vec::new();
+            let mut leave_scale = Vec::new();
+            let mut leave_under = 0usize;
+            for idx in 0..full_rack_start {
+                if den[idx] > 0.0 {
+                    let ci_half = z * (w2v[idx] / (den[idx] * den[idx])).sqrt();
+                    if ci_half <= ci_target_mp {
+                        leave_under += 1;
+                    }
+                    leave_ci.push(ci_half);
+                    // ci_half about 1/sqrt(boards): multiply current boards by
+                    // this to hit target.
+                    leave_scale.push((ci_half / ci_target_mp.max(1.0)).powi(2));
+                }
+            }
+            leave_ci.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            leave_scale.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            let lm = leave_ci.len();
+            eprintln!("  leave-level CI ({lm} leaves, draw-ways-propagated):");
+            eprintln!(
+                "    half-width (mp): p50 {:.2}  p90 {:.2}  p99 {:.2}  max {:.2}",
+                pctl(&leave_ci, 0.5),
+                pctl(&leave_ci, 0.9),
+                pctl(&leave_ci, 0.99),
+                leave_ci.last().copied().unwrap_or(0.0),
+            );
+            eprintln!(
+                "    {:.1}% of leaves within target {:.0} mp; board-scale x_current to pin a \
+                 fraction: p50 {:.3}  p90 {:.3}  p99 {:.3}",
+                if lm > 0 {
+                    100.0 * leave_under as f64 / lm as f64
+                } else {
+                    0.0
+                },
+                ci_target_mp,
+                pctl(&leave_scale, 0.5),
+                pctl(&leave_scale, 0.9),
+                pctl(&leave_scale, 0.99),
+            );
+        }
     }
 
     // global-apportion: the across-board accumulators hold a per-rack board mean

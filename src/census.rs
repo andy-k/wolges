@@ -1637,6 +1637,117 @@ pub fn entering_fused(
     }
 }
 
+/// Leave-level confidence-interval (CI) accumulation for the fixed-width,
+/// confidence-interval-driven sampling diagnostic. A CI here is a range that
+/// shows sampling precision, not bias.
+/// (WOLGES_CENSUS_CI_REPORT=leave). For every full rack R with per-rack across-board
+/// variance varr[R] = (standard deviation squared) / n(R) -- variance = how far
+/// the per-board values scatter from their average, standard deviation is its
+/// square root -- and every subrack S <= R, apportion with the
+/// EXACT draw-ways completion weight cw = prod_t C(unseen[t]-S[t], R[t]-S[t]) -- the
+/// SAME weight the `-generate` decompose uses to form leave(S) from the full racks
+/// (the kept tiles S are removed from the draw pool). Accumulate den[S] += cw and
+/// w2v[S] += cw^2 * varr[R]. The caller forms leave_var[S] = w2v[S]/den[S]^2 (the
+/// variance of the draw-ways-weighted leave mean, treating distinct racks as
+/// independent) and leave_CI = z*sqrt(leave_var), where z is the confidence
+/// multiplier (about 2 for a 95% band). f64, not i128: this is a
+/// diagnostic, no exact-sum requirement. The incremental subrack walk mirrors
+/// entering_fused; only the weight (pool excludes the kept tiles) and the squared
+/// accumulation differ.
+pub fn entering_leave_ci_fused(
+    lat: &MultisetLattice,
+    varr: &[f64],
+    unseen: &[u8],
+    den: &mut [f64],
+    w2v: &mut [f64],
+) {
+    let n = lat.num_letters();
+    let mut r = [0u8; MAX_LETTERS];
+    // Constant context for the subrack CI walk (den/w2v span every rack) -- no
+    // clippy::too_many_arguments; only the changing subrack offset, weight, and the
+    // current rack's variance are threaded.
+    struct Ctx<'a> {
+        n: usize,
+        lat: &'a MultisetLattice,
+        unseen: &'a [u8],
+        den: &'a mut [f64],
+        w2v: &'a mut [f64],
+    }
+    impl Ctx<'_> {
+        fn rec(
+            &mut self,
+            i: usize,
+            nz: &[(usize, u8)],
+            s_s: usize,
+            within_s: u64,
+            w: f64,
+            varr_r: f64,
+        ) {
+            if i == 0 {
+                let sr = (self.lat.size_offset[s_s] + within_s) as usize;
+                // SAFETY: sr = size_offset[s_s]+within_s is the rank of a subrack S of a
+                // size<=rack_size rack, < lat.len(); den and w2v are lat.len()-sized.
+                unsafe {
+                    *self.den.get_unchecked_mut(sr) += w;
+                    *self.w2v.get_unchecked_mut(sr) += w * w * varr_r;
+                }
+                return;
+            }
+            let (t, cnt) = nz[i - 1];
+            let parts = self.n - 1 - t;
+            for cs in 0..=cnt {
+                // cs tiles of letter t are KEPT in S; the played cnt-cs are drawn from the
+                // pool with the kept tiles removed (unseen[t] - cs) -- the draw-ways
+                // completion weight, identical to the -generate decompose. cs > unseen[t]
+                // means S is not drawable here, so it contributes nothing.
+                if cs > self.unseen[t] {
+                    continue;
+                }
+                let cw = n_choose_k((self.unseen[t] - cs) as u64, (cnt - cs) as u64) as f64;
+                if cw == 0.0 {
+                    continue;
+                }
+                let mut dw = 0u64;
+                if t + 1 < self.n {
+                    let mut a = s_s + cs as usize;
+                    for _ in 0..cs {
+                        dw += self.lat.c(a + parts - 1, parts - 1);
+                        a -= 1;
+                    }
+                }
+                self.rec(i - 1, nz, s_s + cs as usize, within_s + dw, w * cw, varr_r);
+            }
+        }
+    }
+    let mut ctx = Ctx {
+        n,
+        lat,
+        unseen,
+        den,
+        w2v,
+    };
+    let lo = lat.full_rack_start();
+    let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
+    for ridx in lo..lat.len() {
+        // SAFETY: ridx ranges over lo..lat.len() (lo = full_rack_start()), so ridx <
+        // lat.len(); varr is the lat.len() per-rack variance buffer.
+        let v = unsafe { *varr.get_unchecked(ridx) };
+        // negative varr is the caller's "never valued -- exclude" sentinel.
+        if v < 0.0 {
+            continue;
+        }
+        lat.unrank_into(ridx, &mut r[..n]);
+        let mut m = 0;
+        for (t, &c) in r[..n].iter().enumerate() {
+            if c > 0 {
+                nz[m] = (t, c);
+                m += 1;
+            }
+        }
+        ctx.rec(m, &nz[..m], 0, 0, 1.0, v);
+    }
+}
+
 /// For the global-apportion drawable-only path: copy best[R] into out[R] for
 /// every full rack R drawable from `unseen` (each letter t taken
 /// 0..=min(unseen[t], remaining), total == rack_size), leaving non-drawable racks
@@ -2088,6 +2199,69 @@ mod tests {
                 UNPLAYABLE
             };
             assert_eq!(pull, push, "leave {idx} {s:?}: pull {pull} push {push}");
+        }
+    }
+
+    #[test]
+    fn entering_leave_ci_matches_brute() {
+        // entering_leave_ci_fused apportions each full rack R's variance varr[R] to every
+        // subrack S with the EXACT draw-ways completion weight cw = prod_t
+        // C(unseen[t]-S[t], R[t]-S[t]) (the -generate decompose weight): den[S] = sum_R cw,
+        // w2v[S] = sum_R cw^2 * varr[R]. Brute-force both over every (R, S<=R).
+        let lat = MultisetLattice::new(3, 3);
+        let unseen = [4u8, 3u8, 2u8];
+        let n = lat.num_letters();
+        let mut varr = vec![0f64; lat.len()];
+        for (idx, slot) in varr.iter_mut().enumerate().skip(lat.full_rack_start()) {
+            let h = (idx as u32).wrapping_mul(2654435761u32);
+            *slot = (h % 9000) as f64; // non-negative per-rack variance
+        }
+        let mut den = vec![0f64; lat.len()];
+        let mut w2v = vec![0f64; lat.len()];
+        entering_leave_ci_fused(&lat, &varr, &unseen, &mut den, &mut w2v);
+        let mut den_b = vec![0f64; lat.len()];
+        let mut w2v_b = vec![0f64; lat.len()];
+        for (ridx, &vr) in varr.iter().enumerate().skip(lat.full_rack_start()) {
+            let rk = lat.tally(ridx);
+            let mut s = vec![0u8; n];
+            for a in 0..=rk[0] {
+                for b in 0..=rk[1] {
+                    for c in 0..=rk[2] {
+                        s[0] = a;
+                        s[1] = b;
+                        s[2] = c;
+                        let mut cw = 1.0f64;
+                        for t in 0..n {
+                            if s[t] > unseen[t] {
+                                cw = 0.0;
+                                break;
+                            }
+                            cw *=
+                                n_choose_k((unseen[t] - s[t]) as u64, (rk[t] - s[t]) as u64) as f64;
+                        }
+                        if cw == 0.0 {
+                            continue;
+                        }
+                        let sr = lat.rank(&s) as usize;
+                        den_b[sr] += cw;
+                        w2v_b[sr] += cw * cw * vr;
+                    }
+                }
+            }
+        }
+        for idx in 0..lat.len() {
+            assert!(
+                (den[idx] - den_b[idx]).abs() <= 1e-6 * den_b[idx].abs().max(1.0),
+                "den {idx}: {} vs brute {}",
+                den[idx],
+                den_b[idx],
+            );
+            assert!(
+                (w2v[idx] - w2v_b[idx]).abs() <= 1e-3 * w2v_b[idx].abs().max(1.0),
+                "w2v {idx}: {} vs brute {}",
+                w2v[idx],
+                w2v_b[idx],
+            );
         }
     }
 
