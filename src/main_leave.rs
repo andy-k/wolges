@@ -4843,6 +4843,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         Vec::new()
     });
+    // Reusable scratch for the periodic leave-CI check (varr, den, w2v), so the
+    // check does not allocate three lat_len Vecs every STOP_EVERY boards. Only
+    // one thread runs the check at a time (the compare_exchange claim), but
+    // distinct checkpoints can overlap, so it is guarded by its own lock.
+    // Empty (no alloc) unless the adaptive stop is on.
+    let ci_scratch: std::sync::Mutex<(Vec<f64>, Vec<f64>, Vec<f64>)> =
+        std::sync::Mutex::new((Vec::new(), Vec::new(), Vec::new()));
     // mini-batch barrier (SGD only): all workers finish a batch, the leader EMA-updates
     // leave_cur, all resume on the next batch with the improved leaves.
     let barrier = std::sync::Barrier::new(num_threads);
@@ -5702,9 +5709,18 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             let (frac, n_boards) = {
                                 let g = shared.lock().unwrap();
                                 let sq = ci_sumsq.lock().unwrap();
+                                let mut scratch = ci_scratch.lock().unwrap();
                                 let (sum, cnt, comp, _, _) = &*g;
                                 let z = stats::NormalDistribution::reverse_ci(ci_conf);
-                                let mut varr = vec![-1.0f64; lat_len];
+                                let (varr, den, w2v) = &mut *scratch;
+                                if varr.len() != lat_len {
+                                    *varr = vec![0.0f64; lat_len];
+                                    *den = vec![0.0f64; lat_len];
+                                    *w2v = vec![0.0f64; lat_len];
+                                }
+                                for v in varr[..full_rack_start].iter_mut() {
+                                    *v = -1.0;
+                                }
                                 for idx in full_rack_start..lat_len {
                                     let n = cnt[idx];
                                     varr[idx] = if n >= 2 {
@@ -5718,14 +5734,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         -1.0
                                     };
                                 }
-                                let mut den = vec![0.0f64; lat_len];
-                                let mut w2v = vec![0.0f64; lat_len];
+                                for idx in 0..lat_len {
+                                    den[idx] = 0.0;
+                                    w2v[idx] = 0.0;
+                                }
                                 census::entering_leave_ci_fused(
                                     &lat,
-                                    &varr,
+                                    varr,
                                     &base_freqs,
-                                    &mut den,
-                                    &mut w2v,
+                                    den,
+                                    w2v,
                                 );
                                 let mut total = 0usize;
                                 let mut under = 0usize;
