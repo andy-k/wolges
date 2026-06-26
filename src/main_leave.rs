@@ -447,6 +447,35 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 generate_winpct_table(make_game_config(), kwg, arc_klv, num_games, seed)?;
                 Ok(true)
             }
+            "-winpct-eval" => {
+                // english-winpct-eval CSW24.kwg leave.klv2 table.csv num_games [seed]
+                // score a win% table + the simmer sigmoid by Brier vs outcomes.
+                let args3 = if args.len() > 3 { &args[3] } else { "-" };
+                let num_games = if args.len() > 5 {
+                    u64::from_str(&args[5])?
+                } else {
+                    1_000_000
+                };
+                let seed = if args.len() > 6 {
+                    Some(u64::from_str(&args[6])?)
+                } else {
+                    None
+                };
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let arc_klv = if args3 == "-" {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
+                } else {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
+                };
+                let table = win_pct::WinPctTable::from_csv(&std::fs::read_to_string(&args[4])?)?;
+                generate_winpct_eval(make_game_config(), kwg, arc_klv, table, num_games, seed)?;
+                Ok(true)
+            }
             "-summarize" => {
                 generate_summary(
                     make_game_config(),
@@ -608,6 +637,11 @@ fn main() -> error::Returns<()> {
     Hasty self-play, recording an empirical win% table (P(mover wins) by
     lead and count-state (bag, my, opp)) as raw sparse csv to stdout.
     if leave is \"-\" or omitted, uses no leave.
+    number of games is optional (default 1000000).
+    seed is optional; prints auto-generated seed to stderr if not provided.
+  english-winpct-eval CSW24.kwg leave.klv table.csv 1000000 [seed]
+    score a win% table and the simmer win_prob sigmoid by Brier (lower is
+    better) against Hasty self-play outcomes; use a held-out seed.
     number of games is optional (default 1000000).
     seed is optional; prints auto-generated seed to stderr if not provided.
   english-resummarize-playability concatenated_playabilities.csv playability.csv
@@ -7606,6 +7640,67 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     Ok(())
 }
 
+// Play one Hasty (static, greedy) self-play game with `arc_klv` leaves,
+// clearing then filling `snapshots` with the mover's-view (bag, my, opp,
+// mover, lead in points) at every ply and `final_scores` with the game's final
+// scores. Shared by the win% recorder and its Brier eval.
+// Static game/lexicon/leave context for a self-play game, grouped so
+// winpct_play_game stays within clippy::too_many_arguments.
+struct WinpctTables<'a, N: kwg::Node, L: kwg::Node> {
+    game_config: &'a game_config::GameConfig,
+    kwg: &'a kwg::Kwg<N>,
+    arc_klv: &'a klv::Klv<L>,
+}
+
+fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
+    tables: WinpctTables<'_, N, L>,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    game_state: &mut game_state::GameState,
+    rng: &mut rand::rngs::ChaCha20Rng,
+    snapshots: &mut Vec<(usize, usize, usize, usize, i32)>,
+    final_scores: &mut [i32],
+) {
+    let WinpctTables {
+        game_config,
+        kwg,
+        arc_klv,
+    } = tables;
+    snapshots.clear();
+    loop {
+        let mover = game_state.turn as usize;
+        let other = 1 - mover;
+        let lead = equity::descale_score(game_state.players[mover].score)
+            - equity::descale_score(game_state.players[other].score);
+        snapshots.push((
+            game_state.bag.len(),
+            game_state.players[mover].rack.len(),
+            game_state.players[other].rack.len(),
+            mover,
+            lead,
+        ));
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config,
+            kwg,
+            klv: arc_klv,
+        };
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack: &game_state.current_player().rack,
+            max_gen: 1,
+            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+            always_include_pass: false,
+        });
+        let play = &move_generator.plays[0].play;
+        game_state.play(game_config, rng, play).unwrap();
+        match game_state.check_game_ended(game_config, final_scores) {
+            game_state::CheckGameEnded::NotEnded => {}
+            _ => break,
+        }
+        game_state.next_turn();
+    }
+}
+
 // Win% table recorder (english-winpct <kwg> <klv> <games> [seed]). Plays Hasty
 // (static, greedy) self-play and, from the mover's view at every ply, snapshots
 // the count-state (bag, my, opp) and the lead, then folds each game's final
@@ -7648,40 +7743,18 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                     }
                     rng.set_stream(g);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                    snapshots.clear();
-                    loop {
-                        let mover = game_state.turn as usize;
-                        let other = 1 - mover;
-                        let lead = equity::descale_score(game_state.players[mover].score)
-                            - equity::descale_score(game_state.players[other].score);
-                        snapshots.push((
-                            game_state.bag.len(),
-                            game_state.players[mover].rack.len(),
-                            game_state.players[other].rack.len(),
-                            mover,
-                            lead,
-                        ));
-                        let board_snapshot = movegen::BoardSnapshot {
-                            board_tiles: &game_state.board_tiles,
+                    winpct_play_game(
+                        WinpctTables {
                             game_config: &game_config,
                             kwg: &kwg,
-                            klv: &arc_klv,
-                        };
-                        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                            board_snapshot: &board_snapshot,
-                            rack: &game_state.current_player().rack,
-                            max_gen: 1,
-                            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                            always_include_pass: false,
-                        });
-                        let play = &move_generator.plays[0].play;
-                        game_state.play(&game_config, &mut rng, play).unwrap();
-                        match game_state.check_game_ended(&game_config, &mut final_scores) {
-                            game_state::CheckGameEnded::NotEnded => {}
-                            _ => break,
-                        }
-                        game_state.next_turn();
-                    }
+                            arc_klv: &arc_klv,
+                        },
+                        &mut move_generator,
+                        &mut game_state,
+                        &mut rng,
+                        &mut snapshots,
+                        &mut final_scores,
+                    );
                     // fold each snapshot's future swing, from its own mover's view.
                     for &(bag, my, opp, mover, lead) in &snapshots {
                         let mover_final = equity::descale_score(final_scores[mover])
@@ -7703,6 +7776,100 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     out.write_all(acc.to_csv().as_bytes())?;
     out.flush()?;
     eprintln!("winpct: {num_games} games in {}s", t0.elapsed().as_secs());
+    Ok(())
+}
+
+// Win% Brier eval (english-winpct-eval <kwg> <leave.klv> <table.csv> <games>
+// [seed]). Scores a recorded win% table and the simmer's win_prob sigmoid
+// against actual Hasty self-play outcomes by Brier score (lower is better); pass
+// a held-out seed so the table is not scored on its own training games. Offline:
+// it computes the sigmoid directly and does not run the simmer.
+fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    arc_klv: std::sync::Arc<klv::Klv<L>>,
+    table: win_pct::WinPctTable,
+    num_games: u64,
+    seed: Option<u64>,
+) -> error::Returns<()> {
+    let t0 = std::time::Instant::now();
+    let game_config = std::sync::Arc::new(game_config);
+    let table = std::sync::Arc::new(table);
+    let seed = seed.unwrap_or_else(rand::random);
+    let num_threads = wolges_threads().max(1).min(num_games.max(1) as usize);
+    eprintln!("winpct-eval: seed {seed}, {num_games} games, {num_threads} threads");
+    let kwg = std::sync::Arc::new(kwg);
+    let next_game = std::sync::atomic::AtomicU64::new(0);
+    // the simmer's win_prob sigmoid width constant (compute_win_prob).
+    let ln_ratio = (1.0f64 / 0.9 - 1.0).ln();
+    // (brier_table, brier_sigmoid, n_samples), summed across threads.
+    let shared = std::sync::Mutex::new((0.0f64, 0.0f64, 0u64));
+
+    std::thread::scope(|s| {
+        for _ in 0..num_threads {
+            s.spawn(|| {
+                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                let mut game_state = game_state::GameState::new(&game_config);
+                let mut final_scores = vec![0i32; game_config.num_players() as usize];
+                let mut snapshots = Vec::<(usize, usize, usize, usize, i32)>::new();
+                let (mut bt, mut bs, mut n) = (0.0f64, 0.0f64, 0u64);
+                loop {
+                    let g = next_game.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if g >= num_games {
+                        break;
+                    }
+                    rng.set_stream(g);
+                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    winpct_play_game(
+                        WinpctTables {
+                            game_config: &game_config,
+                            kwg: &kwg,
+                            arc_klv: &arc_klv,
+                        },
+                        &mut move_generator,
+                        &mut game_state,
+                        &mut rng,
+                        &mut snapshots,
+                        &mut final_scores,
+                    );
+                    for &(bag, my, opp, mover, lead) in &snapshots {
+                        let mover_final = equity::descale_score(final_scores[mover])
+                            - equity::descale_score(final_scores[1 - mover]);
+                        let result = match mover_final.signum() {
+                            1 => 1.0f64,
+                            -1 => 0.0,
+                            _ => 0.5,
+                        };
+                        let tab = table.get(lead, bag, my, opp) as f64;
+                        // the simmer sigmoid, fed the lead in points (its intended
+                        // units) and the unseen count bag + my + opp.
+                        let exp_width = -(30.0 + (bag + my + opp) as f64) / ln_ratio;
+                        let sig = 1.0 / (1.0 + (-(lead as f64) / exp_width).exp());
+                        bt += (tab - result) * (tab - result);
+                        bs += (sig - result) * (sig - result);
+                        n += 1;
+                    }
+                }
+                let mut acc = shared.lock().unwrap();
+                acc.0 += bt;
+                acc.1 += bs;
+                acc.2 += n;
+            });
+        }
+    });
+
+    let (bt, bs, n) = shared.into_inner().unwrap();
+    let d = n.max(1) as f64;
+    eprintln!(
+        "winpct-eval: {n} samples, brier table={:.5} sigmoid={:.5} (lower better)",
+        bt / d,
+        bs / d
+    );
+    eprintln!(
+        "winpct-eval: {num_games} games in {}s",
+        t0.elapsed().as_secs()
+    );
     Ok(())
 }
 
