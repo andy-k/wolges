@@ -970,6 +970,7 @@ fn generate_autoplay_logs<
     // winpct and the opponent terms are mutually exclusive -- one objective at a
     // time, matching the census (its win% path skips the opp/oppdenial_rack folds). With the
     // win% table loaded the opponent machinery stays off.
+    let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
     let opp_on = (oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0)
         && winpct_table.is_none();
     // Build the census lattice, its add-table, and the millipoint leave-value array ONCE
@@ -1691,20 +1692,24 @@ fn generate_autoplay_logs<
                             winpct_table,
                             old_bag_len,
                             game_config.rack_size() as usize,
+                            winpct_blend,
                         );
-
+                        // this board's uniform knob-fold, applied at both record sites below
+                        // (supplement and main). oppdenial_exact_lat is Some only when this
+                        // turn's exact term is active, so knob.apply ranks the rack for the
+                        // exact lookup exactly when this turn's exact term is active.
                         let knob = KnobFold {
-    winpct_board: &winpct_board,
-    oppdenial_rack,
-    opp_marginal: &opp_marginal,
-    oppdenial_exact,
-    oppdenial_exact_term: &oppdenial_exact_term,
-    oppdenial_exact_lat: if oppdenial_exact_active {
-        opp_ctx.map(|(lat, _, _)| lat)
-    } else {
-        None
-    },
-};
+                            winpct_board: &winpct_board,
+                            oppdenial_rack,
+                            opp_marginal: &opp_marginal,
+                            oppdenial_exact,
+                            oppdenial_exact_term: &oppdenial_exact_term,
+                            oppdenial_exact_lat: if oppdenial_exact_active {
+                                opp_ctx.map(|(lat, _, _)| lat)
+                            } else {
+                                None
+                            },
+                        };
 
                         // supplement the undersampled subracks. pick a target subrack S,
                         // complete it to a full rack with filler drawn from this board's
@@ -1779,9 +1784,9 @@ fn generate_autoplay_logs<
                                     always_include_pass: false,
                                 });
                                 let play = &move_generator.plays[0];
-                                // fold the opponent-denial of the supplemented full rack the
-                                // same way the main record below does (0 when oppdenial_rack/oppdenial_exact off), so
-                                // rare forced racks are valued consistently with sampled ones.
+                                // value the supplemented full rack the same way the main record
+                                // below does (a no-op fold when the knobs are off), so rare
+                                // forced racks are valued consistently with sampled ones.
                                 let rounded_equity = knob.apply(play.equity, &sample_rack_buf);
                                 if full_rack_forcing {
                                     // the target is a whole full rack, so num_filler
@@ -1958,10 +1963,10 @@ fn generate_autoplay_logs<
                         game_state.turn = old_turn;
 
                         if SUMMARIZE && old_bag_len > 0 {
-                            // no rounding; the WOLGES_OPPDENIAL_RACK / _EXACT folds (0.0 when off) add
-                            // the opponent-denial of the full drawn rack R (the per-tile
-                            // marginal for oppdenial_rack, the joint opponent term for oppdenial_exact).
-                            // R = cur_rack_as_vec (sorted), ranked for the oppdenial_exact lookup.
+                            // no rounding; knob.apply adds the opponent-denial of the full drawn
+                            // rack R (the per-tile marginal for oppdenial_rack, the joint opponent
+                            // term for oppdenial_exact) on top of the win%-remapped (or raw)
+                            // equity, all no-ops when the knobs are off.
                             let rounded_equity = knob.apply(play.equity, &cur_rack_as_vec);
                             if entering {
                                 // record this turn's equity keyed by the entering
@@ -2532,6 +2537,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     // winpct and the opponent terms are mutually exclusive -- one objective at a
     // time, matching the census (its win% path skips the opp/oppdenial_rack folds). With the
     // win% table loaded the opponent machinery stays off.
+    let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
     let opp_on = (oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0)
         && winpct_table.is_none();
     // Build the census lattice, its add-table, and the millipoint leave-value array ONCE
@@ -2902,7 +2908,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                         // count (num_tiles minus tiles on the board) = the census
                         // count-state key.
                         let winpct_board =
-                            WinpctBoard::new(winpct_table, pool_count, rack_size as usize);
+                            WinpctBoard::new(winpct_table, pool_count, rack_size as usize, winpct_blend);
                         // sample only mid-game positions: inside the pool window, never the
                         // opening (empty board) or the endgame (empty draw bag -> no draws are
                         // taken, so the leave table is not consulted).
@@ -3079,18 +3085,23 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     oppdenial_exact_active = oppdenial_exact_board;
                                 }
 
+                                // this sampled board's uniform knob-fold, applied at every
+                                // sampled record site (mandatory, remediation, step-3 top-up).
+                                // oppdenial_exact_lat is Some only when this board's exact term
+                                // is active, so knob.apply ranks the rack for the exact lookup
+                                // exactly when this turn's exact term is active.
                                 let knob = KnobFold {
-    winpct_board: &winpct_board,
-    oppdenial_rack,
-    opp_marginal: &opp_marginal,
-    oppdenial_exact,
-    oppdenial_exact_term: &oppdenial_exact_term,
-    oppdenial_exact_lat: if oppdenial_exact_active {
-        opp_ctx.map(|(lat, _, _)| lat)
-    } else {
-        None
-    },
-};
+                                    winpct_board: &winpct_board,
+                                    oppdenial_rack,
+                                    opp_marginal: &opp_marginal,
+                                    oppdenial_exact,
+                                    oppdenial_exact_term: &oppdenial_exact_term,
+                                    oppdenial_exact_lat: if oppdenial_exact_active {
+                                        opp_ctx.map(|(lat, _, _)| lat)
+                                    } else {
+                                        None
+                                    },
+                                };
 
                                 if !remediating {
                                     // mandatory phase: enumerate every rack of the
@@ -3114,7 +3125,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     always_include_pass: false,
                                                 },
                                             );
-                                            let equity = knob.apply(move_generator.plays[0].equity, rack_bytes);
+                                            let equity =
+                                                knob.apply(move_generator.plays[0].equity, rack_bytes);
                                             thread_map
                                                 .entry(rack_bytes.into())
                                                 .and_modify(|e| {
@@ -3253,7 +3265,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     always_include_pass: false,
                                                 },
                                             );
-                                            let equity = knob.apply(move_generator.plays[0].equity, &exchange_buffer);
+                                            let equity =
+                                                knob.apply(move_generator.plays[0].equity, &exchange_buffer);
                                             thread_map
                                                 .entry(exchange_buffer[..].into())
                                                 .and_modify(|e| {
@@ -3393,21 +3406,22 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             let w = real_rack_weight;
                             real_rack_buf.clone_from(&game_state.current_player().rack);
                             real_rack_buf.sort_unstable();
-                            // value the real rack's play the same way the sampled records do:
-                            // win% remap (or raw equity when off) plus the oppdenial_rack/oppdenial_exact opponent-
-                            // oppdenial_leave folds. the marginals were built for this exact board above.
+                            // value the real rack's play the same way the sampled records do
+                            // (win% remap plus the opponent-denial folds, all no-ops when off),
+                            // weighted by w. the marginals were built for this exact board
+                            // above, and rr_oppdenial_exact_active gates the exact term.
                             let rr_knob = KnobFold {
-    winpct_board: &winpct_board,
-    oppdenial_rack,
-    opp_marginal: &opp_marginal,
-    oppdenial_exact,
-    oppdenial_exact_term: &oppdenial_exact_term,
-    oppdenial_exact_lat: if rr_oppdenial_exact_active {
-        opp_ctx.map(|(lat, _, _)| lat)
-    } else {
-        None
-    },
-};
+                                winpct_board: &winpct_board,
+                                oppdenial_rack,
+                                opp_marginal: &opp_marginal,
+                                oppdenial_exact,
+                                oppdenial_exact_term: &oppdenial_exact_term,
+                                oppdenial_exact_lat: if rr_oppdenial_exact_active {
+                                    opp_ctx.map(|(lat, _, _)| lat)
+                                } else {
+                                    None
+                                },
+                            };
                             let eq = rr_knob.apply(move_generator.plays[0].equity, &real_rack_buf)
                                 * w as f64;
                             thread_map
@@ -3812,8 +3826,9 @@ struct SampleBudget<'a> {
     undersampled_done: &'a mut u32,
     samples_per_snapshot: u32,
     target: u32,
-    // this board's uniform knob-fold, applied to each undersampled
-    // rack's best play so remediation samples match the main pass.
+    // this board's uniform knob-fold, applied to each undersampled rack's best play so the
+    // remediation samples are valued exactly like the main pass. A no-op fold when the
+    // knobs are off, so the recorded equity stays byte-identical to the pre-knob path.
     knob: KnobFold<'a>,
 }
 
@@ -4236,8 +4251,13 @@ fn oppdenial_exact_fold(oppdenial_exact: f64, oppdenial_exact_term: &[f64], rank
     -oppdenial_exact * oppdenial_exact_term[rank] / equity::SCALE as f64
 }
 
-// One board/turn's uniform knob-fold, built once per board and applied at every
-// rack-record site so none can silently omit a fold.
+// One board/turn's uniform knob-fold. Built once from that board's fold context, then
+// applied at every rack-record site so none can silently omit a fold. apply() returns the
+// win%-remapped (or raw) equity plus the WOLGES_OPPDENIAL_RACK and WOLGES_OPPDENIAL_EXACT
+// folds, summed in a fixed order. All three default off, so with the knobs unset apply()
+// returns base.as_f64() -- byte-identical to the pre-knob record path. oppdenial_exact_lat
+// is Some(lat) only when this board's exact term is active (else None), so apply() ranks
+// the rack for the exact-term lookup exactly when the pre-refactor per-site match did.
 #[derive(Clone, Copy)]
 struct KnobFold<'a> {
     winpct_board: &'a Option<WinpctBoard<'a>>,
@@ -4260,18 +4280,23 @@ impl KnobFold<'_> {
     }
 }
 
-// WIN%-OBJECTIVE remap (WOLGES_WINPCT): rewrite each full rack's
-// best_equity (millipoints) in `best` to the certainty-equivalent lead
+// WIN%-OBJECTIVE remap (WOLGES_WINPCT): rewrite each full rack's best_equity
+// (millipoints) in `best` to the certainty-equivalent lead
 //   g(e) = (win%(e, bag, my, opp) - 0.5) * (SCALE / slope),
-// where e is the descaled best_equity and slope the table's local win-prob-per-
-// point near a tied game at this count-state. g is about equity for small leads
-// and saturates to a +/- ceiling (large midgame, tiny in the endgame) -- the win%
-// concavity. g(0)=0 so no per-board constant leaks past centering. A static
-// leave can only express win% this way: for any fixed count-state win% is
-// monotone in lead, so the best-win% play is the best-equity play; the
-// variance preference that makes win% differ needs lookahead the census lacks.
-// No-op for a degenerate/unsampled cell (keeps equity). Only the full-rack block
-// (full_rack_start..) is touched, matching where best_equity is defined.
+// where e is the descaled best_equity and slope the table's local
+// win-prob-per-point near a tied game at this count-state. g is about equity
+// for small leads and saturates to a +/- ceiling (large midgame, tiny in the
+// endgame) -- the win% concavity. g(0)=0 so no per-board constant leaks past
+// centering. A static leave can only express win% this way: for any fixed
+// count-state win% is monotone in lead, so the best-win% play is the
+// best-equity play; the variance preference that makes win% differ needs
+// lookahead the census lacks. No-op for a degenerate/unsampled cell (keeps
+// equity). Only the full-rack block (full_rack_start..) is touched, matching
+// where best_equity is defined. `blend` in [0, 1] interpolates between the
+// equity value (0) and the pure certainty-equivalent g (1, the simmer's win%
+// taken alone): a rack's value becomes (1 - blend) * best_equity + blend * g.
+// blend < 1 is the simmer-style equity + w * winprob mix, which keeps equity
+// dominant and adds a win% nudge.
 fn winpct_remap(
     table: &win_pct::WinPctTable,
     best: &mut [i32],
@@ -4279,12 +4304,13 @@ fn winpct_remap(
     bag: usize,
     my: usize,
     opp: usize,
+    blend: f64,
 ) {
     let Some(inv_slope_mp) = winpct_inv_slope(table, bag, my, opp) else {
         return;
     };
     for e in best[full_rack_start..].iter_mut() {
-        *e = winpct_g(table, *e, bag, my, opp, inv_slope_mp);
+        *e = winpct_g(table, *e, bag, my, opp, inv_slope_mp, blend);
     }
 }
 
@@ -4309,10 +4335,11 @@ fn winpct_inv_slope(
 }
 
 // Remap one best-play equity (millipoints) to the certainty-equivalent lead
-//   g(e) = (win%(e, bag, my, opp) - 0.5) * inv_slope_mp.
-// Callers that remap a whole full-rack block (the census) or one sampled rack
-// (autoplay, gilles) share this so the win% math lives in one place. inv_slope_mp
-// comes from winpct_inv_slope for this count-state.
+//   g(e) = (win%(e, bag, my, opp) - 0.5) * inv_slope_mp,
+// then blend it with the raw equity: (1 - blend) * e + blend * g (blend = 1.0
+// is pure win%). Callers that remap a whole full-rack block (the census) or
+// one sampled rack (autoplay, gilles) share this so the win% math lives in one
+// place. inv_slope_mp comes from winpct_inv_slope for this count-state.
 fn winpct_g(
     table: &win_pct::WinPctTable,
     e_mp: i32,
@@ -4320,10 +4347,12 @@ fn winpct_g(
     my: usize,
     opp: usize,
     inv_slope_mp: f64,
+    blend: f64,
 ) -> i32 {
     let e_pts = equity::descale_score(e_mp);
     let wprob = table.get(e_pts, bag, my, opp) as f64;
-    ((wprob - 0.5) * inv_slope_mp).round() as i32
+    let g_mp = (wprob - 0.5) * inv_slope_mp;
+    ((1.0 - blend) * e_mp as f64 + blend * g_mp).round() as i32
 }
 
 // The win% remap specialized to one sampled board's count-state, built once per
@@ -4340,6 +4369,7 @@ struct WinpctBoard<'a> {
     my: usize,
     opp: usize,
     inv_slope_mp: f64,
+    blend: f64,
 }
 
 impl WinpctBoard<'_> {
@@ -4350,8 +4380,14 @@ impl WinpctBoard<'_> {
         table: Option<&win_pct::WinPctTable>,
         unseen: usize,
         rack_size: usize,
+        blend: f64,
     ) -> Option<WinpctBoard<'_>> {
-        WinpctBoard::from_bag(table, unseen.saturating_sub(2 * rack_size), rack_size)
+        WinpctBoard::from_bag(
+            table,
+            unseen.saturating_sub(2 * rack_size),
+            rack_size,
+            blend,
+        )
     }
 
     // Build from the physical bag size directly (the autoplay sampler knows it),
@@ -4361,6 +4397,7 @@ impl WinpctBoard<'_> {
         table: Option<&win_pct::WinPctTable>,
         bag: usize,
         rack_size: usize,
+        blend: f64,
     ) -> Option<WinpctBoard<'_>> {
         let table = table?;
         let inv_slope_mp = winpct_inv_slope(table, bag, rack_size, rack_size)?;
@@ -4370,6 +4407,7 @@ impl WinpctBoard<'_> {
             my: rack_size,
             opp: rack_size,
             inv_slope_mp,
+            blend,
         })
     }
 }
@@ -4379,7 +4417,15 @@ impl WinpctBoard<'_> {
 fn winpct_apply(wpb: &Option<WinpctBoard>, e: equity::Equity) -> f64 {
     match wpb {
         Some(w) => {
-            winpct_g(w.table, e.raw(), w.bag, w.my, w.opp, w.inv_slope_mp) as f64
+            winpct_g(
+                w.table,
+                e.raw(),
+                w.bag,
+                w.my,
+                w.opp,
+                w.inv_slope_mp,
+                w.blend,
+            ) as f64
                 / equity::SCALE as f64
         }
         None => e.as_f64(),
@@ -4650,6 +4696,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         None
     };
+    // Blend for the win%-objective: 1.0 = pure certainty-equivalent g (the
+    // simmer's win% alone); < 1.0 = the simmer-style equity + w*winprob mix
+    // (equity dominant, win% nudge). Only consulted when WINPCT is on.
+    let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
     // entering step 3 (only used on the opt-in WOLGES_APPORTION=entering path):
     // 0 = pull (leave_value_by_draw per leave, the default), 1 = push
     // (census::entering_fused, one lattice walk for the whole table, about 20x faster
@@ -5474,6 +5524,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 bag,
                                 rack_size,
                                 rack_size,
+                                winpct_blend,
                             );
                             census::apportion_table(
                                 &lat,
@@ -5611,6 +5662,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 bag,
                                 rack_size,
                                 rack_size,
+                                winpct_blend,
                             );
                         }
                         contrib.iter_mut().for_each(|x| *x = census::UNPLAYABLE);
