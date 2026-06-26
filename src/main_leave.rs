@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
     alphabet, bites, build, census, display, equity, error, fash, game_config, game_state, klv,
-    kwg, move_filter, move_picker, movegen, play_scorer, prob, stats,
+    kwg, move_filter, move_picker, movegen, play_scorer, prob, stats, win_pct,
 };
 
 static BASE62: &[u8; 62] = b"\
@@ -418,6 +418,35 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 generate_rollout_leaves(make_game_config(), kwg, arc_klv, num_games, seed)?;
                 Ok(true)
             }
+            "-winpct" => {
+                // english-winpct CSW24.kwg leave.klv2 num_games [seed]
+                // record a win% table from Hasty self-play; csv to stdout.
+                // leave.klv2 = the leaves both players use to play ("-" = null).
+                let args3 = if args.len() > 3 { &args[3] } else { "-" };
+                let num_games = if args.len() > 4 {
+                    u64::from_str(&args[4])?
+                } else {
+                    1_000_000
+                };
+                let seed = if args.len() > 5 {
+                    Some(u64::from_str(&args[5])?)
+                } else {
+                    None
+                };
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let arc_klv = if args3 == "-" {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
+                } else {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
+                };
+                generate_winpct_table(make_game_config(), kwg, arc_klv, num_games, seed)?;
+                Ok(true)
+            }
             "-summarize" => {
                 generate_summary(
                     make_game_config(),
@@ -574,6 +603,12 @@ fn main() -> error::Returns<()> {
   english-playability CSW24.kwg leave.klv 1000000 [seed]
     autoplay (not saved) and record prorated found best words (at the end)
     (run fewer number of games and use resummarize to merge to mitigate risks)
+    seed is optional; prints auto-generated seed to stderr if not provided.
+  english-winpct CSW24.kwg leave.klv 1000000 [seed]
+    Hasty self-play, recording an empirical win% table (P(mover wins) by
+    lead and count-state (bag, my, opp)) as raw sparse csv to stdout.
+    if leave is \"-\" or omitted, uses no leave.
+    number of games is optional (default 1000000).
     seed is optional; prints auto-generated seed to stderr if not provided.
   english-resummarize-playability concatenated_playabilities.csv playability.csv
     same as english-resummarize but sorts differently (by length first)
@@ -7568,6 +7603,106 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         t0.elapsed().as_secs(),
         baseline / equity::SCALE as f64,
     );
+    Ok(())
+}
+
+// Win% table recorder (english-winpct <kwg> <klv> <games> [seed]). Plays Hasty
+// (static, greedy) self-play and, from the mover's view at every ply, snapshots
+// the count-state (bag, my, opp) and the lead, then folds each game's final
+// lead into a win_pct accumulator. The accumulator is composable, so threads
+// each build a local table and merge once at the end; the result is
+// deterministic in (seed, games) regardless of thread count. Writes the raw
+// sparse csv to stdout, progress to stderr.
+fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    arc_klv: std::sync::Arc<klv::Klv<L>>,
+    num_games: u64,
+    seed: Option<u64>,
+) -> error::Returns<()> {
+    let t0 = std::time::Instant::now();
+    let game_config = std::sync::Arc::new(game_config);
+    let seed = seed.unwrap_or_else(rand::random);
+    let num_threads = wolges_threads().max(1).min(num_games.max(1) as usize);
+    eprintln!("winpct: seed {seed}, {num_games} games, {num_threads} threads");
+    let kwg = std::sync::Arc::new(kwg);
+    let next_game = std::sync::atomic::AtomicU64::new(0);
+    let report_every = 10_000u64;
+    let shared = std::sync::Mutex::new(win_pct::WinPctAccumulator::new());
+
+    std::thread::scope(|s| {
+        for _ in 0..num_threads {
+            s.spawn(|| {
+                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                let mut game_state = game_state::GameState::new(&game_config);
+                let mut final_scores = vec![0i32; game_config.num_players() as usize];
+                let mut acc = win_pct::WinPctAccumulator::new();
+                // per-game snapshots from the mover's view: (bag, my, opp, mover,
+                // lead in points), reused across games.
+                let mut snapshots = Vec::<(usize, usize, usize, usize, i32)>::new();
+                loop {
+                    let g = next_game.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if g >= num_games {
+                        break;
+                    }
+                    rng.set_stream(g);
+                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    snapshots.clear();
+                    loop {
+                        let mover = game_state.turn as usize;
+                        let other = 1 - mover;
+                        let lead = equity::descale_score(game_state.players[mover].score)
+                            - equity::descale_score(game_state.players[other].score);
+                        snapshots.push((
+                            game_state.bag.len(),
+                            game_state.players[mover].rack.len(),
+                            game_state.players[other].rack.len(),
+                            mover,
+                            lead,
+                        ));
+                        let board_snapshot = movegen::BoardSnapshot {
+                            board_tiles: &game_state.board_tiles,
+                            game_config: &game_config,
+                            kwg: &kwg,
+                            klv: &arc_klv,
+                        };
+                        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &game_state.current_player().rack,
+                            max_gen: 1,
+                            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                            always_include_pass: false,
+                        });
+                        let play = &move_generator.plays[0].play;
+                        game_state.play(&game_config, &mut rng, play).unwrap();
+                        match game_state.check_game_ended(&game_config, &mut final_scores) {
+                            game_state::CheckGameEnded::NotEnded => {}
+                            _ => break,
+                        }
+                        game_state.next_turn();
+                    }
+                    // fold each snapshot's future swing, from its own mover's view.
+                    for &(bag, my, opp, mover, lead) in &snapshots {
+                        let mover_final = equity::descale_score(final_scores[mover])
+                            - equity::descale_score(final_scores[1 - mover]);
+                        acc.record(bag, my, opp, lead, mover_final);
+                    }
+                    if (g + 1).is_multiple_of(report_every) {
+                        eprintln!("winpct: {} games", g + 1);
+                    }
+                }
+                shared.lock().unwrap().merge(&acc);
+            });
+        }
+    });
+
+    let acc = shared.into_inner().unwrap();
+    // emit to stdout (make_writer("-") flags it so "time taken" goes to stderr).
+    let mut out = std::io::BufWriter::new(make_writer("-")?);
+    out.write_all(acc.to_csv().as_bytes())?;
+    out.flush()?;
+    eprintln!("winpct: {num_games} games in {}s", t0.elapsed().as_secs());
     Ok(())
 }
 
