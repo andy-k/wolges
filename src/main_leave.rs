@@ -1652,7 +1652,7 @@ fn generate_leaves<
     // subrack_map[subrack] = sum(full_rack_map[subrack + completion]).
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     {
-        let mut word_prob = prob::WordProbability::new(game_config.alphabet());
+        let word_prob = prob::WordProbability::new(game_config.alphabet());
         let mut full_rack_tally = vec![0u8; rack_tally.len()];
         let mut subrack_tally = vec![0u8; rack_tally.len()];
         for (idx, (k, fv)) in full_rack_map.iter().enumerate() {
@@ -1665,8 +1665,11 @@ fn generate_leaves<
                     subrack_bytes
                         .iter()
                         .for_each(|&tile| subrack_tally[tile as usize] += 1);
-                    let w =
-                        word_prob.count_ways_for_leave_completion(&full_rack_tally, &subrack_tally);
+                    let w = word_prob.completion_draw_ways(
+                        &full_rack_tally,
+                        &subrack_tally,
+                        word_prob.bag(),
+                    );
                     subrack_map
                         .entry(subrack_bytes.into())
                         .and_modify(|v| {
