@@ -1174,7 +1174,7 @@ fn generate_autoplay_logs<
 
                         if WRITE_LOGS {
                             equity_fmt.clear();
-                            // no rounding, this used to be {:.3} for compatibility reasons.
+                            // full precision, no rounding.
                             write!(equity_fmt, "{}", play.equity).unwrap();
                         }
 

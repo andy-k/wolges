@@ -56,7 +56,7 @@ impl WordProbability {
         }
     }
 
-    pub fn count_ways(&mut self, word: &[u8]) -> u64 {
+    pub fn word_draw_ways(&mut self, word: &[u8]) -> u64 {
         self.dp.iter_mut().for_each(|m| *m = 0);
         self.dp[0] = 1;
         self.word_tally.iter_mut().for_each(|m| *m = 0);
@@ -100,7 +100,7 @@ impl WordProbability {
                 while v.len() <= l {
                     v.push(0);
                 }
-                v[l] = v[l].max(self.count_ways(word));
+                v[l] = v[l].max(self.word_draw_ways(word));
             }
             if node.arc_index() != 0 {
                 self.get_max_probs_by_len_iter(kwg, word, v, node.arc_index());
