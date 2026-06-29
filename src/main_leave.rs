@@ -4432,9 +4432,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // so a board-impossible rack (its tiles depleted from this board's unseen
     // pool) still gets a real best_equity -- its tiles are playable -- and the
     // emit skips only the GLOBALLY-impossible racks (zero completion combos). Set
-    // IMPOSSIBLE_OK=0 for drawable racks only.
-    let rack_summary =
-        full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_RACK_SUMMARY", false);
+    // IMPOSSIBLE_OK=0 for drawable racks only. A single-gen run emits the summary
+    // CSV for the external -generate; a multi-gen run instead decomposes the rack
+    // means in-process at each gen boundary (census::generate_fused, the same
+    // draw-ways completion weight) and iterates, writing the final klv directly.
+    let rack_summary = full_rack && !sgd && env_flag("WOLGES_CENSUS_RACK_SUMMARY", false);
     let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
     // WOLGES_CENSUS_GLOBAL_APPORTION (default 0 = the coupled per-board apportionment,
     // byte-identical). When 1 (full-rack + single full-batch gen only): decouple the
@@ -5827,16 +5829,52 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     let mut g = shared.lock().unwrap();
                                     let (sum, cnt, completed, valued, ever) = &mut *g;
                                     let mut lv = leave_lock.write().unwrap();
-                                    let base = if cnt[empty_rank] > 0 {
-                                        sum[empty_rank] / cnt[empty_rank] as f64
+                                    if rack_summary {
+                                        // rack_summary accumulates per-FULL-RACK means, not
+                                        // per-subrack apportioned leaves, so decompose to
+                                        // subrack leaves in-process with the draw-ways
+                                        // completion push over the global bag (the same thing
+                                        // the external -generate does on the rack-summary CSV),
+                                        // then mean-center on the empty leave. This is what
+                                        // lifts rack-summary to multi-gen: each gen values racks
+                                        // under the prior gen's leaves, decomposes, feeds next.
+                                        let mut rmean = vec![census::UNPLAYABLE; lat_len];
+                                        for idx in full_rack_start..lat_len {
+                                            if cnt[idx] > 0 {
+                                                rmean[idx] =
+                                                    (sum[idx] / cnt[idx] as f64).round() as i32;
+                                            }
+                                        }
+                                        let mut gnum = vec![0f64; lat_len];
+                                        let mut gden = vec![0f64; lat_len];
+                                        census::generate_fused(
+                                            &lat, &rmean, &base_freqs, &mut gnum, &mut gden,
+                                        );
+                                        let gbase = if gden[empty_rank] != 0.0 {
+                                            gnum[empty_rank] / gden[empty_rank]
+                                        } else {
+                                            0.0
+                                        };
+                                        for idx in 0..lat_len {
+                                            if gden[idx] != 0.0 {
+                                                ever[idx] = true;
+                                                lv[idx] = (gnum[idx] / gden[idx] - gbase).round()
+                                                    as i32;
+                                            }
+                                        }
                                     } else {
-                                        0.0
-                                    };
-                                    for idx in 0..lat_len {
-                                        if cnt[idx] > 0 {
-                                            ever[idx] = true;
-                                            lv[idx] = (sum[idx] / cnt[idx] as f64 - base).round()
-                                                as i32;
+                                        let base = if cnt[empty_rank] > 0 {
+                                            sum[empty_rank] / cnt[empty_rank] as f64
+                                        } else {
+                                            0.0
+                                        };
+                                        for idx in 0..lat_len {
+                                            if cnt[idx] > 0 {
+                                                ever[idx] = true;
+                                                lv[idx] = (sum[idx] / cnt[idx] as f64 - base)
+                                                    .round()
+                                                    as i32;
+                                            }
                                         }
                                     }
                                     eprintln!(
@@ -6068,21 +6106,25 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // same millipoint frame), restricted to leaves valued in some mini-batch / gen; the
     // global-apportion path reports the single global-bag apportionment ga_num/ga_den.
     let value_mp = |idx: usize| -> f64 {
-        if global_apportion {
+        // multi-gen (incl. rack-summary, which decomposes in-process each gen) and SGD
+        // report leave_cur itself; check them first, because rack-summary forces
+        // global_apportion on yet leaves ga_num/ga_den empty (the single-gen-only
+        // apportion below). Single-gen global-apportion uses ga_num/ga_den.
+        if sgd || multigen {
+            leave_final[idx] as f64
+        } else if global_apportion {
             if ga_den[idx] != 0 {
                 (ga_num[idx] / ga_den[idx]) as f64
             } else {
                 0.0
             }
-        } else if sgd || multigen {
-            leave_final[idx] as f64
         } else if accum_cnt[idx] > 0 {
             accum_sum[idx] / accum_cnt[idx] as f64
         } else {
             0.0
         }
     };
-    if rack_summary {
+    if rack_summary && !multigen {
         // autoplay-faithful: emit a full-rack summary (rack, equity_sum_points,
         // board_count) -- each board contributes best(R,B) ONCE (no w(R) weight) --
         // for the standard `-generate` draw-ways decompose. accum_sum is in
@@ -6157,10 +6199,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
     for idx in 0..lat.len() {
-        let valued = if global_apportion {
-            ga_den[idx] != 0
-        } else if sgd || multigen {
+        let valued = if sgd || multigen {
             ever[idx]
+        } else if global_apportion {
+            ga_den[idx] != 0
         } else {
             accum_cnt[idx] > 0
         };
