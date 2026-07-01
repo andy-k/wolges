@@ -476,6 +476,27 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 generate_winpct_eval(make_game_config(), kwg, arc_klv, table, num_games, seed)?;
                 Ok(true)
             }
+            "-winpct-combine" => {
+                // english-winpct-combine win_pct.csv win_pct1.csv win_pct2.csv [...]
+                // merge several english-winpct raw tables into one by summing
+                // their per-count-state histograms. counts add exactly (no
+                // rounding), so independent recorder runs parallelize across
+                // processes and combine afterward. the first argument is the
+                // output ("-" = stdout); the rest are input csv files.
+                if args.len() < 4 {
+                    return Err(
+                        "english-winpct-combine needs an output and at least one input".into(),
+                    );
+                }
+                let mut acc = win_pct::WinPctAccumulator::new();
+                for path in &args[3..] {
+                    acc.merge(&win_pct::WinPctAccumulator::from_csv(
+                        &std::fs::read_to_string(path)?,
+                    )?);
+                }
+                make_writer(&args[2])?.write_all(acc.to_csv().as_bytes())?;
+                Ok(true)
+            }
             "-summarize" => {
                 generate_summary(
                     make_game_config(),
@@ -644,6 +665,11 @@ fn main() -> error::Returns<()> {
     better) against Hasty self-play outcomes; use a held-out seed.
     number of games is optional (default 1000000).
     seed is optional; prints auto-generated seed to stderr if not provided.
+  english-winpct-combine win_pct.csv win_pct1.csv win_pct2.csv [...]
+    merge several english-winpct raw tables into one by summing their
+    per-count-state histograms (counts add exactly, no rounding).
+    the first argument is the output (\"-\" = stdout); the rest are inputs.
+    run english-winpct on separate seeds/processes, then combine here.
   english-resummarize-playability concatenated_playabilities.csv playability.csv
     same as english-resummarize but sorts differently (by length first)
   english-resummarize-playability-all concat_playabilities.csv playability.csv
