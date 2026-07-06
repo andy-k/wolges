@@ -378,13 +378,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             // so a states-only stop would freeze on the truncated value.
             self.work_buffer.depth_limited = true;
 
-            // this should static eval from initial player's perspective.
-            // initial_player_idx is not currently a parameter, and
-            // negamax_eval's initial call may not be for player_idx=0.
-            // anyway, if this player_idx is the opponent, negate the value.
-
-            // for now, no need to worry about this because we return 0.
-            return 0.0;
+            // static leaf value: the standing point margin if the game ended here
+            // (both players pass), from the side-to-move's perspective. negamax keeps
+            // every value from the mover's view and the caller composes it via
+            // (score - v), so no explicit negation is needed. This is a meaningful
+            // bound for a depth-capped search (aspiration) instead of a placeholder 0.
+            return self.both_pass_value(state_idx, player_idx);
         }
 
         // return and/or trim range
