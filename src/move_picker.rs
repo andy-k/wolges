@@ -98,8 +98,6 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Simmer(Simmer<'a, N, L>),
 }
 
-unsafe impl<N: kwg::Node, L: kwg::Node> Send for MovePicker<'_, N, L> {}
-
 impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
     #[inline(always)]
     fn limit_surviving_candidates(
@@ -123,7 +121,7 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
     }
 
     #[inline(always)]
-    pub async fn pick_a_move_async(
+    pub fn pick_a_move(
         &mut self,
         filtered_movegen: &mut move_filter::GenMoves<'_>,
         move_generator: &mut movegen::KurniaMoveGenerator,
@@ -142,10 +140,6 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 );
             }
             MovePicker::Simmer(simmer) => {
-                tokio::spawn(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
-                    println!("3 secs have passed");
-                });
                 filtered_movegen.gen_moves(
                     move_generator,
                     board_snapshot,
@@ -158,7 +152,6 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 let num_sim_iters = simmer.num_sim_iters;
                 const Z: f64 = 1.96; // 95% confidence interval
                 for sim_iter in 1..=num_sim_iters {
-                    tokio::task::yield_now().await;
                     simmer.simmer.prepare_iteration();
                     for candidate in candidates.iter_mut() {
                         let game_ended = simmer.simmer.simulate(
@@ -224,25 +217,5 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 simmer.candidates = candidates;
             }
         }
-    }
-
-    #[inline(always)]
-    #[tokio::main]
-    pub async fn pick_a_move(
-        &mut self,
-        filtered_movegen: &mut move_filter::GenMoves<'_>,
-        move_generator: &mut movegen::KurniaMoveGenerator,
-        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
-        game_state: &game_state::GameState,
-        rack: &[u8],
-    ) {
-        self.pick_a_move_async(
-            filtered_movegen,
-            move_generator,
-            board_snapshot,
-            game_state,
-            rack,
-        )
-        .await
     }
 }
