@@ -2016,6 +2016,55 @@ pub fn leave_value_by_draw(
     }
 }
 
+/// Inference-time dynamic value of the kept subrack whose lattice index is
+/// `s_ridx` (size |S|): the expected static full-rack value v(S + draw), where the
+/// `draw` completion tiles are drawn without replacement from `pool`. `full_v`
+/// holds the static leave value of every full multiset over the lattice (fill it
+/// via a full-length klv; see the fill loop in main_leave). Returns millipoints,
+/// or UNPLAYABLE when no completion is drawable (the pool is too small for `draw`,
+/// so den == 0). `add` is the lattice add-table.
+///
+/// This is the per-move pull used to reweight a rack's static leaves by the tiles
+/// that are actually still live: the more of the completion the current pool
+/// favors, the more its value flows into the kept subrack, so the same kept tiles
+/// score differently early (fat bag) than late (thin bag).
+///
+/// R3 (the subtlety): `pool` is the LIVE pool = bag + opponent, already EXCLUDING
+/// the mover's own rack, so the completion draws from it directly. DrawCtx draws
+/// pool-direct with no kept-tile subtraction -- which is exactly
+/// leave_value_by_draw(lat, full_v, pool + S, S), whose built-in
+/// C(unseen - S, d) = C(pool, d) subtraction cancels the S added back into unseen.
+/// Passing `pool` unadjusted to leave_value_by_draw, or pool + full_rack, is wrong.
+pub fn dynamic_leave_value(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    full_v: &[i32],
+    pool: &[u8],
+    s_ridx: usize,
+    draw: usize,
+) -> i32 {
+    let n = lat.num_letters();
+    let rack_size = lat.rack_size();
+    let mut suffix_cap = [0u32; MAX_LETTERS + 1];
+    for t in (0..n).rev() {
+        suffix_cap[t] = suffix_cap[t + 1] + (pool[t] as u32).min(rack_size as u32);
+    }
+    let (mut num, mut den) = (0.0f64, 0.0f64);
+    DrawCtx {
+        n,
+        pool,
+        suffix_cap: &suffix_cap,
+        add,
+        best: full_v,
+    }
+    .aggregate(0, draw, 1.0, s_ridx, &mut num, &mut den);
+    if den > 0.0 {
+        (num / den) as i32
+    } else {
+        UNPLAYABLE
+    }
+}
+
 #[inline]
 fn n_choose_k(n: u64, k: u64) -> u64 {
     if k > n {
@@ -2309,6 +2358,37 @@ mod tests {
                 UNPLAYABLE
             };
             assert_eq!(pull, push, "leave {idx} {s:?}: pull {pull} push {push}");
+        }
+    }
+
+    #[test]
+    fn dynamic_leave_matches_draw_with_s_added() {
+        // R3: the live pool already excludes the mover's kept subrack S, so the
+        // completion draws pool-direct. dynamic_leave_value (DrawCtx, pool-direct)
+        // must therefore equal the census pull leave_value_by_draw fed
+        // unseen = pool + S, whose built-in C(unseen - S, d) = C(pool, d)
+        // subtraction cancels the S added back. Pin it over every subrack of a
+        // tiny lattice, giving both forms the same completion count draw =
+        // rack_size - |S| (leave_value_by_draw fixes that draw internally).
+        let lat = MultisetLattice::new(3, 3);
+        let add = AddTable::new(&lat);
+        let pool = [3u8, 2u8, 2u8];
+        let mut full_v = vec![UNPLAYABLE; lat.len()];
+        for (idx, slot) in full_v.iter_mut().enumerate() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            *slot = h.rem_euclid(20_000) - 5_000;
+        }
+        for s_idx in 0..lat.len() {
+            let s = lat.tally(s_idx);
+            let s_size: usize = s.iter().map(|&c| c as usize).sum();
+            let draw = lat.rack_size() - s_size;
+            let mut unseen = [0u8; 3];
+            for t in 0..3 {
+                unseen[t] = pool[t] + s[t];
+            }
+            let dyn_v = dynamic_leave_value(&lat, &add, &full_v, &pool, s_idx, draw);
+            let ref_v = leave_value_by_draw(&lat, &full_v, &unseen, &s);
+            assert_eq!(dyn_v, ref_v, "S={s:?} (idx {s_idx})");
         }
     }
 
