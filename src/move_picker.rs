@@ -7,6 +7,14 @@ struct Candidate {
     stats: stats::Stats,
 }
 
+// Default per-decision rollout budget (see Simmer::num_sim_iters).
+const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
+
+// Prune the candidate list once every this many iterations. Between prunes
+// each surviving candidate gets one more rollout, so this trades the cost of
+// pruning against how quickly clearly-worse candidates are dropped.
+const PRUNE_CADENCE: u64 = 16;
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
@@ -16,6 +24,13 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     klv: &'a klv::Klv<L>,
     candidates: Vec<Candidate>,
     simmer: simmer::Simmer,
+    // Number of Monte-Carlo rollout iterations spent on each move decision.
+    // This is a fixed budget: every decision runs this many iterations unless
+    // pruning first narrows the field to a single candidate. Sized so a 2-ply
+    // simmer separates the leading candidates on a typical rack; a caller that
+    // wants a more accurate (slower) or quicker decision overrides it via
+    // set_num_sim_iters.
+    num_sim_iters: u64,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -30,7 +45,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             klv,
             candidates: Vec::new(),
             simmer: simmer::Simmer::new(game_config),
+            num_sim_iters: DEFAULT_NUM_SIM_ITERS,
         }
+    }
+
+    #[inline(always)]
+    pub fn set_num_sim_iters(&mut self, num_sim_iters: u64) {
+        self.num_sim_iters = num_sim_iters;
     }
 
     #[inline(always)]
@@ -121,7 +142,6 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 );
             }
             MovePicker::Simmer(simmer) => {
-                let t0 = std::time::Instant::now();
                 tokio::spawn(async move {
                     tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
                     println!("3 secs have passed");
@@ -135,23 +155,10 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 );
                 simmer.simmer.prepare(simmer.game_config, game_state, 2);
                 let mut candidates = simmer.take_candidates(move_generator.plays.len());
-                let num_sim_iters = 1000;
-                let mut tick_periods = Periods(0);
-                let mut prune_periods = Periods(0);
-                let max_time_for_move_ms = 8000u64;
-                let prune_interval_ms = 1.max(max_time_for_move_ms / candidates.len() as u64);
+                let num_sim_iters = simmer.num_sim_iters;
                 const Z: f64 = 1.96; // 95% confidence interval
                 for sim_iter in 1..=num_sim_iters {
                     tokio::task::yield_now().await;
-                    let elapsed_time_ms = t0.elapsed().as_millis() as u64;
-                    if tick_periods.update(elapsed_time_ms / 1000) {
-                        println!(
-                            "After {} seconds, doing iteration {} with {} candidates",
-                            tick_periods.0,
-                            sim_iter,
-                            candidates.len()
-                        );
-                    }
                     simmer.simmer.prepare_iteration();
                     for candidate in candidates.iter_mut() {
                         let game_ended = simmer.simmer.simulate(
@@ -170,20 +177,22 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                             simmer.simmer.config().descale,
                         ));
                     }
-                    if sim_iter % 16 == 0
-                        && prune_periods.update(elapsed_time_ms / prune_interval_ms)
-                    {
+                    if sim_iter % PRUNE_CADENCE == 0 {
                         let low_bar = candidates
                             .iter()
                             .map(|candidate| candidate.stats.ci_max(-Z))
                             .max_by(|a, b| a.total_cmp(b))
                             .unwrap();
                         candidates.retain(|candidate| candidate.stats.ci_max(Z) >= low_bar);
+                        // Hard cap on survivors that shrinks as the fixed budget
+                        // is spent, so the field narrows toward a single winner by
+                        // the last iteration even when candidates are so close that
+                        // the confidence-interval prune above cannot separate them.
+                        let prune_periods_remaining = (num_sim_iters - sim_iter) / PRUNE_CADENCE;
                         Self::limit_surviving_candidates(
                             &mut candidates,
                             Z,
-                            1 + (2 * max_time_for_move_ms.saturating_sub(elapsed_time_ms)
-                                / prune_interval_ms) as usize,
+                            1 + 2 * prune_periods_remaining as usize,
                         );
                         if candidates.len() < 2 {
                             break;
@@ -197,13 +206,12 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                     .unwrap()
                     .0;
                 println!(
-                    "top candidate mean = {} (sd={} count={} range {}..{}) took {:?}",
+                    "top candidate mean = {} (sd={} count={} range {}..{})",
                     candidates[top_idx].stats.mean(),
                     candidates[top_idx].stats.standard_deviation(),
                     candidates[top_idx].stats.count(),
                     candidates[top_idx].stats.ci_max(-Z),
                     candidates[top_idx].stats.ci_max(Z),
-                    t0.elapsed()
                 );
                 assert_eq!(
                     candidates[top_idx].play_index,
