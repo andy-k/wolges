@@ -15,6 +15,11 @@ const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
 // pruning against how quickly clearly-worse candidates are dropped.
 const PRUNE_CADENCE: u64 = 16;
 
+// Default target probability of the confidence stop ending on the wrong
+// leader, used when StopRule::Confidence is selected. 5% is a conventional
+// choice; a caller tunes it via set_stop_delta.
+const DEFAULT_STOP_DELTA: f64 = 0.05;
+
 // How each iteration's rollouts are allocated across the surviving candidates.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Allocator {
@@ -51,6 +56,53 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node>(
     )
 }
 
+// The rule that decides when a move decision is finished.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StopRule {
+    // Always run the whole fixed iteration budget (minus pruning to one arm).
+    FixedCap,
+    // Stop as soon as the leader is separated from every other survivor; the
+    // fixed budget becomes a safety cap. See leader_is_separated.
+    Confidence,
+}
+
+// The z threshold for the confidence stop, corrected for multiple comparisons.
+// The stop compares the leader against each of the num_survivors - 1 other
+// survivors; a union bound over those comparisons at overall error `delta`,
+// using the Gaussian tail P(Z > z) <= exp(-z^2/2), gives each comparison a
+// budget of delta/(num_survivors - 1) and hence z = sqrt(2 ln((num_survivors -
+// 1) / delta)). This corrects for the number of arms, not for the number of
+// times the stop is checked -- the fixed iteration cap bounds that peeking.
+// Reference: Gaussian tail bound / Bonferroni union bound.
+#[inline(always)]
+fn fwer_z(num_survivors: usize, delta: f64) -> f64 {
+    (2.0 * ((num_survivors - 1) as f64 / delta).ln()).sqrt()
+}
+
+// True when the leader's lower confidence bound clears every other survivor's
+// upper bound at the corrected z: the leader is separated from the whole field,
+// so more rollouts are unlikely to change the winner. A single survivor (or
+// none) is trivially separated.
+#[inline(always)]
+fn leader_is_separated(candidates: &[Candidate], delta: f64) -> bool {
+    let num_survivors = candidates.len();
+    if num_survivors < 2 {
+        return true;
+    }
+    let z = fwer_z(num_survivors, delta);
+    let leader_idx = candidates
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
+        .unwrap()
+        .0;
+    let leader_low = candidates[leader_idx].stats.ci_max(-z);
+    candidates
+        .iter()
+        .enumerate()
+        .all(|(i, candidate)| i == leader_idx || leader_low >= candidate.stats.ci_max(z))
+}
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
@@ -72,6 +124,10 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     verbose: bool,
     // How each iteration's rollouts are allocated across the candidates.
     allocator: Allocator,
+    // Whether a decision runs the whole budget or stops once the leader is
+    // statistically separated, and the target error for that stop.
+    stop_rule: StopRule,
+    stop_delta: f64,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -89,6 +145,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             num_sim_iters: DEFAULT_NUM_SIM_ITERS,
             verbose: true,
             allocator: Allocator::RoundRobin,
+            stop_rule: StopRule::FixedCap,
+            stop_delta: DEFAULT_STOP_DELTA,
         }
     }
 
@@ -105,6 +163,18 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     #[inline(always)]
     pub fn set_allocator(&mut self, allocator: Allocator) {
         self.allocator = allocator;
+    }
+
+    #[inline(always)]
+    pub fn set_stop_rule(&mut self, stop_rule: StopRule) {
+        self.stop_rule = stop_rule;
+    }
+
+    // delta is the target probability of stopping on the wrong leader; it is
+    // clamped to (0, 1) since the corrected z is only defined there.
+    #[inline(always)]
+    pub fn set_stop_delta(&mut self, stop_delta: f64) {
+        self.stop_delta = stop_delta.clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON);
     }
 
     /// Reseed the inner rollout RNG so a decision replays identically. The
@@ -340,6 +410,14 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                         if candidates.len() < 2 {
                             break;
                         }
+                        // Confidence stop: once the leader is separated from the
+                        // whole field at the corrected z, the rest of the budget
+                        // is only a safety cap, so stop early.
+                        if simmer.stop_rule == StopRule::Confidence
+                            && leader_is_separated(&candidates, simmer.stop_delta)
+                        {
+                            break;
+                        }
                     }
                 }
                 let top_idx = candidates
@@ -369,5 +447,53 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 simmer.candidates = candidates;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stats_from(values: &[f64]) -> stats::Stats {
+        let mut s = stats::Stats::new();
+        for &v in values {
+            s.update(v);
+        }
+        s
+    }
+
+    fn candidate_from(play_index: usize, values: &[f64]) -> Candidate {
+        Candidate {
+            play_index,
+            stats: stats_from(values),
+        }
+    }
+
+    #[test]
+    fn fwer_z_matches_the_gaussian_union_bound() {
+        // two survivors at delta 0.05: z = sqrt(2 ln(1 / 0.05)) = sqrt(2 ln 20).
+        let expected = (2.0 * (1.0f64 / 0.05).ln()).sqrt();
+        assert!((fwer_z(2, 0.05) - expected).abs() < 1e-12);
+        // more arms -> a larger z, correcting for more comparisons.
+        assert!(fwer_z(100, 0.05) > fwer_z(2, 0.05));
+    }
+
+    #[test]
+    fn leader_is_separated_only_when_the_field_is_cleared() {
+        // leader mean 20 (tight) vs one rival mean 10 (tight): clearly separated.
+        let separated = vec![
+            candidate_from(0, &[19.0, 21.0].repeat(50)),
+            candidate_from(1, &[9.0, 11.0].repeat(50)),
+        ];
+        assert!(leader_is_separated(&separated, 0.05));
+        // leader mean 10.1 vs rival 10.0 with overlapping intervals: not separated.
+        let overlapping = vec![
+            candidate_from(0, &[9.1, 11.1].repeat(50)),
+            candidate_from(1, &[9.0, 11.0].repeat(50)),
+        ];
+        assert!(!leader_is_separated(&overlapping, 0.05));
+        // a single survivor is trivially separated.
+        let one = vec![candidate_from(0, &[10.0, 10.0])];
+        assert!(leader_is_separated(&one, 0.05));
     }
 }
