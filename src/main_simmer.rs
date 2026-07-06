@@ -1,8 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use wolges::{
-    alphabet, bites, build, display, error, fash, game_config, game_state, klv, kwg, movegen,
-    simmer, stats,
+    alphabet, bites, build, display, error, fash, game_config, game_state, klv, kwg, move_picker,
+    movegen,
 };
 
 // most of this is copied from main_endgame.
@@ -62,56 +62,6 @@ impl Question {
             rack: v,
             board_tiles,
         })
-    }
-}
-
-struct ObservableCandidate {
-    play_index: usize,
-    stats: stats::Stats,
-    equity_stats: stats::Stats,
-    win_rate_stats: stats::Stats,
-}
-
-// Simmer can only be reused for the same game_config and kwg.
-// (Refer to note at simmer::Simmer.)
-// This is not enforced.
-struct ObservableSimmer<'a, N: kwg::Node, L: kwg::Node> {
-    game_config: &'a game_config::GameConfig,
-    kwg: &'a kwg::Kwg<N>,
-    klv: &'a klv::Klv<L>,
-    candidates: Vec<ObservableCandidate>,
-    simmer: simmer::Simmer,
-}
-
-impl<'a, N: kwg::Node, L: kwg::Node> ObservableSimmer<'a, N, L> {
-    pub fn new(
-        game_config: &'a game_config::GameConfig,
-        kwg: &'a kwg::Kwg<N>,
-        klv: &'a klv::Klv<L>,
-    ) -> Self {
-        Self {
-            game_config,
-            kwg,
-            klv,
-            candidates: Vec::new(),
-            simmer: simmer::Simmer::new(game_config),
-        }
-    }
-
-    #[inline(always)]
-    fn take_candidates(&mut self, num_plays: usize) -> Vec<ObservableCandidate> {
-        let mut candidates = std::mem::take(&mut self.candidates);
-        candidates.clear();
-        candidates.reserve(num_plays);
-        for idx in 0..num_plays {
-            candidates.push(ObservableCandidate {
-                play_index: idx,
-                stats: stats::Stats::new(),
-                equity_stats: stats::Stats::new(),
-                win_rate_stats: stats::Stats::new(),
-            });
-        }
-        candidates
     }
 }
 
@@ -282,13 +232,11 @@ fn main() -> error::Returns<()> {
 
     // ok, let's sim...
 
-    let mut simmer = ObservableSimmer::new(&game_config, &smaller_kwg, &klv);
-    simmer.simmer.prepare(&game_config, &game_state, 2);
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &game_state.board_tiles,
-        game_config: simmer.game_config,
-        kwg: simmer.kwg,
-        klv: simmer.klv,
+        game_config: &game_config,
+        kwg: &smaller_kwg,
+        klv: &klv,
     };
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot,
@@ -298,49 +246,33 @@ fn main() -> error::Returns<()> {
         always_include_pass: false,
         dynamic_leaves: None,
     });
-    let mut candidates = simmer.take_candidates(move_generator.plays.len());
-    let num_sim_iters = 10000;
-    for sim_iter in 1..=num_sim_iters {
-        let should_output = sim_iter % 50 == 0;
-        if should_output {
-            println!("\niter {sim_iter}");
-        }
-        simmer.simmer.prepare_iteration();
-        for candidate in candidates.iter_mut() {
-            let game_ended = simmer.simmer.simulate(
-                simmer.game_config,
-                simmer.kwg,
-                simmer.klv,
-                &move_generator.plays[candidate.play_index].play,
+
+    let mut driver = move_picker::Simmer::new(&game_config, &smaller_kwg, &klv);
+    driver.set_observe(true);
+    driver.set_verbose(false);
+    driver.set_num_sim_iters(10000);
+    // run in chunks so the leaderboard can be shown as it converges, exercising
+    // the resumable accumulator.
+    let chunk = 50u64;
+    let mut done = 0u64;
+    driver.begin_decision(&move_generator, &game_state, chunk);
+    done += chunk;
+    loop {
+        println!("\niter {done}");
+        for (i, (play_index, _obj, equity_mean, win_rate)) in (1..).zip(driver.leaderboard(10)) {
+            println!(
+                "{:3} {:6.2} {:6.2} {}",
+                i,
+                equity_mean,
+                100.0 * win_rate,
+                move_generator.plays[play_index].play.fmt(board_snapshot)
             );
-            let final_spread = simmer.simmer.final_equity_spread();
-            let win_prob = simmer.simmer.compute_win_prob(game_ended, final_spread);
-            let sim_spread = final_spread - simmer.simmer.initial_score_spread;
-            candidate.stats.update(simmer::sim_objective(
-                sim_spread,
-                win_prob,
-                simmer.simmer.win_prob_weightage(),
-                simmer.simmer.config().descale,
-            ));
-            candidate
-                .equity_stats
-                .update(simmer::spread_points(sim_spread));
-            candidate.win_rate_stats.update(win_prob);
         }
-        if should_output {
-            candidates.sort_unstable_by(|a, b| b.stats.mean().total_cmp(&a.stats.mean()));
-            for (i, candidate) in (1..).zip(candidates.iter().take(10)) {
-                println!(
-                    "{:3} {:6.2} {:6.2} {}",
-                    i,
-                    candidate.equity_stats.mean(),
-                    100.0 * candidate.win_rate_stats.mean(),
-                    move_generator.plays[candidate.play_index]
-                        .play
-                        .fmt(board_snapshot)
-                );
-            }
+        if done >= 10000 {
+            break;
         }
+        driver.resume(&move_generator, chunk);
+        done += chunk;
     }
 
     Ok(())

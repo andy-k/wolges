@@ -8,6 +8,10 @@ struct Candidate {
     // stable identity for this candidate within a decision, so a retired
     // candidate can be named for readmit even as the vectors are reordered.
     stream_id: u64,
+    // per-arm equity (points) and win rate, updated only in observe mode
+    // (default off), for the observable study driver.
+    equity_stats: stats::Stats,
+    win_rate_stats: stats::Stats,
 }
 
 // Default per-decision rollout budget (see Simmer::num_sim_iters).
@@ -37,8 +41,10 @@ pub enum Allocator {
     Adaptive,
 }
 
-// One rollout of `play` from the prepared position, returned as the objective
-// value fed to the candidate's running statistics. Shared by both allocators.
+// One rollout of `play` from the prepared position. Returns the objective value
+// fed to the candidate's running statistics, plus the raw sim spread and win
+// probability so the observe mode can track per-arm equity and win rate without
+// recomputing anything. Shared by both allocators.
 #[inline(always)]
 fn rollout_objective<N: kwg::Node, L: kwg::Node>(
     simmer: &mut simmer::Simmer,
@@ -46,17 +52,20 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node>(
     kwg: &kwg::Kwg<N>,
     klv: &klv::Klv<L>,
     play: &movegen::Play,
-) -> f64 {
+) -> (f64, i32, f64) {
     let game_ended = simmer.simulate(game_config, kwg, klv, play);
     let final_spread = simmer.final_equity_spread();
     let win_prob = simmer.compute_win_prob(game_ended, final_spread);
     let sim_spread = final_spread - simmer.initial_score_spread;
-    simmer::sim_objective(
+    let objective = simmer::sim_objective(
         sim_spread,
         win_prob,
         simmer.win_prob_weightage(),
         simmer.config().descale,
-    )
+    );
+    // sim_spread and win_prob are returned too so the observe mode can track
+    // per-arm equity and win rate without recomputing anything.
+    (objective, sim_spread, win_prob)
 }
 
 // The rule that decides when a move decision is finished.
@@ -189,6 +198,10 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     // Next stream id to hand out, so added candidates get ids distinct from the
     // initial 0..num_plays.
     next_stream_id: u64,
+    // When true, run_iterations also tracks each candidate's equity and win rate
+    // for the observable study driver. Off (default) = no extra work, batch
+    // play byte-identical.
+    observe: bool,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -211,6 +224,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             retired: Vec::new(),
             iters_done: 0,
             next_stream_id: 0,
+            observe: false,
         }
     }
 
@@ -241,6 +255,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         self.stop_delta = stop_delta.clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON);
     }
 
+    #[inline(always)]
+    pub fn set_observe(&mut self, observe: bool) {
+        self.observe = observe;
+    }
+
     /// Reseed the inner rollout RNG so a decision replays identically. The
     /// sim-vs-sim harness reseeds every move from a (seed, pair, game, turn)
     /// mix, making its results independent of the thread count.
@@ -266,6 +285,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
                 play_index: idx,
                 stats: stats::Stats::new(),
                 stream_id: idx as u64,
+                equity_stats: stats::Stats::new(),
+                win_rate_stats: stats::Stats::new(),
             });
         }
         candidates
@@ -302,7 +323,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             match effective_allocator {
                 Allocator::RoundRobin => {
                     for candidate in candidates.iter_mut() {
-                        let value = rollout_objective(
+                        let (value, sim_spread, win_prob) = rollout_objective(
                             &mut self.simmer,
                             self.game_config,
                             self.kwg,
@@ -310,6 +331,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
                             &move_generator.plays[candidate.play_index].play,
                         );
                         candidate.stats.update(value);
+                        if self.observe {
+                            candidate
+                                .equity_stats
+                                .update(simmer::spread_points(sim_spread));
+                            candidate.win_rate_stats.update(win_prob);
+                        }
                     }
                 }
                 Allocator::Adaptive => {
@@ -375,7 +402,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
                         }
                         prev = idx;
                         let play_index = candidates[idx].play_index;
-                        let value = rollout_objective(
+                        let (value, sim_spread, win_prob) = rollout_objective(
                             &mut self.simmer,
                             self.game_config,
                             self.kwg,
@@ -383,6 +410,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
                             &move_generator.plays[play_index].play,
                         );
                         candidates[idx].stats.update(value);
+                        if self.observe {
+                            candidates[idx]
+                                .equity_stats
+                                .update(simmer::spread_points(sim_spread));
+                            candidates[idx].win_rate_stats.update(win_prob);
+                        }
                     }
                 }
             }
@@ -460,6 +493,26 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         (leader.play_index, leader.stats.mean(), leader.stats.count())
     }
 
+    // The top `top_n` candidates -- active and retired -- by objective mean,
+    // each as (play index, objective mean, mean equity in points, mean win
+    // rate). For the observable study driver; equity/win-rate are only populated
+    // in observe mode.
+    pub fn leaderboard(&self, top_n: usize) -> Vec<(usize, f64, f64, f64)> {
+        let mut all: Vec<&Candidate> = self.candidates.iter().chain(self.retired.iter()).collect();
+        all.sort_unstable_by(|a, b| b.stats.mean().total_cmp(&a.stats.mean()));
+        all.iter()
+            .take(top_n)
+            .map(|c| {
+                (
+                    c.play_index,
+                    c.stats.mean(),
+                    c.equity_stats.mean(),
+                    c.win_rate_stats.mean(),
+                )
+            })
+            .collect()
+    }
+
     // Add an already-generated play (by its index in move_generator.plays) to
     // the working set as a fresh candidate with zero samples, so a study session
     // can bring an unselected move into contention. Returns its stream id.
@@ -470,6 +523,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             play_index,
             stats: stats::Stats::new(),
             stream_id,
+            equity_stats: stats::Stats::new(),
+            win_rate_stats: stats::Stats::new(),
         });
         stream_id
     }
@@ -634,6 +689,8 @@ mod tests {
             play_index,
             stats: stats_from(values),
             stream_id: play_index as u64,
+            equity_stats: stats::Stats::new(),
+            win_rate_stats: stats::Stats::new(),
         }
     }
 
