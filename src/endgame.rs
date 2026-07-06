@@ -423,8 +423,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
             let alphabet = self.game_config.alphabet();
             let rack_scores = [
-                alphabet.rack_score(&current_ply_buffer.racks[0]),
-                alphabet.rack_score(&current_ply_buffer.racks[1]),
+                alphabet.scaled_rack_score(&current_ply_buffer.racks[0]),
+                alphabet.scaled_rack_score(&current_ply_buffer.racks[1]),
             ];
 
             /*
