@@ -313,15 +313,22 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut last_valuation = f32::NAN;
         for max_depth in 1.. {
             let old_num_state_eval = self.work_buffer.state_eval.len();
+            // reset ONCE per depth, before any aspiration re-search below, so
+            // the final accepted search's depth-limit flag is what's observed.
             self.work_buffer.depth_limited = false;
-            let valuation = self.negamax_eval(
-                0,
-                player_idx,
-                max_depth,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
-                false,
-            );
+            let valuation = if max_depth == 1 {
+                // no previous value to aim at; search the full window.
+                self.negamax_eval(
+                    0,
+                    player_idx,
+                    max_depth,
+                    f32::NEG_INFINITY,
+                    f32::INFINITY,
+                    false,
+                )
+            } else {
+                self.aspiration_search(player_idx, max_depth, last_valuation)
+            };
             last_valuation = valuation;
             if verbose {
                 println!(
@@ -343,6 +350,37 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
         last_valuation
+    }
+
+    // Aspiration window for one iterative-deepening depth. Each depth otherwise
+    // re-searches the whole tree with the full (-inf, +inf) window; instead we
+    // first search a narrow band around the previous depth's value, where the
+    // answer almost always lands, letting alpha-beta prune far more. A fail-soft
+    // result strictly inside the band is the exact value. If it falls on or
+    // outside an edge (fail-low <= lo, or fail-high >= hi), that result is only a
+    // bound, so we re-search once with the full window, which is always exact.
+    // Same converged value as the full-window search, fewer nodes.
+    fn aspiration_search(&mut self, player_idx: u8, max_depth: i8, last_valuation: f32) -> f32 {
+        // narrow band half-width, in movegen's scaled unit (equity::SCALE=1000).
+        const ASPIRATION_WINDOW: f32 = (3 * super::equity::SCALE) as f32;
+        let lo = last_valuation - ASPIRATION_WINDOW;
+        let hi = last_valuation + ASPIRATION_WINDOW;
+        let v = self.negamax_eval(0, player_idx, max_depth, lo, hi, false);
+        if v > lo && v < hi {
+            // strictly inside the band: exact.
+            v
+        } else {
+            // fail-low or fail-high: the narrow result is only a bound, so
+            // re-search the full window once for the exact value.
+            self.negamax_eval(
+                0,
+                player_idx,
+                max_depth,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                false,
+            )
+        }
     }
 
     pub fn evaluate(&mut self, player_idx: u8) {
