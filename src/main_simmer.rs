@@ -316,10 +316,11 @@ fn main() -> error::Returns<()> {
             let final_spread = simmer.simmer.final_equity_spread();
             let win_prob = simmer.simmer.compute_win_prob(game_ended, final_spread);
             let sim_spread = final_spread - simmer.simmer.initial_score_spread;
+            let sim_spread_points = simmer::spread_points(sim_spread);
             candidate
                 .stats
-                .update(sim_spread as f64 + win_prob * simmer.simmer.win_prob_weightage());
-            candidate.equity_stats.update(sim_spread as f64);
+                .update(sim_spread_points + win_prob * simmer.simmer.win_prob_weightage());
+            candidate.equity_stats.update(sim_spread_points);
             candidate.win_rate_stats.update(win_prob);
         }
         if should_output {

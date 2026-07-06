@@ -1,7 +1,18 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{game_config, game_state, klv, kwg, movegen};
+use super::{equity, game_config, game_state, klv, kwg, movegen};
 use rand::SeedableRng;
+
+/// Whole-point spread from a millipoint spread. Player scores and klv leave
+/// values are accumulated in millipoints (equity::SCALE = 1000), but the
+/// win-probability sigmoid and its weightage were tuned in whole points. Feed a
+/// spread through this before the sigmoid or the objective so a lead of, say, 30
+/// points reads as 30.0 rather than 30000.0 (which would saturate the sigmoid to
+/// a step and swamp the win-probability term in the objective).
+#[inline(always)]
+pub fn spread_points(millipoints: i32) -> f64 {
+    millipoints as f64 / equity::SCALE as f64
+}
 
 fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen::Play) {
     rack_tally.iter_mut().for_each(|m| *m = 0);
@@ -250,8 +261,9 @@ impl Simmer {
                 _ => 0.5,
             }
         } else {
-            // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
-            // (to adjust these, adjust the 30.0 and 0.9 consts below)
+            // handwavily: assume a spread of +/- (30 + num_unseen_tiles) points
+            // is 90%/10% (-Andy Kurnia). (to adjust these, change the 30.0 and 0.9
+            // consts below.)
             let num_unseen_tiles = self.game_state.bag.len()
                 + self
                     .game_state
@@ -261,7 +273,9 @@ impl Simmer {
                     .sum::<usize>();
             // this could be precomputed for every possible num_unseen_tiles (1 to 93)
             let exp_width = -(30.0 + num_unseen_tiles as f64) / (1.0f64 / 0.9 - 1.0).ln();
-            1.0 / (1.0 + (-(final_spread as f64) / exp_width).exp())
+            // final_spread is in millipoints; descale to points, the units the
+            // 30.0/0.9 consts assume.
+            1.0 / (1.0 + (-spread_points(final_spread) / exp_width).exp())
         }
     }
 
@@ -326,5 +340,14 @@ mod tests {
             .clone();
         assert_eq!(RNG.with(|rng| rng.borrow().serialize_state()), shared_state);
         assert_eq!(rack_after_first, rack_after_second);
+    }
+
+    #[test]
+    fn spread_points_descales_millipoints_to_points() {
+        // one point is SCALE (1000) millipoints.
+        assert_eq!(spread_points(0), 0.0);
+        assert_eq!(spread_points(equity::SCALE), 1.0);
+        assert_eq!(spread_points(30 * equity::SCALE), 30.0);
+        assert_eq!(spread_points(-500), -0.5);
     }
 }
