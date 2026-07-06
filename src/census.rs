@@ -2065,6 +2065,24 @@ pub fn dynamic_leave_value(
     }
 }
 
+/// Fill `out[idx]` with `value_of(multiset(idx))` for every lattice index,
+/// decoding each index to its per-letter tally once with a single reused scratch
+/// buffer (no per-index allocation). This is the board-independent v-table build:
+/// the census opponent model and the dynamic-leave pull both need every multiset's
+/// static leave value keyed by lattice index, and `value_of` is the caller's klv
+/// lookup (kept as a closure so this stays independent of the klv type).
+pub fn fill_lattice_leaves(
+    lat: &MultisetLattice,
+    out: &mut [i32],
+    value_of: impl Fn(&[u8]) -> i32,
+) {
+    let mut tally = vec![0u8; lat.num_letters()];
+    for (idx, slot) in out.iter_mut().enumerate() {
+        lat.unrank_into(idx, &mut tally);
+        *slot = value_of(&tally);
+    }
+}
+
 #[inline]
 fn n_choose_k(n: u64, k: u64) -> u64 {
     if k > n {

@@ -1011,11 +1011,9 @@ fn generate_autoplay_logs<
         let lat = census::MultisetLattice::new(num_letters, rack_size);
         let add_table = census::AddTable::new(&lat);
         let mut leave = vec![0i32; lat.len()];
-        let mut tally = vec![0u8; num_letters];
-        for (idx, slot) in leave.iter_mut().enumerate() {
-            lat.unrank_into(idx, &mut tally);
-            *slot = arc_klv0.leave_value_from_tally(&tally);
-        }
+        census::fill_lattice_leaves(&lat, &mut leave, |tally| {
+            arc_klv0.leave_value_from_tally(tally)
+        });
         eprintln!(
             "autoplay: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} WOLGES_OPPDENIAL_EXACT={oppdenial_exact} \
              oppdenial_exact_pool_max={oppdenial_exact_pool_max} opponent-denial machinery on ({} lattice leaves)",
@@ -2577,11 +2575,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         let lat = census::MultisetLattice::new(num_letters, rack_size as usize);
         let add_table = census::AddTable::new(&lat);
         let mut leave = vec![0i32; lat.len()];
-        let mut tally = vec![0u8; num_letters];
-        for (idx, slot) in leave.iter_mut().enumerate() {
-            lat.unrank_into(idx, &mut tally);
-            *slot = arc_klv0.leave_value_from_tally(&tally);
-        }
+        census::fill_lattice_leaves(&lat, &mut leave, |tally| {
+            arc_klv0.leave_value_from_tally(tally)
+        });
         eprintln!(
             "gilles: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} WOLGES_OPPDENIAL_EXACT={oppdenial_exact} \
              oppdenial_exact_pool_max={oppdenial_exact_pool_max} opponent-denial machinery on ({} lattice leaves)",
