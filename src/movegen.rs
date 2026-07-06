@@ -2,6 +2,10 @@
 
 use super::{alphabet, bites, display, equity, game_config, klv, kwg, matrix};
 
+// Stack scratch width for a whole-alphabet tally (the live pool). MultisetLattice
+// caps num_letters at this same bound, so every supported alphabet fits.
+const MAX_ALPHABET_LEN: usize = 64;
+
 #[derive(Clone)]
 struct CrossSet {
     bits: u64,
@@ -352,6 +356,7 @@ impl WorkingBuffer {
         board_snapshot: &BoardSnapshot<'_, N, L>,
         rack: &[u8],
         adjust_leave_value: &AdjustLeaveValue,
+        dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
         self.num_tiles_on_rack = rack.len().try_into().unwrap();
@@ -484,6 +489,34 @@ impl WorkingBuffer {
                 adjust_leave_value,
             );
             if self.multi_leaves.is_dense() {
+                if let Some(dyn_ref) = dynamic_leaves {
+                    // live_pool[t] = freq(t) - board(t) - rack(t): the tiles this
+                    // mover can still draw (bag + opponent), excluding the current
+                    // rack. A board tile's blank-designation bit is stripped back to
+                    // the blank so a played blank returns to the blank pool. Applied
+                    // before extract so the shadow-play bound also sees the reweight.
+                    let n = dyn_ref.lat.num_letters();
+                    let mut live_pool = [0u8; MAX_ALPHABET_LEN];
+                    for (t, slot) in live_pool[..n].iter_mut().enumerate() {
+                        *slot = alphabet.freq(t as u8);
+                    }
+                    for &tile in board_snapshot.board_tiles.iter() {
+                        if tile != 0 {
+                            let base = (tile & !((tile as i8) >> 7) as u8) as usize;
+                            live_pool[base] = live_pool[base].saturating_sub(1);
+                        }
+                    }
+                    for (t, &cnt) in self.rack_tally.iter().enumerate().take(n) {
+                        live_pool[t] = live_pool[t].saturating_sub(cnt);
+                    }
+                    self.multi_leaves.apply_dynamic_leaves(
+                        dyn_ref.lat,
+                        dyn_ref.add,
+                        dyn_ref.full_v,
+                        &live_pool,
+                        dyn_ref.min_keep,
+                    );
+                }
                 self.multi_leaves
                     .extract_raw_best_leave_values(&mut self.best_leave_values);
             } else {
@@ -2545,6 +2578,10 @@ pub struct GenMovesParams<'a, N: kwg::Node, L: kwg::Node> {
     pub max_gen: usize,
     pub num_exchanges_by_this_player: i16,
     pub always_include_pass: bool,
+    // When set, reweight this player's dense leaves by the live pool before
+    // generating (midgame only). None (the default) leaves generation exactly as
+    // it was -- byte-identical -- so only opt-in callers pay for it.
+    pub dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
 }
 
 // KurniaMoveGenerator can only be reused for the same game_config and kwg.
@@ -2612,7 +2649,7 @@ impl KurniaMoveGenerator {
         let mut vec_moves = std::mem::take(&mut self.plays);
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, rack, &|leave_value: i32| leave_value);
+        working_buffer.init(board_snapshot, rack, &|leave_value: i32| leave_value, None);
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
 
         for _ in kurnia_gen_place_moves_iter(
@@ -2717,7 +2754,12 @@ impl KurniaMoveGenerator {
         }
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(params.board_snapshot, params.rack, &adjust_leave_value);
+        working_buffer.init(
+            params.board_snapshot,
+            params.rack,
+            &adjust_leave_value,
+            params.dynamic_leaves,
+        );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
@@ -2862,7 +2904,12 @@ impl KurniaMoveGenerator {
         }
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(params.board_snapshot, params.rack, &adjust_leave_value);
+        working_buffer.init(
+            params.board_snapshot,
+            params.rack,
+            &adjust_leave_value,
+            params.dynamic_leaves,
+        );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
@@ -2973,7 +3020,7 @@ impl KurniaMoveGenerator {
         found_word: FoundWord,
     ) {
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, &[], &|leave_value: i32| leave_value);
+        working_buffer.init(board_snapshot, &[], &|leave_value: i32| leave_value, None);
         gen_remaining_words(board_snapshot, working_buffer, found_word)
     }
 }

@@ -154,6 +154,7 @@ fn do_it<N: kwg::Node>(
             max_gen: usize::MAX,
             num_exchanges_by_this_player: 0,
             always_include_pass: false,
+            dynamic_leaves: None,
         });
         let plays1 = move_generator.plays.clone();
         move_generator.reset_for_another_kwg();
@@ -166,6 +167,7 @@ fn do_it<N: kwg::Node>(
             max_gen: usize::MAX,
             num_exchanges_by_this_player: 0,
             always_include_pass: false,
+            dynamic_leaves: None,
         });
         let plays2 = move_generator.plays.clone();
         move_generator.reset_for_another_kwg();
@@ -175,6 +177,7 @@ fn do_it<N: kwg::Node>(
             max_gen: usize::MAX,
             num_exchanges_by_this_player: 0,
             always_include_pass: false,
+            dynamic_leaves: None,
         });
         let plays3 = move_generator.plays.clone();
         if plays1 != plays3 {
@@ -257,6 +260,7 @@ fn do_it<N: kwg::Node>(
                     max_gen: usize::MAX,
                     num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                     always_include_pass: false,
+                    dynamic_leaves: None,
                 });
                 // test word prune, only for classic.
                 let plays2;
@@ -290,6 +294,7 @@ fn do_it<N: kwg::Node>(
                         max_gen: usize::MAX,
                         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                         always_include_pass: false,
+                        dynamic_leaves: None,
                     });
                     plays2 = move_generator.plays.clone();
                     move_generator.reset_for_another_kwg();
@@ -299,6 +304,7 @@ fn do_it<N: kwg::Node>(
                         max_gen: usize::MAX,
                         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                         always_include_pass: false,
+                        dynamic_leaves: None,
                     });
                     if plays1 != move_generator.plays {
                         panic!("movegen was confused");
@@ -334,6 +340,7 @@ fn do_it<N: kwg::Node>(
                         max_gen: usize::MAX,
                         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                         always_include_pass: true,
+                        dynamic_leaves: None,
                     },
                     |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
                     |leave_value: i32| {

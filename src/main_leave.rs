@@ -1806,6 +1806,7 @@ fn generate_autoplay_logs<
                                         .current_player()
                                         .num_exchanges,
                                     always_include_pass: false,
+                                    dynamic_leaves: None,
                                 });
                                 let play = &move_generator.plays[0];
                                 // value the supplemented full rack the same way the main record
@@ -1879,6 +1880,7 @@ fn generate_autoplay_logs<
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
+                            dynamic_leaves: None,
                         });
 
                         let plays = &move_generator.plays;
@@ -3145,6 +3147,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     max_gen: 1,
                                                     num_exchanges_by_this_player: 0,
                                                     always_include_pass: false,
+                                                    dynamic_leaves: None,
                                                 },
                                             );
                                             let equity =
@@ -3285,6 +3288,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     max_gen: 1,
                                                     num_exchanges_by_this_player: 0,
                                                     always_include_pass: false,
+                                                    dynamic_leaves: None,
                                                 },
                                             );
                                             let equity =
@@ -3419,6 +3423,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
+                            dynamic_leaves: None,
                         });
                         // record the real rack's best-play equity (observed
                         // mix) before playing it. only while the bag is
@@ -3890,6 +3895,7 @@ fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
                 max_gen: 1,
                 num_exchanges_by_this_player: 0,
                 always_include_pass: false,
+                dynamic_leaves: None,
             });
             let equity = knob.apply(move_generator.plays[0].equity, rack_bytes);
             thread_map
@@ -4507,6 +4513,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         max_gen: 1,
         num_exchanges_by_this_player: i16::MAX,
         always_include_pass: false,
+        dynamic_leaves: None,
     };
     move_generator.set_spell_once(true);
     move_generator.gen_moves_filtered(
@@ -5470,6 +5477,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         max_gen: 1,
                                         num_exchanges_by_this_player: 0,
                                         always_include_pass: false,
+                                        dynamic_leaves: None,
                                     },
                                 );
                                 let engine_mp = (move_generator.plays[0].equity.as_f64()
@@ -5881,6 +5889,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     .current_player()
                                     .num_exchanges,
                                 always_include_pass: false,
+                                dynamic_leaves: None,
                             });
                             game_state
                                 .play(&game_config, &mut rng, &move_generator.plays[0].play)
@@ -6005,6 +6014,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         .current_player()
                                         .num_exchanges,
                                     always_include_pass: false,
+                                    dynamic_leaves: None,
                                 });
                                 if opening_samples
                                     && game_state.current_player().rack.len() == rack_size
@@ -7127,6 +7137,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                         .current_player()
                                         .num_exchanges,
                                     always_include_pass: false,
+                                    dynamic_leaves: None,
                                 },
                                 |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
                                 |leave_value: i32| leave_value,
@@ -7776,6 +7787,7 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
+                            dynamic_leaves: None,
                         });
                         // the mover's best-play equity = the census's 1-ply value of R,
                         // the baseline's prediction of this turn's worth, and the
@@ -8013,6 +8025,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             max_gen: 1,
             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
             always_include_pass: false,
+            dynamic_leaves: None,
         });
         let play = &move_generator.plays[0].play;
         game_state.play(game_config, rng, play).unwrap();
@@ -8277,6 +8290,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     .current_player()
                                     .num_exchanges,
                                 always_include_pass: false,
+                                dynamic_leaves: None,
                             });
                             let play = &move_generator.plays[0].play;
                             if klv_swapped {

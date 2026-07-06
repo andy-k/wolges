@@ -186,6 +186,7 @@ impl Simmer {
                             .current_player()
                             .num_exchanges,
                         always_include_pass: false,
+                        dynamic_leaves: None,
                     });
                 &self.move_generator.plays[0].play
             });

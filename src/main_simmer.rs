@@ -296,6 +296,7 @@ fn main() -> error::Returns<()> {
         max_gen: 5,
         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
         always_include_pass: false,
+        dynamic_leaves: None,
     });
     let mut candidates = simmer.take_candidates(move_generator.plays.len());
     let num_sim_iters = 10000;
