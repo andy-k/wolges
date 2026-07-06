@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats};
+use super::{game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats, win_pct};
 
 struct Candidate {
     play_index: usize,
@@ -52,10 +52,11 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node>(
     kwg: &kwg::Kwg<N>,
     klv: &klv::Klv<L>,
     play: &movegen::Play,
+    table: Option<&win_pct::WinPctTable>,
 ) -> (f64, i32, f64) {
     let game_ended = simmer.simulate(game_config, kwg, klv, play);
     let final_spread = simmer.final_equity_spread();
-    let win_prob = simmer.compute_win_prob(game_ended, final_spread);
+    let win_prob = simmer.compute_win_prob(game_ended, final_spread, table);
     let sim_spread = final_spread - simmer.initial_score_spread;
     let objective = simmer::sim_objective(
         sim_spread,
@@ -202,6 +203,10 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     // for the observable study driver. Off (default) = no extra work, batch
     // play byte-identical.
     observe: bool,
+    // Optional empirical win-probability table handed to the inner simmer's
+    // terminal evaluation. None (default) = the simmer uses its sigmoid, batch
+    // play byte-identical. Borrowed, never owned.
+    win_pct_table: Option<&'a win_pct::WinPctTable>,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -225,6 +230,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             iters_done: 0,
             next_stream_id: 0,
             observe: false,
+            win_pct_table: None,
         }
     }
 
@@ -258,6 +264,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     #[inline(always)]
     pub fn set_observe(&mut self, observe: bool) {
         self.observe = observe;
+    }
+
+    /// Give this seat's inner simmer an empirical win-probability table for its
+    /// terminal evaluation (used only when the SimmerConfig selects the table
+    /// source). None keeps the sigmoid. Borrowed for the seat's lifetime.
+    #[inline(always)]
+    pub fn set_win_pct_table(&mut self, table: Option<&'a win_pct::WinPctTable>) {
+        self.win_pct_table = table;
     }
 
     /// Reseed the inner rollout RNG so a decision replays identically. The
@@ -329,6 +343,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
                             self.kwg,
                             self.klv,
                             &move_generator.plays[candidate.play_index].play,
+                            self.win_pct_table,
                         );
                         candidate.stats.update(value);
                         if self.observe {
@@ -408,6 +423,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
                             self.kwg,
                             self.klv,
                             &move_generator.plays[play_index].play,
+                            self.win_pct_table,
                         );
                         candidates[idx].stats.update(value);
                         if self.observe {

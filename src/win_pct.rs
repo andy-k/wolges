@@ -181,11 +181,18 @@ impl WinPctTable {
     // P(mover wins | lead `spread`, count-state (bag, my, opp)). An unsampled
     // key returns 0.5; a spread past the key's observed range saturates.
     pub fn get(&self, spread: i32, bag: usize, my: usize, opp: usize) -> f32 {
+        self.get_opt(spread, bag, my, opp).unwrap_or(0.5)
+    }
+
+    // Like get, but distinguishes an unsampled key (None) from a sampled 0.5, so
+    // a caller can fall back to its own estimator only where the table has no
+    // data. A spread past the key's observed range still saturates to 0.0 / 1.0.
+    pub fn get_opt(&self, spread: i32, bag: usize, my: usize, opp: usize) -> Option<f32> {
         match self.rows.get(&(bag as u16, my as u8, opp as u8)) {
-            None => 0.5,
-            Some(row) if spread > row.cap => 1.0,
-            Some(row) if spread < -row.cap => 0.0,
-            Some(row) => row.win[(spread + row.cap) as usize],
+            None => None,
+            Some(row) if spread > row.cap => Some(1.0),
+            Some(row) if spread < -row.cap => Some(0.0),
+            Some(row) => Some(row.win[(spread + row.cap) as usize]),
         }
     }
 
