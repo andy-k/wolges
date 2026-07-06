@@ -531,6 +531,74 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     )
                 }
             }
+            "-sim-mutate-check" => {
+                // english-sim-mutate-check CSW24.kwg leaves.klv2 96 [seed]
+                // Self-check for the mutable working set: after some candidates
+                // are pruned to the retired list, readmitting one WITH history
+                // and running more iterations must keep its earlier statistics
+                // (its sample count only grows, never resets).
+                let klv = if args.len() > 3 && args[3] != "-" {
+                    klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args[3])?)
+                } else {
+                    klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+                };
+                let iters = if args.len() > 4 {
+                    u64::from_str(&args[4])?
+                } else {
+                    96
+                };
+                let seed = if args.len() > 5 {
+                    u64::from_str(&args[5])?
+                } else {
+                    1
+                };
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let game_config = make_game_config();
+                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+                let mut game_state = game_state::GameState::new(&game_config);
+                game_state.reset_and_draw_tiles(&game_config, &mut rng);
+                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                    board_snapshot: &movegen::BoardSnapshot {
+                        board_tiles: &game_state.board_tiles,
+                        game_config: &game_config,
+                        kwg: &kwg,
+                        klv: &klv,
+                    },
+                    rack: &game_state.current_player().rack,
+                    max_gen: 100,
+                    num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                    always_include_pass: false,
+                    dynamic_leaves: None,
+                });
+                let mut driver = move_picker::Simmer::new(&game_config, &kwg, &klv);
+                driver.set_num_sim_iters(iters);
+                driver.set_verbose(false);
+                driver.reseed(seed);
+                driver.begin_decision(&move_generator, &game_state, iters);
+                let retired_id = driver.retired_stream_ids().next();
+                match retired_id {
+                    None => wolges::return_error!(
+                        "no candidates were pruned; raise the iteration budget".to_string()
+                    ),
+                    Some(id) => {
+                        let before = driver.stream_count(id).unwrap();
+                        let readmitted = driver.readmit_with_history(id);
+                        driver.resume(&move_generator, iters);
+                        let after = driver.stream_count(id).unwrap();
+                        println!("readmit stream {id}: count before={before} after={after}");
+                        if readmitted && after >= before {
+                            println!("SIM_MUTATE_OK");
+                            Ok(true)
+                        } else {
+                            wolges::return_error!(
+                                "readmit dropped history: count reset".to_string()
+                            )
+                        }
+                    }
+                }
+            }
             "-rollout" => {
                 // english-rollout CSW24.kwg policy.klv2 num_games [seed]
                 // whole-game Monte-Carlo rollout leaves (a measured negative).
@@ -832,12 +900,9 @@ fn main() -> error::Returns<()> {
   english-sim-study-check CSW24.kwg leaves.klv2 64 [seed]
     self-check that a resumed decision (begin_decision then resume) matches
     the same decision run in one call; prints SIM_RESUME_OK on success.
-    p0 uses klv0, p1 uses klv1 for move selection (static play, max=1).
-    reports wins/losses/draws, score stats, divergent games, and
-    confidence that one set of leaves is better.
-    if klv is \"-\" or omitted, uses no leave.
-    number of game pairs is optional (default 10000).
-    seed is optional; prints auto-generated seed to stderr if not provided.
+  english-sim-mutate-check CSW24.kwg leaves.klv2 96 [seed]
+    self-check that readmitting a retired candidate keeps its statistics;
+    prints SIM_MUTATE_OK on success.
   (english can also be catalan, dutch, french, german, norwegian, polish,
     slovene, spanish, swedish, super-english, super-catalan)
   (add -big after language, such as dutch-big-autoplay, to use kbwg)

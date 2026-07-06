@@ -5,6 +5,9 @@ use super::{game_config, game_state, klv, kwg, move_filter, movegen, simmer, sta
 struct Candidate {
     play_index: usize,
     stats: stats::Stats,
+    // stable identity for this candidate within a decision, so a retired
+    // candidate can be named for readmit even as the vectors are reordered.
+    stream_id: u64,
 }
 
 // Default per-decision rollout budget (see Simmer::num_sim_iters).
@@ -183,6 +186,9 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     // How many rollout iterations the current decision has run, so a resumed
     // decision continues from the next iteration instead of restarting.
     iters_done: u64,
+    // Next stream id to hand out, so added candidates get ids distinct from the
+    // initial 0..num_plays.
+    next_stream_id: u64,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -204,6 +210,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             stop_delta: DEFAULT_STOP_DELTA,
             retired: Vec::new(),
             iters_done: 0,
+            next_stream_id: 0,
         }
     }
 
@@ -258,6 +265,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             candidates.push(Candidate {
                 play_index: idx,
                 stats: stats::Stats::new(),
+                stream_id: idx as u64,
             });
         }
         candidates
@@ -425,6 +433,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     ) {
         self.simmer.prepare(self.game_config, game_state, 2);
         self.candidates = self.take_candidates(move_generator.plays.len());
+        self.next_stream_id = self.candidates.len() as u64;
         self.retired.clear();
         self.iters_done = 0;
         let budget = self.num_sim_iters;
@@ -449,6 +458,61 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
             .unwrap();
         (leader.play_index, leader.stats.mean(), leader.stats.count())
+    }
+
+    // Add an already-generated play (by its index in move_generator.plays) to
+    // the working set as a fresh candidate with zero samples, so a study session
+    // can bring an unselected move into contention. Returns its stream id.
+    pub fn add_play(&mut self, play_index: usize) -> u64 {
+        let stream_id = self.next_stream_id;
+        self.next_stream_id += 1;
+        self.candidates.push(Candidate {
+            play_index,
+            stats: stats::Stats::new(),
+            stream_id,
+        });
+        stream_id
+    }
+
+    // Readmit a retired candidate to the working set WITH its accumulated
+    // statistics, named by its stream id. Returns true if it was found.
+    pub fn readmit_with_history(&mut self, stream_id: u64) -> bool {
+        if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
+            let candidate = self.retired.swap_remove(pos);
+            self.candidates.push(candidate);
+            true
+        } else {
+            false
+        }
+    }
+
+    // Readmit a retired candidate's play with FRESH (zeroed) statistics, named
+    // by its stream id: the play returns to contention but its old rollouts are
+    // dropped. Returns true if it was found.
+    pub fn readmit_fresh(&mut self, stream_id: u64) -> bool {
+        if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
+            let play_index = self.retired.swap_remove(pos).play_index;
+            self.add_play(play_index);
+            true
+        } else {
+            false
+        }
+    }
+
+    // The stream ids currently retired, so a study session can pick one to
+    // readmit.
+    pub fn retired_stream_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.retired.iter().map(|c| c.stream_id)
+    }
+
+    // The sample count of the candidate with this stream id, whether it is
+    // active or retired, or None if there is no such candidate.
+    pub fn stream_count(&self, stream_id: u64) -> Option<f64> {
+        self.candidates
+            .iter()
+            .chain(self.retired.iter())
+            .find(|c| c.stream_id == stream_id)
+            .map(|c| c.stats.count())
     }
 }
 
@@ -551,6 +615,7 @@ mod tests {
         Candidate {
             play_index,
             stats: stats_from(values),
+            stream_id: play_index as u64,
         }
     }
 
