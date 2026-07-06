@@ -425,7 +425,89 @@ impl Question {
     }
 }
 
+// batch endgame solver: read the harvested "FEN\tR0\tR1\tP" lines and print
+// "<line index>\t<value>" for each. solve() is headless and deterministic, so
+// re-running yields byte-identical output -- this is the value list that any
+// behavior-preserving speedup to the solver diffs against.
+// assumes the harvested positions are CSW24 english (as produced by autoplay).
+fn run_batch(path: &str) -> error::Returns<()> {
+    let game_config = game_config::make_english_game_config();
+    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+    let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    let racks_alphabet_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
+    let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let mut rack0 = Vec::new();
+    let mut rack1 = Vec::new();
+    let file_contents = std::fs::read_to_string(path)?;
+    for (line_index, line) in file_contents.lines().enumerate() {
+        let mut fields = line.split('\t');
+        let fen_str = fields
+            .next()
+            .ok_or_else(|| error::new(format!("line {line_index}: missing board fen")))?;
+        let rack0_str = fields
+            .next()
+            .ok_or_else(|| error::new(format!("line {line_index}: missing player 1 rack")))?;
+        let rack1_str = fields
+            .next()
+            .ok_or_else(|| error::new(format!("line {line_index}: missing player 2 rack")))?;
+        let player_str = fields
+            .next()
+            .ok_or_else(|| error::new(format!("line {line_index}: missing player to move")))?;
+        let board_tiles = fen_parser.parse(fen_str)?.to_vec();
+        racks_alphabet_reader
+            .set_word(rack0_str, &mut rack0)
+            .map_err(|e| error::new(format!("line {line_index}: bad rack {rack0_str:?}: {e}")))?;
+        racks_alphabet_reader
+            .set_word(rack1_str, &mut rack1)
+            .map_err(|e| error::new(format!("line {line_index}: bad rack {rack1_str:?}: {e}")))?;
+        let player = player_str.parse::<u8>().map_err(|e| {
+            error::new(format!("line {line_index}: bad player {player_str:?}: {e}"))
+        })?;
+
+        // word-prune once per position: keep only words still playable on this
+        // board, build a smaller gaddawg, and let the solver search that.
+        let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
+        move_generator.gen_remaining_words(
+            &movegen::BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                klv: &empty_klv,
+            },
+            |word: &[u8]| {
+                set_of_words.insert(word.into());
+            },
+        );
+        let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
+        vec_of_words.sort_unstable();
+        let smaller_kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            &vec_of_words,
+        )?;
+        let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
+
+        let mut egs =
+            endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(&game_config, &smaller_kwg);
+        egs.init(&board_tiles, [&rack0, &rack1]);
+        let v = egs.solve(player);
+        println!("{line_index}\t{v}");
+    }
+    Ok(())
+}
+
 fn main() -> error::Returns<()> {
+    // opt-in batch mode (WOLGES_ENDGAME_BATCH=<path>): solve every harvested
+    // position in the file and print just "<line index>\t<value>" per line, so
+    // the value lists can be diffed before and after a speedup change. When the
+    // env var is unset the hardcoded demo below runs unchanged.
+    if let Ok(batch_path) = std::env::var("WOLGES_ENDGAME_BATCH") {
+        return run_batch(&batch_path);
+    }
+
     let data = [
         r#"
       {
