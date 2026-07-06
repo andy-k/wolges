@@ -1248,6 +1248,54 @@ fn generate_autoplay_logs<
     let seed = seed.unwrap_or_else(rand::random);
     eprintln!("seed: {seed}");
     let num_threads = wolges_threads();
+
+    // Dynamic leaves knob (see compare_leaves). Off (default) => byte-identical:
+    // no context is built and the played-move gen_moves passes None. On, the
+    // greedy trajectory-advancing ply reweights its leaves by the live pool via
+    // a full-length klv0 value table, so the game plays (and thus samples) the
+    // pool-reweighted move. WOLGES_DYNAMIC_LEAVES_MIN_KEEP sets the smallest kept
+    // subrack that is reweighted (see apply_dynamic_leaves).
+    let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+        != 0;
+    let dynamic_min_keep = std::env::var("WOLGES_DYNAMIC_LEAVES_MIN_KEEP")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(2);
+    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> =
+        if dynamic_leaves_on {
+            let num_letters = game_config.alphabet().len() as usize;
+            let rack_size = game_config.rack_size() as usize;
+            let lat = census::MultisetLattice::new(num_letters, rack_size);
+            let add = census::AddTable::new_with_threads(&lat, num_threads);
+            let mut full_v = vec![0i32; lat.len()];
+            census::fill_lattice_leaves(&lat, &mut full_v, |tally| {
+                arc_klv0.leave_value_from_tally(tally)
+            });
+            Some((lat, add, full_v))
+        } else {
+            None
+        };
+    let dyn_ref = dyn_ctx
+        .as_ref()
+        .map(|(lat, add, full_v)| klv::DynamicLeavesRef {
+            lat,
+            add,
+            full_v: full_v.as_slice(),
+            min_keep: dynamic_min_keep,
+        });
+    eprintln!(
+        "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
+        dynamic_leaves_on as u8,
+        if dynamic_leaves_on {
+            "dynamic leaves on for the klv0 side; needs a --full (len 1-7) klv0"
+        } else {
+            "off, static leaves"
+        },
+    );
+
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     // one run id for this run's whole output family (the log, the games file, the
@@ -2095,7 +2143,7 @@ fn generate_autoplay_logs<
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
-                            dynamic_leaves: None,
+                            dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
                         });
 
                         let plays = &move_generator.plays;
@@ -2803,6 +2851,52 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     } else {
         None
     };
+
+    // Dynamic leaves knob (see compare_leaves). Off (default) => byte-identical:
+    // no context is built and the played-move gen_moves passes None. On, the
+    // greedy trajectory-advancing ply reweights its leaves by the live pool via
+    // a full-length klv0 value table, so the game plays (and thus samples) the
+    // pool-reweighted move. WOLGES_DYNAMIC_LEAVES_MIN_KEEP sets the smallest kept
+    // subrack that is reweighted (see apply_dynamic_leaves).
+    let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+        != 0;
+    let dynamic_min_keep = std::env::var("WOLGES_DYNAMIC_LEAVES_MIN_KEEP")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(2);
+    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> =
+        if dynamic_leaves_on {
+            let num_letters = game_config.alphabet().len() as usize;
+            let lat = census::MultisetLattice::new(num_letters, rack_size as usize);
+            let add = census::AddTable::new_with_threads(&lat, num_threads);
+            let mut full_v = vec![0i32; lat.len()];
+            census::fill_lattice_leaves(&lat, &mut full_v, |tally| {
+                arc_klv0.leave_value_from_tally(tally)
+            });
+            Some((lat, add, full_v))
+        } else {
+            None
+        };
+    let dyn_ref = dyn_ctx
+        .as_ref()
+        .map(|(lat, add, full_v)| klv::DynamicLeavesRef {
+            lat,
+            add,
+            full_v: full_v.as_slice(),
+            min_keep: dynamic_min_keep,
+        });
+    eprintln!(
+        "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
+        dynamic_leaves_on as u8,
+        if dynamic_leaves_on {
+            "dynamic leaves on for the klv0 side; needs a --full (len 1-7) klv0"
+        } else {
+            "off, static leaves"
+        },
+    );
     eprintln!(
         "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget} real_rack={real_rack_mode}"
     );
@@ -3637,7 +3731,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
-                            dynamic_leaves: None,
+                            dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
                         });
                         // record the real rack's best-play equity (observed
                         // mix) before playing it. only while the bag is
@@ -5375,6 +5469,52 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // Each board slot seeds its own rng deterministically from (seed, slot index)
     // so the produced board set is reproducible and independent of scheduling.
     let num_threads = wolges_threads().max(1).min(max_boards as usize);
+
+    // Dynamic leaves knob (see compare_leaves). Off (default) => byte-identical:
+    // no context is built and every played-move gen_moves passes None. On, the
+    // greedy trajectory-advancing ply reweights its leaves by the live pool via
+    // a full-length klv0 value table, so which board trajectories get sampled
+    // follows the pool-reweighted move. NOTE: census leave VALUES come from the
+    // exhaustive value_board table pass, not the played move, so this only
+    // changes the sampled board mix, not how each leave is valued. Reuses the
+    // existing `lat`; builds a dedicated add-table (the full-rack add_table above
+    // is opt-in). WOLGES_DYNAMIC_LEAVES_MIN_KEEP sets the smallest kept subrack
+    // that is reweighted (see apply_dynamic_leaves).
+    let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+        != 0;
+    let dynamic_min_keep = std::env::var("WOLGES_DYNAMIC_LEAVES_MIN_KEEP")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(2);
+    let dyn_ctx: Option<(census::AddTable, Vec<i32>)> = if dynamic_leaves_on {
+        let add = census::AddTable::new_with_threads(&lat, num_threads);
+        let mut full_v = vec![0i32; lat.len()];
+        census::fill_lattice_leaves(&lat, &mut full_v, |tally| {
+            arc_klv0.leave_value_from_tally(tally)
+        });
+        Some((add, full_v))
+    } else {
+        None
+    };
+    let dyn_ref = dyn_ctx.as_ref().map(|(add, full_v)| klv::DynamicLeavesRef {
+        lat: &lat,
+        add,
+        full_v: full_v.as_slice(),
+        min_keep: dynamic_min_keep,
+    });
+    eprintln!(
+        "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
+        dynamic_leaves_on as u8,
+        if dynamic_leaves_on {
+            "dynamic leaves on for the klv0 side; needs a --full (len 1-7) klv0"
+        } else {
+            "off, static leaves"
+        },
+    );
+
     let lat_len = lat.len();
     let next_board = std::sync::atomic::AtomicU64::new(0);
     // adaptive global board-stop (WOLGES_CENSUS_CI_STOP_FRAC): set true by the periodic
@@ -6102,7 +6242,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     .current_player()
                                     .num_exchanges,
                                 always_include_pass: false,
-                                dynamic_leaves: None,
+                                dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
                             });
                             game_state
                                 .play(&game_config, &mut rng, &move_generator.plays[0].play)
@@ -6227,7 +6367,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         .current_player()
                                         .num_exchanges,
                                     always_include_pass: false,
-                                    dynamic_leaves: None,
+                                    dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
                                 });
                                 if opening_samples
                                     && game_state.current_player().rack.len() == rack_size
