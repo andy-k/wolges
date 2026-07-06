@@ -89,6 +89,7 @@ struct WorkBuffer {
     plays: Vec<movegen::Play>, // global u32->Play mapping. [0] = pass, [1..] = place
     play_finder: fash::MyHashMap<movegen::Play, u32>, // maps all plays except pass
     child_plays: Vec<ChildPlay>, // subslices of StateEval, often re-sorted; excludes pass
+    depth_limited: bool,       // set when a line was cut short by the ply limit this pass
 }
 
 impl WorkBuffer {
@@ -106,6 +107,7 @@ impl WorkBuffer {
             plays: Vec::new(),
             play_finder: fash::MyHashMap::default(),
             child_plays: Vec::new(),
+            depth_limited: false,
         }
     }
 
@@ -311,6 +313,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut last_valuation = f32::NAN;
         for max_depth in 1.. {
             let old_num_state_eval = self.work_buffer.state_eval.len();
+            self.work_buffer.depth_limited = false;
             let valuation = self.negamax_eval(
                 0,
                 player_idx,
@@ -329,7 +332,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 self.print_best_line(player_idx);
             }
             // check for time limit here
-            if self.work_buffer.state_eval.len() == old_num_state_eval {
+            // stop once the search has fully resolved: no new states were
+            // reached AND no line was cut short by the ply limit. Requiring
+            // the latter avoids stopping while deep pass-then-play-out lines
+            // are still truncated (they add plies but no new states).
+            if self.work_buffer.state_eval.len() == old_num_state_eval
+                && !self.work_buffer.depth_limited
+            {
                 break;
             }
         }
@@ -359,6 +368,16 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     ) -> f32 {
         // movegen not done for depth == 0, so no state_eval.
         if depth == 0 {
+            // this line still had legal continuations but ran out of plies, so
+            // its value here (0) is a placeholder. Record that this pass was
+            // cut short so the iterative-deepening loop keeps going deeper
+            // instead of mistaking the truncated value for a solved one. This
+            // matters for lines that end in a run of passes (e.g. one side is
+            // stuck and can only pass while the other plays out a blank several
+            // plies later): those passes add depth without adding new states,
+            // so a states-only stop would freeze on the truncated value.
+            self.work_buffer.depth_limited = true;
+
             // this should static eval from initial player's perspective.
             // initial_player_idx is not currently a parameter, and
             // negamax_eval's initial call may not be for player_idx=0.
