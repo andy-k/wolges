@@ -392,6 +392,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let state_eval = if let Some(state_eval) = self.work_buffer.state_eval.get(&state_idx) {
             let state_side_eval = &state_eval.best_move[player_idx as usize];
             if state_side_eval.depth >= depth {
+                // invariant: a table-served (real-depth) best_move is always a PLACE
+                // move, so its value does not depend on the consecutive-pass count.
+                // pass-dependent values are stored with depth i8::MIN (see the
+                // pass-store sites below) and never satisfy i8::MIN >= depth here.
+                debug_assert!(
+                    state_side_eval.play_idx != 0,
+                    "endgame TT served a pass value; pass-count invariant broken",
+                );
                 match state_side_eval.equity_type {
                     StateSideEvalEquityType::Exact => {
                         return state_side_eval.equity;
@@ -626,6 +634,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 play_idx: 0,
                 new_state_idx: state_idx,
                 equity_type: StateSideEvalEquityType::Exact,
+                // i8::MIN keeps the single state_idx key correct w.r.t. the pass
+                // count: this pass value depends on just_passed, so marking it
+                // never-reusable (no real depth satisfies i8::MIN >= depth) stops
+                // the TT from serving it. Do not "optimize" this depth away.
                 depth: i8::MIN, // cannot cache pass_valuation
             };
         } else {
@@ -652,6 +664,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 play_idx: 0,
                 new_state_idx: state_idx,
                 equity_type: StateSideEvalEquityType::Exact,
+                // i8::MIN keeps the single state_idx key correct w.r.t. the pass
+                // count: this pass value depends on just_passed, so marking it
+                // never-reusable (no real depth satisfies i8::MIN >= depth) stops
+                // the TT from serving it. Do not "optimize" this depth away.
                 depth: i8::MIN, // cannot cache pass_valuation
             };
             best_valuation = pass_valuation;
