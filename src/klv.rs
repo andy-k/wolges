@@ -1,6 +1,23 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{equity, kwg};
+use super::{census, equity, kwg};
+
+// Stack scratch width for a decoded subrack tally. MultisetLattice caps
+// num_letters at this same bound, so every alphabet fits.
+const MAX_LETTERS: usize = 64;
+
+/// The board-independent inputs the dynamic-leave pull needs, bundled so a move
+/// generator can thread one optional handle through instead of four arguments.
+/// `lat`/`add` are the multiset lattice and its add-table, `full_v` is the static
+/// v-table (one leave value per lattice index, from a full-length klv), and
+/// `min_keep` is the smallest kept-subrack size that gets reweighted.
+#[derive(Clone, Copy)]
+pub struct DynamicLeavesRef<'a> {
+    pub lat: &'a census::MultisetLattice,
+    pub add: &'a census::AddTable,
+    pub full_v: &'a [i32],
+    pub min_keep: usize,
+}
 
 pub struct Klv<L: kwg::Node> {
     kwg: kwg::Kwg<L>,
@@ -379,6 +396,64 @@ impl MultiLeaves {
         }
     }
 
+    // Reweight the dense leave table in place by the tiles still live this move.
+    // Each dense slot holds the static value of keeping some subrack S of the rack;
+    // this replaces it with the dynamic value = the expected static full-rack value
+    // once S is refilled by drawing rack_size - |S| tiles from `live_pool` (the
+    // pool the mover can still draw: bag + opponent, already excluding this rack).
+    // So the same kept tiles are valued against the actual remaining pool rather
+    // than an average bag. Every downstream read (place, exchange, pass, and the
+    // shadow-play bound rebuilt right after) then sees dynamic values, since they
+    // all index this same table.
+    //
+    // Subracks smaller than `min_keep` keep their static value: they are the
+    // least leave-sensitive keeps (playing 5-7 tiles) and skipping them cuts the
+    // dominant draw cost of the tiny keeps. A subrack whose completion is
+    // undrawable (dynamic_leave_value returns UNPLAYABLE, den == 0) also keeps its
+    // static value. No-op when the dense table was not built.
+    pub fn apply_dynamic_leaves(
+        &mut self,
+        lat: &census::MultisetLattice,
+        add: &census::AddTable,
+        full_v: &[i32],
+        live_pool: &[u8],
+        min_keep: usize,
+    ) {
+        if self.leave_values.is_empty() {
+            return;
+        }
+        let num_letters = lat.num_letters();
+        let rack_size = lat.rack_size();
+        let pool_size: usize = live_pool[..num_letters].iter().map(|&c| c as usize).sum();
+        // Non-rack positions stay zero for the whole scan; each rack tile's slot is
+        // rewritten every iteration (possibly to zero), so no per-index reset.
+        let mut s_tally = [0u8; MAX_LETTERS];
+        for idx in 0..self.leave_values.len() {
+            // Decode idx (mixed radix over the rack's distinct tiles) into the kept
+            // subrack S and its size.
+            let mut s_size = 0usize;
+            for &tile in &self.unique_tiles {
+                let digit = &self.digits[tile as usize];
+                let kept = (idx as u32 / digit.place_value) % (digit.count as u32 + 1);
+                s_tally[tile as usize] = kept as u8;
+                s_size += kept as usize;
+            }
+            if s_size < min_keep {
+                continue;
+            }
+            let s_ridx = lat.rank(&s_tally[..num_letters]);
+            if s_ridx == !0 {
+                continue;
+            }
+            let draw = (rack_size - s_size).min(pool_size);
+            let dynamic =
+                census::dynamic_leave_value(lat, add, full_v, live_pool, s_ridx as usize, draw);
+            if dynamic != census::UNPLAYABLE {
+                self.leave_values[idx] = dynamic;
+            }
+        }
+    }
+
     #[inline(always)]
     pub fn kurnia_gen_exchange_moves_unconditionally<'a, FoundExchangeMove: FnMut(&[u8], i32)>(
         &self,
@@ -528,5 +603,120 @@ impl MultiLeaves {
         } else {
             *self.leave_values.last().unwrap()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binom(n: u64, k: u64) -> u64 {
+        if k > n {
+            return 0;
+        }
+        let k = k.min(n - k);
+        let mut num = 1u128;
+        let mut den = 1u128;
+        for i in 0..k {
+            num *= (n - i) as u128;
+            den *= (i + 1) as u128;
+        }
+        (num / den) as u64
+    }
+
+    #[test]
+    fn apply_dynamic_leaves_matches_brute() {
+        // Hand-build the dense table for rack AAB over a 3-letter alphabet with
+        // rack_size 3, so the mixed-radix decode and the pull can both be checked
+        // against a from-scratch draw average. digits: A(count 2, place 1),
+        // B(count 1, place 3); the 6 dense slots enumerate keep {}, A, AA, B, AB,
+        // AAB via idx = keptA + 3*keptB.
+        let num_letters = 3usize;
+        let rack_size = 3usize;
+        let lat = census::MultisetLattice::new(num_letters, rack_size);
+        let add = census::AddTable::new(&lat);
+        // Static v-table: value every lattice index (the pull ranks full racks S+d).
+        let mut full_v = vec![0i32; lat.len()];
+        for (idx, slot) in full_v.iter_mut().enumerate() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            *slot = h.rem_euclid(20_000) - 5_000;
+        }
+        // Recognizable static leaves so kept-static slots are detectable.
+        let statics: Vec<i32> = (0..6i32).map(|i| -100 - i).collect();
+        let mut ml = MultiLeaves {
+            unique_tiles: vec![0u8, 1u8],
+            digits: vec![
+                MultiLeavesDigit {
+                    count: 2,
+                    place_value: 1,
+                },
+                MultiLeavesDigit {
+                    count: 1,
+                    place_value: 3,
+                },
+                MultiLeavesDigit {
+                    count: 0,
+                    place_value: 0,
+                },
+            ],
+            leave_values: statics.clone(),
+            num_playeds: vec![3, 2, 1, 2, 1, 0],
+        };
+
+        let live_pool = [2u8, 2u8, 1u8]; // A, B, C still drawable
+        let min_keep = 1usize;
+        ml.apply_dynamic_leaves(&lat, &add, &full_v, &live_pool, min_keep);
+
+        // Brute force each idx's expected value independently.
+        for (idx, &static_v) in statics.iter().enumerate() {
+            let kept_a = (idx as u32 % 3) as u8;
+            let kept_b = (idx as u32 / 3) as u8;
+            let s_size = (kept_a + kept_b) as usize;
+            if s_size < min_keep {
+                // keep {} stays static under min_keep 1.
+                assert_eq!(
+                    ml.leave_values[idx], static_v,
+                    "idx {idx} should stay static"
+                );
+                continue;
+            }
+            let draw = rack_size - s_size;
+            // Average full_v[rank(S + d)] over completions d of size `draw` drawn
+            // from live_pool, weighted by the exact draw ways prod C(pool[t], d[t]).
+            let mut num = 0f64;
+            let mut den = 0f64;
+            for da in 0..=live_pool[0] {
+                for db in 0..=live_pool[1] {
+                    for dc in 0..=live_pool[2] {
+                        if (da + db + dc) as usize != draw {
+                            continue;
+                        }
+                        let ways = binom(live_pool[0] as u64, da as u64)
+                            * binom(live_pool[1] as u64, db as u64)
+                            * binom(live_pool[2] as u64, dc as u64);
+                        if ways == 0 {
+                            continue;
+                        }
+                        let r = [kept_a + da, kept_b + db, dc];
+                        let ri = lat.rank(&r) as usize;
+                        num += ways as f64 * full_v[ri] as f64;
+                        den += ways as f64;
+                    }
+                }
+            }
+            let want = (num / den) as i32;
+            assert_eq!(
+                ml.leave_values[idx], want,
+                "idx {idx} (keep {kept_a}A {kept_b}B)"
+            );
+        }
+
+        // den == 0 contract that apply relies on for its keep-static fallback: an
+        // infeasible draw (more completion tiles than the pool holds) is UNPLAYABLE.
+        let empty_ridx = lat.rank(&[0u8, 0, 0]) as usize;
+        assert_eq!(
+            census::dynamic_leave_value(&lat, &add, &full_v, &[0u8, 0, 0], empty_ridx, 3),
+            census::UNPLAYABLE,
+        );
     }
 }
