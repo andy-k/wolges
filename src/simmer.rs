@@ -175,6 +175,21 @@ impl Simmer {
         self.config = config;
     }
 
+    /// Build a fresh simmer already prepared to this one's current position and
+    /// config, for a worker thread that runs its own rollouts. The ChaCha20 RNG
+    /// is not Clone, so this rebuilds from the retained initial game state rather
+    /// than copying field by field; the caller reseeds it before every iteration,
+    /// so the new RNG's starting state does not matter. prepare() recomputes the
+    /// weightage and tile counts deterministically from the position and config,
+    /// so the copy matches the original. Call after prepare(), before any
+    /// prepare_iteration() has advanced the original's initial state.
+    pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
+        let mut clone = Simmer::new(game_config);
+        clone.config = self.config;
+        clone.prepare(game_config, &self.initial_game_state, self.num_sim_plies);
+        clone
+    }
+
     #[inline(always)]
     pub fn config(&self) -> &SimmerConfig {
         &self.config
@@ -218,6 +233,26 @@ impl Simmer {
         } else {
             w_no_out
         };
+    }
+
+    /// The prepared initial game state, right after prepare() and before any
+    /// prepare_iteration() has drawn from it. The parallel move picker snapshots
+    /// this once per worker so it can restore it before every iteration.
+    #[inline(always)]
+    pub fn prepared_state(&self) -> &game_state::GameState {
+        &self.initial_game_state
+    }
+
+    /// Restore the initial game state to a pristine prepared position (a snapshot
+    /// from prepared_state). prepare_iteration draws destructively from the bag,
+    /// so it is not a pure reset: a later iteration's draw depends on how many
+    /// earlier iterations ran on this simmer. Restoring the snapshot before each
+    /// iteration makes every iteration's draw depend only on its own reseed, so
+    /// the parallel path is independent of how the iterations split across
+    /// threads.
+    #[inline(always)]
+    pub fn restore_prepared(&mut self, pristine: &game_state::GameState) {
+        self.initial_game_state.clone_from(pristine);
     }
 
     #[inline(always)]

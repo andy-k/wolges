@@ -60,7 +60,7 @@ fn main() -> error::Returns<()> {
     }
 }
 
-fn do_it<N: kwg::Node>(
+fn do_it<N: kwg::Node + Sync>(
     kwg: &kwg::Kwg<N>,
     klv: &klv::Klv<kwg::Node22>,
     game_config: &game_config::GameConfig,

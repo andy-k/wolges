@@ -17,6 +17,19 @@ struct Candidate {
 // Default per-decision rollout budget (see Simmer::num_sim_iters).
 const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
 
+// splitmix64 finalizer of a decision seed combined with an iteration index.
+// The parallel move picker reseeds each iteration's draw from this, so the draw
+// is reproducible and depends only on (decision seed, iteration index) -- never
+// on how the block's iterations were partitioned across threads. That is what
+// makes the parallel result independent of the thread count.
+#[inline(always)]
+fn mix(decision_seed: u64, sim_iter: u64) -> u64 {
+    let mut z = decision_seed.wrapping_add(sim_iter.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 // Prune the candidate list once every this many iterations. Between prunes
 // each surviving candidate gets one more rollout, so this trades the cost of
 // pruning against how quickly clearly-worse candidates are dropped.
@@ -207,8 +220,18 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     // terminal evaluation. None (default) = the simmer uses its sigmoid, batch
     // play byte-identical. Borrowed, never owned.
     win_pct_table: Option<&'a win_pct::WinPctTable>,
+    // How many threads a single decision's rollouts are divided across on native
+    // builds. 1 (default) keeps the single-threaded stream, so the
+    // default path is byte-identical to before; > 1 opts into the parallel path.
+    sim_threads: usize,
+    // The seed the parallel path keys each iteration's draw off (see mix), set by
+    // reseed alongside the inner simmer's own reseed. Unused by the single-thread
+    // path.
+    decision_seed: u64,
 }
 
+// Simmer's Sync-free methods; the thread-spawning ones that additionally
+// require N and L to be Sync are in the second impl block below.
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     pub fn new(
         game_config: &'a game_config::GameConfig,
@@ -231,6 +254,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             next_stream_id: 0,
             observe: false,
             win_pct_table: None,
+            sim_threads: 1,
+            decision_seed: 0,
         }
     }
 
@@ -266,6 +291,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         self.observe = observe;
     }
 
+    /// Divide each decision's rollouts across `sim_threads` threads on native
+    /// builds. 1 (default) keeps the single-threaded stream; > 1 opts into the
+    /// deterministic parallel path (falls back to single-threaded on wasm).
+    #[inline(always)]
+    pub fn set_sim_threads(&mut self, sim_threads: usize) {
+        self.sim_threads = sim_threads;
+    }
+
     /// Give this seat's inner simmer an empirical win-probability table for its
     /// terminal evaluation (used only when the SimmerConfig selects the table
     /// source). None keeps the sigmoid. Borrowed for the seat's lifetime.
@@ -280,6 +313,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     #[inline(always)]
     pub fn reseed(&mut self, seed: u64) {
         self.simmer.reseed(seed);
+        // The parallel path keys each iteration's draw off this seed (see mix),
+        // so it must track the same per-move reseed the single-thread path gets.
+        self.decision_seed = seed;
     }
 
     /// Give this seat its own rollout objective and win-probability
@@ -306,6 +342,146 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         candidates
     }
 
+    // The current leader's play index, mean objective, and sample count, read
+    // without committing or stopping -- for study sessions and self-checks.
+    pub fn leader_summary(&self) -> (usize, f64, f64) {
+        let leader = self
+            .candidates
+            .iter()
+            .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
+            .unwrap();
+        (leader.play_index, leader.stats.mean(), leader.stats.count())
+    }
+
+    // The top `top_n` candidates -- active and retired -- by objective mean,
+    // each as (play index, objective mean, mean equity in points, mean win
+    // rate). For the observable study driver; equity/win-rate are only populated
+    // in observe mode.
+    pub fn leaderboard(&self, top_n: usize) -> Vec<(usize, f64, f64, f64)> {
+        let mut all: Vec<&Candidate> = self.candidates.iter().chain(self.retired.iter()).collect();
+        all.sort_unstable_by(|a, b| b.stats.mean().total_cmp(&a.stats.mean()));
+        all.iter()
+            .take(top_n)
+            .map(|c| {
+                (
+                    c.play_index,
+                    c.stats.mean(),
+                    c.equity_stats.mean(),
+                    c.win_rate_stats.mean(),
+                )
+            })
+            .collect()
+    }
+
+    // Add an already-generated play (by its index in move_generator.plays) to
+    // the working set as a fresh candidate with zero samples, so a study session
+    // can bring an unselected move into contention. Returns its stream id.
+    pub fn add_play(&mut self, play_index: usize) -> u64 {
+        let stream_id = self.next_stream_id;
+        self.next_stream_id += 1;
+        self.candidates.push(Candidate {
+            play_index,
+            stats: stats::Stats::new(),
+            stream_id,
+            equity_stats: stats::Stats::new(),
+            win_rate_stats: stats::Stats::new(),
+        });
+        stream_id
+    }
+
+    // Readmit a retired candidate to the working set WITH its accumulated
+    // statistics, named by its stream id. Returns true if it was found.
+    pub fn readmit_with_history(&mut self, stream_id: u64) -> bool {
+        if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
+            let candidate = self.retired.swap_remove(pos);
+            self.candidates.push(candidate);
+            true
+        } else {
+            false
+        }
+    }
+
+    // Readmit a retired candidate's play with FRESH (zeroed) statistics, named
+    // by its stream id: the play returns to contention but its old rollouts are
+    // dropped. Returns true if it was found.
+    pub fn readmit_fresh(&mut self, stream_id: u64) -> bool {
+        if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
+            let play_index = self.retired.swap_remove(pos).play_index;
+            self.add_play(play_index);
+            true
+        } else {
+            false
+        }
+    }
+
+    // The stream ids currently retired, so a study session can pick one to
+    // readmit.
+    pub fn retired_stream_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.retired.iter().map(|c| c.stream_id)
+    }
+
+    // The sample count of the candidate with this stream id, whether it is
+    // active or retired, or None if there is no such candidate.
+    pub fn stream_count(&self, stream_id: u64) -> Option<f64> {
+        self.candidates
+            .iter()
+            .chain(self.retired.iter())
+            .find(|c| c.stream_id == stream_id)
+            .map(|c| c.stats.count())
+    }
+
+    // Anytime query: read the run's state between resume calls without
+    // disturbing it -- pause, inspect the current leader, decide whether to
+    // keep going or stop, then resume or commit.
+
+    // The play index of the current leader (highest mean), read WITHOUT stopping
+    // or committing -- the anytime query-best.
+    pub fn best_so_far(&self) -> usize {
+        top_candidate_play_index_by_mean(&self.candidates)
+    }
+
+    // Whether the leader is already confidently separated from the field at the
+    // current stop_delta, i.e. whether the confidence stop would fire now, so a
+    // manager can move on without spending the rest of the budget. No side
+    // effect.
+    pub fn is_decided(&self) -> bool {
+        leader_is_separated(&self.candidates, self.stop_delta)
+    }
+}
+
+#[inline(always)]
+fn top_candidate_play_index_by_mean(candidates: &[Candidate]) -> usize {
+    candidates
+        .iter()
+        .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
+        .unwrap()
+        .play_index
+}
+
+pub struct Periods(pub u64);
+
+impl Periods {
+    #[inline(always)]
+    pub fn update(&mut self, new_periods: u64) -> bool {
+        if new_periods != self.0 {
+            self.0 = new_periods;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[expect(clippy::large_enum_variant)]
+pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
+    Hasty,
+    Simmer(Simmer<'a, N, L>),
+}
+
+// Simmer methods that spawn worker threads (via thread::scope) and so
+// require N and L to be Sync. The rest of Simmer's methods do not need Sync
+// and stay in the plain impl block above.
+impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
     // Run `count` more rollout iterations on the retained candidate set,
     // pruning (and retiring the dropped candidates) at the cadence boundaries
     // and, in Confidence mode, stopping once the leader is separated. `budget`
@@ -318,6 +494,15 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         budget: u64,
         count: u64,
     ) {
+        // Opt-in native parallel path: split the block's rollouts across threads
+        // with an iteration-keyed reseed, so the result is deterministic across
+        // thread counts. wasm and the default single thread keep the flowing
+        // stream below, byte-identical to before.
+        #[cfg(not(target_family = "wasm"))]
+        if self.sim_threads > 1 {
+            self.run_iterations_parallel(move_generator, budget, count);
+            return;
+        }
         let mut candidates = std::mem::take(&mut self.candidates);
         let mut retired = std::mem::take(&mut self.retired);
         const Z: f64 = 1.96; // 95% confidence interval
@@ -470,6 +655,176 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         self.retired = retired;
     }
 
+    // The parallel counterpart of run_iterations, taken when sim_threads > 1 on
+    // native builds. It samples every candidate on every iteration (round-robin
+    // only, this first cut) but splits the iterations of each prune-cadence
+    // period across threads, gathers their per-iteration values back into
+    // iteration order, reduces each candidate's values in that fixed order, and
+    // runs the same prune/cap/confidence-stop logic on the merged set. It
+    // reseeds every iteration from (decision seed, iteration index), so its draws
+    // -- and therefore its result -- are the same for any thread count, though
+    // they differ from the single-thread flowing stream (that is the point).
+    //
+    // The reduction is deliberately per-iteration in a fixed order rather than a
+    // merge of the threads' pre-reduced statistics: the parallel-variance combine
+    // is not associative in floating point, so merging different per-thread
+    // groupings would give thread-count-dependent bits and could flip a decision.
+    // Reducing every iteration's value in the same ascending order for any thread
+    // count keeps the whole run byte-identical between, say, two and eight
+    // threads.
+    #[cfg(not(target_family = "wasm"))]
+    fn run_iterations_parallel(
+        &mut self,
+        move_generator: &movegen::KurniaMoveGenerator,
+        budget: u64,
+        count: u64,
+    ) {
+        let mut candidates = std::mem::take(&mut self.candidates);
+        let mut retired = std::mem::take(&mut self.retired);
+        const Z: f64 = 1.96; // 95% confidence interval
+        let num_threads = self.sim_threads;
+        let decision_seed = self.decision_seed;
+        let observe = self.observe;
+        let game_config = self.game_config;
+        let kwg = self.kwg;
+        let klv = self.klv;
+        let win_pct_table = self.win_pct_table;
+        let base_simmer = &self.simmer;
+        let end = self.iters_done + count;
+        // One prune-cadence period at a time: sample it in parallel, merge, then
+        // prune on the merged set exactly as the single-thread path does.
+        while self.iters_done < end {
+            let block_start = self.iters_done;
+            let next_boundary = (block_start / PRUNE_CADENCE + 1) * PRUNE_CADENCE;
+            let block_end = end.min(next_boundary);
+            let num_candidates = candidates.len();
+            let block_len = (block_end - block_start) as usize;
+            // The candidates' play indices, read-only for the whole block so the
+            // threads can share them.
+            let play_indices: Vec<usize> = candidates
+                .iter()
+                .map(|candidate| candidate.play_index)
+                .collect();
+            // Each thread runs a contiguous slice of this block's iterations and
+            // returns their per-iteration values laid out iteration-major (one
+            // row of num_candidates values per iteration, in ascending iteration
+            // order). Contiguous slices in thread order let the rows concatenate
+            // back into ascending iteration order for any thread count. The third
+            // and fourth vecs (equity, win rate) stay empty unless observing.
+            let mut thread_rows: Vec<(Vec<f64>, Vec<f64>, Vec<f64>)> =
+                Vec::with_capacity(num_threads);
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(num_threads);
+                for thread_index in 0..num_threads {
+                    let play_indices = &play_indices;
+                    // Contiguous, near-even partition of this block's iterations:
+                    // the first (block_len % num_threads) threads take one extra.
+                    let base = block_len / num_threads;
+                    let extra = block_len % num_threads;
+                    let lo = thread_index * base + thread_index.min(extra);
+                    let hi = lo + base + if thread_index < extra { 1 } else { 0 };
+                    handles.push(scope.spawn(move || {
+                        // Own prepared simmer, so the threads never share the RNG.
+                        let mut simmer = base_simmer.prepared_clone(game_config);
+                        // Snapshot the pristine prepared position; prepare_iteration
+                        // draws destructively, so restore it before each iteration
+                        // to keep every iteration's draw independent of the others.
+                        let pristine = simmer.prepared_state().clone();
+                        let span = hi - lo;
+                        let mut objective = Vec::with_capacity(span * num_candidates);
+                        let mut equity = Vec::new();
+                        let mut win_rate = Vec::new();
+                        if observe {
+                            equity.reserve(span * num_candidates);
+                            win_rate.reserve(span * num_candidates);
+                        }
+                        for offset in lo..hi {
+                            // Absolute iteration index -> its own reseed and a
+                            // pristine draw, so the value is fixed no matter which
+                            // thread runs it or how many iterations preceded it.
+                            let sim_iter = block_start + 1 + offset as u64;
+                            simmer.restore_prepared(&pristine);
+                            simmer.reseed(mix(decision_seed, sim_iter));
+                            simmer.prepare_iteration();
+                            for &play_index in play_indices.iter() {
+                                let (value, sim_spread, win_prob) = rollout_objective(
+                                    &mut simmer,
+                                    game_config,
+                                    kwg,
+                                    klv,
+                                    &move_generator.plays[play_index].play,
+                                    win_pct_table,
+                                );
+                                objective.push(value);
+                                if observe {
+                                    equity.push(simmer::spread_points(sim_spread));
+                                    win_rate.push(win_prob);
+                                }
+                            }
+                        }
+                        (objective, equity, win_rate)
+                    }));
+                }
+                for handle in handles {
+                    thread_rows.push(handle.join().unwrap());
+                }
+            });
+            // Concatenate the threads' rows in thread (= ascending iteration)
+            // order, then reduce each candidate's values in that fixed order. The
+            // buffer is identical for any thread count, so the reduction is too.
+            let mut block_objective: Vec<f64> = Vec::with_capacity(block_len * num_candidates);
+            let mut block_equity: Vec<f64> = Vec::new();
+            let mut block_win_rate: Vec<f64> = Vec::new();
+            if observe {
+                block_equity.reserve(block_len * num_candidates);
+                block_win_rate.reserve(block_len * num_candidates);
+            }
+            for (objective, equity, win_rate) in thread_rows {
+                block_objective.extend(objective);
+                if observe {
+                    block_equity.extend(equity);
+                    block_win_rate.extend(win_rate);
+                }
+            }
+            for (candidate_index, candidate) in candidates.iter_mut().enumerate() {
+                for iteration in 0..block_len {
+                    let k = iteration * num_candidates + candidate_index;
+                    candidate.stats.update(block_objective[k]);
+                    if observe {
+                        candidate.equity_stats.update(block_equity[k]);
+                        candidate.win_rate_stats.update(block_win_rate[k]);
+                    }
+                }
+            }
+            self.iters_done = block_end;
+            if block_end.is_multiple_of(PRUNE_CADENCE) {
+                let low_bar = candidates
+                    .iter()
+                    .map(|candidate| candidate.stats.ci_max(-Z))
+                    .max_by(|a, b| a.total_cmp(b))
+                    .unwrap();
+                retire_below(&mut candidates, &mut retired, Z, low_bar);
+                let prune_periods_remaining = budget.saturating_sub(block_end) / PRUNE_CADENCE;
+                limit_surviving_candidates(
+                    &mut candidates,
+                    &mut retired,
+                    Z,
+                    1 + 2 * prune_periods_remaining as usize,
+                );
+                if candidates.len() < 2 {
+                    break;
+                }
+                if self.stop_rule == StopRule::Confidence
+                    && leader_is_separated(&candidates, self.stop_delta)
+                {
+                    break;
+                }
+            }
+        }
+        self.candidates = candidates;
+        self.retired = retired;
+    }
+
     // Study entry point: prepare the position, reset the candidate set and its
     // retired side list, and run `iters` rollout iterations WITHOUT committing a
     // winner, so the caller can inspect the leader or resume with more. The
@@ -497,141 +852,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         let budget = self.num_sim_iters;
         self.run_iterations(move_generator, budget, extra_iters);
     }
-
-    // The current leader's play index, mean objective, and sample count, read
-    // without committing or stopping -- for study sessions and self-checks.
-    pub fn leader_summary(&self) -> (usize, f64, f64) {
-        let leader = self
-            .candidates
-            .iter()
-            .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
-            .unwrap();
-        (leader.play_index, leader.stats.mean(), leader.stats.count())
-    }
-
-    // The top `top_n` candidates -- active and retired -- by objective mean,
-    // each as (play index, objective mean, mean equity in points, mean win
-    // rate). For the observable study driver; equity/win-rate are only populated
-    // in observe mode.
-    pub fn leaderboard(&self, top_n: usize) -> Vec<(usize, f64, f64, f64)> {
-        let mut all: Vec<&Candidate> = self.candidates.iter().chain(self.retired.iter()).collect();
-        all.sort_unstable_by(|a, b| b.stats.mean().total_cmp(&a.stats.mean()));
-        all.iter()
-            .take(top_n)
-            .map(|c| {
-                (
-                    c.play_index,
-                    c.stats.mean(),
-                    c.equity_stats.mean(),
-                    c.win_rate_stats.mean(),
-                )
-            })
-            .collect()
-    }
-
-    // Add an already-generated play (by its index in move_generator.plays) to
-    // the working set as a fresh candidate with zero samples, so a study session
-    // can bring an unselected move into contention. Returns its stream id.
-    pub fn add_play(&mut self, play_index: usize) -> u64 {
-        let stream_id = self.next_stream_id;
-        self.next_stream_id += 1;
-        self.candidates.push(Candidate {
-            play_index,
-            stats: stats::Stats::new(),
-            stream_id,
-            equity_stats: stats::Stats::new(),
-            win_rate_stats: stats::Stats::new(),
-        });
-        stream_id
-    }
-
-    // Readmit a retired candidate to the working set WITH its accumulated
-    // statistics, named by its stream id. Returns true if it was found.
-    pub fn readmit_with_history(&mut self, stream_id: u64) -> bool {
-        if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
-            let candidate = self.retired.swap_remove(pos);
-            self.candidates.push(candidate);
-            true
-        } else {
-            false
-        }
-    }
-
-    // Readmit a retired candidate's play with FRESH (zeroed) statistics, named
-    // by its stream id: the play returns to contention but its old rollouts are
-    // dropped. Returns true if it was found.
-    pub fn readmit_fresh(&mut self, stream_id: u64) -> bool {
-        if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
-            let play_index = self.retired.swap_remove(pos).play_index;
-            self.add_play(play_index);
-            true
-        } else {
-            false
-        }
-    }
-
-    // The stream ids currently retired, so a study session can pick one to
-    // readmit.
-    pub fn retired_stream_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.retired.iter().map(|c| c.stream_id)
-    }
-
-    // The sample count of the candidate with this stream id, whether it is
-    // active or retired, or None if there is no such candidate.
-    pub fn stream_count(&self, stream_id: u64) -> Option<f64> {
-        self.candidates
-            .iter()
-            .chain(self.retired.iter())
-            .find(|c| c.stream_id == stream_id)
-            .map(|c| c.stats.count())
-    }
-
-    // Anytime query: read the run's state between resume calls without
-    // disturbing it -- pause, inspect the current leader, decide whether to
-    // keep going or stop, then resume or commit.
-
-    // The play index of the current leader (highest mean), read WITHOUT stopping
-    // or committing -- the anytime query-best.
-    pub fn best_so_far(&self) -> usize {
-        top_candidate_play_index_by_mean(&self.candidates)
-    }
-
-    // Whether the leader is already confidently separated from the field at the
-    // current stop_delta, i.e. whether the confidence stop would fire now, so a
-    // manager can move on without spending the rest of the budget. No side
-    // effect.
-    pub fn is_decided(&self) -> bool {
-        leader_is_separated(&self.candidates, self.stop_delta)
-    }
-}
-
-#[inline(always)]
-fn top_candidate_play_index_by_mean(candidates: &[Candidate]) -> usize {
-    candidates
-        .iter()
-        .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
-        .unwrap()
-        .play_index
-}
-
-pub struct Periods(pub u64);
-
-impl Periods {
-    #[inline(always)]
-    pub fn update(&mut self, new_periods: u64) -> bool {
-        if new_periods != self.0 {
-            self.0 = new_periods;
-            true
-        } else {
-            false
-        }
-    }
-}
-
-#[expect(clippy::large_enum_variant)]
-pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
-    Hasty,
-    Simmer(Simmer<'a, N, L>),
 }
 
 impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
@@ -643,7 +863,10 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         game_state: &game_state::GameState,
         rack: &[u8],
-    ) {
+    ) where
+        N: Sync,
+        L: Sync,
+    {
         match self {
             MovePicker::Hasty => {
                 filtered_movegen.gen_moves(
