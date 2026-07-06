@@ -163,10 +163,12 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                         let final_spread = simmer.simmer.final_equity_spread();
                         let win_prob = simmer.simmer.compute_win_prob(game_ended, final_spread);
                         let sim_spread = final_spread - simmer.simmer.initial_score_spread;
-                        candidate.stats.update(
-                            simmer::spread_points(sim_spread)
-                                + win_prob * simmer.simmer.win_prob_weightage(),
-                        );
+                        candidate.stats.update(simmer::sim_objective(
+                            sim_spread,
+                            win_prob,
+                            simmer.simmer.win_prob_weightage(),
+                            simmer.simmer.config().descale,
+                        ));
                     }
                     if sim_iter % 16 == 0
                         && prune_periods.update(elapsed_time_ms / prune_interval_ms)
