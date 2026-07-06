@@ -589,16 +589,53 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 .or_insert(state_eval)
         };
 
-        // sort moves by equity desc
+        // order moves by equity descending, then negamax them in that order.
         let low_idx = state_eval.child_play_idxs[player_idx as usize];
         let high_idx = state_eval.child_play_idxs[player_idx as usize + 1];
-        self.work_buffer.child_plays[low_idx..high_idx]
-            .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
+        // Lazy move ordering (OPT-IN study lever, DEFAULT OFF). None keeps the
+        // plain full sort; Some(k) instead brings only the best k moves to the
+        // front now and sorts the remaining tail only if the search runs past
+        // them. Either way the result is value-identical -- alpha-beta returns
+        // the same value regardless of the order moves are tried. It is off by
+        // default because measurement found it SLOWER on the harvested endgame
+        // positions: bag-empty endgames have small racks, so each node's move
+        // list is short, and iterative deepening re-visits each node many
+        // times, so the full sort is already near-linear on the partly-ordered
+        // slice and the select-then-tail-sort machinery is pure overhead
+        // (about 7% slower on corpus-med at every k in 2..24). Flip to
+        // Some(6) to benchmark, or study wider/deeper position mixes.
+        const LAZY_MOVE_ORDER_PREFIX: Option<usize> = None;
+        // how far the slice is already in equity-desc order: children in
+        // [low_idx..sorted_end) are sorted, the rest keep their prior
+        // valuations until the loop reaches them and sorts the tail once.
+        let mut sorted_end = high_idx;
+        match LAZY_MOVE_ORDER_PREFIX {
+            Some(k) if high_idx - low_idx > k => {
+                let slice = &mut self.work_buffer.child_plays[low_idx..high_idx];
+                // partition the best k to the front, then order just those k.
+                slice.select_nth_unstable_by(k, |a, b| b.valuation.total_cmp(&a.valuation));
+                slice[..k].sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
+                sorted_end = low_idx + k;
+            }
+            _ => {
+                self.work_buffer.child_plays[low_idx..high_idx]
+                    .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
+            }
+        }
 
         // perform actual negamax
         let mut best_idx = !0;
         let mut best_valuation = f32::NEG_INFINITY;
         for child_play_idx in low_idx..high_idx {
+            if sorted_end < high_idx && child_play_idx == sorted_end {
+                // reached the end of the pre-selected prefix without a cutoff;
+                // sort the still-unsearched tail once and continue. the tail
+                // keeps its pre-loop valuations, so this produces exactly the
+                // order a full sort would have for those moves.
+                self.work_buffer.child_plays[sorted_end..high_idx]
+                    .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
+                sorted_end = high_idx;
+            }
             match &self.work_buffer.plays
                 [self.work_buffer.child_plays[child_play_idx].play_idx as usize]
             {
