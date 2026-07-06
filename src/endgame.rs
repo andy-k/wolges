@@ -926,6 +926,138 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.work_buffer.plays.len(),
         );
     }
+
+    // Solve a pre-endgame that has exactly ONE tile left in the bag, and that
+    // tile is KNOWN to be `bag_tile`. Returns the game-theoretic point margin
+    // from `player_idx`'s view, in the SAME scaled unit (equity::SCALE = 1000)
+    // as solve().
+    //
+    // With one tile in the bag the rules are simple:
+    //  - Any play places at least one tile, so it draws min(placed, 1) = 1: it
+    //    always draws that one bag tile. The bag then empties and the mover's
+    //    rack = old rack - placed tiles + bag_tile. Because the draw refills the
+    //    rack, no play can empty it here -- there is no "play-out" while the bag
+    //    is non-empty. After the draw it is a plain empty-bag endgame with the
+    //    opponent to move, which the existing (byte-identical) solver handles.
+    //  - A pass draws nothing and leaves the bag holding just the one tile.
+    //  - Two consecutive passes end the game; the bag tile stays unseen and is
+    //    not scored against either player.
+    //
+    // This is a thin bag-phase layer on top of the empty-bag solver: it does not
+    // touch negamax_eval / solve / get_new_state_idx / both_pass_value.
+    pub fn solve_one_in_bag(&mut self, player_idx: u8, bag_tile: u8) -> f32 {
+        // copy the Copy refs first so the sub-solver + the bag-phase move
+        // generator can borrow them without tangling with the &self borrow of
+        // board_tiles/racks below.
+        let gc = self.game_config;
+        let kwg = self.kwg;
+        // one empty-bag sub-solver, created once and reused across every play
+        // branch (no fresh solver per branch). num_players == 2 was already
+        // checked when self was built, so this construction cannot panic.
+        let mut sub = EndgameSolver::<N, L>::new(gc, kwg);
+        // a bag-phase move generator, separate from the sub-solver's own.
+        let mut mg = movegen::KurniaMoveGenerator::new(gc);
+        // an empty leave-value table for bag-phase generation, matching the
+        // empty-bag search (self.klv is always the empty klv too).
+        let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        // board + racks as locals so the bag phase never clobbers self.*.
+        let board = self.board_tiles.clone();
+        let racks = [self.racks[0].clone(), self.racks[1].clone()];
+        Self::one_in_bag_minimax(
+            gc, kwg, &klv, &mut sub, &mut mg, &board, &racks, player_idx, bag_tile, false,
+        )
+    }
+
+    // Bag-phase minimax for the one-known-bag-tile case. Shape mirrors the
+    // tests' plain-negamax `reference`: generate the mover's plays into a LOCAL
+    // Vec (so the reused generator is free for the pass-branch recursion), then
+    // for each play draw the bag tile and hand the resulting empty-bag position
+    // to the optimized sub-solver. Value is from `mover`'s view, scaled.
+    #[allow(clippy::too_many_arguments)]
+    fn one_in_bag_minimax(
+        gc: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        klv: &klv::Klv<L>,
+        sub: &mut EndgameSolver<'a, N, L>,
+        mg: &mut movegen::KurniaMoveGenerator,
+        board: &[u8],
+        racks: &[Vec<u8>; 2],
+        mover: u8,
+        bag_tile: u8,
+        just_passed: bool,
+    ) -> f32 {
+        let alphabet = gc.alphabet();
+        let opp = mover ^ 1;
+        let snapshot = movegen::BoardSnapshot {
+            board_tiles: board,
+            game_config: gc,
+            kwg,
+            klv,
+        };
+        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover as usize], 0, true);
+
+        // the mover draws the one bag tile after playing. A drawn blank goes on
+        // the rack as an undesignated blank (rack byte 0); a drawn letter goes
+        // on as itself. This is the same blank-wipe idiom used elsewhere here.
+        let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
+
+        // iterate this node's place moves directly out of the generator; the loop
+        // body never touches mg, and the pass-branch recursion that reuses mg runs
+        // after this loop, so no copy of the plays is needed.
+        let mut best = f32::NEG_INFINITY;
+        for vm in &mg.plays {
+            if let movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } = &vm.play
+            {
+                // play P on a cloned board + mover rack (same apply convention
+                // as print_best_line / the tests' apply_place), then draw the
+                // bag tile so the bag empties. A play is never a play-out here.
+                let mut nb = board.to_vec();
+                let mut nr = racks.clone();
+                {
+                    let rack = &mut nr[mover as usize];
+                    let strider = gc.board_layout().dim().lane(*down, *lane);
+                    for (i, &tile) in (*idx..).zip(word.iter()) {
+                        if tile != 0 {
+                            nb[strider.at(i)] = tile;
+                            let blanked = tile & !((tile as i8) >> 7) as u8;
+                            let p = rack.iter().rposition(|&t| t == blanked).unwrap();
+                            rack[p] = 0x80;
+                        }
+                    }
+                    rack.retain(|&t| t != 0x80);
+                    rack.push(drawn);
+                }
+                // now a plain empty-bag endgame, opponent to move.
+                sub.init(&nb, [&nr[0], &nr[1]]);
+                let v = sub.solve(opp);
+                // negamax compose: the mover collects score(P) then the value
+                // of the empty-bag position from the opponent's view is a loss.
+                let val = *score as f32 - v;
+                if val > best {
+                    best = val;
+                }
+            }
+        }
+
+        let pass_val = if just_passed {
+            // both sides passed with the tile still in the bag: leftover point
+            // margin, bag tile unscored (same form as both_pass_value).
+            (alphabet.scaled_rack_score(&racks[opp as usize])
+                - alphabet.scaled_rack_score(&racks[mover as usize])) as f32
+        } else {
+            -Self::one_in_bag_minimax(gc, kwg, klv, sub, mg, board, racks, opp, bag_tile, true)
+        };
+        if pass_val > best {
+            best = pass_val;
+        }
+        best
+    }
 }
 
 // Reference-check tests for the endgame solver. A small self-contained gaddawg
@@ -1064,6 +1196,84 @@ mod tests {
                 as f32
         } else {
             -reference(gc, kwg, klv, mg, board, racks, opp, true)
+        };
+        if pass_val > best {
+            best = pass_val;
+        }
+        best
+    }
+
+    // Obviously-correct plain negamax for the ONE-KNOWN-BAG-TILE case. Mirrors
+    // `reference` but adds the single known draw: after any Place the mover
+    // draws the one bag tile (so the bag empties and the rack cannot empty --
+    // there is no play-out while the bag is non-empty), turning the rest into a
+    // plain empty-bag endgame solved by the empty-bag `reference`. A pass leaves
+    // the tile in the bag; two passes end the game with the bag tile unscored.
+    // Value from `mover`'s view, in the same scaled unit as `reference`.
+    #[allow(clippy::too_many_arguments)]
+    fn reference_one_in_bag<N: kwg::Node, L: kwg::Node>(
+        gc: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        klv: &klv::Klv<L>,
+        mg: &mut movegen::KurniaMoveGenerator,
+        board: &[u8],
+        racks: &[Vec<u8>; 2],
+        mover: usize,
+        bag_tile: u8,
+        just_passed: bool,
+    ) -> f32 {
+        let alphabet = gc.alphabet();
+        let snapshot = movegen::BoardSnapshot {
+            board_tiles: board,
+            game_config: gc,
+            kwg,
+            klv,
+        };
+        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover], 0, true);
+        // collect this node's place moves before recursing (recursion reuses mg).
+        let mut places: Vec<movegen::Play> = Vec::new();
+        for vm in &mg.plays {
+            if let movegen::Play::Place { .. } = &vm.play {
+                places.push(vm.play.clone());
+            }
+        }
+
+        // a drawn blank lands on the rack as an undesignated blank (byte 0).
+        let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
+
+        let opp = mover ^ 1;
+        let mut best = f32::NEG_INFINITY;
+        for play in &places {
+            if let movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } = play
+            {
+                // the mover plays P and draws the one known bag tile; never a
+                // play-out here because the draw refills the rack.
+                let mut nb = board.to_vec();
+                let mut nr = racks.clone();
+                apply_place(gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
+                nr[mover].push(drawn);
+                // now a plain EMPTY-BAG endgame, opp to move: recurse the plain
+                // empty-bag reference (the bag is gone).
+                let val = *score as f32 - reference(gc, kwg, klv, mg, &nb, &nr, opp, false);
+                if val > best {
+                    best = val;
+                }
+            }
+        }
+
+        let pass_val = if just_passed {
+            // both sides passed with the tile still in the bag: leftover point
+            // margin, bag tile unscored.
+            (alphabet.scaled_rack_score(&racks[opp]) - alphabet.scaled_rack_score(&racks[mover]))
+                as f32
+        } else {
+            -reference_one_in_bag(gc, kwg, klv, mg, board, racks, opp, bag_tile, true)
         };
         if pass_val > best {
             best = pass_val;
@@ -1463,5 +1673,131 @@ mod tests {
         println!("properties: {illegal} illegal PV plays, {oob} out-of-bounds values");
         assert_eq!(illegal, 0, "a PV play was not legal");
         assert_eq!(oob, 0, "a solve() value exceeded the scaled bound");
+    }
+
+    // ---- one-in-bag: differential vs the trusted reference --------------------
+    // On a handful of small positions, with a chosen bag tile drawable from the
+    // tiny alphabet, assert solve_one_in_bag(mover, T) reproduces the
+    // reference_one_in_bag value exactly (bit-for-bit in the scaled unit), for
+    // BOTH movers and several distinct T.
+    #[test]
+    fn differential_one_in_bag() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+
+        // A=1 B=2 T=20 H=8 in this tiny alphabet, plus blank (0). These are all
+        // drawable "one tile left in the bag" hypotheses.
+        let bag_tiles: [u8; 4] = [1, 8, 20, 0];
+
+        let mut disagreements = 0usize;
+        let mut total = 0usize;
+        // a modest slice of small positions is plenty; each one_in_bag node
+        // expands into a full empty-bag solve per play, so keep it small.
+        let mut positions = embedded_positions();
+        positions.extend(random_positions(12));
+        for (name, pos) in positions {
+            for &t in &bag_tiles {
+                for mover in 0u8..2 {
+                    total += 1;
+                    let refv = reference_one_in_bag(
+                        &gc,
+                        &kwg,
+                        &klv,
+                        &mut mg,
+                        &pos.board,
+                        &pos.racks,
+                        mover as usize,
+                        t,
+                        false,
+                    );
+                    let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+                    egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                    let solvev = egs.solve_one_in_bag(mover, t);
+                    if refv.to_bits() != solvev.to_bits() {
+                        disagreements += 1;
+                        println!(
+                            "DISAGREE [{name}] mover={mover} bag={t}: ref={refv} solve={solvev}\n   {}",
+                            describe(&gc, &pos)
+                        );
+                    }
+                }
+            }
+        }
+        println!("one-in-bag differential: {disagreements} disagreements out of {total} cases");
+        assert_eq!(
+            disagreements, 0,
+            "solve_one_in_bag disagreed with reference_one_in_bag"
+        );
+    }
+
+    // ---- one-in-bag: hand-checkable forced double-pass ------------------------
+    // Empty board; neither rack forms a listed word and the lone bag tile is
+    // also unplayable, so BOTH sides can only pass. The game ends on the double
+    // pass with the bag tile unscored, so the value is exactly the leftover
+    // point margin: scaled_rack_score(opp) - scaled_rack_score(mover).
+    // p0 = [B,B] -> 3+3 = 6 pts; p1 = [H,T] -> 4+1 = 5 pts (scaled x1000).
+    // From p0's view the value is (5 - 6) * 1000 = -1000; from p1's, +1000.
+    // The bag tile below is B (=2), which forms nothing on the empty board.
+    #[test]
+    fn one_in_bag_forced_double_pass() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+
+        let board = empty_board();
+        let racks = [vec![2u8, 2], vec![8u8, 20]];
+
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        egs.init(&board, [&racks[0][..], &racks[1][..]]);
+        // p0 to move, one B left in the bag.
+        let v0 = egs.solve_one_in_bag(0, 2);
+        assert_eq!(v0, -1000.0, "p0 forced-pass leftover should be -1000");
+
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        egs.init(&board, [&racks[0][..], &racks[1][..]]);
+        let v1 = egs.solve_one_in_bag(1, 2);
+        assert_eq!(v1, 1000.0, "p1 forced-pass leftover should be +1000");
+    }
+
+    // ---- one-in-bag: hand-checkable play-out after the draw -------------------
+    // Empty board; p0 holds [A,B] and there is one A (=1) in the bag. p0 can
+    // play a two-tile word (AB or BA, each scoring 1+3 = 4 = 4000 scaled) and
+    // then draws the A, leaving p0 with [A]. It is then a plain empty-bag
+    // endgame with p1 to move. Rather than pin the exact deep value (which
+    // depends on p1's best reply), assert the bag layer AGREES with the trusted
+    // reference here, and that playing beats passing for p0 (a nonnegative value
+    // vs the pass-only leftover). This exercises the "draw then empty-bag solve"
+    // path directly.
+    #[test]
+    fn one_in_bag_play_then_draw() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+
+        let board = empty_board();
+        let racks = [vec![1u8, 2], vec![8u8, 20]]; // p0=[A,B] p1=[H,T]
+        let bag = 1u8; // one A in the bag
+
+        let refv = reference_one_in_bag(&gc, &kwg, &klv, &mut mg, &board, &racks, 0, bag, false);
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        egs.init(&board, [&racks[0][..], &racks[1][..]]);
+        let solvev = egs.solve_one_in_bag(0, bag);
+        assert_eq!(solvev.to_bits(), refv.to_bits(), "bag layer vs reference");
+
+        // p0 can play (and does no worse than the pass-only leftover). The
+        // pass-only leftover from p0's view here is (p1 - p0) points =
+        // (5 - 4) * 1000 = 1000; pass is always an option in the minimax, so the
+        // solved value is >= that regardless of how the play lines resolve.
+        let a = gc.alphabet();
+        let pass_only = (a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0])) as f32;
+        assert!(
+            solvev >= pass_only,
+            "playing should not be worse than the pass-only leftover: solve={solvev} pass_only={pass_only}"
+        );
     }
 }
