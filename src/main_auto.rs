@@ -1,10 +1,19 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use rand::prelude::*;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::sync::{Arc, Mutex};
 use wolges::{
     alphabet, bag, bites, build, display, equity, error, fash, game_config, game_state,
     game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
+
+// opt-in endgame-position harvester (WOLGES_ENDGAME_HARVEST=<path>): a single
+// shared writer that every worker appends bag-empty positions to. None when the
+// env var is unset, in which case autoplay is byte-identical to before.
+type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
+
 fn main() -> error::Returns<()> {
     if false {
         let mut rng = rand::rngs::ChaCha20Rng::from_seed(*b"the seed is an array of 32 bytes");
@@ -35,26 +44,36 @@ fn main() -> error::Returns<()> {
         return Ok(());
     }
 
+    // set up the harvester once; None (env unset) means no behavior change.
+    let harvest: Option<HarvestWriter> = match std::env::var("WOLGES_ENDGAME_HARVEST") {
+        Ok(path) => Some(Arc::new(Mutex::new(BufWriter::new(File::create(path)?)))),
+        Err(_) => None,
+    };
+
     match 1 {
         1 => do_it(
             &kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
             &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
             &game_config::make_english_game_config(),
+            harvest,
         ),
         2 => do_it(
             &kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kad")?),
             &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
             &game_config::make_jumbled_english_game_config(),
+            harvest,
         ),
         3 => do_it(
             &kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.kbwg")?),
             &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
             &game_config::make_dutch_game_config(),
+            harvest,
         ),
         4 => do_it(
             &kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.kbwg")?),
             &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.klv2")?),
             &game_config::make_dutch_game_config(),
+            harvest,
         ),
         _ => unimplemented!(),
     }
@@ -64,6 +83,7 @@ fn do_it<N: kwg::Node + Sync>(
     kwg: &kwg::Kwg<N>,
     klv: &klv::Klv<kwg::Node22>,
     game_config: &game_config::GameConfig,
+    harvest: Option<HarvestWriter>,
 ) -> error::Returns<()> {
     let mut fen_parser =
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
@@ -441,6 +461,27 @@ fn do_it<N: kwg::Node + Sync>(
                 game_state::CheckGameEnded::NotEnded => {}
             }
             game_state.next_turn();
+
+            // harvest bag-empty endgame positions when opted in. off path is a
+            // single None-check per turn; on path formats + writes under lock.
+            if let Some(harvest) = &harvest
+                && game_state.bag.is_empty()
+            {
+                let alphabet = game_config.alphabet();
+                let mut writer = harvest.lock().unwrap();
+                writeln!(
+                    writer,
+                    "{}\t{}\t{}\t{}",
+                    display::BoardFenner::new(
+                        alphabet,
+                        game_config.board_layout(),
+                        &game_state.board_tiles,
+                    ),
+                    alphabet.fmt_rack(&game_state.players[0].rack),
+                    alphabet.fmt_rack(&game_state.players[1].rack),
+                    game_state.turn,
+                )?;
+            }
         }
         timers.set_turn(-1);
 
