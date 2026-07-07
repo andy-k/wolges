@@ -1143,6 +1143,61 @@ value.
 New knobs: WOLGES_ROLLOUT_CV, WOLGES_ROLLOUT_LAMBDA, WOLGES_ROLLOUT_SHRINK.
 
 
+FORCING FULL RARE RACKS
+
+Self-play almost never deals a rack full of rare tiles, so the leaves that
+depend on such racks are built from too few games. Autoplay already patches
+this by forcing: deliberately building and playing the cases that self-play
+starves, so their leaves rest on real plays rather than on nothing. Until now
+it forced at the level of undersampled subracks -- the shorter kept-tile
+combinations -- and kept them in a side list, apart from the main rack tally.
+It had to: under the per-occurrence decompose, dropping a full rare rack into
+the main tally would over-count every common subrack that rack happens to
+contain.
+
+Full-rack forcing adds the other option -- force undersampled full racks in
+their entirety and record them in the main rack tally, exactly like a naturally
+drawn rack. Switched on (WOLGES_AUTOPLAY_FULL_RACK_FORCING, off by default),
+the remediation step walks the possible full racks, looks each up in the rack
+tally, and targets any seen fewer than the min-samples count. A rack that wants
+more copies of a tile than the whole bag holds is skipped -- it can never be
+completed, so forcing it would be wasted work. Paired with the
+WOLGES_IMPOSSIBLE_OK knob turned on, it will also force racks that this board
+cannot currently deal, building them with their tiles forced onto the board. A
+forced rack is built tile for tile and recorded keyed by the full rack, count
+one. Switched off, the old subrack-targeted path is byte-for-byte unchanged.
+
+This is only sound alongside the per-rack decompose (the -generate weighting
+that counts each distinct rack once, weighted by the ways the bag could
+complete it, rather than once per occurrence). That weighting is what keeps a
+force-covered rack from inflating the common subracks it shares, which is the
+very over-counting the side-list subrack path was invented to avoid.
+
+Measured at volume, full-rack forcing was worth turning on for the autoplay
+recipe by default. A bare autoplay run now forces each undersampled full rack,
+places racks board-tolerantly (it exports the full-rack-forcing and
+impossible-ok knobs), and covers every globally-possible rack at least once by
+defaulting each generation's min-samples to one. A sound forced run still
+passes WOLGES_GENERATE_PER_RACK=1 explicitly, since the per-rack decompose it
+leans on is opt-in. Passing --no-forcing reverts to plain natural-rack
+sampling; --gilles keeps its own board sampler and is never forced.
+
+On the per-rack decompose footing (each distinct rack weighted once, not once
+per occurrence), the forced autoplay table roughly ties board sampling.
+english-compare reports 50.0218 for the forced autoplay table against board
+sampling, confidence 73.1. That lead is about 0.02 pp above an even split,
+smaller than one standard error at a million pairs (about 0.035 pp), so it is a
+marginal positive that sits inside the noise -- consistently on the right side
+across the run, but not something this test can call apart from a tie. Against
+the census the same table reads 49.9774, confidence 73.9 -- again a tie. So
+forcing is a small, sub-noise improvement in coverage, not a step change; it is
+kept on because a leave built on a real forced play is sounder than one left
+starved, and it costs nothing when the racks it targets are the ones self-play
+would have missed.
+
+New knobs: WOLGES_AUTOPLAY_FULL_RACK_FORCING.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1173,8 +1228,9 @@ from the racks held.
 
     ./genleaves.sh english english 2000000 2000000 2000000
 
-More games mean lower best-play noise. The genleaves.sh arguments are explained
-under RUNNING GENLEAVES.SH below.
+It forces the rare tail by default; add genleaves.sh's --no-forcing option for
+plain natural sampling. The genleaves.sh arguments are explained under RUNNING
+GENLEAVES.SH below.
 
 Whole-game rollout -- a recorded negative, kept for reference. It credits whole
 finished games to the racks held; too noisy to beat the census.
@@ -1197,8 +1253,10 @@ three numbers means three generations; append :N to a count to ask for N
 samples of every rack that generation.
 
 Options, each written before the configs:
-  --gilles  collect samples by board sampling instead of self-play autoplay
-  --full    also write the full-length leaves (what dynamic leaves read)
+  --gilles      collect samples by board sampling instead of self-play autoplay
+  --no-forcing  turn off autoplay's full-rack forcing, reverting to plain
+                natural sampling (ignored under --gilles)
+  --full        also write the full-length leaves (what dynamic leaves read)
 
 
 ENVIRONMENT KNOBS
@@ -1320,6 +1378,16 @@ Census:
     is what dynamic leaves read:
       1  also write the full-length values
       0  drop them, giving a smaller, play-identical file
+
+Autoplay:
+  It also reads the shared knobs above. Its own knob:
+  WOLGES_AUTOPLAY_FULL_RACK_FORCING (0 or 1; default 0; the genleaves autoplay
+    recipe turns it on) -- how autoplay forces the rare tail; sound only
+    alongside the per-rack decompose. genleaves.sh's --no-forcing option turns
+    it back off:
+      1  force whole undersampled racks into the main rack tally, like a
+         natural sample
+      0  target undersampled subracks in a side list
 
 Whole-game rollout:
   It also reads WOLGES_THREADS. Its own knobs:
