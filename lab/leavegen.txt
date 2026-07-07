@@ -843,6 +843,65 @@ New knobs: WOLGES_CENSUS_ALPHA, WOLGES_CENSUS_BATCH, WOLGES_CENSUS_BUCKETS,
 WOLGES_CENSUS_PER_GAME.
 
 
+THE BLANK MODEL: SPELL EACH WORD ONCE
+
+The census's first step builds a play-value sheet: for each set of played
+tiles, the best score, from one move-generator pass over the unseen pool. A
+blank tile can be played as any letter, so in the plain build it follows every
+word path the board allows -- not an arbitrary twenty-six-letter fan-out, but
+every real edge in the word graph. That means a word playable with a blank is
+found once for each letter the blank stands as, and again with a real tile when
+the pool holds one. When the pool holds several blanks, the same word is
+re-found once for every combination of which of its tiles are blanks, and that
+cost grows with the number of blanks in the pool -- the dominant cost of the
+sheet build on blank-rich tile sets.
+
+The faster build spells each word exactly once. The generator descends
+real-before-blank: it uses a blank for a letter only when no real copy of that
+letter is left (real preferred), so each feasible word comes out once. Then the
+census reconstructs every blank spelling of that word by arithmetic, with no
+further move generation. This works because blanking a placed tile only removes
+that tile's own face value -- the blank stays in place, so every word and
+letter multiplier and the bingo bonus are untouched. The score drops from
+turning tiles into blanks are therefore independent and simply add up: for any
+choice of which placed tiles are blank, the score is the all-real score minus
+the face-value drops at those positions. For a given number of blanks spent on
+one letter, the cheapest positions (smallest drops) are blanked first. The
+sheet comes out bit-for-bit the same either way; only the build is faster, most
+so on blank-rich tile sets.
+
+
+FILLING RACK VALUES BY WORD
+
+To value a board the census needs, for every full rack, the best single play
+that rack can make. The straightforward way searches each rack's ways to split
+into played tiles and kept tiles. On a full bag there are millions of racks, so
+that search dominates. Since most splits play a non-word and are worthless,
+only the real-word plays matter, so the census can turn the search around: for
+each playable word on the board, scatter its score forward onto every rack that
+could play it, adding the value of whatever that rack would keep, then read
+each rack's best straight off. This touches only the word plays instead of
+every split and gives bit-for-bit the same values. It helps most on the
+big-pool boards that dominate the wall clock, and can cost a little on the
+smallest pools and on the very largest alphabets (where the table of possible
+racks is several times bigger, so the extra scattered writes outweigh the
+saving). So it is on by default only where it pays: WOLGES_CENSUS_SCATTER takes
+off, on, or auto, and auto (the default) turns it on for the common alphabets
+and the big pools and off elsewhere.
+
+The rest of the sheet-and-valuation speedups are byte-identical reshuffles: the
+two full-rack passes are fused into one (each rack visited once, dropping a
+large per-worker value table), only the racks the board can actually deal are
+built (a big win late in the game, when most racks are undrawable), and on a
+full bag the per-rack hand-out of value is replaced by a fixed-cost set of
+passes over the table (WOLGES_CENSUS_ZETA_POOL sets the unseen-pool size at
+which the build switches to that path, default thirty-six for English). None of
+these change the leaves; they are why the census can be both exact and fast,
+which is its selling point over sampling.
+
+New knobs: WOLGES_CENSUS_SCATTER, WOLGES_CENSUS_ZETA_POOL.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -975,10 +1034,19 @@ Census:
       1  value every in-window board along one real game per worker (the board
          count then counts games)
       0  play a fresh game per board
+  WOLGES_CENSUS_SCATTER (off, on, or auto; default auto) -- how the census
+    finds each rack's best play; the values are identical, speed only:
+      off   search each rack's play-and-keep splits
+      on    scatter each playable word's score onto the racks that could play
+            it
+      auto  on for the common alphabets and big pools, off elsewhere
   WOLGES_CENSUS_VERIFY (0 or 1; default 0) -- whether to cross-check the census
     against the live move generator on the first board:
       1  run the cross-check
       0  skip it
+  WOLGES_CENSUS_ZETA_POOL (a whole number, a pool size; default 36 EN) --
+    unseen-pool size at or above which the full-rack hand-out uses fixed-cost
+    table passes; speed only.
   WOLGES_FULL (0 or 1; default 0) -- whether to keep the full-length leave rows
     (a value for the whole rack, not just a shorter leave); a full-length table
     is what dynamic leaves read:
