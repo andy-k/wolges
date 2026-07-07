@@ -1000,6 +1000,42 @@ New knobs: WOLGES_OPPDENIAL_EXACT, WOLGES_OPPDENIAL_EXACT_POOL_MAX,
 WOLGES_OPPDENIAL_LEAVE, WOLGES_OPPDENIAL_RACK.
 
 
+COVERING RARE-TILE LEAVES BY HOLDING TILES BACK
+
+A separate coverage experiment, kept in the same recorded-dead-end spirit. The
+census can only value a leave on boards where all of that leave's tiles are
+still unseen. The single-copy tiles -- the Q, Z, J -- are usually played before
+the sampling window opens, so racks that need them are rarely drawable and
+their leaves get little or no coverage: on a small board sample a Q-rack's
+leave can go unmeasured entirely.
+
+WOLGES_CENSUS_WITHHOLD = B (default 0, off) holds the B rarest tiles out of the
+bag for the whole game, so they stay unseen and turn up in the boards the
+census studies, and the racks that need them finally get covered. It is the
+same reserved-tile idea the board sampler already uses. It is off by default
+because it is a quality trade, not a free win: a board that withholds the Q
+never places the Q, which shifts the mix of boards being studied away from real
+play.
+
+WOLGES_CENSUS_WITHHOLD_FRAC = f, a fraction in (0, 1] (default 1.0, every
+board), softens that shift. Below 1.0 only every (1/f)-th board is a withhold
+board and the rest are dealt naturally, and the withhold boards are picked
+spaced evenly across the game's fill levels rather than bunched in one, so the
+common leaves keep an honest board mix while the rare tail still gets some
+coverage. At the default 1.0 every board withholds, which is the plain behavior
+above.
+
+Verdict. Census with the withhold on against census with it off, one million
+pairs, our-vs-our: 50.0436, confidence 89.1. That is a hair above an even
+split, but the gap is barely over the 0.035 pp noise floor and the confidence
+sits below the two-standard-error (about 98 percent) bar, so it reads as
+roughly a tie rather than a real gain. The extra rare-tail coverage does not
+clearly pay for the shifted board mix. Both withhold knobs stay off by default.
+
+New knobs: WOLGES_CENSUS_WITHHOLD, WOLGES_CENSUS_WITHHOLD_FRAC,
+WOLGES_OPPDENIAL_LEAVE_MARGINAL.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1093,6 +1129,9 @@ Shared across builders:
     per-letter opponent-denial term, folded into the finished table through a
     companion file; read by all three builders. 0.0 disables it. A recorded
     dead-end.
+  WOLGES_OPPDENIAL_LEAVE_MARGINAL (a file path; default
+    oppdenial-leave-marginal.csv) -- the companion per-letter file, written
+    only when WOLGES_OPPDENIAL_LEAVE is nonzero.
   WOLGES_OPPDENIAL_RACK (a decimal weight; default 0.0, off) -- the same
     per-letter drop folded into each drawn rack's recorded value instead of
     through a file. 0.0 disables it.
@@ -1155,6 +1194,12 @@ Census:
     against the live move generator on the first board:
       1  run the cross-check
       0  skip it
+  WOLGES_CENSUS_WITHHOLD (a whole number of tiles; default 0, off) -- hold this
+    many of the rarest tiles out of the bag for the whole game so rare-tile
+    racks appear in the sampled boards; 0 disables it. A recorded dead-end.
+  WOLGES_CENSUS_WITHHOLD_FRAC (a decimal in (0, 1]; default 1.0, every board)
+    -- fraction of boards that withhold; below 1.0, only every (1/f)-th board
+    does, spaced across the fill levels.
   WOLGES_CENSUS_ZETA_POOL (a whole number, a pool size; default 36 EN) --
     unseen-pool size at or above which the full-rack hand-out uses fixed-cost
     table passes; speed only.
