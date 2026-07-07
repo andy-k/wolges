@@ -519,12 +519,102 @@ the two on the double-counting argument.
 New knobs: WOLGES_GENERATE_PER_RACK.
 
 
+THE EXACT PER-BOARD CENSUS
+
+Board sampling and the autoplay baseline both manufacture or observe racks and
+then average what those racks happened to be worth. A third method, called the
+census, takes the opposite approach: on a single board it goes through every
+possible holding exactly and works out what each leave is worth, with no racks
+sampled at all. english-census does this on one board, then repeats over many
+fresh boards and averages, and writes the result as a leave table:
+
+  cargo run --release --bin leave -- english-census CSW24.kwg a.klv2 b.klv2 500
+
+The two leave files are the tables the two players use while a game is played
+out to reach a board worth studying; the last number is how many boards to
+study. As with the other methods, starting from the null table (pass "-") the
+first pass values plays by their board score alone, and feeding the finished
+table back in as the input to the next pass refines it over generations.
+
+The catalog the census hangs off is every subrack -- every group of tiles you
+could be holding, from nothing up to a full rack, where a tile may repeat (two
+E's is a different holding from one E). Each subrack is given a number, and the
+number can be turned back into the subrack, both by a direct formula with no
+stored table: the subracks are ordered first by how many tiles they hold and
+then in a fixed order by their letter counts, and a single pass over the tile
+kinds converts either way. For the classic English game -- twenty-seven tile
+kinds counting the blank, a seven-tile rack -- there are 5,379,616 subracks.
+The catalog hardcodes nothing about English: the number of tile kinds and the
+rack size are both parameters, so the census works for any game variant.
+
+
+HOW THE CENSUS VALUES A LEAVE
+
+On one board the census works in three steps.
+
+First it builds a play-value sheet: for every group of tiles you could play,
+the most points that playing exactly those tiles can score on this board. It
+gets the sheet from one move generation over the tiles still unseen -- every
+tile not yet on the board, opponent racks included, since a sampled rack is a
+hypothetical draw from everything not yet placed. Of all the plays the search
+finds for one played group, only the best score is kept in the sheet.
+
+Second, from the sheet it works out the best any full rack can do. The best a
+rack can do is the best over every way to divide it into tiles you play and
+tiles you keep: the play's score from the sheet, plus the value of the keep
+from the leave table currently in hand. This is computed for every full rack in
+the catalog at once. A slow, obviously-correct reference -- literally try every
+play-and-keep split -- pins down what the answer must be, and the fast version
+that fills the whole catalog is checked against that reference in the tests, so
+the fast path is proven right before it is trusted.
+
+Third, it values each leave. You keep some tiles; the bag then draws the rest
+of your rack back up to a full rack. For every way that draw could come out,
+look up the best that completed rack can do, and average those -- weighting
+each possible draw by how many ways it can actually come out of the unseen
+tiles, so likely draws count more than unlikely ones (drawing without
+replacement: the kept tiles are themselves already gone from the pool, and the
+completion is drawn from what remains). That weighted average is the leave's
+value: the worth of walking into a turn holding exactly those tiles, given
+everything still unseen. A full-length leave -- the full rack kept, that is, a
+pass -- draws nothing and takes its own best-rack value straight through. A
+leave the board's unseen tiles cannot complete at all is left unvalued on that
+board.
+
+The result is exactly the worth of holding that leave, measured for every leave
+on the board rather than estimated from the racks that happened to come up.
+Each board contributes a running total and count per leave; after all the
+boards, every leave's average is taken, the whole table is shifted so the empty
+leave is worth zero (its value is the average best full-rack equity -- the
+natural baseline), and a (leave, value) row is written per leave. Rare
+holdings, which one board may not be able to complete, get covered by piling up
+boards: more boards mean less noise and more of the uncommon board situations
+reached.
+
+The table is written without the full-length leaves by default. Keeping a full
+rack (a pass) is almost never the best move mid-game, and the empty-bag endgame
+is scored with its own penalty rather than from the leave table, so dropping
+those rows gives a smaller, play-identical file; WOLGES_FULL=1 keeps them.
+
+New knobs: WOLGES_FULL.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
 get the most competitive leaves out of each method. Each recipe is one command
 (indented) followed by a note on how to push it further. If you only want a
 good table, use the census.
+
+Census -- exact, and the one to use. It values every leave on a board exactly,
+then averages over many boards; more boards mean less board-to-board noise.
+
+    cargo run --release --bin leave -- english-census CSW24.kwg - - 500
+
+500 boards is a starting point, not the strongest table. Feed the finished
+table back in as both players' table and repeat until it stops changing,
+raising the board count until the leaves settle. WOLGES_POOL_* shift the board
+window; the WOLGES_CENSUS_* knobs tune it.
 
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
@@ -559,6 +649,7 @@ samples of every rack that generation.
 
 Options, each written before the configs:
   --gilles  collect samples by board sampling instead of self-play autoplay
+  --full    also write the full-length leaves (what dynamic leaves read)
 
 
 ENVIRONMENT KNOBS
@@ -616,6 +707,16 @@ Board sampling (gilles):
     count, 25 EN) -- low edge of the snapshot window, counted in tiles not yet
     on the board. The census reads the same variable with its own default
     window.
+
+Census:
+  It also reads the shared knobs above and the board window WOLGES_POOL_MIN /
+  WOLGES_POOL_MAX (listed under board sampling, but with the census's own
+  default window). Its own knobs:
+  WOLGES_FULL (0 or 1; default 0) -- whether to keep the full-length leave rows
+    (a value for the whole rack, not just a shorter leave); a full-length table
+    is what dynamic leaves read:
+      1  also write the full-length values
+      0  drop them, giving a smaller, play-identical file
 
 Compare and dynamic leaves:
   WOLGES_COMPARE_PORCELAIN (0 or 1; default 0) -- english-compare's output;
