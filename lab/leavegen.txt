@@ -1198,6 +1198,36 @@ would have missed.
 New knobs: WOLGES_AUTOPLAY_FULL_RACK_FORCING.
 
 
+THE PER-RACK DECOMPOSE BECOMES THE DEFAULT
+
+Recall the two ways english-generate can weight each rack when it turns a
+summary of sampled full racks into a per-leave table: per-occurrence folds in
+each rack's sampled count, while per-rack uses each distinct rack's average
+once, weighted only by ways(R, S), the ways to draw its missing tiles.
+Per-occurrence counts the draw frequency twice -- a rack already appears in the
+summary about as often as the bag deals it, so weighting that sample again by
+its count squares the effect -- and it is exactly what let a force-covered rare
+rack pull hard on every short leave it shares with common racks. Per-rack has
+neither problem, because a rack's average enters once no matter how it got into
+the summary. It is the correct decompose, so it is now the default: a bare
+english-generate does the right thing with no environment variable set.
+
+Measured on identical samples -- the same summary decomposed both ways, so
+nothing but the weighting differs -- the per-rack table beats the
+per-occurrence table. english-compare reports 52.0648 for the per-rack table,
+confidence 100: per-rack wins by about 2.06 pp. That is a large, certain gap,
+and it settles a footing question left open earlier. The
+board-sampling-versus-autoplay comparison reported near the top of this file --
+board sampling ahead by about 2.1 pp -- was run on per-occurrence tables (the
+47.88 footing); much of that apparent gap between where the racks came from was
+the double-counting in the decompose, not a real difference in method. Under
+the per-rack default the self-play, board-sampling, and per-board census tables
+land much closer together. As with the earlier switch that made full-rack
+apportionment the census default, the safe and correct behavior should not need
+a flag; set WOLGES_GENERATE_PER_RACK=0 to opt back to per-occurrence, kept only
+for reproducing the older tables.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1272,7 +1302,7 @@ Every run:
     table.
 
 Decompose (english-generate):
-  WOLGES_GENERATE_PER_RACK (0 or 1; default 0) -- how the english-generate
+  WOLGES_GENERATE_PER_RACK (0 or 1; default 1) -- how the english-generate
     decompose weights each rack; applies to any autoplay or board-sampling
     summary:
       1  weight each distinct rack once, by its draw-ways (per-rack)
