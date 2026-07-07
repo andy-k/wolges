@@ -1327,6 +1327,32 @@ arrive at the same quality. Kept opt-in.
 New knobs: WOLGES_CENSUS_RACK_SUMMARY.
 
 
+REAL OPENING RACKS IN THE SUMMARY
+
+The rack summary values every rack on every board inside the operating window,
+but that window never lands on the near-empty opening boards -- the one place
+its coverage falls short of the self-play sampler, which plays whole games from
+the very first move. WOLGES_OPENING_SAMPLES (default off, and only meaningful
+with the rack summary on) grafts the missing opening coverage on: while the
+sampler greedily plays each board's game up to its target board, it records the
+real rack actually held at every earlier turn as one extra summary row, valued
+by that turn's greedy best play. The target board itself is still valued
+exactly by the census and its own rack is never recorded, so nothing is
+double-counted. WOLGES_OPENING_WEIGHT (default 1) counts each opening row that
+many times: a rack already carries one value per board, hundreds of them, so a
+single weight-1 opening row barely moves its average, and the weight lets you
+turn the opening signal up to see whether giving it more say helps.
+
+It does not. In our own head-to-head no opening weight beats the plain
+uniform-board rack summary; the best result is a tie. The opening mix is not
+the gap between the census and self-play. Kept opt-in as a recorded dead-end. A
+fresh head-to-head bears this out: opening off versus on is a coin flip at the
+natural weight of 1 (49.9991, confidence 51) and still a tie even with the
+opening signal amplified 256-fold (49.9923, confidence 56).
+
+New knobs: WOLGES_OPENING_SAMPLES, WOLGES_OPENING_WEIGHT.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1516,6 +1542,12 @@ Census:
     is what dynamic leaves read:
       1  also write the full-length values
       0  drop them, giving a smaller, play-identical file
+  WOLGES_OPENING_SAMPLES (0 or 1; default 0; only with the rack summary on) --
+    whether to add opening-board coverage. A dead-end:
+      1  also record the real rack held at each earlier turn
+      0  record only the target boards
+  WOLGES_OPENING_WEIGHT (a whole number; default 1) -- how many times each
+    opening row is counted.
 
 Autoplay:
   It also reads the shared knobs above. Its own knob:
