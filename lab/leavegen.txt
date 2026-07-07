@@ -1490,6 +1490,89 @@ apportioning multi-pass, it never smooths or fills in leaves it did not
 measure.
 
 
+VALUING A PLAY BY ITS CHANCE OF WINNING
+
+Every method so far values a play by its equity -- the points it scores on the
+board plus the value of the leave it keeps -- and picks the play with the most
+equity. But points are only a stand-in for the thing that actually decides a
+game, which is winning it. This section tries to skip the stand-in and value a
+play directly by how often it leads to a win.
+
+The chance of winning is written "win%": the probability that the player to
+move eventually wins this game, a number from 0 (a certain loss) through 0.5
+(an even game) to 1 (a certain win), with a tie counted as half a win. It is
+learned empirically -- that is, measured by watching many real games finish,
+not read off a hand-tuned formula.
+
+wolges already carries such a hand-tuned formula elsewhere in the engine: an
+S-shaped curve that turns a point lead into a win-chance guess (a small lead
+reads near 0.5, a large lead flattens out near 0 or 1). The idea here is to
+replace that guess with a table measured from our own play, and then to see
+whether valuing racks by that measured win chance builds a better leave table
+than valuing them by points.
+
+
+THE WIN% TABLE, MEASURED FROM SELF-PLAY
+
+The table is keyed by the count-state a position is in: the triple (tiles left
+in the bag, my rack size, the opponent's rack size). Keeping the two rack sizes
+separate, rather than collapsing everything into one "tiles unseen" number,
+lets the table tell the endgame apart from the midgame -- which is exactly
+where the win chance stops tracking the points and starts depending on who is
+about to run out of tiles.
+
+For each count-state the table stores, as a plain integer tally, how much the
+point lead swung from that moment to the end of the game, measured from the
+mover's side. It leans on one trick that only works because the games are
+played statically -- each side always just takes its single highest-equity
+move, with no lookahead. With static play the rest of a game does not depend on
+the lead at a given moment, so a single finished game tells you the outcome for
+every hypothetical lead it could have had at every position it passed through:
+a position with lead s wins exactly when the remaining swing comes out above
+-s. One game therefore informs the whole curve at once.
+
+Reading the table folds each swing together with its mirror image, so a
+dead-even position reads as exactly 0.5 and a lead of s and a deficit of s
+always add to 1. A lead past anything ever observed for that count-state
+saturates to a sure win or a sure loss, and a count-state that was never
+sampled returns 0.5. The tallies are integer counts, so two runs combine by
+simply adding them -- no rounding error from splitting the work across
+machines.
+
+
+RECORDING AND GRADING THE TABLE
+
+Two command-line tools build and check the table.
+
+  cargo run --release --bin leave -- \
+    english-winpct CSW24.kwg leave.klv2 1000000
+
+plays that many greedy self-play games with the given leave table ("-" for the
+null table) and writes the raw win% table. At every turn it snapshots the
+mover's view -- bag size, both rack sizes, and the lead in whole points -- and
+after the game folds each snapshot's eventual swing into the tally. Games are
+seeded by game number, so the same seed and game count reproduce the same table
+no matter how many threads run it.
+
+  cargo run --release --bin leave -- \
+    english-winpct-eval CSW24.kwg leave.klv2 table.csv 1000000
+
+grades a finished table against fresh games. For every snapshot it compares
+both the table's win-chance and the old hand-tuned formula's guess against what
+actually happened (a win counts 1, a loss 0, a tie one half), and reports each
+one's Brier score -- the average of the squared gap between the predicted
+chance and the real outcome, where lower is better. Grade with a different
+(held-out) seed so the table is not judged on the very games that trained it.
+
+The measured table is a slightly better predictor than the hand-tuned formula:
+about 0.170 to the formula's 0.172, a hair lower (lower is better). Those
+figures come from english-winpct-eval grading each table on held-out self-play
+-- a different seed than the table was built on -- not from a head-to-head
+leave comparison. The margin is small, but the direction is what counts: a
+table read straight off played-out games predicts winners a touch better than a
+formula nobody had to hand-tune.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
