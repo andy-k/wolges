@@ -462,6 +462,63 @@ argued from that mechanism, not from an at-scale english-compare of folding-in
 versus the split.
 
 
+TWO WAYS TO WEIGHT A RACK IN THE DECOMPOSE
+
+The generate step values a leave by averaging the best-play values of all the
+fuller racks that contain it. That average has to weight each fuller rack
+somehow, and there are two sensible ways to do it -- the same choice applies to
+any summary fed to english-generate, whether it came from self-play or from
+board sampling.
+
+Recall how a rack reaches the average. Self-play (or board sampling) sees a
+full rack some number of times and, each time, records the best-play equity
+from it; the summary keeps that rack's running equity-sum and its count of
+sightings. Its mean best-play value is that equity-sum divided by that count.
+When english-generate splits the rack across the leaves you could keep from it,
+it must also weight the rack by how many ways the rest of the rack -- the tiles
+beyond the leave -- could be drawn from the bag, the same draw-combination
+count the autoplay baseline used (drawing without replacement). For a rack R
+and a kept leave S that count is written ways(R, S): the ways to draw the tiles
+of R that are not in S. So each leave ends up an average over the racks that
+contain it, and the question is only what each rack's share of that average is.
+
+The way described so far, call it per-occurrence, folds the sighting count
+straight into the weight: a rack contributes its whole equity-sum, and its
+whole count, each scaled by ways(R, S). Written out, a leave comes out as the
+sum over its racks of (equity-sum times ways(R, S)) divided by the sum of
+(count times ways(R, S)). Because a rack's equity-sum is already its mean times
+its count, this makes each rack pull on the average in proportion to how often
+it was drawn as well as to its draw combinations.
+
+The trouble is that a rack already appears in the summary as many times as it
+was drawn -- that is what its count records. Weighting it a second time by that
+same count counts the draw frequency twice. A rack that comes up often then
+leans harder than its own average score warrants on the short, common leaves it
+shares with many other racks, because those shared leaves collect its inflated
+weight over and over.
+
+The other way, call it per-rack, weights each distinct rack by its mean alone,
+scaled only by ways(R, S), and never by how many times it was sampled. Written
+out, a leave comes out as the sum over its racks of (mean times ways(R, S))
+divided by the sum of ways(R, S). Each distinct rack now counts exactly once,
+at its true average, so how often it happened to be drawn no longer inflates
+its pull on the leaves it shares.
+
+Neither way changes the fact that the table still stores a value per whole
+leave, not one number per tile -- leaves remain non-additive either way. The
+two ways only differ in how much each rack is allowed to sway the leaves it
+feeds into.
+
+WOLGES_GENERATE_PER_RACK chooses between them. It defaults off, which is the
+per-occurrence weighting above and reproduces the earlier leaves byte for byte.
+Set it on for the per-rack weighting. With it on the leaves come out visibly
+different and sensibly shaped in the runs tried; whether that plays stronger is
+not something we can call here, only that per-rack is the more defensible of
+the two on the double-counting argument.
+
+New knobs: WOLGES_GENERATE_PER_RACK.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -515,6 +572,14 @@ Every run:
   WOLGES_THREADS (a whole number; default the core count) -- worker threads for
     every parallel run and for english-compare; changes only speed, never the
     table.
+
+Decompose (english-generate):
+  WOLGES_GENERATE_PER_RACK (0 or 1; default 0) -- how the english-generate
+    decompose weights each rack; applies to any autoplay or board-sampling
+    summary:
+      1  weight each distinct rack once, by its draw-ways (per-rack)
+      0  also multiply by the rack's sampled count (per-occurrence), which
+         double-counts draw frequency
 
 Shared across builders:
   WOLGES_IMPOSSIBLE_OK (0 or 1; default 1) -- whether to value a rack the board
