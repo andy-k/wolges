@@ -508,6 +508,18 @@ fn main() -> error::Returns<()> {
         return run_batch(&batch_path);
     }
 
+    // opt-in single-position mode: any command-line argument switches from the
+    // built-in demo to solving one user-supplied position. Grammar:
+    //   endgame <lexicon> <fen> <rack>
+    // The mover is player 0 (holding <rack>); the opponent's tiles are inferred
+    // as whatever is unseen, and the one-in-bag PEG case is auto-detected --
+    // exactly the model the demo uses. No arguments (and no batch env var) runs
+    // the demo unchanged.
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.len() > 1 {
+        return run_cli(&args);
+    }
+
     let data = [
         r#"
       {
@@ -1220,6 +1232,48 @@ fn main() -> error::Returns<()> {
         "CGINTU?",
     )?;
 
+    solve_question(&question)
+}
+
+// resolve the game configuration (alphabet, board layout, tile counts) for a
+// lexicon name. Returns None for an unknown lexicon so callers can report a
+// clear error. The kwg file is loaded separately in solve_question.
+fn game_config_for_lexicon(lexicon: &str) -> Option<game_config::GameConfig> {
+    match lexicon {
+        "CSW24" => Some(game_config::make_english_game_config()),
+        _ => None,
+    }
+}
+
+// single-position command-line entry: parse "endgame <lexicon> <fen> <rack>",
+// build the Question (mover = player 0, opponent inferred from unseen tiles),
+// and run the same solve the demo uses.
+fn run_cli(args: &[String]) -> error::Returns<()> {
+    const USAGE: &str = "\
+usage: endgame <lexicon> <fen> <rack>
+  lexicon: CSW24
+  fen:     board in FEN notation (quote it -- it contains '/')
+  rack:    your tiles, e.g. ADENOOO (? for a blank)";
+    if args.len() != 4 {
+        wolges::return_error!(format!(
+            "expected exactly 3 arguments, got {}\n{USAGE}",
+            args.len() - 1,
+        ));
+    }
+    let lexicon = &args[1];
+    let fen = &args[2];
+    let rack = &args[3];
+    let Some(game_config) = game_config_for_lexicon(lexicon) else {
+        wolges::return_error!(format!("invalid lexicon {lexicon:?}\n{USAGE}"));
+    };
+    let question = Question::from_fen(&game_config, lexicon, fen, rack)?;
+    solve_question(&question)
+}
+
+// resolve the lexicon, word-prune the board, and solve the position: a plain
+// empty-bag endgame, or the one-in-bag PEG when exactly one tile is unseen
+// beyond the opponent's rack. Shared by the built-in demo and the CLI.
+fn solve_question(question: &Question) -> error::Returns<()> {
     let kwg;
     let game_config;
 
@@ -1435,4 +1489,38 @@ fn main() -> error::Returns<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // fast parse check for the CLI path: from_fen on an empty English board with
+    // a two-tile rack yields the expected Question (no solve -- parse only).
+    #[test]
+    fn from_fen_empty_board_parses() {
+        let game_config = game_config::make_english_game_config();
+        let dim = game_config.board_layout().dim();
+        // empty 15x15 board: each row is the full row width as one empty run.
+        let empty_fen = std::iter::repeat_n(dim.cols.to_string(), dim.rows as usize)
+            .collect::<Vec<_>>()
+            .join("/");
+        let question = Question::from_fen(&game_config, "CSW24", &empty_fen, "AB").unwrap();
+        assert_eq!(question.lexicon, "CSW24");
+        assert_eq!(question.rack, vec![1u8, 2u8]); // A, B
+        assert_eq!(question.board_tiles.len(), dim.rows as usize);
+        assert!(
+            question
+                .board_tiles
+                .iter()
+                .all(|row| row.len() == dim.cols as usize && row.iter().all(|&t| t == 0))
+        );
+    }
+
+    // unknown lexicon is rejected with None so the CLI can print usage.
+    #[test]
+    fn game_config_for_lexicon_rejects_unknown() {
+        assert!(game_config_for_lexicon("CSW24").is_some());
+        assert!(game_config_for_lexicon("BOGUS").is_none());
+    }
 }
