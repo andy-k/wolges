@@ -262,6 +262,92 @@ is the existing self-play table described above, and the numbers are on that
 footing.
 
 
+COVERING THE RARE RACKS
+
+Plain board sampling never promises that every rack gets studied. A rack built
+mostly from one-of-a-kind tiles -- a rack that wants the Q, say -- is hard to
+draw, so across a whole run it turns up only a handful of times, or never. Its
+leaves then rest on very few samples or none, and english-generate has to guess
+their value from the fuller racks it did see rather than measure it directly.
+(The plain english-generate does exactly that filling-in, called smoothing; the
+english-generate-no-smooth variant leaves an unmeasured leave alone instead.)
+The question this raises: if we spent the effort to sample those rare racks
+enough to measure them, would the resulting table play any better?
+
+To find out, english-gilles takes one more optional number, a minimum-sample
+target, right after the game count:
+
+  cargo run --release --bin leave -- \
+    english-gilles CSW24.kwg a.klv2 b.klv2 1000000 [min_samples] [seed]
+
+A min_samples of 0, the default, is exactly the plain board sampling already
+described -- byte for byte the same summary. A nonzero value turns on a
+remediation phase: the threads first play the requested games as usual, then
+keep playing extra games, but on each board they now aim the rack enumeration
+at the racks still short of the target count. On a snapshot they take the worst
+(least-likely) group, enumerate the still-undersampled racks inside it, widen
+the group with a few of the rarest leftover tiles to reach more of them, and
+fill any remaining room with random racks so each snapshot still does a steady
+amount of work. The threads periodically rebuild the shortfall list and stop
+once nothing is left short or the shortfall stops dropping.
+
+Because every rack it scores is assembled from tiles actually left on that
+board, it is always a rack that could really occur there. Any racks that still
+cannot be reached -- a tail of one-copy tiles that always get played before the
+snapshot window opens -- are reported at the end rather than silently dropped.
+(One supporting fix rode along here: the exchange enumerator now clears its
+working buffer before it starts, since the random fill-in can leave tiles
+behind and the enumeration assumes an empty buffer; without the reset the
+enumeration would quietly produce almost nothing and wrongly look like full
+coverage.)
+
+With a target of 1 the shortfall falls steadily to zero, covering all 3,199,724
+racks the standard tile distribution can form. That count is a property of the
+100-tile bag -- the standard letter counts plus two blanks -- not of any word
+list: a word list decides which racks can score, not which can be drawn. So the
+remediation does what it claims: it reaches every rack with measured data.
+
+The rarest racks, though, make it crawl. A tile with a single copy in the bag
+is almost always played before the midgame snapshot window opens, so a rack
+needing it can only be sampled in the rare game where that tile happens to sit
+unplayed that long, and chasing the last few thousand such racks that way
+dominates the whole run. WOLGES_GILLES_RESERVE (off by default) attacks that
+tail directly: before each remediation game it takes a batch of the
+still-uncovered racks, gathers the tiles they need, sets those aside up to a
+budget, and deals the game from the rest of the bag. The reserved tiles never
+enter play, so they are still unseen when the midgame snapshots happen and the
+wanted racks become directly drawable right where the sampling looks -- at the
+correct midgame phase, and with nothing impossible ever sampled, since the
+held-back tiles really are unseen on that board. The budget,
+WOLGES_GILLES_RESERVE_BUDGET, defaults to what the bag can spare and still deal
+the opening racks and play into the snapshot window, so it scales with the bag
+rather than being a fixed count. It is off by default because holding tiles
+back makes the board a little unnatural -- those tiles are absent more often
+than chance would have them -- which can nudge the leave values, so it is a
+lever to grind the rare tail faster, to be checked with english-compare before
+it is trusted.
+
+The verdict, measured our own table against our own with english-compare at one
+million game pairs, plain board sampling as the yardstick:
+
+  min-samples remediation vs plain board sampling: english-compare reports
+    49.9660 for the remediated table (the first table) -- a lead of about one
+    standard error below an even split, which reads as a tie.
+
+  reserve pool vs plain board sampling: english-compare reports 49.9856 for
+    the reserved-pool table, well inside the noise -- a tie.
+
+So spending the effort to measure the rare racks, instead of letting
+english-generate fill them in, does not make the table play any better: the
+fill-in estimate for those hard-to-draw racks was already good enough, because
+a rack that is hard to draw is also one the move generator rarely has to value
+in real play. Both levers stay optional and off by default; they earn their
+keep only when you specifically want the rare tail measured rather than
+estimated.
+
+New knobs: WOLGES_GILLES_RESERVE, WOLGES_GILLES_RESERVE_BUDGET.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -329,6 +415,13 @@ Board sampling (gilles):
     snapshot before keeping the least likely one.
   WOLGES_GILLES_GROUP (a whole number of tiles; default two rack-sizes minus
     one, 13 EN) -- worst-group size drawn per snapshot.
+  WOLGES_GILLES_RESERVE (0 or 1; default 0) -- only with a nonzero min-sample
+    target:
+      1  hold the tiles the uncovered racks need out of the deal, so they
+         become drawable in the window
+      0  deal every game normally
+  WOLGES_GILLES_RESERVE_BUDGET (a whole number of tiles; default what the bag
+    can spare) -- how many tiles the reserve may hold back at once.
   WOLGES_GILLES_STRIDE (a whole number; default 3) -- turns between snapshots.
   WOLGES_POOL_MAX (a whole number of tiles; default the tile count minus
     WOLGES_POOL_MIN, 75 EN) -- high edge of the snapshot window.
