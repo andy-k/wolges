@@ -5516,6 +5516,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     );
 
     let lat_len = lat.len();
+    // the progress line's denominator: not every lattice index is a real subrack
+    // (e.g. 7 Q's has no completion combos, since the bag only has 1 Q), so
+    // lat_len overcounts. Only count indices whose per-tile tally fits under the
+    // alphabet's tile frequencies -- the same test the globally_possible closure
+    // applies per-rack elsewhere, run once here across the whole lattice.
+    let globally_possible_count = {
+        let mut tally = vec![0u8; num_letters];
+        (0..lat_len)
+            .filter(|&idx| {
+                lat.unrank_into(idx, &mut tally);
+                (0..num_letters).all(|t| tally[t] <= base_freqs[t])
+            })
+            .count()
+    };
     let next_board = std::sync::atomic::AtomicU64::new(0);
     // adaptive global board-stop (WOLGES_CENSUS_CI_STOP_FRAC): set true by the periodic
     // leave-CI check once the target leave fraction is pinned, so all workers break out
@@ -6127,7 +6141,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         cur_boards,
                         t0.elapsed().as_secs(),
                         *valued,
-                        lat_len,
+                        globally_possible_count,
                     );
                 };
 
