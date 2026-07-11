@@ -105,3 +105,32 @@ bound actually holds every time (compiled out of release builds entirely, so it
 costs nothing there, but still catches a violation in any debug run or test).
 Reserving the capacity up front only changes when the buffer is allocated,
 never what the search computes, so every solve value is unchanged.
+
+
+ONE STEP BEFORE THE BAG IS EMPTY: THE ONE-KNOWN-BAG-TILE CASE
+
+Everything so far only ever solves once the bag is already empty. This adds a
+bag holding exactly one tile, where that tile's identity is passed in as
+already known.
+
+The rules at that point are simple enough to solve exactly with a small extra
+layer on top of the empty-bag solver, never touching its search logic. Placing
+any tile always draws that single bag tile back (a play draws min(placed, 1) =
+1 whenever it places at least one tile), refilling the mover's rack -- so a
+play here can never empty the mover's rack, and there is no play-out to worry
+about while this one tile remains. After the draw, the position is a plain
+empty-bag endgame with the opponent to move, so the existing solver handles it
+unchanged. Passing draws nothing, leaving the one tile in the bag; two
+consecutive passes end the game with that tile staying unseen and unscored for
+either side.
+
+solve_one_in_bag(player_idx, bag_tile) runs this shallow bag-phase minimax: for
+the mover's own turn only, try every legal play, draw the known tile (landing
+on the rack as an undesignated blank if that tile is a blank -- its letter is
+only chosen once it is actually played), and hand the resulting fully-known
+position to one reused empty-bag sub-solver; or pass, and recurse one ply with
+the roles swapped. Tests add a trusted, independently-written plain-negamax
+reference for this one-in-bag case and check the fast solver against it for
+both movers and several different bag tiles, plus two hand-checkable positions
+(a forced double pass, and a play that must draw before it can end). The
+empty-bag solver's own differential check is unchanged.
