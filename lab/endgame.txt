@@ -181,12 +181,17 @@ PEG-1 (and the plain empty bag) is in scope here.
 SOLVING A REAL POSITION FROM THE COMMAND LINE
 
 Everything above could only be exercised through the built-in demo positions or
-a harvested-corpus batch file. A minimal command line now takes a lexicon, a
-board (in FEN, the same compact board notation the rest of wolges uses), and
-the mover's own rack, works out the opponent's tiles from whatever is unseen,
-and runs whichever solver actually applies: an ordinary empty-bag endgame, or
-the one-in-bag PEG enumeration when exactly one tile is left in the bag. The
-batch mode and the built-in demo positions are unchanged.
+a batch file of harvested positions. A minimal command line now takes a config
+name, a word-graph file, a board (in FEN, the same compact board notation the
+rest of wolges uses), and the mover's own rack, works out the opponent's tiles
+from whatever is unseen, and runs whichever solver actually applies: an
+ordinary empty-bag endgame, or the one-in-bag PEG enumeration when exactly one
+tile is left in the bag. The batch mode and the built-in demo positions are
+unchanged.
+
+The config name (english, french, and so on) selects only the alphabet, board
+layout, and tile set, never a particular word list, so any word graph built for
+that language works without recompiling; the file argument is that graph.
 
 By default the result covers only the tiles still to be played: the win, draw,
 or loss and the point margin describe the rest of the game, not the game so
