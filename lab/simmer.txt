@@ -30,3 +30,18 @@ per-candidate objective a rollout reports is the spread (in points, unless the
 config's descale flag is off) plus the win probability scaled by its weightage
 -- one function, sim_objective, used by both the interactive move picker and
 the batch harness, so they can never drift apart.
+
+
+DROPPING THE ASYNC RUNTIME
+
+The move picker's earlier shape ran its rollout loop alongside an async
+wall-clock timer (a tokio task that woke up on a schedule and set a stop flag),
+which meant the whole picker had to run inside a tokio async runtime just to
+host that one timer. Once the timer is replaced by a fixed iteration budget (a
+plain count of rollouts to run, not a clock), the timer task, the runtime, and
+the unsafe "this type is safe to send between threads" assertion that came with
+it are all dead weight -- with the async machinery gone the picker's fields are
+all themselves safe to send, so the compiler can derive that property instead
+of a human asserting it. Stripping tokio out entirely is also what lets the
+picker build for a single-threaded wasm target, which cannot host a tokio
+runtime at all. Picking a move is now a plain synchronous function call.
