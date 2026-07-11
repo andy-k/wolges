@@ -124,3 +124,33 @@ unchanged; StopRule::Confidence, set via set_stop_rule with set_stop_delta for
 the target overall error, stops early once separated. Wired into
 english-sim-compare per seat as WOLGES_SIM_P0_STOP / P1_STOP and
 WOLGES_SIM_P0_STOP_DELTA / P1_STOP_DELTA.
+
+
+A MUTABLE WORKING SET FOR STUDY SESSIONS
+
+Everything so far runs one decision start to finish. A study session (a human
+or a tool poking at a position interactively) wants more: bring in a move the
+picker generated but never rolled out, or bring back one the prune already
+dropped. Every candidate now carries a stable stream id (distinct from its
+position in the list, which shifts as candidates are added or pruned), so a
+retired candidate can be named later even after the list has been reshuffled.
+Three operations use that id: add_play brings an already-generated play into
+the working set as a fresh candidate with zero samples; readmit_with_history
+brings a retired candidate back WITH its accumulated rollout statistics (its
+old samples still count); readmit_fresh brings the same play back but throws
+its old statistics away and starts it at zero. retired_stream_ids and
+stream_count let a caller see what is sitting retired and check how many
+rollouts a given candidate already has.
+
+Candidates share each iteration's opponent draw (common random numbers, a
+variance-reduction technique: comparing candidates on the SAME hidden tiles
+removes noise that would otherwise come from comparing them on different
+draws), but each candidate's own rollout draws from a private snapshot of that
+shared state, so one candidate's tile exchanges never shift another's draws.
+Readmitting a retired candidate is exactly as safe as any other candidate in
+the working set -- there is nothing special to isolate.
+
+None of this touches ordinary batch play: pick_a_move never calls these
+operations, so its output is unchanged. english-sim-mutate-check is a headless
+self-check confirming a readmitted candidate really does keep its statistics
+across the round trip.
