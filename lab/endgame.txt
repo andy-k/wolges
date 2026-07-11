@@ -90,3 +90,18 @@ sort is already cheap and the extra partial-select-then-tail-sort step is pure
 overhead, about 7% slower here at every cutoff point tried. It ships off by
 default behind a const, kept as an opt-in study lever for wider or deeper
 position mixes where trying fewer moves first might still pay off.
+
+
+A ZERO-REALLOCATION SCRATCH BUFFER
+
+One of the search's scratch buffers (the placed-tile list, rebuilt every time a
+candidate play turns into a new search state) can never hold more than one tile
+per board square, since a play only ever adds tiles to empty squares. Reserving
+that worst-case capacity once, when the work buffer is first created, means the
+search never grows the buffer during a run -- not even on the very first deep
+line, which used to be the first time the old code noticed the buffer was too
+small and had to reallocate. A debug_assert now also checks that the proven
+bound actually holds every time (compiled out of release builds entirely, so it
+costs nothing there, but still catches a violation in any debug run or test).
+Reserving the capacity up front only changes when the buffer is allocated,
+never what the search computes, so every solve value is unchanged.
