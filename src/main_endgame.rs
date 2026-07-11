@@ -1235,61 +1235,80 @@ fn main() -> error::Returns<()> {
     solve_question(&question, 0)
 }
 
-// resolve the game configuration (alphabet, board layout, tile counts) for a
-// lexicon name. Returns None for an unknown lexicon so callers can report a
-// clear error. The kwg file is loaded separately in solve_question.
-fn game_config_for_lexicon(lexicon: &str) -> Option<game_config::GameConfig> {
-    match lexicon {
-        "CSW24" => Some(game_config::make_english_game_config()),
-        _ => None,
-    }
-}
-
 // single-position command-line entry: parse
-// "endgame <lexicon> <fen> <rack> [score_diff]", build the Question (mover =
-// player 0, opponent inferred from unseen tiles), and run the same solve the
-// demo uses. score_diff is the mover's current game score minus the
-// opponent's (whole points, may be negative); it is added to the solver's
-// point margin so the printed win/draw/loss reflects the actual game, not
-// just the value of the tiles left to play. Default 0 asks only about the
-// rest of the game, ignoring the score so far.
+// "endgame <config> <kwg-file> <fen> <rack> [score-diff]", build the Question
+// (mover = player 0, opponent inferred from unseen tiles), and run the same
+// solve the demo uses. Unlike the demo, this loads the word graph from a
+// caller-given path rather than a hardcoded lexicon-to-file table, so any
+// lexicon works without recompiling -- config only selects the alphabet, board
+// layout, and tile set (the config the kwg was built for), never a specific
+// word list.
+//
+// score-diff is how many points the mover is ahead of the opponent right now
+// on the board (negative if behind); it is added to the solver's point margin
+// so the printed win/draw/loss reflects the actual game, not just the value of
+// the tiles left to play. Default 0 asks only about the rest of the game,
+// ignoring the score so far.
 fn run_cli(args: &[String]) -> error::Returns<()> {
     const USAGE: &str = "\
-usage: endgame <lexicon> <fen> <rack> [score_diff]
-  lexicon:    CSW24
+usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
+  config:     english, catalan, dutch, french, german, norwegian,
+              polish, slovene, spanish, or swedish -- the alphabet, board
+              layout, and tile set the kwg-file was built for, NOT a
+              particular word list
+  kwg-file:   path to a .kwg word graph built for that config
   fen:        board in FEN notation (quote it -- it contains '/')
   rack:       your tiles, e.g. ADENOOO (? for a blank)
-  score_diff: your current score minus the opponent's, default 0";
-    if args.len() != 4 && args.len() != 5 {
+  score-diff: how many points you are AHEAD of the opponent right now
+              (negative if you are behind), default 0";
+    if args.len() != 5 && args.len() != 6 {
         wolges::return_error!(format!(
-            "expected 3 or 4 arguments, got {}\n{USAGE}",
+            "expected 4 or 5 arguments, got {}\n{USAGE}",
             args.len() - 1,
         ));
     }
-    let lexicon = &args[1];
-    let fen = &args[2];
-    let rack = &args[3];
-    let score_diff = if args.len() == 5 {
-        let Ok(score_diff) = args[4].parse::<i32>() else {
-            wolges::return_error!(format!("invalid score_diff {:?}\n{USAGE}", args[4]));
+    let config_name = &args[1];
+    let kwg_path = &args[2];
+    let fen = &args[3];
+    let rack = &args[4];
+    let score_diff = if args.len() == 6 {
+        let Ok(score_diff) = args[5].parse::<i32>() else {
+            wolges::return_error!(format!("invalid score-diff {:?}\n{USAGE}", args[5]));
         };
         score_diff
     } else {
         0
     };
-    let Some(game_config) = game_config_for_lexicon(lexicon) else {
-        wolges::return_error!(format!("invalid lexicon {lexicon:?}\n{USAGE}"));
+    let Some(game_config) = game_config_for_name(config_name) else {
+        wolges::return_error!(format!("invalid config {config_name:?}\n{USAGE}"));
     };
-    let question = Question::from_fen(&game_config, lexicon, fen, rack)?;
-    solve_question(&question, score_diff)
+    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(kwg_path)?);
+    let question = Question::from_fen(&game_config, config_name, fen, rack)?;
+    solve_position(&game_config, &kwg, &question, score_diff)
 }
 
-// resolve the lexicon, word-prune the board, and solve the position: a plain
-// empty-bag endgame, or the one-in-bag PEG when exactly one tile is unseen
-// beyond the opponent's rack. Shared by the built-in demo and the CLI.
-// score_diff is the mover's current game score minus the opponent's, in
-// whole points; add it to the solver's point margin to get the mover's
-// actual game outcome, not just the value of the remaining tiles.
+// the alphabet, board layout, and tile set for a config name -- language-
+// named, not lexicon-named, since a config is reusable across any word list
+// built for it (a config has no notion of which words are valid).
+fn game_config_for_name(name: &str) -> Option<game_config::GameConfig> {
+    Some(match name {
+        "english" => game_config::make_english_game_config(),
+        "catalan" => game_config::make_catalan_game_config(),
+        "dutch" => game_config::make_dutch_game_config(),
+        "french" => game_config::make_french_game_config(),
+        "german" => game_config::make_german_game_config(),
+        "norwegian" => game_config::make_norwegian_game_config(),
+        "polish" => game_config::make_polish_game_config(),
+        "slovene" => game_config::make_slovene_game_config(),
+        "spanish" => game_config::make_spanish_game_config(),
+        "swedish" => game_config::make_swedish_game_config(),
+        _ => return None,
+    })
+}
+
+// resolve the lexicon to its built-in kwg file, then solve. Used only by the
+// hardcoded demo below, which ships its own small kwg per lexicon; the CLI
+// (run_cli) loads a caller-given kwg file instead, via solve_position.
 fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
     let kwg;
     let game_config;
@@ -1304,23 +1323,26 @@ fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
             kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
             game_config = game_config::make_english_game_config();
         }
-        "ECWL" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "OSPS49" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/OSPS49.kwg")?);
-            game_config = game_config::make_polish_game_config();
-        }
-        "RD28" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/RD28.kwg")?);
-            game_config = game_config::make_german_game_config();
-        }
         _ => {
             wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
         }
     };
 
+    solve_position(&game_config, &kwg, question, score_diff)
+}
+
+// word-prune the board and solve the position: a plain empty-bag endgame,
+// or the one-in-bag PEG when exactly one tile is unseen beyond the
+// opponent's rack. Shared by the built-in demo and the CLI. score_diff is
+// the mover's current game score minus the opponent's, in whole points;
+// add it to the solver's point margin to get the mover's actual game
+// outcome, not just the value of the remaining tiles.
+fn solve_position<N: kwg::Node>(
+    game_config: &game_config::GameConfig,
+    kwg: &kwg::Kwg<N>,
+    question: &Question,
+    score_diff: i32,
+) -> error::Returns<()> {
     let alphabet = game_config.alphabet();
     let alphabet_len_without_blank = alphabet.len() - 1;
 
@@ -1422,14 +1444,14 @@ fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
 
     // perform word prune.
 
-    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
     // these always allocate for now.
     let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
     move_generator.gen_remaining_words(
         &movegen::BoardSnapshot {
             board_tiles: &board_tiles,
-            game_config: &game_config,
-            kwg: &kwg,
+            game_config,
+            kwg,
             klv: &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
         },
         |word: &[u8]| {
@@ -1449,7 +1471,7 @@ fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
     move_generator.reset_for_another_kwg();
 
     let mut egs =
-        endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(&game_config, &smaller_kwg);
+        endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(game_config, &smaller_kwg);
     if oppo_rack.len() == rack_size + 1 {
         // exactly one tile is in the bag. The mover (p0) does not know which
         // unseen tile it is, so enumerate every distinct unseen tile as the bag
@@ -1550,10 +1572,10 @@ mod tests {
         );
     }
 
-    // unknown lexicon is rejected with None so the CLI can print usage.
+    // unknown config is rejected with None so the CLI can print usage.
     #[test]
-    fn game_config_for_lexicon_rejects_unknown() {
-        assert!(game_config_for_lexicon("CSW24").is_some());
-        assert!(game_config_for_lexicon("BOGUS").is_none());
+    fn game_config_for_name_rejects_unknown() {
+        assert!(game_config_for_name("english").is_some());
+        assert!(game_config_for_name("BOGUS").is_none());
     }
 }
