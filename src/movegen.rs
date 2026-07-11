@@ -18,6 +18,11 @@ struct CachedCrossSet {
 #[derive(Clone)]
 struct CrossSetComputation {
     score: i32,
+    // the full board tile at this square (letter plus the 0x80 blank bit), or 0
+    // when empty. Cached to validate the reuse chain below; it must keep the
+    // blank bit so a played blank (score 0) is never confused with a natural
+    // tile of the same letter (nonzero score) when a square's tile changes
+    // between generations on a reused move generator.
     b_letter: u8,
     end_range: i8,
     p: i32,
@@ -619,8 +624,9 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
             let b = board_strip[j as usize];
             if b != 0 {
                 let b_letter = b & 0x7f;
-                if chain_valid && cross_set_buffer[j as usize].b_letter == b_letter {
-                    // Same tile, chain unbroken - use cached seek result.
+                if chain_valid && cross_set_buffer[j as usize].b_letter == b {
+                    // Same exact tile (blank bit included), chain unbroken -
+                    // use cached seek result and score.
                     p = cross_set_buffer[j as usize].p;
                     score = cross_set_buffer[j as usize].score;
                 } else {
@@ -629,7 +635,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                     score += alphabet.scaled_score(b);
                     cross_set_buffer[j as usize] = CrossSetComputation {
                         score,
-                        b_letter,
+                        b_letter: b,
                         end_range: last_empty,
                         p,
                     };
@@ -723,7 +729,11 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                                 let mut q = kwg.seek(p_right, tile);
                                 if q > 0 {
                                     for qi in (prev_j..j - 1).rev() {
-                                        q = kwg.seek(q, cross_set_buffer[qi as usize].b_letter);
+                                        // mask off the blank bit: the reuse key keeps
+                                        // it (score differs) but the trie seek needs the
+                                        // bare letter (a blank forms its designated word).
+                                        q = kwg
+                                            .seek(q, cross_set_buffer[qi as usize].b_letter & 0x7f);
                                         if q <= 0 {
                                             break;
                                         }
@@ -742,7 +752,11 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                                 let mut q = kwg.seek(p_left, tile);
                                 if q > 0 {
                                     for qi in j..j_end {
-                                        q = kwg.seek(q, cross_set_buffer[qi as usize].b_letter);
+                                        // mask off the blank bit: the reuse key keeps
+                                        // it (score differs) but the trie seek needs the
+                                        // bare letter (a blank forms its designated word).
+                                        q = kwg
+                                            .seek(q, cross_set_buffer[qi as usize].b_letter & 0x7f);
                                         if q <= 0 {
                                             break;
                                         }
@@ -3478,4 +3492,104 @@ fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::N
         },
         &mut found_word,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{alphabet, bites, build, game_config, klv, kwg};
+
+    // A move generator's cross-set score cache keys the reuse check on the
+    // exact board tile (letter plus the 0x80 blank bit). Only the endgame
+    // solver replays this scan on the SAME scratch buffers across successive
+    // board states (normal play always starts from a fresh generator), so a
+    // natural tile and a blank forming the same letter must NOT be confused
+    // by that reuse check -- a blank scores 0 points, a natural tile does
+    // not. This test drives the scan directly, across two board states that
+    // share one square (a natural 'A' tile, then a blank playing 'A'), and
+    // checks the cached score updates instead of staying stuck on the first
+    // state's nonzero value.
+    #[test]
+    fn cross_set_score_cache_distinguishes_blank_from_natural_tile() {
+        let gc = game_config::make_english_game_config();
+        let alphabet = gc.alphabet();
+        let reader = alphabet::AlphabetReader::new_for_words(alphabet);
+        let mut word_buf = Vec::new();
+        reader.set_word("AA", &mut word_buf).unwrap();
+        let words: Vec<bites::Bites> = vec![word_buf[..].into()];
+        let kwg_bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            &words,
+        )
+        .unwrap();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &[],
+            game_config: &gc,
+            kwg: &kwg,
+            klv: &klv,
+        };
+
+        let natural_a = 1u8; // 'A' is letter index 1 in the English alphabet.
+        let blank_a = natural_a | 0x80; // a blank tile played as 'A'.
+        let natural_a_score = alphabet.scaled_score(natural_a);
+        assert!(
+            natural_a_score > 0,
+            "the test needs a natural tile that actually scores points"
+        );
+
+        let len = gc.board_layout().dim().cols as usize;
+        let output_strider = gc.board_layout().dim().across(0);
+        let mut cross_sets = vec![CrossSet { bits: 0, score: 0 }; len];
+        let mut cross_set_buffer = vec![
+            CrossSetComputation {
+                score: 0,
+                b_letter: 0,
+                end_range: 0,
+                p: 0,
+            };
+            len
+        ];
+        let mut cached_cross_sets = vec![
+            CachedCrossSet {
+                p_left: 0,
+                p_right: 0,
+                bits: 0,
+            };
+            len
+        ];
+
+        // First board: square 2 holds the natural 'A'. The two flanking empty
+        // squares (1 and 3) pick up its scaled score as a hookable bonus.
+        let mut board_strip = vec![0u8; len];
+        board_strip[2] = natural_a;
+        gen_classic_cross_set(
+            &board_snapshot,
+            &board_strip,
+            &mut cross_sets,
+            output_strider.clone(),
+            &mut cross_set_buffer,
+            &mut cached_cross_sets,
+        );
+        assert_eq!(cross_sets[1].score, natural_a_score);
+        assert_eq!(cross_sets[3].score, natural_a_score);
+
+        // Second board: the SAME square now holds a blank playing 'A' -- same
+        // letter, same word validity, but 0 points. Reuse the same scratch
+        // buffers (as the endgame solver does across board states) without
+        // resetting them.
+        board_strip[2] = blank_a;
+        gen_classic_cross_set(
+            &board_snapshot,
+            &board_strip,
+            &mut cross_sets,
+            output_strider,
+            &mut cross_set_buffer,
+            &mut cached_cross_sets,
+        );
+        assert_eq!(cross_sets[1].score, 0);
+        assert_eq!(cross_sets[3].score, 0);
+    }
 }

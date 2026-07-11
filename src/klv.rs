@@ -269,7 +269,8 @@ impl MultiLeaves {
         alphabet_score: AlphabetScore,
         play_out_bonus: i32,
     ) {
-        // leave value for not going out is -10 - 2 * residual tiles (in millipoints).
+        // leave value for not going out is -10 - 2 * (total score of
+        // residual tiles) (in millipoints).
         self.leave_values[0] = -equity::ENDGAME_PENALTY_BASE;
         for &tile in &self.unique_tiles {
             let penalty = -2 * alphabet_score(tile) as i32 * equity::SCALE;
