@@ -218,3 +218,35 @@ defaults to none, so a caller that never asks for Table sees no change at all.
 english-sim-compare can give each seat its own source (WOLGES_SIM_P0_WINPROB /
 P1_WINPROB) sharing one table (WOLGES_SIM_WINPCT_TABLE), to weigh the sigmoid
 against the empirical table directly, seat against seat.
+
+
+OPTIONAL DETERMINISTIC PARALLEL ROLLOUTS
+
+A single decision's rollouts are independent of each other, so on a native
+(non-wasm) build they can run across several threads at once. The opt-in
+parallel mode splits one decision's iteration block into contiguous slices, one
+per thread, each thread running its own simmer instance and returning that
+slice's per-iteration values for the caller to combine.
+
+Splitting work across threads would normally make the result depend on how many
+threads happened to run it and in what order they finished, which breaks the
+"same seed, same result" guarantee the rest of this file relies on. Two choices
+restore it. First, each iteration's draw is seeded from the decision's own seed
+mixed with that iteration's index, rather than flowing from one shared stream
+-- and the simmer's prepared starting position is restored before every
+iteration -- so an iteration's draw depends only on its own index, never on
+which thread ran it or what ran before it. Second, the iterations' values are
+reduced in one fixed ascending order afterward, not by combining each thread's
+own running statistics: floating-point variance combination is not associative
+(a + b then + c can differ in its last bits from a then + b + c when + is
+inexact), so combining by thread would make the result depend on the thread
+count in ways too small to see by eye but able to flip which candidate wins a
+close decision. Reducing every iteration's raw value in the same fixed order
+regardless of which thread produced it removes that dependency: two threads and
+eight threads now give byte-identical results.
+
+Gated off entirely for the single-threaded wasm build (which has no threads to
+split across) and off by default even where threads are available (one thread
+keeps the original single-stream behavior, byte-identical to before this knob
+existed); english-sim-compare exposes the thread count as
+WOLGES_SIM_DRIVER_THREADS.
