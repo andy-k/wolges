@@ -95,3 +95,32 @@ is unchanged. It is opt-in: Allocator::RoundRobin stays the default (byte-
 identical to before), Allocator::Adaptive is set via set_allocator and wired
 into english-sim-compare per seat as WOLGES_SIM_P0_ALLOCATOR / P1_ALLOCATOR, so
 the two can be measured against each other.
+
+
+STOPPING EARLY ONCE THE LEADER IS CLEARLY BEST
+
+Left alone, the picker always spends its whole iteration budget (short of
+pruning down to a single survivor). On a lopsided position that keeps rolling
+out long after the answer is obvious; on a close one the fixed budget may not
+be enough to be sure at all. The confidence stop adds a second way to finish a
+decision: at every prune boundary, if the leader's lower confidence bound
+already clears every other survivor's upper confidence bound, stop right there
+-- the remaining budget becomes a safety cap rather than a requirement.
+
+Comparing one leader against every other survivor, and repeating the check at
+every prune, means a plain single 95%-confidence threshold would let the chance
+of picking the wrong leader compound over all those repeated comparisons. The
+stop corrects for the number of arms with a union bound (the rule that the
+chance of ANY of several unlikely events happening is at most the sum of their
+individual chances): the Gaussian tail bound P(Z > z) is at most exp(-z^2 / 2),
+so splitting an overall error budget of delta evenly across the (num_survivors
+- 1) comparisons and solving for z gives z = sqrt(2 * ln((num_survivors - 1) /
+delta)). This correction is for the number of candidates being compared, not
+for how many times the stop is re-checked as rollouts accumulate; the fixed
+iteration cap is what bounds that repeated peeking.
+
+It is opt-in: StopRule::FixedCap (the default) always runs the full budget,
+unchanged; StopRule::Confidence, set via set_stop_rule with set_stop_delta for
+the target overall error, stops early once separated. Wired into
+english-sim-compare per seat as WOLGES_SIM_P0_STOP / P1_STOP and
+WOLGES_SIM_P0_STOP_DELTA / P1_STOP_DELTA.
