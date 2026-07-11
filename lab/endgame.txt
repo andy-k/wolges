@@ -1,0 +1,26 @@
+THE ENDGAME SOLVER: EXACT PLAY ONCE THE BAG IS EMPTY
+
+Every leave table in this repo (lab/leavegen.txt) values a KEPT rack by an
+estimate, because the rest of the game is still unknown -- more tiles will be
+drawn, the opponent's rack is hidden. Once the tile bag is empty, neither of
+those is true any more: every tile still in play is either on the board or on a
+rack, so with both racks known the whole rest of the game is just a finite,
+fully-visible sequence of plays and passes. Leave values stop applying at that
+point -- lab/leavegen.txt notes that with an empty bag no tiles are drawn, so
+the leave table is not consulted there; this file is about solving that fully-
+visible tail EXACTLY, by negamax game-tree search (search every legal reply, at
+each ply picking whichever line values best for the player to move, alternating
+who that is) with iterative deepening (search one ply deeper each pass, using
+the previous pass's answer to speed the next one up) all the way to the game's
+end.
+
+evaluate(player_idx) is the entry point that prints the search's per-depth
+progress. Callers that want the answer as DATA rather than printed lines get
+two additions here: solve(player_idx) runs the identical search silently and
+returns just the final converged value, and collect_pv(player_idx, out) walks
+the best line the search found and pushes each ply's (equity, play) pair into a
+caller-owned, reusable vector, so the caller can keep that line around after
+the solver itself goes out of scope. Both share the same core loop as
+evaluate() -- pulled out into one private routine with a verbose flag -- so
+this is a pure refactor: no search logic changes, and evaluate()'s printed
+output is exactly as before.
