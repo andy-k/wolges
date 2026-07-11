@@ -24,3 +24,24 @@ the solver itself goes out of scope. Both share the same core loop as
 evaluate() -- pulled out into one private routine with a verbose flag -- so
 this is a pure refactor: no search logic changes, and evaluate()'s printed
 output is exactly as before.
+
+
+A REAL VALUE FOR THE DEPTH-LIMIT LEAF
+
+Iterative deepening stops each pass at a fixed depth and returns whatever value
+the search assigned to the positions at that depth limit -- the "leaves" of
+that pass's search tree (a tree-search leaf; see lab/leavegen.txt for the very
+different sense of "leave", the kept tiles after a play). Until now a
+depth-limited leaf returned a placeholder zero rather than a real value. It now
+returns the leftover-tile point margin the position would score if the game
+ended right there (both players passing), from the side to move's perspective
+-- the same kind of terminal scoring the rest of the solver already uses when
+the game genuinely does end.
+
+Today's converged answer does not change: the search always deepens past a
+depth-limited line before it actually stops there (an existing guard already
+guarantees the search keeps going rather than settling for a capped-depth
+value), so no real search run today ever returns this placeholder as its final
+answer. But a depth-limited leaf is still a real, reachable position, not a
+sentinel that should never be valued -- it deserves its correct value
+regardless of whether today's search ever stops there.
