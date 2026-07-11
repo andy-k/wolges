@@ -176,3 +176,14 @@ are a genuine generalization this file does not attempt, not merely an input it
 rejects: such a position falls through to the same "not endgame yet" error the
 CLI raises for any position with too many tiles left unaccounted for. Only
 PEG-1 (and the plain empty bag) is in scope here.
+
+
+SOLVING A REAL POSITION FROM THE COMMAND LINE
+
+Everything above could only be exercised through the built-in demo positions or
+a harvested-corpus batch file. A minimal command line now takes a lexicon, a
+board (in FEN, the same compact board notation the rest of wolges uses), and
+the mover's own rack, works out the opponent's tiles from whatever is unseen,
+and runs whichever solver actually applies: an ordinary empty-bag endgame, or
+the one-in-bag PEG enumeration when exactly one tile is left in the bag. The
+batch mode and the built-in demo positions are unchanged.
