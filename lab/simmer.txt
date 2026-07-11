@@ -67,3 +67,31 @@ seed, the pair number, the game number, and the turn number, so the whole run
 -- board positions, every rollout's random draws, the final result -- is a
 deterministic function of the seed alone: replaying the same seed at any thread
 count reproduces the same numbers exactly.
+
+
+SPENDING THE ROLLOUT BUDGET WHERE IT MATTERS: THE ADAPTIVE ALLOCATOR
+
+The picker's default way of spending its fixed rollout budget is round robin:
+every surviving candidate is rolled out on every iteration, until the
+confidence-interval prune (lab/leavegen.txt-style: mean plus or minus a margin
+that narrows as samples grow) drops the clearly-worse ones. Early on, before
+any pruning has happened, that spends as many rollouts on plays that are
+obviously bad as on the two or three that might really be the best -- the
+budget is not concentrating on the decision that matters.
+
+The Adaptive allocator instead rolls out, each iteration, only the current
+leader (the highest running mean), the strongest challenger (the non-leader
+whose gap to the leader, measured in standard errors, is smallest), and one
+least-sampled candidate as a floor. The floor matters because the prune needs
+every candidate to already have some samples -- a candidate with no rollouts
+yet has no confidence interval to compare, and would either dodge the prune
+forever or be dropped instantly for the wrong reason. Because of that floor
+requirement, Adaptive actually runs as round robin at first, until the very
+first prune, then switches to leader/challenger/floor.
+
+This changes only WHICH candidates get rolled out between prunes; the prune
+rule itself (drop anyone the leader's confidence interval has already cleared)
+is unchanged. It is opt-in: Allocator::RoundRobin stays the default (byte-
+identical to before), Allocator::Adaptive is set via set_allocator and wired
+into english-sim-compare per seat as WOLGES_SIM_P0_ALLOCATOR / P1_ALLOCATOR, so
+the two can be measured against each other.
