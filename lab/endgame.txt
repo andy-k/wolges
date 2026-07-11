@@ -187,3 +187,10 @@ the mover's own rack, works out the opponent's tiles from whatever is unseen,
 and runs whichever solver actually applies: an ordinary empty-bag endgame, or
 the one-in-bag PEG enumeration when exactly one tile is left in the bag. The
 batch mode and the built-in demo positions are unchanged.
+
+By default the result covers only the tiles still to be played: the win, draw,
+or loss and the point margin describe the rest of the game, not the game so
+far. An optional trailing number says how many points the mover is ahead of the
+opponent right now (negative if behind), and it is added to the solver's margin
+so the reported outcome reflects the whole game rather than just the value of
+the remaining plays.
