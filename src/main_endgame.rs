@@ -483,11 +483,7 @@ fn run_batch(path: &str) -> error::Returns<()> {
         );
         let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
         vec_of_words.sort_unstable();
-        let smaller_kwg_bytes = build::build(
-            build::BuildContent::Gaddawg,
-            build::BuildLayout::Wolges,
-            &vec_of_words,
-        )?;
+        let smaller_kwg_bytes = build_pruned_kwg(&game_config, &vec_of_words)?;
         let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
 
         let mut egs =
@@ -510,11 +506,11 @@ fn main() -> error::Returns<()> {
 
     // opt-in single-position mode: any command-line argument switches from the
     // built-in demo to solving one user-supplied position. Grammar:
-    //   endgame <lexicon> <fen> <rack>
-    // The mover is player 0 (holding <rack>); the opponent's tiles are inferred
-    // as whatever is unseen, and the one-in-bag PEG case is auto-detected --
-    // exactly the model the demo uses. No arguments (and no batch env var) runs
-    // the demo unchanged.
+    //   endgame <config> <kwg-file> <fen> <rack> [score-diff]
+    // The mover is player 0 (holding <rack>); the opponent's tiles are
+    // inferred as whatever is unseen, and the one-in-bag PEG case is
+    // auto-detected -- exactly the model the demo uses. No arguments (and no
+    // batch env var) runs the demo unchanged.
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() > 1 {
         return run_cli(&args);
@@ -1255,8 +1251,11 @@ usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
   config:     english, catalan, dutch, french, german, norwegian,
               polish, slovene, spanish, or swedish -- the alphabet, board
               layout, and tile set the kwg-file was built for, NOT a
-              particular word list
-  kwg-file:   path to a .kwg word graph built for that config
+              particular word list. Prefix jumbled- for the anagram variant
+              (needs a .kad alphagram dawg) and/or super- for the 21x21
+              board; suffix -big for a .kbwg (24-bit, e.g. a Dutch word list
+              too large for a plain .kwg), e.g. jumbled-dutch-big
+  kwg-file:   path to a word graph built for that config
   fen:        board in FEN notation (quote it -- it contains '/')
   rack:       your tiles, e.g. ADENOOO (? for a blank)
   score-diff: how many points you are AHEAD of the opponent right now
@@ -1279,31 +1278,89 @@ usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
     } else {
         0
     };
-    let Some(game_config) = game_config_for_name(config_name) else {
+    // the -big suffix picks the 24-bit node layout (a .kbwg) for word lists
+    // too large to fit a plain .kwg; the base name still selects the config.
+    let (base_name, big) = match config_name.strip_suffix("-big") {
+        Some(base) => (base, true),
+        None => (config_name.as_str(), false),
+    };
+    let Some(game_config) = game_config_for_name(base_name) else {
         wolges::return_error!(format!("invalid config {config_name:?}\n{USAGE}"));
     };
-    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(kwg_path)?);
     let question = Question::from_fen(&game_config, config_name, fen, rack)?;
-    solve_position(&game_config, &kwg, &question, score_diff)
+    let kwg_bytes = std::fs::read(kwg_path)?;
+    // Node22 (.kwg/.kad) vs Node24 (.kbwg): only the source graph's layout
+    // differs; solve_position is generic over it and rebuilds a Node22 pruned
+    // graph internally, so both arms converge after the load.
+    if big {
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        solve_position(&game_config, &kwg, &question, score_diff)
+    } else {
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        solve_position(&game_config, &kwg, &question, score_diff)
+    }
 }
 
 // the alphabet, board layout, and tile set for a config name -- language-
 // named, not lexicon-named, since a config is reusable across any word list
-// built for it (a config has no notion of which words are valid).
+// built for it (a config has no notion of which words are valid). The
+// jumbled- prefix selects the anagram variant (any letters in any order form
+// a word), the super- prefix selects the 21x21 Super board, and they combine
+// as jumbled-super-. A jumbled config expects a .kad (alphagram dawg) word
+// graph rather than a .kwg gaddawg; the word-prune step below rebuilds in the
+// matching shape automatically.
 fn game_config_for_name(name: &str) -> Option<game_config::GameConfig> {
     Some(match name {
         "english" => game_config::make_english_game_config(),
+        "jumbled-english" => game_config::make_jumbled_english_game_config(),
+        "super-english" => game_config::make_super_english_game_config(),
+        "jumbled-super-english" => game_config::make_jumbled_super_english_game_config(),
         "catalan" => game_config::make_catalan_game_config(),
+        "jumbled-catalan" => game_config::make_jumbled_catalan_game_config(),
+        "super-catalan" => game_config::make_super_catalan_game_config(),
+        "jumbled-super-catalan" => game_config::make_jumbled_super_catalan_game_config(),
         "dutch" => game_config::make_dutch_game_config(),
+        "jumbled-dutch" => game_config::make_jumbled_dutch_game_config(),
         "french" => game_config::make_french_game_config(),
+        "jumbled-french" => game_config::make_jumbled_french_game_config(),
         "german" => game_config::make_german_game_config(),
+        "jumbled-german" => game_config::make_jumbled_german_game_config(),
         "norwegian" => game_config::make_norwegian_game_config(),
+        "jumbled-norwegian" => game_config::make_jumbled_norwegian_game_config(),
         "polish" => game_config::make_polish_game_config(),
+        "jumbled-polish" => game_config::make_jumbled_polish_game_config(),
         "slovene" => game_config::make_slovene_game_config(),
+        "jumbled-slovene" => game_config::make_jumbled_slovene_game_config(),
         "spanish" => game_config::make_spanish_game_config(),
+        "jumbled-spanish" => game_config::make_jumbled_spanish_game_config(),
         "swedish" => game_config::make_swedish_game_config(),
+        "jumbled-swedish" => game_config::make_jumbled_swedish_game_config(),
         _ => return None,
     })
+}
+
+// word-prune a board into a smaller word graph for the solver to search: keep
+// only words still playable here, then rebuild them in the shape the config's
+// rules need -- a gaddawg for classic play, or an alphagram dawg (dawg over
+// sorted-letter words) for jumbled play, matching how movegen dispatches on
+// game_rules(). The pruned set is always tiny, so Node22 suffices regardless
+// of how big the source graph was.
+fn build_pruned_kwg(
+    game_config: &game_config::GameConfig,
+    words: &[bites::Bites],
+) -> error::Returns<bites::Bites> {
+    match game_config.game_rules() {
+        game_config::GameRules::Classic => build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            words,
+        ),
+        game_config::GameRules::Jumbled => build::build(
+            build::BuildContent::DawgOnly,
+            build::BuildLayout::Wolges,
+            &build::make_alphagrams(words),
+        ),
+    }
 }
 
 // resolve the lexicon to its built-in kwg file, then solve. Used only by the
@@ -1461,11 +1518,7 @@ fn solve_position<N: kwg::Node>(
     println!("word_prune: {} words", set_of_words.len());
     let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
     vec_of_words.sort_unstable();
-    let smaller_kwg_bytes = build::build(
-        build::BuildContent::Gaddawg,
-        build::BuildLayout::Wolges,
-        &vec_of_words.into_boxed_slice(),
-    )?;
+    let smaller_kwg_bytes = build_pruned_kwg(game_config, &vec_of_words)?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
     let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
     move_generator.reset_for_another_kwg();
@@ -1577,5 +1630,75 @@ mod tests {
     fn game_config_for_name_rejects_unknown() {
         assert!(game_config_for_name("english").is_some());
         assert!(game_config_for_name("BOGUS").is_none());
+    }
+
+    // the jumbled- and super- prefixes resolve, and their game_rules match
+    // (jumbled -> Jumbled, so the word-prune below picks the alphagram dawg).
+    #[test]
+    fn game_config_for_name_handles_jumbled_and_super() {
+        assert!(matches!(
+            game_config_for_name("english").unwrap().game_rules(),
+            game_config::GameRules::Classic
+        ));
+        assert!(matches!(
+            game_config_for_name("jumbled-english")
+                .unwrap()
+                .game_rules(),
+            game_config::GameRules::Jumbled
+        ));
+        assert!(matches!(
+            game_config_for_name("jumbled-super-english")
+                .unwrap()
+                .game_rules(),
+            game_config::GameRules::Jumbled
+        ));
+        // super- alone stays classic (only the board grows to 21x21).
+        let super_english = game_config_for_name("super-english").unwrap();
+        assert!(matches!(
+            super_english.game_rules(),
+            game_config::GameRules::Classic
+        ));
+        assert_eq!(super_english.board_layout().dim().rows, 21);
+        // the -big node-width suffix is not part of the config name itself.
+        assert!(game_config_for_name("english-big").is_none());
+    }
+
+    // the classic word-prune builds a gaddawg (finds the word forward), the
+    // jumbled one an alphagram dawg (finds the sorted letters), so a single
+    // word round-trips under each config's own lookup but not the other's.
+    #[test]
+    fn build_pruned_kwg_matches_game_rules() {
+        use wolges::kwg::Node; // arc_index is a Node trait method
+        let classic = game_config::make_english_game_config();
+        let jumbled = game_config::make_jumbled_english_game_config();
+        let reader = alphabet::AlphabetReader::new_for_words(classic.alphabet());
+        let mut buf = Vec::new();
+        reader.set_word("DOG", &mut buf).unwrap();
+        let word: bites::Bites = buf[..].into();
+        let mut sorted_buf = buf.clone();
+        sorted_buf.sort_unstable();
+        let sorted: bites::Bites = sorted_buf[..].into();
+        // DOG's spelling and its alphagram (DGO) differ, so each lookup is
+        // decisive about which shape was built.
+        assert_ne!(word, sorted);
+        let words = [word.clone()];
+        // a dawg word is present iff get_word_index (from the dawg root arc)
+        // returns something other than the !0 not-found sentinel.
+        let present = |kwg: &kwg::Kwg<kwg::Node22>, w: &[u8]| {
+            let counts = kwg.count_dawg_words_alloc();
+            kwg.get_word_index(&counts, kwg[0].arc_index(), w) != !0
+        };
+
+        let classic_kwg =
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&classic, &words).unwrap());
+        // gaddawg indexes the word as spelled; the sorted letters are not a word.
+        assert!(present(&classic_kwg, &word));
+        assert!(!present(&classic_kwg, &sorted));
+
+        let jumbled_kwg =
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&jumbled, &words).unwrap());
+        // the alphagram dawg indexes the sorted letters, not the spelling.
+        assert!(present(&jumbled_kwg, &sorted));
+        assert!(!present(&jumbled_kwg, &word));
     }
 }
