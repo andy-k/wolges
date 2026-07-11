@@ -174,3 +174,27 @@ work, set how sure the stop must be, then between resume calls poll best_so_far
 and is_decided to pause, look at the current leader, and decide whether to keep
 going or stop -- instead of only being able to run the whole budget blind or
 abandon the decision outright.
+
+
+ONE ENGINE, NOT TWO: FOLDING THE OBSERVABLE STUDY LOOP IN
+
+The interactive terminal driver (main_simmer) had grown its own copy of the
+rollout loop, separate from the real move-picker engine described above, so it
+could track each candidate's running equity and win rate and print a
+leaderboard as a study session progressed. Two loops meant two behaviors that
+had to be kept in step by hand, and any future change to the real engine (a new
+allocator, a new stop rule) would need to be re-implemented in the terminal
+copy to actually show up there.
+
+The engine itself now has an opt-in observe mode. run_iterations already
+computes each rollout's spread and win probability on the way to the objective
+described earlier; with observe on, it also feeds those two numbers into
+per-candidate running equity and win-rate statistics, and a leaderboard method
+ranks every candidate -- active or retired -- by mean. With observe off, the
+default, none of that extra bookkeeping runs, and ordinary batch play is
+byte-identical to before.
+
+The terminal driver is now a thin shell: build one engine with observe on, run
+the rollout budget through the same begin_decision / resume calls a study
+session would use, and print the leaderboard as the estimates converge. The
+separate copy of the loop is gone.
