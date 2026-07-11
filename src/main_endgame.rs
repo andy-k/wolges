@@ -1232,7 +1232,7 @@ fn main() -> error::Returns<()> {
         "CGINTU?",
     )?;
 
-    solve_question(&question)
+    solve_question(&question, 0)
 }
 
 // resolve the game configuration (alphabet, board layout, tile counts) for a
@@ -1245,35 +1245,52 @@ fn game_config_for_lexicon(lexicon: &str) -> Option<game_config::GameConfig> {
     }
 }
 
-// single-position command-line entry: parse "endgame <lexicon> <fen> <rack>",
-// build the Question (mover = player 0, opponent inferred from unseen tiles),
-// and run the same solve the demo uses.
+// single-position command-line entry: parse
+// "endgame <lexicon> <fen> <rack> [score_diff]", build the Question (mover =
+// player 0, opponent inferred from unseen tiles), and run the same solve the
+// demo uses. score_diff is the mover's current game score minus the
+// opponent's (whole points, may be negative); it is added to the solver's
+// point margin so the printed win/draw/loss reflects the actual game, not
+// just the value of the tiles left to play. Default 0 asks only about the
+// rest of the game, ignoring the score so far.
 fn run_cli(args: &[String]) -> error::Returns<()> {
     const USAGE: &str = "\
-usage: endgame <lexicon> <fen> <rack>
-  lexicon: CSW24
-  fen:     board in FEN notation (quote it -- it contains '/')
-  rack:    your tiles, e.g. ADENOOO (? for a blank)";
-    if args.len() != 4 {
+usage: endgame <lexicon> <fen> <rack> [score_diff]
+  lexicon:    CSW24
+  fen:        board in FEN notation (quote it -- it contains '/')
+  rack:       your tiles, e.g. ADENOOO (? for a blank)
+  score_diff: your current score minus the opponent's, default 0";
+    if args.len() != 4 && args.len() != 5 {
         wolges::return_error!(format!(
-            "expected exactly 3 arguments, got {}\n{USAGE}",
+            "expected 3 or 4 arguments, got {}\n{USAGE}",
             args.len() - 1,
         ));
     }
     let lexicon = &args[1];
     let fen = &args[2];
     let rack = &args[3];
+    let score_diff = if args.len() == 5 {
+        let Ok(score_diff) = args[4].parse::<i32>() else {
+            wolges::return_error!(format!("invalid score_diff {:?}\n{USAGE}", args[4]));
+        };
+        score_diff
+    } else {
+        0
+    };
     let Some(game_config) = game_config_for_lexicon(lexicon) else {
         wolges::return_error!(format!("invalid lexicon {lexicon:?}\n{USAGE}"));
     };
     let question = Question::from_fen(&game_config, lexicon, fen, rack)?;
-    solve_question(&question)
+    solve_question(&question, score_diff)
 }
 
 // resolve the lexicon, word-prune the board, and solve the position: a plain
 // empty-bag endgame, or the one-in-bag PEG when exactly one tile is unseen
 // beyond the opponent's rack. Shared by the built-in demo and the CLI.
-fn solve_question(question: &Question) -> error::Returns<()> {
+// score_diff is the mover's current game score minus the opponent's, in
+// whole points; add it to the solver's point margin to get the mover's
+// actual game outcome, not just the value of the remaining tiles.
+fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
     let kwg;
     let game_config;
 
@@ -1438,7 +1455,14 @@ fn solve_question(question: &Question) -> error::Returns<()> {
         // unseen tile it is, so enumerate every distinct unseen tile as the bag
         // tile (the word prune above is invariant across these hypotheses, so it
         // is done once), solve each fully-known hypothesis, and average.
-        let result = egs.solve_peg_one_in_bag(0, &board_tiles, &question.rack, &available_tally);
+        let scaled_score_diff = equity::scale_score(score_diff) as f32;
+        let result = egs.solve_peg_one_in_bag(
+            0,
+            &board_tiles,
+            &question.rack,
+            &available_tally,
+            scaled_score_diff,
+        );
         // an honest decline beats a silently wrong number: some configs allow an
         // exchange with one tile in the bag, which the enumeration does not model,
         // so such a position is declined rather than answered here.
@@ -1451,7 +1475,8 @@ fn solve_question(question: &Question) -> error::Returns<()> {
         };
         let total_unseen: u32 = result.hypotheses.iter().map(|&(_, weight, _)| weight).sum();
         println!(
-            "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles",
+            "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles \
+             (current score {score_diff:+})",
             result.hypotheses.len(),
             total_unseen,
         );
@@ -1462,6 +1487,8 @@ fn solve_question(question: &Question) -> error::Returns<()> {
                 let take = if u as u8 == bag_tile { c - 1 } else { c } as usize;
                 opp.extend(std::iter::repeat_n(u as u8, take));
             }
+            // value already includes score_diff, so this is the final game
+            // margin, not just the value of the tiles left to play.
             let outcome = if value > 0.0 {
                 "win"
             } else if value == 0.0 {
@@ -1470,7 +1497,7 @@ fn solve_question(question: &Question) -> error::Returns<()> {
                 "loss"
             };
             println!(
-                "  bag={} (x{}): opp rack [{}] -> point margin {} ({})",
+                "  bag={} (x{}): opp rack [{}] -> game margin {} ({})",
                 alphabet.of_rack(bag_tile).unwrap_or("?"),
                 weight,
                 alphabet.fmt_rack(&opp),
@@ -1479,13 +1506,19 @@ fn solve_question(question: &Question) -> error::Returns<()> {
             );
         }
         println!(
-            "peg: win% {:.4}, expected point margin {}",
+            "peg: win% {:.4}, expected game margin {}",
             result.win_pct * 100.0,
             result.expected_margin / equity::SCALE as f32,
         );
     } else {
         egs.init(&board_tiles, [&question.rack, &oppo_rack]);
-        egs.evaluate(0);
+        let future_margin = egs.evaluate(0);
+        let total_margin = equity::scale_score(score_diff) as f32 + future_margin;
+        println!(
+            "total game margin (current score {score_diff:+} + future {}) = {}",
+            future_margin / equity::SCALE as f32,
+            total_margin / equity::SCALE as f32,
+        );
     }
 
     Ok(())
