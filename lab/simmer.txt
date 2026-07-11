@@ -1,0 +1,32 @@
+THE SIMMER: PICKING A MOVE BY ROLLING OUT GAMES
+
+Every other file in lab/ values a LEAVE -- the tiles kept after one play --
+with a table built ahead of time. The simmer is a different kind of tool: it
+picks a MOVE, right now, on a real board, by actually playing out the rest of
+the game (or a fixed number of turns of it) many times from each candidate play
+and seeing which one comes out ahead on average. It is a 2-ply Monte Carlo
+rollout move picker: ply 0 is the candidate itself, ply 1 is the opponent's
+reply (found by the ordinary move generator, one play each), and so on for as
+many plies as the caller asks for. "Simmer" is short for simulate; a Monte
+Carlo method is one that estimates an answer by running many random trials and
+averaging, rather than computing it exactly.
+
+The core piece is a per-instance ChaCha20 random-number generator, reseed(seed)
+for a reproducible run (the same seed and settings replay the same draws no
+matter how many threads run them), and a SimmerConfig struct that collects the
+model's tunable numbers: whether spreads are read in whole points or raw
+millipoints (equity::SCALE = 1000; see lab/leavegen.txt), the win-probability
+weightage for a game that can or cannot be played out within the simmed plies,
+and the sigmoid consts described below. new() seeds from system entropy so an
+un-reseeded caller keeps its original non-reproducible behavior; only a caller
+that opts into reseed() gets a repeatable stream.
+
+Two small helpers are pulled out so every caller shares one definition. The
+unfinished-game win probability is a hand-tuned sigmoid of the score margin: a
+lead of (sigmoid_spread + tiles_left_unseen) points reads as sigmoid_prob (a
+config knob, default 90%), calibrated so a bigger lead is worth more confidence
+the further along the game is and less when many tiles remain unseen. The
+per-candidate objective a rollout reports is the spread (in points, unless the
+config's descale flag is off) plus the win probability scaled by its weightage
+-- one function, sim_objective, used by both the interactive move picker and
+the batch harness, so they can never drift apart.
