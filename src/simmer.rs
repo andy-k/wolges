@@ -151,6 +151,19 @@ impl Simmer {
         self.game_state.clone_from(&self.initial_game_state);
         // reset leave values from previous iteration
         self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
+        // Copy-on-write rollout rng, for common random numbers across candidates.
+        // prepare_iteration() left the shared thread-local rng at the state every
+        // candidate in this iteration must roll out from. A Place ply draws its
+        // replenishment tiles off the front of the already-shuffled bag (no rng
+        // needed) and an empty exchange (a pass) draws nothing either; only a
+        // real exchange consumes randomness (returning the exchanged tiles to a
+        // random bag position). So this rollout never mutates the shared
+        // thread-local directly: the first ply that needs randomness snapshots it
+        // into a stack-local ChaCha20 generator (serialize_state/deserialize_state,
+        // no heap allocation) and every later draw in this rollout advances that
+        // local copy instead, leaving the shared state untouched for the next
+        // candidate.
+        let mut rollout_rng: Option<rand::rngs::ChaCha20Rng> = None;
         let mut next_play = movegen::Play::Exchange {
             tiles: [][..].into(),
         };
@@ -183,11 +196,12 @@ impl Simmer {
             );
             self.last_seen_leave_values[self.game_state.turn as usize] =
                 klv.leave_value_from_tally(&self.rack_tally);
-            RNG.with(|rng| {
-                self.game_state
-                    .play(game_config, &mut *rng.borrow_mut(), &next_play)
-                    .unwrap();
+            let rng = rollout_rng.get_or_insert_with(|| {
+                RNG.with(|rng| {
+                    rand::rngs::ChaCha20Rng::deserialize_state(&rng.borrow().serialize_state())
+                })
             });
+            self.game_state.play(game_config, rng, &next_play).unwrap();
             match self
                 .game_state
                 .check_game_ended(game_config, &mut self.final_scores)
@@ -253,5 +267,63 @@ impl Simmer {
     #[inline(always)]
     pub fn win_prob_weightage(&self) -> f64 {
         self.win_prob_weightage
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A rollout that exchanges tiles must draw from a copy of the shared
+    // thread-local rng, not the thread-local itself, so the shared
+    // post-prepare_iteration state stays put for the next candidate (common
+    // random numbers: every candidate in the iteration rolls out from the same
+    // randomness). This drives one candidate's rollout through an exchange and
+    // checks the shared state is unchanged afterwards, then repeats the same
+    // rollout from that unchanged state and checks it reproduces exactly.
+    #[test]
+    fn exchanging_rollout_leaves_shared_rng_untouched() {
+        let game_config = game_config::make_english_game_config();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = rand::rngs::ChaCha20Rng::seed_from_u64(3);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+
+        // num_sim_plies = 0 rolls out exactly the candidate play (no move
+        // generation), so an empty kwg suffices and the candidate is the only
+        // ply.
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00");
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut simmer = Simmer::new(&game_config);
+        RNG.with(|rng| *rng.borrow_mut() = rand::rngs::ChaCha20Rng::seed_from_u64(99));
+        simmer.prepare(&game_config, &game_state, 0);
+        simmer.prepare_iteration();
+
+        // exchange the first tile of the player-to-move's rack; put_back is the
+        // only rng draw in the rollout.
+        let exchanged =
+            simmer.initial_game_state.players[simmer.initial_game_state.turn as usize].rack[0];
+        let candidate = movegen::Play::Exchange {
+            tiles: [exchanged][..].into(),
+        };
+
+        // the shared state right after the shared draw.
+        let shared_state = RNG.with(|rng| rng.borrow().serialize_state());
+
+        simmer.simulate(&game_config, &kwg, &klv, &candidate);
+        let rack_after_first = simmer.game_state.players[simmer.initial_game_state.turn as usize]
+            .rack
+            .clone();
+        // the exchange drew from a copy, so the shared state is untouched.
+        assert_eq!(RNG.with(|rng| rng.borrow().serialize_state()), shared_state);
+
+        // a second rollout of the same candidate, from the same untouched
+        // shared state, reproduces the first exactly: identical randomness per
+        // candidate.
+        simmer.simulate(&game_config, &kwg, &klv, &candidate);
+        let rack_after_second = simmer.game_state.players[simmer.initial_game_state.turn as usize]
+            .rack
+            .clone();
+        assert_eq!(RNG.with(|rng| rng.borrow().serialize_state()), shared_state);
+        assert_eq!(rack_after_first, rack_after_second);
     }
 }
