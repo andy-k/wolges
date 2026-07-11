@@ -198,3 +198,23 @@ The terminal driver is now a thin shell: build one engine with observe on, run
 the rollout budget through the same begin_decision / resume calls a study
 session would use, and print the leaderboard as the estimates converge. The
 separate copy of the loop is gone.
+
+
+AN EMPIRICAL WIN% TABLE AS AN ALTERNATIVE TO THE SIGMOID
+
+The unfinished-game win probability described earlier is a hand-tuned sigmoid
+of the score margin -- a formula, not a measurement. Where enough self-play
+games have already been recorded, an empirical table of P(win | margin, tiles
+left), built from counting how those recorded games actually turned out, may be
+better calibrated than a hand-tuned formula.
+
+WinProbSource picks which one a config uses: Sigmoid (the default, unchanged)
+always uses the formula; Table looks the terminal position up in a WinPctTable,
+by margin and by how many tiles are left in the bag and racks, and falls back
+to the sigmoid for any margin-and-tile-count combination the table never saw
+enough of to have an entry. The table is handed to the simmer by reference and
+defaults to none, so a caller that never asks for Table sees no change at all.
+
+english-sim-compare can give each seat its own source (WOLGES_SIM_P0_WINPROB /
+P1_WINPROB) sharing one table (WOLGES_SIM_WINPCT_TABLE), to weigh the sigmoid
+against the empirical table directly, seat against seat.
