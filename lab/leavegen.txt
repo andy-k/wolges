@@ -45,8 +45,8 @@ two binaries with no arguments to see every option:
   cargo run --release --bin buildlex
 
 The first step plays games and logs what happened. Each run writes a batch of
-games to a randomly named log file such as log-60abcdef; the name depends on
-the clock, so do not start two runs in the same second. These three are the
+games to a randomly named log file such as log-60abcdef; the name carries a
+run stamp, and two runs never overwrite each other's logs. These three are the
 same -- play with no leave table on either side:
 
   cargo run --release --bin leave -- english-autoplay CSW24.kwg
@@ -1809,6 +1809,14 @@ Every run:
   WOLGES_THREADS (a whole number; default the core count) -- worker threads for
     every parallel run and for english-compare; changes only speed, never the
     table.
+  Output files carry a run stamp -- the wall-clock time at 1/65536-second
+  resolution, in hex -- shared by a census run's snapshots
+  (census-gen-<stamp>-<gen>.klv2), its summary and leaves, a rollout's
+  leaves, a board-sampling summary, a playability scan, and an autoplay
+  pass's log, games, and summaries, so a run's files stay grouped. Two runs
+  started within the same 1/65536 second share a stamp; every file is created
+  without overwriting an existing one, inserting a _1 (then _2) before the
+  extension on a clash, so no run ever clobbers another's output.
 
 Decompose (english-generate):
   WOLGES_GENERATE_PER_RACK (0 or 1; default 1) -- how the english-generate
