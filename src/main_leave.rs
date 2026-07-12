@@ -569,6 +569,16 @@ fn env_flag(name: &str, default: bool) -> bool {
     env_parse::<u64>(name, default as u64) != 0
 }
 
+// worker-thread count for every parallel run. honor WOLGES_THREADS if set (and
+// parsable), else default to the machine's core count. reading it through one
+// helper keeps the override consistent across every threaded algorithm.
+fn wolges_threads() -> usize {
+    std::env::var("WOLGES_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(num_cpus::get)
+}
+
 fn generate_autoplay_logs<
     const WRITE_LOGS: bool,
     const SUMMARIZE: bool,
@@ -604,7 +614,7 @@ fn generate_autoplay_logs<
     );
     let seed = seed.unwrap_or_else(rand::random);
     eprintln!("seed: {seed}");
-    let num_threads = num_cpus::get();
+    let num_threads = wolges_threads();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let epoch_secs = std::time::SystemTime::now()
@@ -1946,7 +1956,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let klv = std::sync::Arc::new(klv);
     let seed = seed.unwrap_or_else(rand::random);
     eprintln!("seed: {seed}");
-    let num_threads = num_cpus::get();
+    let num_threads = wolges_threads();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let epoch_secs = std::time::SystemTime::now()
@@ -2516,7 +2526,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let kwg = std::sync::Arc::new(kwg);
     let seed = seed.unwrap_or_else(rand::random);
     eprintln!("seed: {seed}");
-    let num_threads = num_cpus::get();
+    let num_threads = wolges_threads();
     let completed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
