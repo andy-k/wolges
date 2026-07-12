@@ -189,6 +189,16 @@ check.
 New knobs: WOLGES_IMPOSSIBLE_OK.
 
 
+WORKER THREADS
+
+Every builder and every compare runs in parallel across cores. WOLGES_THREADS
+sets the worker-thread count -- self-play autoplay, the playability scan, and
+english-compare so far -- defaulting to the machine's core count. Threads
+change only how fast a run goes, never the table it produces.
+
+New knobs: WOLGES_THREADS.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -226,6 +236,11 @@ A bare run already does the right thing; these are for experiments, tuning, or
 reproduction. Each shows its type and default in parentheses; a knob with a
 fixed set of values lists what each one does. EN is the classic two-player
 English game.
+
+Every run:
+  WOLGES_THREADS (a whole number; default the core count) -- worker threads for
+    every parallel run and for english-compare; changes only speed, never the
+    table.
 
 Shared across builders:
   WOLGES_IMPOSSIBLE_OK (0 or 1; default 1) -- whether to value a rack the board
