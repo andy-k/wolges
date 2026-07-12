@@ -1539,8 +1539,8 @@ fn solve_position<N: kwg::Node>(
             scaled_score_diff,
         );
         // an honest decline beats a silently wrong number: some configs allow an
-        // exchange with one tile in the bag, which the enumeration does not model,
-        // so such a position is declined rather than answered here.
+        // exchange with one tile in the bag but have no forced scoreless-turn end,
+        // so such a position is not exactly solvable and is declined here.
         let result = match result {
             Ok(result) => result,
             Err(unsupported) => {

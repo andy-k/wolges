@@ -252,6 +252,51 @@ pub fn make_english_game_config() -> GameConfig {
     })
 }
 
+// A test-support config: the standard English alphabet and board, but with the
+// Spanish-style one-tile exchange rule (an exchange is legal with a single tile
+// in the bag) and a short scoreless-turn end. It lets the exchange-aware
+// one-in-bag search be exercised and cross-checked on the tiny test word graph
+// without needing a real Spanish word graph.
+#[cfg(test)]
+pub fn make_exchange_test_game_config() -> GameConfig {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_english_alphabet(),
+        board_layout: board_layout::make_standard_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+        num_passes_to_end: 2,
+        challenges_are_passes: true,
+        num_zeros_to_end: 3,
+        zeros_can_end_empty_board: false,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
+        exchange_tile_limit: 1,
+    })
+}
+
+// A test-support config that allows the one-tile exchange but never forces the
+// game to end (an exchange is not counted as a zero turn, so a run of exchanges
+// can go on forever). The one-in-bag PEG solver must decline such a config
+// rather than report a silently wrong no-exchange number.
+#[cfg(test)]
+pub fn make_exchange_unsolvable_test_game_config() -> GameConfig {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_english_alphabet(),
+        board_layout: board_layout::make_standard_board_layout(),
+        rack_size: 7,
+        num_players: 2,
+        num_passes_to_end: 2,
+        challenges_are_passes: true,
+        num_zeros_to_end: 3,
+        zeros_can_end_empty_board: false,
+        exchanges_are_zeros: false,
+        exchanges_allowed_per_player: i16::MAX,
+        exchange_tile_limit: 1,
+    })
+}
+
 pub fn make_jumbled_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
