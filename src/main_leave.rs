@@ -32,13 +32,55 @@ fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error
 // as a fixed-width hex string: 32 bits of whole seconds (good until the year
 // 2106) followed by 16 bits of sub-second fraction. The sub-second part makes
 // two runs collide only if they start within about fifteen microseconds of each
-// other.
+// other; a collision that does slip through is still caught at write time by
+// claim_output_path, so no reservation or lock file is needed.
 fn run_stamp() -> String {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let ticks = (d.as_secs() << 16) | (d.subsec_nanos() as u64 * 65536 / 1_000_000_000);
     format!("{ticks:012x}")
+}
+
+// Claim an output path without clobbering an existing file. Two runs that share
+// a stamp, or a file a user has moved onto the name, would otherwise collide; if
+// `desired` already exists, insert _1 (then _2, ...) before the extension and
+// warn, so a run never overwrites another's output and never crashes at the end.
+// Leaves an empty placeholder at the returned path (the caller's writer truncates
+// it), which claims the name atomically.
+fn claim_output_path(desired: &str) -> std::io::Result<String> {
+    use std::fmt::Write as _;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(desired)
+    {
+        Ok(_) => return Ok(desired.to_owned()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    // split before the extension so the fallback reads census-leaves-<id>_1.klv2,
+    // not census-leaves-<id>.klv2_1; a name with no '.' just appends the suffix.
+    let dot = desired.rfind('.').unwrap_or(desired.len());
+    let (stem, ext) = (&desired[..dot], &desired[dot..]);
+    let mut buf = String::with_capacity(desired.len() + 4);
+    for n in 1u32.. {
+        buf.clear();
+        let _ = write!(buf, "{stem}_{n}{ext}");
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&buf)
+        {
+            Ok(_) => {
+                eprintln!("warning: {desired} already exists; writing {buf} instead");
+                return Ok(buf);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!()
 }
 
 // when using "-" as output filename, print things to stderr.
@@ -1036,14 +1078,14 @@ fn generate_autoplay_logs<
     let num_threads = wolges_threads();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    let epoch_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let run_identifier = std::sync::Arc::new(format!("log-{epoch_secs:08x}"));
+    // one run id for this run's whole output family (the log, the games file, the
+    // summary, and the rare-subrack summary all interpolate it), so two autoplay
+    // runs stay grouped and, via claim_output_path at each write, never overwrite
+    // each other even if their stamps collide.
+    let run_identifier = std::sync::Arc::new(format!("log-{}", run_stamp()));
     eprintln!("logging to {run_identifier}");
     let mut csv_log = if WRITE_LOGS {
-        Some(csv::Writer::from_path(run_identifier.to_string())?)
+        Some(csv::Writer::from_path(claim_output_path(&run_identifier)?)?)
     } else {
         None
     };
@@ -1068,7 +1110,8 @@ fn generate_autoplay_logs<
     } else {
         None
     };
-    let mut csv_game = csv::Writer::from_path(format!("games-{run_identifier}"))?;
+    let mut csv_game =
+        csv::Writer::from_path(claim_output_path(&format!("games-{run_identifier}"))?)?;
     csv_game.serialize((
         "gameID",
         player_aliases
@@ -2267,7 +2310,8 @@ fn generate_autoplay_logs<
         let mut kv = full_rack_map.iter().collect::<Vec<_>>();
         kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
 
-        let mut csv_out = csv::Writer::from_path(format!("summary-{run_identifier}"))?;
+        let mut csv_out =
+            csv::Writer::from_path(claim_output_path(&format!("summary-{run_identifier}"))?)?;
         let mut cur_rack_ser = String::new();
         csv_out.serialize(("", total_equity, row_count))?;
         for (k, fv) in kv.iter() {
@@ -2288,7 +2332,9 @@ fn generate_autoplay_logs<
         if !rare_subrack_map.is_empty() {
             let mut rare_kv = rare_subrack_map.iter().collect::<Vec<_>>();
             rare_kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
-            let mut rare_out = csv::Writer::from_path(format!("summary-rare-{run_identifier}"))?;
+            let mut rare_out = csv::Writer::from_path(claim_output_path(&format!(
+                "summary-rare-{run_identifier}"
+            ))?)?;
             for (k, fv) in rare_kv.iter() {
                 cur_rack_ser.clear();
                 for &tile in k.iter() {
@@ -2408,11 +2454,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     eprintln!("seed: {seed}");
     let num_threads = wolges_threads();
 
-    let epoch_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let run_identifier = format!("gilles-summary-{epoch_secs:08x}");
+    let run_identifier = format!("gilles-summary-{}", run_stamp());
 
     // config-derived parameters (classic English: 25, 75, 13, 7).
     let rack_size = game_config.rack_size();
@@ -3526,7 +3568,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     eprintln!("{} records, {} unique racks", row_count, map.len());
     let mut kv = map.iter().collect::<Vec<_>>();
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
-    let mut csv_out = csv::Writer::from_path(&run_identifier)?;
+    let mut csv_out = csv::Writer::from_path(claim_output_path(&run_identifier)?)?;
     let mut cur_rack_ser = String::new();
     csv_out.serialize(("", total_equity, row_count))?;
     for (k, fv) in kv.iter() {
@@ -5091,13 +5133,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         *slot = arc_klv0.leave_value_from_tally(&tally_buf);
     }
     // resume: load the latest persisted gen klv2 into leave_cur and continue from the
-    // next gen (0-based gen_idx == the 1-based count of completed gens).
-    // The snapshots share one per-run stamp (census-gen-<stamp>-<generation>.klv2) so a
-    // run's gens stay grouped; a resume reuses the stamp of the family it continues.
-    // NOTE: the stamp is the wall-clock time at 1/65536-second resolution, so two runs
-    // started within about fifteen microseconds of each other still share it and would
-    // overwrite -- enough for crash-resume, not yet safe for two runs sharing a
-    // directory at once (there is no write-time guard here yet).
+    // next gen (0-based gen_idx == the 1-based count of completed gens). Snapshots are
+    // named census-gen-<stamp>-<generation>.klv2, where <stamp> is the run id; a resume
+    // reuses the stamp of the family it continues (the one with the most completed
+    // gens) so the new snapshots join it, while a fresh run stamps the current time.
+    // The stamp now goes through claim_output_path when the snapshot is written, so a
+    // stamp collision no longer overwrites another run's file.
     let mut start_gen = 0usize;
     let census_run_epoch;
     let mut resumed: Option<(String, usize, std::path::PathBuf)> = None;
@@ -5105,22 +5146,21 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         for e in rd.flatten() {
             let name = e.file_name();
             let name = name.to_string_lossy();
-            if let Some((stamp, gg)) = name
+            if let Some((rid, gg)) = name
                 .strip_prefix("census-gen-")
                 .and_then(|r| r.strip_suffix(".klv2"))
                 .and_then(|r| r.split_once('-'))
-                && u64::from_str_radix(stamp, 16).is_ok()
+                && u64::from_str_radix(rid, 16).is_ok()
                 && let Ok(gg) = gg.parse::<usize>()
                 && resumed
                     .as_ref()
-                    .is_none_or(|(bs, bg, _)| (gg, stamp) > (*bg, bs.as_str()))
+                    .is_none_or(|(br, bg, _)| (gg, rid) > (*bg, br.as_str()))
             {
-                resumed = Some((stamp.to_owned(), gg, e.path()));
+                resumed = Some((rid.to_owned(), gg, e.path()));
             }
         }
     }
-    if let Some((stamp, num, path)) = resumed {
-        census_run_epoch = stamp;
+    if let Some((rid, num, path)) = resumed {
         let bytes = std::fs::read(&path)?;
         let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes);
         for (idx, slot) in leave_cur.iter_mut().enumerate() {
@@ -5128,6 +5168,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             *slot = resume_klv.leave_value_from_tally(&tally_buf);
         }
         start_gen = num;
+        census_run_epoch = rid;
         eprintln!(
             "census: resuming from {} (gen {num} done) -> starting gen {}",
             path.display(),
@@ -5145,7 +5186,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         return Err(format!(
             "census resume: {start_gen} generation(s) already completed but the \
              spec has only {gens}; extend the board-count spec or remove \
-             census-gen*.klv2"
+             census-gen-*.klv2"
         )
         .into());
     }
@@ -6309,7 +6350,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 if persist_gens {
                                     let g = shared.lock().unwrap();
                                     let lv = leave_lock.read().unwrap();
-                                    let p = format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
+                                    let desired =
+                                        format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
+                                    let p = claim_output_path(&desired).unwrap_or(desired);
                                     match write_census_klv2(
                                         &lat,
                                         &|i| lv[i] as f64,
@@ -6531,11 +6574,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         // board_count) -- each board contributes best(R,B) ONCE (no w(R) weight) --
         // for the standard `-generate` draw-ways decompose. accum_sum is in
         // millipoints; descale to points to match the autoplay summary convention.
-        let epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let summary_name = format!("census-summary-{epoch:08x}.csv");
+        let summary_name = claim_output_path(&format!("census-summary-{census_run_epoch}.csv"))?;
         let mut sw = csv::Writer::from_path(&summary_name)?;
         let mut tally_buf = vec![0u8; num_letters];
         let mut leave_ser = String::new();
@@ -6583,11 +6622,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         return Ok(());
     }
     let baseline = value_mp(empty_rank);
-    let epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let out_name = format!("census-leaves-{epoch:08x}.csv");
+    let out_name = claim_output_path(&format!("census-leaves-{census_run_epoch}.csv"))?;
     // non-full by default: a play table never keeps a full rack (a pass is
     // almost never the best move mid-game, and the empty-bag endgame scores with a
     // penalty term, not the klv), so dropping the length-rack_size values is a
@@ -6640,7 +6675,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     );
 
     // Emit the klv2 in-process (skips the external buildlex; same DawgOnly/Wolges build).
-    let klv_name = format!("census-leaves-{epoch:08x}.klv2");
+    let klv_name = claim_output_path(&format!("census-leaves-{census_run_epoch}.klv2"))?;
     let is_valued = |idx: usize| {
         if sgd || multigen {
             ever[idx]
@@ -7020,11 +7055,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let num_threads = wolges_threads();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    let epoch_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let run_identifier = std::sync::Arc::new(format!("{epoch_secs:08x}"));
+    let run_identifier = std::sync::Arc::new(run_stamp());
     eprintln!("run identifier is {run_identifier}");
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -7328,7 +7359,8 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 .then_with(|| b.1.equity.total_cmp(&a.1.equity).then_with(|| a.0.cmp(b.0)))
         });
 
-        let mut csv_out = csv::Writer::from_path(format!("playability-{run_identifier}"))?;
+        let mut csv_out =
+            csv::Writer::from_path(claim_output_path(&format!("playability-{run_identifier}"))?)?;
         let mut cur_word_ser = String::new();
         csv_out.serialize(("", total_equity, row_count))?;
         for (k, fv) in kv.iter() {
@@ -7910,11 +7942,7 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     if shrink_k > 0.0 {
         eprintln!("rollout: shrinking toward prior klv with K={shrink_k}");
     }
-    let epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let out_name = format!("rollout-leaves-{epoch:08x}.csv");
+    let out_name = claim_output_path(&format!("rollout-leaves-{}.csv", run_stamp()))?;
     let mut tally_buf = vec![0u8; num_letters];
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
