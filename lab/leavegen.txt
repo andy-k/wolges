@@ -1,73 +1,199 @@
-(Things documented in this file are unstable.)
+LEAVE GENERATION IN WOLGES
+
+A leave is the group of tiles a player keeps after making a play. After you
+place tiles (or exchange, or pass), whatever stays on your rack is your leave,
+and its quality -- how much easier it makes your next turn -- is worth real
+points. The move generator scores each candidate play as the points it makes on
+the board plus the value of the leave it would keep, so it needs a table that
+maps every possible leave to a value. This file records how that table is
+built, how well it plays, and how the choices along the way compare.
+
+Leave values do not add up tile by tile, and that is the whole reason the table
+stores a value per leave instead of one number per tile. A lone Q is a burden
+and a lone U is a burden, but QU together is good, because the U rescues the Q.
+No per-tile score can say that; only a table keyed by the whole kept group can.
+In wolges that table is a klv2 file -- a leave-value file, version 2, holding a
+32-bit floating-point value per leave with no cap on how large or small a value
+it may hold.
 
 
-BASICS OF GENERATING LEAVE FILES
+TL;DR -- IF YOU JUST WANT A GOOD TABLE
 
-These rudimentary tools generate somewhat usable leave files. See the options:
+wolges builds a leave table by playing games against itself. The genleaves.sh
+script runs the whole loop -- play a generation, summarize, generate, compile,
+then play the next generation with the table just built:
 
-cargo run --release --bin leave
-cargo run --release --bin buildlex
+  ./genleaves.sh english english 2000000 2000000 2000000
 
-The first step is to play many games. Each run saves (a certain number of
-games) to (a pair of random filenames) such as log-60abcdef. The name depends
-on the time, so do not start two of these on or near the same second.
-
-Run either of these, they mean the same thing, that is, run with no leaves:
-
-cargo run --release --bin leave -- english-autoplay CSW24.kwg
-cargo run --release --bin leave -- english-autoplay CSW24.kwg - -
-cargo run --release --bin leave -- english-autoplay CSW24.kwg - - 1000000
-
-The second step is to summarize that:
-
-cargo run --release --bin leave -- english-summarize log-12345678 summary.csv
-
-With the bash shell it's possible to combine multiple log files:
-
-cargo run --release --bin leave -- english-summarize <( cat log-* ) summary.csv
-
-The third step is either of these. Choose one or both:
-
-cargo run --release --bin leave -- english-generate-no-smooth summary.csv leaves-no-smooth.csv
-cargo run --release --bin leave -- english-generate summary.csv leaves-smooth.csv
-
-Next, compile it to klv2 (or klv):
-
-cargo run --release --bin buildlex -- english-klv2 leaves-no-smooth.csv leaves-no-smooth.klv2
-cargo run --release --bin buildlex -- english-klv2 leaves-smooth.csv leaves-smooth.klv2
-
-Repeat from first step as necessary, but specify the new leave files:
-
-cargo run --release --bin leave -- english-autoplay CSW24.kwg leaves-smooth.klv2 leaves-no-smooth.klv2
-
-After the kwg are the klv for player0 and player1, these need not be the same.
-With the bash shell, to use the same leave file, attach the {,} without space:
-
-cargo run --release --bin leave -- english-autoplay CSW24.kwg leaves-smooth.klv2{,}
-
-Specify "-" for no leave (this is default for both), but is necessary if
-player0 is using no leave and player1 is using a leave file.
+That is three generations of about two million games each, a reasonable
+starting point rather than a tuned optimum; run more of either for a better
+table, with shrinking returns as they climb. How it works, and how well it
+plays, is below.
 
 
-GENERATING LEAVE FILES
+GENERATING A TABLE BY SELF-PLAY
 
-The easier way to generate leaves is to use genleaves.sh.
+wolges builds a leave table by playing games against itself and learning from
+the racks it held. The tools are rudimentary but produce usable tables; run the
+two binaries with no arguments to see every option:
 
-This script runs n1 games with no leaves, n2 games with leave1, etc.
-Run it with no parameters to see how to use it.
+  cargo run --release --bin leave
+  cargo run --release --bin buildlex
 
-Advanced functionalities the script demonstrates include:
-- english-autoplay-summarize to autoplay and summarize in one run.
-- english-autoplay-summarize-only to not save the logs (because they are big).
-- english-generate-full to generate full rack leaves instead of just up to n-1.
-- english-generate-full-no-smooth for both full and no smooth.
-- english-klv for klv1 in case that is still useful.
-- leaves for the super distribution.
+The first step plays games and logs what happened. Each run writes a batch of
+games to a randomly named log file such as log-60abcdef; the name depends on
+the clock, so do not start two runs in the same second. These three are the
+same -- play with no leave table on either side:
 
-We used to generate leaves with
-../genleaves.sh english english 2000000 2000000 2000000
+  cargo run --release --bin leave -- english-autoplay CSW24.kwg
+  cargo run --release --bin leave -- english-autoplay CSW24.kwg - -
+  cargo run --release --bin leave -- english-autoplay CSW24.kwg - - 1000000
 
-That generated okay leaves in decent time.
-It is debatable what arguments will generate the best leaves.
+The two arguments after the word graph are the tables for player 0 and player
+1; they need not match, and "-" means no table (the default for both). The last
+number is how many games to play.
 
-Use --full to generate leaves for pass. Not useful.
+The second step tallies a log into one row per rack -- the rack, the sum of the
+best-play equities seen for it, and how many times it was seen:
+
+  cargo run --release --bin leave -- english-summarize log-60abcdef summary.csv
+
+With bash, several logs combine in one pass:
+
+  cargo run --release --bin leave -- english-summarize <(cat log-*) summary.csv
+
+The third step turns that tally into a leave table, valuing each leave from the
+racks that hold it. Each leave's value is the average of the best-play values
+of the fuller racks that contain it, where a rack counts more the more often it
+came up and the more ways its extra tiles could have been drawn from the bag.
+The whole table is then shifted so the empty leave is worth zero. There are two
+variants -- smoothed and not (the difference is discussed below):
+
+  cargo run --release --bin leave -- \
+    english-generate-no-smooth summary.csv leaves.csv
+  cargo run --release --bin leave -- \
+    english-generate summary.csv leaves.csv
+
+The fourth step compiles the csv into the binary klv2 the move generator reads:
+
+  cargo run --release --bin buildlex -- english-klv2 leaves.csv leaves.klv2
+
+Feeding a finished table back in as the players' table and repeating from the
+first step lets each generation improve on the last:
+
+  cargo run --release --bin leave -- \
+    english-autoplay CSW24.kwg leaves.klv2 leaves.klv2
+
+With bash, {,} repeats an argument so both seats share one table without
+retyping it:
+
+  cargo run --release --bin leave -- english-autoplay CSW24.kwg leaves.klv2{,}
+
+The genleaves.sh script automates the whole loop -- play a generation,
+summarize, generate, compile, then play the next generation with the table just
+built. Run it with no arguments for its usage; in short it takes the game
+config, the config for the leave set, and one game count per generation.
+
+
+HOW LEAVE QUALITY IS MEASURED
+
+Two leave tables are compared by having them play each other. The
+english-compare command runs self-play games in which player 0 uses the first
+table and player 1 uses the second, everything else identical, and reports
+player 0's share of the games:
+
+  cargo run --release --bin leave -- \
+    english-compare CSW24.kwg a.klv2 b.klv2 1000000
+
+The last number is how many game pairs to play. Games are run in mirrored
+pairs: the same deal is played twice, once with each table in each seat, so the
+luck of the draw and the first-move advantage cancel between the two halves and
+only the tables' own skill is left to separate them. Passing "-" in place of a
+table file means the null table, described next.
+
+Player 0's win share is its fraction of all the games, counting a draw as half
+a game to each side. 50 percent is a tie; above 50 means the first table won
+more and is the better table in that head-to-head. The share is reported in
+percentage points, written "pp": 50.13 means 0.13 pp above a tie.
+
+Because each game turns partly on luck, a small gap can be noise, so
+english-compare also reports a confidence: the probability that the leading
+table is genuinely ahead rather than ahead by chance. It comes from a
+normal-curve model that treats each game as an even bet and measures how many
+standard errors the lead sits above an even split. A standard error is the
+typical size of the random wobble in the win share; on this model it shrinks
+with the square root of the number of games, and each pair is two games. At one
+million pairs (two million games) it is about 0.035 pp, and at ten million
+pairs about 0.011 pp. A lead of about one standard error reads as roughly 84
+percent confidence, about two standard errors as roughly 98 percent, and a lead
+lost in the noise reads near 50 percent (a tie); 100 percent is as certain as
+this test gets. So a gap under about 0.035 pp at a million pairs is noise no
+matter which way its sign happens to fall.
+
+A table played against itself scores 50.00 by symmetry, which is the
+calibration check.
+
+Every number below is a fresh english-compare run of our own tables against our
+own tables.
+
+
+THE NULL REFERENCE
+
+The simplest possible table gives every leave a value of zero. Call it the null
+table (english-compare takes it by passing "-" instead of a file). It never
+changes, so every other table can be measured against the same far-away
+yardstick and all the results sit on one scale. Any real leave table beats null
+by a wide margin -- knowing that keeping ING beats keeping QVX is most of the
+battle -- so null loses heavily, winning only about 37.5 percent of its games
+against a self-play table (confidence 100), and null against null is 50.00 by
+symmetry.
+
+
+SMOOTHING, OR NOT
+
+The generate step comes in two variants. The plain english-generate smooths the
+table: a rack seen only a handful of times has a noisy average, so its value is
+pulled toward what similar, better-sampled racks say, steadying the leaves that
+self-play rarely deals. english-generate-no-smooth skips that and uses the
+observed averages as they stand.
+
+In head-to-head play the two are a tie. A smoothed table against an unsmoothed
+one, both built from the same self-play at two million games, lands at about
+49.99 for the smoothed side over a few hundred thousand pairs, and at two
+million pairs the unsmoothed side leads with only about 57 percent confidence
+-- well short of the roughly 98 percent that would mark a real difference. So
+smoothing neither clearly helps nor clearly hurts self-play strength; it mainly
+keeps the rare leaves from swinging on a few lucky games. Smoothing is the
+default genleaves.sh uses; it turns off only when a per-generation min-samples
+count is asked for.
+
+
+BEST CURRENT WAY TO RUN EACH METHOD
+
+This section stays current: whatever the defaults have become, it shows how to
+get the most competitive leaves out of each method. Each recipe is one command
+(indented) followed by a note on how to push it further. If you only want a
+good table, use the census.
+
+Self-play autoplay -- wolges's original baseline. It plays games and learns
+from the racks held.
+
+    ./genleaves.sh english english 2000000 2000000 2000000
+
+More games mean lower best-play noise. The genleaves.sh arguments are explained
+under RUNNING GENLEAVES.SH below.
+
+RUNNING GENLEAVES.SH
+
+The autoplay and board-sampling recipes above are driven by the genleaves.sh
+script, which runs the whole build loop (play a generation, summarize,
+decompose, compile, then play the next generation with the table just built):
+
+    ./genleaves.sh [options] <play-config> <leave-config> <count-per-gen>...
+
+play-config is the tile distribution to play games with (english, norwegian,
+super-english, and so on); leave-config is the distribution the leave table is
+compiled for. They are usually the same, which is why the examples read
+"english english". Each trailing number is one generation's game count, so
+three numbers means three generations; append :N to a count to ask for N
+samples of every rack that generation.
