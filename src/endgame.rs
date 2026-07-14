@@ -1058,6 +1058,136 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
         best
     }
+
+    // Solve a pre-endgame that has exactly ONE tile left in the bag, without
+    // knowing which unseen tile it is. Every tile that is not on the board and
+    // not on the mover's rack is UNSEEN; exactly one of them sits in the bag and
+    // the rest form the opponent's rack, so |unseen| = opponent_rack_size + 1.
+    //
+    // The mover cannot see the bag tile, so this tries every distinct unseen
+    // tile T as the bag tile, weighting each hypothesis by how many copies of T
+    // are unseen (a tile with 3 copies unseen is 3x as likely to be the one in
+    // the bag). For each T the opponent rack is the unseen multiset with one T
+    // removed, which makes the position fully known, and the one-known-bag-tile
+    // solver returns that hypothesis's scaled point margin from the mover's
+    // view. peg_aggregate then averages win/draw/loss and the point margin.
+    //
+    // `unseen_tally[t]` is the count of tile t in the unseen multiset (index 0
+    // is the blank). This is full enumeration, not sampling.
+    pub fn solve_peg_one_in_bag(
+        &mut self,
+        mover: u8,
+        board: &[u8],
+        mover_rack: &[u8],
+        unseen_tally: &[u8],
+    ) -> Result<PegResult, PegUnsupported> {
+        // When an exchange is legal against the one-tile bag (Spanish sets
+        // exchange_tile_limit to 1), the mover could exchange instead of playing
+        // or passing, and this enumeration models only plays and passes. Decline
+        // honestly for such a config rather than report a number that silently
+        // assumes the exchange away; the exchange case is handled in a later
+        // commit. Every other config (English and friends) is solved below.
+        if one_in_bag_exchange_legal(self.game_config) {
+            return Err(PegUnsupported::ExchangeNotSupported);
+        }
+        let mut hypotheses: Vec<(u8, u32, f32)> = Vec::new();
+        // opp_rack is rebuilt in place for each hypothesis (one allocation).
+        let mut opp_rack: Vec<u8> = Vec::new();
+        for (t, &count) in unseen_tally.iter().enumerate() {
+            if count == 0 {
+                continue;
+            }
+            let bag_tile = t as u8;
+            // opp_rack = the unseen multiset with exactly one copy of bag_tile
+            // removed (that copy is the one in the bag).
+            opp_rack.clear();
+            for (u, &c) in unseen_tally.iter().enumerate() {
+                let take = if u == t { c - 1 } else { c } as usize;
+                opp_rack.extend(std::iter::repeat_n(u as u8, take));
+            }
+            // place mover_rack and opp_rack at their player indices, then solve
+            // this now-fully-known one-in-bag hypothesis.
+            let mut racks: [&[u8]; 2] = [&[], &[]];
+            racks[mover as usize] = mover_rack;
+            racks[(mover ^ 1) as usize] = &opp_rack;
+            self.init(board, racks);
+            let v = self.solve_one_in_bag(mover, bag_tile);
+            hypotheses.push((bag_tile, count as u32, v));
+        }
+        let weighted: Vec<(u32, f32)> = hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
+        let (win_pct, expected_margin) = peg_aggregate(&weighted);
+        Ok(PegResult {
+            win_pct,
+            expected_margin,
+            hypotheses,
+        })
+    }
+}
+
+// The outcome of a one-in-bag PEG enumeration: the mover's win rate (0..1, a
+// draw counting half), the expected scaled point margin, and the per-hypothesis
+// (bag tile, weight, scaled point margin) tuples for display.
+pub struct PegResult {
+    pub win_pct: f32,
+    pub expected_margin: f32,
+    pub hypotheses: Vec<(u8, u32, f32)>,
+}
+
+// Why a one-in-bag PEG position could not be solved exactly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PegUnsupported {
+    // An exchange is legal with one tile in the bag, which this enumeration does
+    // not model, so the position is declined rather than answered with a number
+    // that assumes the exchange away.
+    ExchangeNotSupported,
+}
+
+impl std::fmt::Display for PegUnsupported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PegUnsupported::ExchangeNotSupported => f.write_str(
+                "an exchange is legal with one tile in the bag, which is not \
+                 modeled, so this position is not solved",
+            ),
+        }
+    }
+}
+
+// Whether an exchange is legal when the bag holds a single tile. Movegen would
+// exchange only when num_tiles_in_bag >= exchange_tile_limit; here the real bag
+// size is one, so the test is exchange_tile_limit <= 1 (Spanish sets it to 1).
+fn one_in_bag_exchange_legal(gc: &game_config::GameConfig) -> bool {
+    gc.exchange_tile_limit() <= 1
+}
+
+// Aggregate one-in-bag hypotheses into a win rate and an expected point margin.
+// Each hypothesis is (weight, scaled point margin). win_score is 1.0 for a win
+// (margin > 0), 0.5 for a draw (margin == 0), 0.0 for a loss (margin < 0).
+// win_pct = sum(win_score * weight) / sum(weight); the expected point margin is
+// sum(margin * weight) / sum(weight), in the same scaled unit as the inputs. An
+// empty (or zero-weight) input returns (0.0, 0.0) rather than a NaN.
+pub fn peg_aggregate(hypotheses: &[(u32, f32)]) -> (f32, f32) {
+    let mut total = 0.0f32;
+    let mut win_sum = 0.0f32;
+    let mut margin_sum = 0.0f32;
+    for &(weight, value) in hypotheses {
+        let w = weight as f32;
+        let win_score = if value > 0.0 {
+            1.0
+        } else if value == 0.0 {
+            0.5
+        } else {
+            0.0
+        };
+        total += w;
+        win_sum += win_score * w;
+        margin_sum += value * w;
+    }
+    if total == 0.0 {
+        (0.0, 0.0)
+    } else {
+        (win_sum / total, margin_sum / total)
+    }
 }
 
 // Reference-check tests for the endgame solver. A small self-contained gaddawg
@@ -1500,6 +1630,58 @@ mod tests {
         }
         println!("differential: {disagreements} disagreements out of {total} positions");
         assert_eq!(disagreements, 0, "solve() disagreed with the reference");
+    }
+
+    // ---- PEG one-in-bag aggregation -------------------------------------------
+    // Pure arithmetic check of peg_aggregate, no solver involved: a win with
+    // weight 2, a draw, and a loss. win_sum = 1*2 + 0.5*1 + 0*1 = 2.5 over total
+    // weight 4 -> win% 0.625; margin_sum = 3000*2 + 0 + (-5000)*1 = 1000 over 4
+    // -> expected margin 250 (scaled). Every value divides exactly in f32.
+    #[test]
+    fn peg_aggregate_arithmetic() {
+        let (win_pct, expected) = super::peg_aggregate(&[(2, 3000.0), (1, 0.0), (1, -5000.0)]);
+        assert_eq!(win_pct, 0.625);
+        assert_eq!(expected, 250.0);
+        // win-score mapping at the boundaries, all equal weight.
+        let (win_pct, expected) = super::peg_aggregate(&[(1, 1.0), (1, 0.0), (1, -1.0)]);
+        assert_eq!(win_pct, 0.5);
+        assert_eq!(expected, 0.0);
+        // empty input is NaN-free.
+        assert_eq!(super::peg_aggregate(&[]), (0.0, 0.0));
+    }
+
+    // ---- PEG one-in-bag hand-checkable position -------------------------------
+    // Empty board. The mover (p0) holds a lone B (3 pts); a single tile on an
+    // empty board forms no word, so p0 can only pass. The unseen multiset is
+    // {H, T} (one each), so exactly one is in the bag and the other is the
+    // opponent's one-tile rack -- and that lone tile also forms no word, so the
+    // opponent can only pass too. Both pass, the bag tile stays unseen and
+    // unscored, and the point margin is the opponent's kept tile minus B (3).
+    //   bag = H  -> opp rack [T]: margin = 1 - 3 = -2 pts (-2000 scaled), loss
+    //   bag = T  -> opp rack [H]: margin = 4 - 3 = +1 pt  (+1000 scaled), win
+    // One win and one loss, equal weight: win% = 0.5; expected margin =
+    // (-2000 + 1000) / 2 = -500 scaled.
+    #[test]
+    fn peg_one_in_bag_hand_checkable() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+
+        let board = empty_board();
+        let mover_rack = [2u8]; // B
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        unseen_tally[8] = 1; // H
+        unseen_tally[20] = 1; // T
+
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let result = egs
+            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally)
+            .expect("english one-in-bag is always solvable");
+
+        // hypotheses come out in ascending tile order (H = 8, then T = 20).
+        assert_eq!(result.hypotheses, vec![(8, 1, -2000.0), (20, 1, 1000.0)]);
+        assert_eq!(result.win_pct, 0.5);
+        assert_eq!(result.expected_margin, -500.0);
     }
 
     // ---- PV-playout invariant -------------------------------------------------

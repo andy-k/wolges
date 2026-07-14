@@ -134,3 +134,45 @@ reference for this one-in-bag case and check the fast solver against it for
 both movers and several different bag tiles, plus two hand-checkable positions
 (a forced double pass, and a play that must draw before it can end). The
 empty-bag solver's own differential check is unchanged.
+
+
+WHEN THE MOVER DOESN'T KNOW WHICH TILE IS LEFT: PEG
+
+The one-known-bag-tile solver assumes the mover already knows which tile is
+sitting in the bag. In a real game that is almost never true: the mover only
+knows which tiles are UNSEEN -- not on the board and not on their own rack --
+and the single bag tile could be any one of them, with the rest making up the
+opponent's rack. This situation, one tile left in an otherwise fully-known
+position, is what this file calls PEG (pre-endgame): not yet an ordinary
+empty-bag endgame, but one move away from becoming one.
+
+solve_peg_one_in_bag solves it exactly rather than by sampling: for every
+distinct unseen tile, try it as the hypothesis for the bag tile (the remaining
+unseen tiles then form the opponent's rack, making that hypothesis fully known)
+and hand it to the one-known-bag-tile solver. Each hypothesis is weighted by
+how many copies of that tile are unseen -- a tile with three copies still
+unseen is three times as likely to be the one actually in the bag as a tile
+with only one copy left. peg_aggregate then folds all the weighted hypotheses
+into a single win rate (a draw scoring half a win) and a single expected point
+margin, both from the mover's point of view. Full enumeration, not sampling:
+every distinct unseen tile is tried, so the mover's uncertainty about the bag
+is modeled exactly, not estimated.
+
+This enumeration weighs only plays and passes, so it is correct only where an
+exchange is not an option. With a single tile in the bag an exchange is legal
+only when the config permits exchanging that few tiles (Spanish does; English
+and most others require a fuller bag), and there the mover could exchange
+instead. Rather than report a number that silently assumes the exchange away,
+solve_peg_one_in_bag returns a result that DECLINES such a config with an
+honest "exchange not modeled" -- every other config is still answered exactly.
+The exchange case is left unsolved here.
+
+The solver's scope is exactly zero or one tile in the bag. One tile is the
+PEG-1 case -- the one-in-bag pre-endgame this section solves; zero tiles is
+already an ordinary empty-bag endgame. A bag holding two or more tiles is a
+larger pre-endgame -- PEG-2, PEG-3, and larger -- and each extra tile in the
+bag multiplies the draws the mover must weigh. Those larger pre-endgames
+are a genuine generalization this file does not attempt, not merely an input it
+rejects: such a position falls through to the same "not endgame yet" error the
+CLI raises for any position with too many tiles left unaccounted for. Only
+PEG-1 (and the plain empty bag) is in scope here.

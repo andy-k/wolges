@@ -1337,7 +1337,12 @@ fn main() -> error::Returns<()> {
         .zip(available_tally.iter())
         .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
         .collect::<Box<_>>();
-    if oppo_rack.len() > game_config.rack_size() as usize {
+    let rack_size = game_config.rack_size() as usize;
+    // oppo_rack.len() == rack_size means the bag is empty (a plain endgame);
+    // == rack_size + 1 means exactly one tile is in the bag (the PEG case
+    // handled below). Two or more in the bag still falls through to the
+    // unseen-tile-count error below.
+    if oppo_rack.len() > rack_size + 1 {
         wolges::return_error!(format!(
             "not endgame yet as there are {} unseen tiles",
             oppo_rack.len(),
@@ -1374,8 +1379,60 @@ fn main() -> error::Returns<()> {
 
     let mut egs =
         endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(&game_config, &smaller_kwg);
-    egs.init(&board_tiles, [&question.rack, &oppo_rack]);
-    egs.evaluate(0);
+    if oppo_rack.len() == rack_size + 1 {
+        // exactly one tile is in the bag. The mover (p0) does not know which
+        // unseen tile it is, so enumerate every distinct unseen tile as the bag
+        // tile (the word prune above is invariant across these hypotheses, so it
+        // is done once), solve each fully-known hypothesis, and average.
+        let result = egs.solve_peg_one_in_bag(0, &board_tiles, &question.rack, &available_tally);
+        // an honest decline beats a silently wrong number: some configs allow an
+        // exchange with one tile in the bag, which the enumeration does not model,
+        // so such a position is declined rather than answered here.
+        let result = match result {
+            Ok(result) => result,
+            Err(unsupported) => {
+                println!("peg: {unsupported}");
+                return Ok(());
+            }
+        };
+        let total_unseen: u32 = result.hypotheses.iter().map(|&(_, weight, _)| weight).sum();
+        println!(
+            "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles",
+            result.hypotheses.len(),
+            total_unseen,
+        );
+        for &(bag_tile, weight, value) in &result.hypotheses {
+            // rebuild the opponent rack for this hypothesis for display only.
+            let mut opp = Vec::new();
+            for (u, &c) in available_tally.iter().enumerate() {
+                let take = if u as u8 == bag_tile { c - 1 } else { c } as usize;
+                opp.extend(std::iter::repeat_n(u as u8, take));
+            }
+            let outcome = if value > 0.0 {
+                "win"
+            } else if value == 0.0 {
+                "draw"
+            } else {
+                "loss"
+            };
+            println!(
+                "  bag={} (x{}): opp rack [{}] -> point margin {} ({})",
+                alphabet.of_rack(bag_tile).unwrap_or("?"),
+                weight,
+                alphabet.fmt_rack(&opp),
+                value / equity::SCALE as f32,
+                outcome,
+            );
+        }
+        println!(
+            "peg: win% {:.4}, expected point margin {}",
+            result.win_pct * 100.0,
+            result.expected_margin / equity::SCALE as f32,
+        );
+    } else {
+        egs.init(&board_tiles, [&question.rack, &oppo_rack]);
+        egs.evaluate(0);
+    }
 
     Ok(())
 }
