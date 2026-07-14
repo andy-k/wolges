@@ -305,7 +305,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         (rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize]) as f32
     }
 
-    pub fn evaluate(&mut self, player_idx: u8) {
+    // iterative-deepening core shared by evaluate (verbose) and solve (quiet).
+    // returns the final (deepest, converged) root valuation.
+    fn run_id_loop(&mut self, player_idx: u8, verbose: bool) -> f32 {
+        let mut last_valuation = f32::NAN;
         for max_depth in 1.. {
             let old_num_state_eval = self.work_buffer.state_eval.len();
             let valuation = self.negamax_eval(
@@ -316,17 +319,32 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 f32::INFINITY,
                 false,
             );
-            println!(
-                "valuation for depth {max_depth} is {}",
-                valuation / super::equity::SCALE as f32
-            );
-            self.print_progress();
-            self.print_best_line(player_idx);
+            last_valuation = valuation;
+            if verbose {
+                println!(
+                    "valuation for depth {max_depth} is {}",
+                    valuation / super::equity::SCALE as f32
+                );
+                self.print_progress();
+                self.print_best_line(player_idx);
+            }
             // check for time limit here
             if self.work_buffer.state_eval.len() == old_num_state_eval {
                 break;
             }
         }
+        last_valuation
+    }
+
+    pub fn evaluate(&mut self, player_idx: u8) {
+        self.run_id_loop(player_idx, true);
+    }
+
+    // headless entry point: returns the root valuation as data, with no
+    // per-depth prints. "quiet" means no per-depth spam; the throttled
+    // in-search tick can still fire on a multi-second search.
+    pub fn solve(&mut self, player_idx: u8) -> f32 {
+        self.run_id_loop(player_idx, false)
     }
 
     // based on https://en.wikipedia.org/wiki/Negamax
@@ -675,6 +693,15 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
             player_idx ^= 1;
         }
+    }
+
+    // collect the principal variation as owned data (each Play cloned) so the
+    // caller can hold it past the solver borrow. out is caller-owned and reused.
+    pub fn collect_pv(&'a self, player_idx: u8, out: &mut Vec<(f32, movegen::Play)>) {
+        out.clear();
+        self.append_solution(0, player_idx, |found| {
+            out.push((found.equity, found.play.clone()));
+        });
     }
 
     pub fn print_best_line(&mut self, player_idx: u8) {
