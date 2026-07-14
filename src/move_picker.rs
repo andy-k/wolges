@@ -31,6 +31,9 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     // wants a more accurate (slower) or quicker decision overrides it via
     // set_num_sim_iters.
     num_sim_iters: u64,
+    // When false, pick_a_move skips its per-decision debug print. The batch
+    // sim-vs-sim harness turns this off; the interactive picker leaves it on.
+    verbose: bool,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -46,12 +49,33 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             candidates: Vec::new(),
             simmer: simmer::Simmer::new(game_config),
             num_sim_iters: DEFAULT_NUM_SIM_ITERS,
+            verbose: true,
         }
     }
 
     #[inline(always)]
     pub fn set_num_sim_iters(&mut self, num_sim_iters: u64) {
         self.num_sim_iters = num_sim_iters;
+    }
+
+    #[inline(always)]
+    pub fn set_verbose(&mut self, verbose: bool) {
+        self.verbose = verbose;
+    }
+
+    /// Reseed the inner rollout RNG so a decision replays identically. The
+    /// sim-vs-sim harness reseeds every move from a (seed, pair, game, turn)
+    /// mix, making its results independent of the thread count.
+    #[inline(always)]
+    pub fn reseed(&mut self, seed: u64) {
+        self.simmer.reseed(seed);
+    }
+
+    /// Give this seat its own rollout objective and win-probability
+    /// configuration (descale, weightages, sigmoid constants).
+    #[inline(always)]
+    pub fn set_config(&mut self, config: simmer::SimmerConfig) {
+        self.simmer.set_config(config);
     }
 
     #[inline(always)]
@@ -198,14 +222,16 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                     .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
                     .unwrap()
                     .0;
-                println!(
-                    "top candidate mean = {} (sd={} count={} range {}..{})",
-                    candidates[top_idx].stats.mean(),
-                    candidates[top_idx].stats.standard_deviation(),
-                    candidates[top_idx].stats.count(),
-                    candidates[top_idx].stats.ci_max(-Z),
-                    candidates[top_idx].stats.ci_max(Z),
-                );
+                if simmer.verbose {
+                    println!(
+                        "top candidate mean = {} (sd={} count={} range {}..{})",
+                        candidates[top_idx].stats.mean(),
+                        candidates[top_idx].stats.standard_deviation(),
+                        candidates[top_idx].stats.count(),
+                        candidates[top_idx].stats.ci_max(-Z),
+                        candidates[top_idx].stats.ci_max(Z),
+                    );
+                }
                 assert_eq!(
                     candidates[top_idx].play_index,
                     top_candidate_play_index_by_mean(&candidates)

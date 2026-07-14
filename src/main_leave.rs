@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
     alphabet, bites, build, census, display, equity, error, fash, game_config, game_state, klv,
-    kwg, move_filter, move_picker, movegen, play_scorer, prob, stats, win_pct,
+    kwg, move_filter, move_picker, movegen, play_scorer, prob, simmer, stats, win_pct,
 };
 
 static BASE62: &[u8; 62] = b"\
@@ -431,6 +431,37 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 )?;
                 Ok(true)
             }
+            "-sim-compare" => {
+                // english-sim-compare CSW24.kwg leaves.klv2 1000 [seed]
+                // Both seats share one leave table but each runs the full 2-ply
+                // simmer to choose every move, with its own rollout config from
+                // WOLGES_SIM_P0_* / WOLGES_SIM_P1_* (see sim_compare_seat_config)
+                // and a shared budget WOLGES_SIM_ITERS. Give both seats the same
+                // config to confirm the harness is unbiased (about 50%).
+                let arc_klv = if args.len() > 3 && args[3] != "-" {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        &args[3],
+                    )?))
+                } else {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
+                };
+                let num_game_pairs = if args.len() > 4 {
+                    u64::from_str(&args[4])?
+                } else {
+                    1_000
+                };
+                let seed = if args.len() > 5 {
+                    Some(u64::from_str(&args[5])?)
+                } else {
+                    None
+                };
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                sim_compare(make_game_config(), kwg, arc_klv, num_game_pairs, seed)?;
+                Ok(true)
+            }
             "-rollout" => {
                 // english-rollout CSW24.kwg policy.klv2 num_games [seed]
                 // whole-game Monte-Carlo rollout leaves (a measured negative).
@@ -724,6 +755,10 @@ fn main() -> error::Returns<()> {
     if klv is \"-\" or omitted, uses no leave.
     number of game pairs is optional (default 10000).
     seed is optional; prints auto-generated seed to stderr if not provided.
+  english-sim-compare CSW24.kwg leaves.klv2 1000 [seed]
+    play game pairs where both seats choose moves by the 2-ply simmer,
+    each seat configured by WOLGES_SIM_P0_* / WOLGES_SIM_P1_* (and a shared
+    WOLGES_SIM_ITERS budget), to A/B simmer configurations.
     each pair: same tile draw, alternating starting player.
     p0 uses klv0, p1 uses klv1 for move selection (static play, max=1).
     reports wins/losses/draws, score stats, divergent games, and
@@ -8413,6 +8448,226 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             end_reason,
                             pair_diverged,
                         );
+                    }
+
+                    let secs = t0.elapsed().as_secs();
+                    let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
+                    if secs > prev {
+                        eprintln!("After {}s: {} pairs", secs, pair_idx + 1);
+                    }
+                }
+
+                stats
+            }));
+        }
+
+        let mut combined = GamePairStats::new();
+        for handle in thread_handles {
+            combined.merge(&handle.join().unwrap());
+        }
+
+        println!();
+        combined.print();
+
+        Ok(())
+    })
+}
+
+// Build one seat's rollout configuration from environment, falling back to the
+// shipped default for any knob the caller does not override. `prefix` is
+// "WOLGES_SIM_P0_" or "WOLGES_SIM_P1_". DESCALE=0 reproduces the pre-descale
+// units baseline for that seat (its win-probability term collapses), the A/B
+// for the descale fix; both seats left at the default 1 is the unbiased
+// calibration check that should land near 50%.
+fn sim_compare_seat_config(prefix: &str) -> simmer::SimmerConfig {
+    let mut config = simmer::SimmerConfig::default();
+    if let Some(descale) = std::env::var(format!("{prefix}DESCALE"))
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        config.descale = descale != 0;
+    }
+    config
+}
+
+// Play game pairs where both seats choose every move with the full 2-ply
+// simmer instead of a single greedy play, to compare two simmer configurations
+// the same way english-compare compares two leave tables. Both seats share one
+// leave table; the asymmetry under test is each seat's SimmerConfig. As in
+// english-compare, the two games of a pair start from the same position and
+// draw order with the seats swapped, canceling first-move advantage. Each
+// seat's simmer is reseeded every move from a (seed, pair, game, turn) mix, so
+// the whole run is a deterministic function of the seed regardless of how the
+// pairs are split across threads.
+fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    arc_klv: std::sync::Arc<klv::Klv<L>>,
+    num_game_pairs: u64,
+    seed: Option<u64>,
+) -> error::Returns<()> {
+    let game_config = std::sync::Arc::new(game_config);
+    let kwg = std::sync::Arc::new(kwg);
+    let seed = seed.unwrap_or_else(rand::random);
+    eprintln!("seed: {seed}");
+    let num_threads = wolges_threads();
+    let completed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let reported_secs = std::sync::atomic::AtomicU64::new(0);
+    let t0 = std::time::Instant::now();
+
+    // Fixed per-move rollout budget (no wall clock), shared by both seats so a
+    // config difference is the only asymmetry. Each seat's objective and
+    // win-probability configuration comes from its own environment prefix.
+    let num_sim_iters = std::env::var("WOLGES_SIM_ITERS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1_000);
+    let config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
+    let config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
+    eprintln!(
+        "WOLGES_SIM_ITERS={num_sim_iters} P0.descale={} P1.descale={}",
+        config_p0.descale as u8, config_p1.descale as u8,
+    );
+
+    std::thread::scope(|s| -> error::Returns<()> {
+        let mut thread_handles = Vec::new();
+        for _ in 0..num_threads {
+            let game_config = std::sync::Arc::clone(&game_config);
+            let kwg = std::sync::Arc::clone(&kwg);
+            let arc_klv = std::sync::Arc::clone(&arc_klv);
+            let completed_pairs = std::sync::Arc::clone(&completed_pairs);
+            let reported_secs = &reported_secs;
+            thread_handles.push(s.spawn(move || {
+                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+                let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
+                // One simmer driver per seat, each configured once; both are
+                // reseeded per move so the decision replays identically no
+                // matter which thread runs the pair.
+                let mut driver_p0 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+                    &game_config,
+                    &kwg,
+                    &arc_klv,
+                ));
+                if let move_picker::MovePicker::Simmer(driver) = &mut driver_p0 {
+                    driver.set_config(config_p0);
+                    driver.set_num_sim_iters(num_sim_iters);
+                    driver.set_verbose(false);
+                }
+                let mut driver_p1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+                    &game_config,
+                    &kwg,
+                    &arc_klv,
+                ));
+                if let move_picker::MovePicker::Simmer(driver) = &mut driver_p1 {
+                    driver.set_config(config_p1);
+                    driver.set_num_sim_iters(num_sim_iters);
+                    driver.set_verbose(false);
+                }
+                let mut game_state = game_state::GameState::new(&game_config);
+                let mut saved_game_state = game_state.clone();
+                let mut final_scores = vec![0i32; game_config.num_players() as usize];
+                let mut stats = GamePairStats::new();
+                let mut first_game_moves: Vec<movegen::Play> = Vec::new();
+
+                loop {
+                    let pair_idx =
+                        completed_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if pair_idx >= num_game_pairs {
+                        break;
+                    }
+
+                    rng.set_stream(pair_idx);
+                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    saved_game_state.clone_from(&game_state);
+                    let saved_rng_state = rng.serialize_state();
+
+                    let mut pair_diverged = false;
+                    let mut pair_results =
+                        [(0i32, 0i32, 0u32, game_state::CheckGameEnded::NotEnded); 2];
+
+                    for game_in_pair in 0..2u8 {
+                        if game_in_pair > 0 {
+                            game_state.clone_from(&saved_game_state);
+                            rng = rand::rngs::ChaCha20Rng::deserialize_state(&saved_rng_state);
+                        }
+                        let seat_swapped = game_in_pair != 0;
+                        let mut num_turns = 0u32;
+                        if !seat_swapped {
+                            first_game_moves.clear();
+                        }
+
+                        let end_reason = loop {
+                            // The player-0 seat uses config_p0 (swap-corrected
+                            // across the pair's two games); choose its move with
+                            // that seat's simmer driver.
+                            let is_p0_seat = (game_state.turn == 0) != seat_swapped;
+                            let board_snapshot = movegen::BoardSnapshot {
+                                board_tiles: &game_state.board_tiles,
+                                game_config: &game_config,
+                                kwg: &kwg,
+                                klv: &arc_klv,
+                            };
+                            let driver = if is_p0_seat {
+                                &mut driver_p0
+                            } else {
+                                &mut driver_p1
+                            };
+                            // Mix (seed, pair, game, turn) into the rollout seed
+                            // so the sim stream is fixed no matter how the pairs
+                            // split across threads.
+                            if let move_picker::MovePicker::Simmer(simmer_driver) = &mut *driver {
+                                simmer_driver.reseed(census_mix64(
+                                    seed.wrapping_add(census_mix64(
+                                        pair_idx
+                                            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                                            .wrapping_add((game_in_pair as u64).wrapping_shl(40))
+                                            .wrapping_add(num_turns as u64),
+                                    )),
+                                ));
+                            }
+                            driver.pick_a_move(
+                                &mut filtered_movegen,
+                                &mut move_generator,
+                                &board_snapshot,
+                                &game_state,
+                                &game_state.current_player().rack,
+                            );
+                            let play = &move_generator.plays[0].play;
+                            if seat_swapped {
+                                if !pair_diverged
+                                    && (num_turns as usize >= first_game_moves.len()
+                                        || first_game_moves[num_turns as usize] != *play)
+                                {
+                                    pair_diverged = true;
+                                }
+                            } else {
+                                first_game_moves.push(play.clone());
+                            }
+                            game_state.play(&game_config, &mut rng, play).unwrap();
+                            num_turns += 1;
+                            let end = game_state.check_game_ended(&game_config, &mut final_scores);
+                            match end {
+                                game_state::CheckGameEnded::PlayedOut
+                                | game_state::CheckGameEnded::ZeroScores => break end,
+                                game_state::CheckGameEnded::NotEnded => {}
+                            }
+                            game_state.next_turn();
+                        };
+
+                        let (p0_score, p1_score) = if seat_swapped {
+                            (final_scores[1], final_scores[0])
+                        } else {
+                            (final_scores[0], final_scores[1])
+                        };
+                        pair_results[game_in_pair as usize] =
+                            (p0_score, p1_score, num_turns, end_reason);
+                    }
+                    if !pair_diverged && pair_results[0].2 != pair_results[1].2 {
+                        pair_diverged = true;
+                    }
+                    for &(p0_score, p1_score, num_turns, end_reason) in &pair_results {
+                        stats.add_game(p0_score, p1_score, num_turns, end_reason, pair_diverged);
                     }
 
                     let secs = t0.elapsed().as_secs();

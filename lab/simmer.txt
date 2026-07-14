@@ -45,3 +45,25 @@ all themselves safe to send, so the compiler can derive that property instead
 of a human asserting it. Stripping tokio out entirely is also what lets the
 picker build for a single-threaded wasm target, which cannot host a tokio
 runtime at all. Picking a move is now a plain synchronous function call.
+
+
+MEASURING THE SIMMER: A TWO-SEAT COMPARE
+
+lab/leavegen.txt's english-compare measures leave TABLES: each seat picks its
+move by one greedy look at the board with its own table. english-sim-compare is
+the simmer's counterpart: both seats share the same leave table, but each picks
+its move by running the full rollout instead of a single greedy look, and the
+two seats can each be configured differently. Every seat reads its own settings
+from WOLGES_SIM_P0_* and WOLGES_SIM_P1_* (today just DESCALE, on or off), and
+both share one fixed WOLGES_SIM_ITERS rollout budget per move. Giving both
+seats identical settings and expecting the result to land near 50% is a harness
+sanity check (an unbiased comparison should tie); giving them different
+settings measures which one plays better.
+
+As in english-compare, each game pair starts from the same deal with the seats
+swapped, so first-move advantage cancels between the two halves of the pair.
+Each seat's simmer is reseeded before every single move from a mix of the run's
+seed, the pair number, the game number, and the turn number, so the whole run
+-- board positions, every rollout's random draws, the final result -- is a
+deterministic function of the seed alone: replaying the same seed at any thread
+count reproduces the same numbers exactly.
