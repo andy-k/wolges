@@ -799,6 +799,16 @@ fn generate_autoplay_logs<
     // (no smoothing).
     let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
 
+    // full_rack_forcing: target whole undersampled FULL racks (count(R) <
+    // min_samples) instead of undersampled subracks. The forced rack is built
+    // impossible-tolerantly (pair with WOLGES_IMPOSSIBLE_OK=1) and recorded keyed
+    // by R into the main full-rack map, like a natural sample. Sound only with the
+    // per-rack `-generate` decompose (WOLGES_GENERATE_PER_RACK=1): there each
+    // rack's MEAN is weighted by global-bag combos alone, so a force-covered rack
+    // never inflates the common subracks it shares. Off (default) = the
+    // subrack-targeted path, byte-identical to before.
+    let full_rack_forcing = env_flag("WOLGES_AUTOPLAY_FULL_RACK_FORCING", false);
+
     // entering-leave attribution. Off (default): record each turn's best-play
     // equity keyed by the drawn rack R (full-rack attribution). On: record it
     // keyed by the entering leave L = the tiles the player walked into the turn
@@ -1259,6 +1269,7 @@ fn generate_autoplay_logs<
                                             },
                                             RecomputeParams {
                                                 leave_size,
+                                                full_rack_forcing,
                                                 min_samples: min_samples_per_rack,
                                             },
                                         );
@@ -1277,7 +1288,7 @@ fn generate_autoplay_logs<
                                                 mutex_guard.undersampled_racks.len();
                                             write!(
                                                 mutex_guard.undersampling_comment,
-                                                " (need to force {num_undersampled} subracks over {deficit} moves)"
+                                                " (need to force {num_undersampled} targets over {deficit} moves)"
                                             )
                                             .unwrap();
                                         }
@@ -1347,6 +1358,7 @@ fn generate_autoplay_logs<
                                     },
                                     RecomputeParams {
                                         leave_size,
+                                        full_rack_forcing,
                                         min_samples: min_samples_per_rack,
                                     },
                                 );
@@ -1364,7 +1376,7 @@ fn generate_autoplay_logs<
                                     let num_undersampled = mutex_guard.undersampled_racks.len();
                                     write!(
                                         mutex_guard.undersampling_comment,
-                                        " (need to force {num_undersampled} subracks over {deficit} moves)"
+                                        " (need to force {num_undersampled} targets over {deficit} moves)"
                                     )
                                     .unwrap();
                                 }
@@ -1643,19 +1655,39 @@ fn generate_autoplay_logs<
                                 // same way the main record below does (0 when oppdenial_rack/oppdenial_exact off), so
                                 // rare forced racks are valued consistently with sampled ones.
                                 let rounded_equity = knob.apply(play.equity, &sample_rack_buf);
-                                // attribute to the target subrack S only, count exactly 1
-                                // (no positional multiplicity): S is the subrack, not a
-                                // positional subset of the built rack.
-                                thread_rare_subrack_map
-                                    .entry(s_subrack[..].into())
-                                    .and_modify(|e| {
-                                        e.equity += rounded_equity;
-                                        e.count += 1;
-                                    })
-                                    .or_insert(Cumulate {
-                                        equity: rounded_equity,
-                                        count: 1,
-                                    });
+                                if full_rack_forcing {
+                                    // the target is a whole full rack, so num_filler
+                                    // == 0 and sample_rack_buf IS that rack R. record
+                                    // it keyed by R into the main full-rack map, count
+                                    // 1, like a natural sample. the per-rack `-generate`
+                                    // decomposes it without the per-occurrence
+                                    // pollution that subrack targeting was invented to
+                                    // avoid.
+                                    thread_full_rack_map
+                                        .entry(sample_rack_buf[..].into())
+                                        .and_modify(|e| {
+                                            e.equity += rounded_equity;
+                                            e.count += 1;
+                                        })
+                                        .or_insert(Cumulate {
+                                            equity: rounded_equity,
+                                            count: 1,
+                                        });
+                                } else {
+                                    // attribute to the target subrack S only, count exactly 1
+                                    // (no positional multiplicity): S is the subrack, not a
+                                    // positional subset of the built rack.
+                                    thread_rare_subrack_map
+                                        .entry(s_subrack[..].into())
+                                        .and_modify(|e| {
+                                            e.equity += rounded_equity;
+                                            e.count += 1;
+                                        })
+                                        .or_insert(Cumulate {
+                                            equity: rounded_equity,
+                                            count: 1,
+                                        });
+                                }
                                 undersampled_thread_racks
                                     .swap_remove(chosen_undersampled_thread_rack_index);
                                 if undersampling_remediation_countdown
@@ -3446,6 +3478,7 @@ struct RecomputeScratch<'a> {
 
 struct RecomputeParams {
     leave_size: u8,
+    full_rack_forcing: bool,
     min_samples: u64,
 }
 
@@ -3467,6 +3500,7 @@ fn recompute_undersampled_subracks(
     } = scratch;
     let RecomputeParams {
         leave_size,
+        full_rack_forcing,
         min_samples,
     } = params;
     // no remediation requested: nothing is ever undersampled (min_samples
@@ -3483,6 +3517,54 @@ fn recompute_undersampled_subracks(
     if min_samples == 0 {
         undersampled.clear();
         return 0;
+    }
+    if full_rack_forcing {
+        // full-rack forcing: mark undersampled FULL racks (count(R) <
+        // min_samples) straight from the full-rack map -- no subrack
+        // decomposition, no draw-ways. rack_size = leave_size + 1 (leave_size
+        // is rack_size - 1 whenever remediation runs). Pairs with the per-rack
+        // `-generate` so a forced rack never pollutes the common subracks it
+        // shares.
+        // Skip globally-impossible racks (a tile appears more often than the
+        // bag holds it): under per-rack `-generate` their completion combos
+        // are 0, so they contribute nothing -- forcing them is wasted
+        // remediation.
+        // full_rack_tally holds a frozen copy of the global freqs
+        // (alphabet_freqs is the live enumeration tally, mutated as it walks).
+        let rack_size = leave_size + 1;
+        full_rack_tally.copy_from_slice(alphabet_freqs);
+        let frozen_freq: &[u8] = full_rack_tally;
+        undersampled.clear();
+        let mut remaining = 0u64;
+        generate_exchanges(&mut ExchangeEnv {
+            found_exchange_move: |rack_bytes: &[u8]| {
+                // rack_bytes is sorted, so equal tiles are adjacent.
+                let mut i = 0;
+                while i < rack_bytes.len() {
+                    let t = rack_bytes[i] as usize;
+                    let mut run = 1u8;
+                    while i + (run as usize) < rack_bytes.len()
+                        && rack_bytes[i + (run as usize)] as usize == t
+                    {
+                        run += 1;
+                    }
+                    if run > frozen_freq[t] {
+                        return;
+                    }
+                    i += run as usize;
+                }
+                let count = full_rack_map.get(rack_bytes).map_or(0, |c| c.count);
+                if count < min_samples {
+                    undersampled.push(rack_bytes.into());
+                    remaining += min_samples - count;
+                }
+            },
+            rack_tally: alphabet_freqs,
+            min_len: rack_size,
+            max_len: rack_size,
+            exchange_buffer,
+        });
+        return remaining;
     }
     // pooled per-subrack count from the full racks. for each rack R,
     // enumerate its subracks S (length 1..=leave_size, skipping the empty
