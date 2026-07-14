@@ -131,7 +131,13 @@ this test gets. So a gap under about 0.035 pp at a million pairs is noise no
 matter which way its sign happens to fall.
 
 A table played against itself scores 50.00 by symmetry, which is the
-calibration check.
+calibration check. Setting WOLGES_COMPARE_PORCELAIN to a nonzero value appends
+a machine-readable block after the normal output -- one NAME VALUE per line
+(each table's share, the win percent, the draws, the confidence, which side
+leads, and the game and pair counts) -- so a script reads the first table's
+share directly instead of pattern-matching the human-readable line.
+
+New knobs: WOLGES_COMPARE_PORCELAIN.
 
 Every number below is a fresh english-compare run of our own tables against our
 own tables.
@@ -197,3 +203,17 @@ compiled for. They are usually the same, which is why the examples read
 "english english". Each trailing number is one generation's game count, so
 three numbers means three generations; append :N to a count to ask for N
 samples of every rack that generation.
+
+
+ENVIRONMENT KNOBS
+
+A bare run already does the right thing; these are for experiments, tuning, or
+reproduction. Each shows its type and default in parentheses; a knob with a
+fixed set of values lists what each one does. EN is the classic two-player
+English game.
+
+Compare and dynamic leaves:
+  WOLGES_COMPARE_PORCELAIN (0 or 1; default 0) -- english-compare's output;
+    changes no table:
+      1  append a machine-readable result block after the normal output
+      0  print the human-readable output only
