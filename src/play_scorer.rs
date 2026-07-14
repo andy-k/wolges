@@ -561,3 +561,144 @@ impl Default for PlayScorer {
         Self::new()
     }
 }
+
+/// Recount an all-real place play's score exactly like
+/// [`PlayScorer::compute_score`], and additionally report, per newly-placed
+/// tile (in `word` order), how much the total score would DROP if that tile
+/// were a blank designated as the same letter.
+///
+/// Blanking a placed tile only zeroes its own face value: it keeps the tile
+/// (and thus every word/tile multiplier and the played-count bonus) in place,
+/// and only removes that tile's contribution to its main word and, if any, its
+/// crossword. The drop is therefore independent and additive across positions,
+/// so the best score for any blank designation of this single traversal is the
+/// all-real score minus the smallest drops of the positions chosen to be
+/// blanks. This lets the census derive every blank variant of one real-tile
+/// GADDAG traversal instead of re-running the wildcard descent, which makes a
+/// separate traversal for every letter each blank could spell. `out` is
+/// cleared then filled with `(letter, drop)` for each placed tile, where
+/// `letter` is the real tile (high bit clear). The drop uses the blank's own
+/// scaled score (which may be non-zero for a custom alphabet), not a
+/// hardcoded 0.
+pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    down: bool,
+    lane: i8,
+    idx: i8,
+    word: &[u8],
+    out: &mut Vec<(u8, i32)>,
+) -> i32 {
+    let game_config = board_snapshot.game_config;
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    let premiums = board_layout.premiums();
+    let dim = board_layout.dim();
+    let strider = dim.lane(down, lane);
+    let blank_scaled = alphabet.scaled_score(0);
+    out.clear();
+
+    let mut recounted_score = 0;
+    let mut num_played = 0;
+
+    // main word: accumulate the word score/multiplier exactly as compute_score,
+    // and stage each placed tile's pre-word-multiplier drop = (real face - blank
+    // face) * this square's tile multiplier.
+    {
+        let mut word_multiplier = 1;
+        let mut word_score = 0i32;
+        for (i, &tile) in (idx..).zip(word.iter()) {
+            let strider_at_i = strider.at(i);
+            let tile_multiplier;
+            let premium = &premiums[strider_at_i];
+            let placed_tile = if tile != 0 {
+                num_played += 1;
+                word_multiplier *= premium.word_multiplier as i32;
+                tile_multiplier = premium.tile_multiplier;
+                // recount as if all-real: mask off any blank designation the descent
+                // chose for this newly-placed tile (the blank variants, including this
+                // letter as a blank, are reconstructed afterwards from the drop).
+                let letter = tile & 0x7f;
+                out.push((
+                    letter,
+                    (alphabet.scaled_score(letter) - blank_scaled) * tile_multiplier as i32,
+                ));
+                letter
+            } else {
+                tile_multiplier = 1;
+                board_snapshot.board_tiles[strider_at_i]
+            };
+            let face_value_tile_score = alphabet.scaled_score(placed_tile);
+            word_score += face_value_tile_score * tile_multiplier as i32;
+        }
+        recounted_score += word_score * word_multiplier;
+        // fold the main word's multiplier into each staged drop.
+        for e in out.iter_mut() {
+            e.1 *= word_multiplier;
+        }
+    }
+
+    // crosswords: for each placed tile that forms a perpendicular word, add its
+    // crossword contribution to the recount and its crossword drop (the placed
+    // tile is the only new tile, so its square's word multiplier is the whole
+    // crossword's multiplier).
+    let mut k = 0;
+    for (i, &tile) in (idx..).zip(word.iter()) {
+        if tile != 0 {
+            // all-real letter for this newly-placed tile (mask any blank designation).
+            let letter = tile & 0x7f;
+            let perpendicular_strider = dim.lane(!down, i);
+            let mut j = lane;
+            while j > 0 && board_snapshot.board_tiles[perpendicular_strider.at(j - 1)] != 0 {
+                j -= 1;
+            }
+            let perpendicular_strider_len = perpendicular_strider.len();
+            if j == lane
+                && if j + 1 < perpendicular_strider_len {
+                    board_snapshot.board_tiles[perpendicular_strider.at(j + 1)] == 0
+                } else {
+                    true
+                }
+            {
+                // no perpendicular tile
+                k += 1;
+                continue;
+            }
+            let mut word_multiplier = 1;
+            let mut word_score = 0i32;
+            // the placed square's tile multiplier, captured while walking the
+            // crossword: at j == lane the premium being read is this same cell
+            // (the perpendicular strider through lane i at position lane is the
+            // placed cell strider.at(i)), so there is no need to re-index it.
+            let mut placed_tile_multiplier = 1i32;
+            for j in j..perpendicular_strider_len {
+                let perpendicular_strider_at_j = perpendicular_strider.at(j);
+                let tile_multiplier;
+                let premium = &premiums[perpendicular_strider_at_j];
+                let placed_tile = if j == lane {
+                    word_multiplier *= premium.word_multiplier as i32;
+                    tile_multiplier = premium.tile_multiplier;
+                    placed_tile_multiplier = premium.tile_multiplier as i32;
+                    letter
+                } else {
+                    tile_multiplier = 1;
+                    board_snapshot.board_tiles[perpendicular_strider_at_j]
+                };
+                if placed_tile == 0 {
+                    break;
+                }
+                let face_value_tile_score = alphabet.scaled_score(placed_tile);
+                word_score += face_value_tile_score * tile_multiplier as i32;
+            }
+            recounted_score += word_score * word_multiplier;
+            out[k].1 += (alphabet.scaled_score(letter) - blank_scaled)
+                * placed_tile_multiplier
+                * word_multiplier;
+            k += 1;
+        }
+    }
+
+    let num_played_bonus = game_config.num_played_bonus(num_played);
+    recounted_score += num_played_bonus as i32 * equity::SCALE;
+
+    recounted_score
+}

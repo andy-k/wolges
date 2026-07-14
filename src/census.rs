@@ -95,6 +95,47 @@ impl MultisetLattice {
         (self.size_offset[s] + within) as u32
     }
 
+    /// Like [`rank`], but over only the NON-ZERO letters: `items` is `(letter,
+    /// count)` ascending by letter, every count > 0, and `s` is their total. The
+    /// zero-count letters [`rank`] iterates contribute nothing to `within` and
+    /// leave `rem` unchanged, so skipping them is identical -- but O(items) instead
+    /// of O(num_letters). The blank-spelling recorder ranks one variant per call with
+    /// only about 1 + (distinct played letters) non-zero entries, so this avoids
+    /// re-scanning the whole (mostly empty) alphabet tally every variant.
+    #[inline]
+    pub fn rank_sparse(&self, s: usize, items: &[(u8, u8)]) -> u32 {
+        self.rank_sparse_iter(s, items.iter().copied())
+    }
+
+    /// Iterator form of [`rank_sparse`]: ranks the ascending non-zero
+    /// `(letter, count)` entries without requiring them materialized in a slice,
+    /// so the blank-spelling recorder can rank a variant straight from its blank +
+    /// kept-run iterators with no per-leave stack array.
+    #[inline]
+    pub fn rank_sparse_iter(&self, s: usize, items: impl Iterator<Item = (u8, u8)>) -> u32 {
+        if s > self.rack_size {
+            return !0;
+        }
+        let l = self.num_letters;
+        let mut within: u64 = 0;
+        let mut rem = s;
+        for (letter, ct_raw) in items {
+            let t = letter as usize;
+            // the last letter (index l-1) has parts == 0 and contributes nothing;
+            // items are ascending, so it can only be the final entry.
+            if t >= l - 1 {
+                break;
+            }
+            let ct = ct_raw as usize;
+            let parts = l - 1 - t;
+            for j in 0..ct {
+                within += self.c((rem - j) + parts - 1, parts - 1);
+            }
+            rem -= ct;
+        }
+        (self.size_offset[s] + within) as u32
+    }
+
     /// Rank of a multiset given as sorted tile bytes (e.g. a played word's tiles).
     pub fn rank_bytes(&self, sorted_tiles: &[u8]) -> u32 {
         let mut tally = [0u8; MAX_LETTERS];
@@ -429,141 +470,459 @@ pub fn apportion_table(
     }
 }
 
-/// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
-/// best_equity(R) inline (max over splits) and immediately apportion it
-/// (weighted by w(R)) to every subrack -- ONE lattice pass, no materialized
-/// best[] array. Equivalent to best_equity_table followed by apportion_table
-/// (proven by apportion_fused_matches_split). The entering path can NOT fuse
-/// this way: its draw-average pulls best[S+d] at random across racks, so it
-/// needs best[] fully materialized. num/den caller-owned, zeroed per board.
-pub fn apportion_fused(
+/// Parent (add-one-tile) index table over the sub-full-rack multisets. For every
+/// lattice index `idx` of size < rack_size and every letter `t`, `add(idx, t)` is
+/// the rank of `multiset(idx)` with one more `t`. [`apportion_fused`] walks each
+/// subrack up from the empty multiset one tile at a time by table lookup, instead
+/// of recomputing the binomial rank-skip (`lat.c(...)`) per rack -- step 3 is about 95%
+/// of a census board, so this is the bigger-pie win. Built once per process and
+/// shared read-only across the board threads. Only sub-full-rack rows are stored
+/// (a subrack never grows past rack_size, so `add` is never called on a full rack):
+/// full_rack_start() * num_letters u32s (about 120 MB english, about 420 MB for a 33-letter
+/// lattice).
+pub struct AddTable {
+    num_letters: usize,
+    add: Vec<u32>,
+}
+
+impl AddTable {
+    pub fn new(lat: &MultisetLattice) -> Self {
+        let n = lat.num_letters();
+        let rows = lat.full_rack_start();
+        let mut add = vec![0u32; rows * n];
+        let mut tally = vec![0u8; n];
+        for (idx, row) in add.chunks_exact_mut(n).enumerate() {
+            lat.unrank_into(idx, &mut tally);
+            for (t, slot) in row.iter_mut().enumerate() {
+                tally[t] += 1;
+                *slot = lat.rank(&tally);
+                tally[t] -= 1;
+            }
+        }
+        Self {
+            num_letters: n,
+            add,
+        }
+    }
+
+    /// Rank of `multiset(idx)` with one more tile of letter `t`. Caller guarantees
+    /// `idx < full_rack_start()` (size < rack_size) and `t < num_letters`.
+    #[inline(always)]
+    pub fn add(&self, idx: usize, t: usize) -> usize {
+        // SAFETY: add holds full_rack_start()*num_letters u32s; the caller's contract is
+        // idx < full_rack_start() and t < num_letters, so idx*num_letters+t is
+        // < add.len().
+        unsafe { *self.add.get_unchecked(idx * self.num_letters + t) as usize }
+    }
+}
+
+/// Subset-max (downward zeta): dst[X] = max over all subracks P <= X of src[P], for
+/// every lattice index X. `src` and `dst` are lattice-length. One pass per letter, idx
+/// low->high so each +1-tile superset add(idx, t) -- a strictly higher index (larger
+/// size) -- reads an idx that has already folded in its own lower-count predecessors;
+/// max is idempotent, so composing the n passes yields the full multiset subset-max.
+/// Source indices are the sub-full-rack block (the only ones `add` accepts); writes
+/// may land on full racks. The mirror of the superset-sum fold in apportion_fused.
+/// Collapses a null-leave best_equity to the sheet subset-max, and precomputes
+/// maxleave(R) = max_{K<=R} leave[K] for the word-scatter path.
+pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], dst: &mut [i32]) {
+    let n = lat.num_letters();
+    let lo = lat.full_rack_start();
+    dst.copy_from_slice(src);
+    for t in 0..n {
+        for idx in 0..lo {
+            let sp = add.add(idx, t);
+            // SAFETY: idx ranges 0..full_rack_start() (< lat.len()), so idx < dst.len(); dst
+            // is the lat.len() destination buffer.
+            let v = unsafe { *dst.get_unchecked(idx) };
+            // SAFETY: sp = add.add(idx, t) is the rank of multiset(idx) plus one tile t
+            // (idx < full_rack_start(), t < num_letters), a lattice index < lat.len()
+            // = dst.len().
+            let cur = unsafe { dst.get_unchecked_mut(sp) };
+            if v > *cur {
+                *cur = v;
+            }
+        }
+    }
+}
+
+/// Word-scatter step 2 for the full-rack path (gens > 1): materialize best_equity(R)
+/// for every drawable full rack R into `best`, exactly, by exploiting the exchange
+/// floor (every non-word played multiset is worth 0). best(R) = max(maxleave(R), max
+/// over WORD splits P (sheet[P] > 0) of sheet[P] + leave[R - P]). The caller seeds
+/// `best` with maxleave (subset_max_transform of leave); this folds in each word: for
+/// every P with sheet[P] > 0, scatter sheet[P] + leave[K] into best[P + K] for every
+/// drawable complement K (P + K <= unseen, |P| + |K| == rack_size). Visits only word
+/// splits (about half the subracks of a rack are words), trading the per-rack 2^distinct
+/// rec_max descent for word-keyed scattered writes. `best` is lattice-indexed; only
+/// the full-rack block is meaningful afterwards.
+fn scatter_words(
     lat: &MultisetLattice,
+    add: &AddTable,
     sheet: &[i32],
     leave: &[i32],
     unseen: &[u8],
-    num: &mut [f64],
-    den: &mut [f64],
+    best: &mut [i32],
 ) {
     let n = lat.num_letters();
-    let mut r = [0u8; MAX_LETTERS];
-    // Constant context shared by the two per-rack recursions; best/w/we vary per rack
-    // and are passed as arguments -- no clippy::too_many_arguments. nz and the num/den
-    // accumulators are borrowed per rack; the Ctx is rebuilt for each drawable rack.
+    let rack_size = lat.rack_size();
+    // Enumerate the drawable complement K of a fixed word P: each letter t taken
+    // 0..=min(unseen[t]-P[t], remaining) times, total == rack_size - |P|. Carry K's
+    // lattice index (from 0) for leave[K] and R = P+K's index (from P) for best[R];
+    // both advance one tile at a time by the add table (source size < rack_size). At a
+    // complete K, scatter sheet[P]+leave[K] (max) into best[R]. avail[] = unseen-P, and
+    // suffix_cap prunes branches that cannot still fill `remaining`.
+    // Constant context for one word P's complement walk, so rec_k carries only the
+    // changing draw position and the two lattice indices -- no
+    // clippy::too_many_arguments. avail/suffix_cap/sp_val are fixed for this word; best
+    // is the shared scatter target, reborrowed per word.
     struct Ctx<'a> {
+        sp_val: i32,
         n: usize,
-        lat: &'a MultisetLattice,
-        sheet: &'a [i32],
+        add: &'a AddTable,
         leave: &'a [i32],
-        nz: &'a [(usize, u8)],
-        num: &'a mut [f64],
-        den: &'a mut [f64],
+        avail: &'a [u8],
+        suffix_cap: &'a [u32],
+        best: &'a mut [i32],
     }
     impl Ctx<'_> {
-        // max over splits -> best_equity(R) (same incremental rank as best_equity_table).
-        fn rec_max(
-            &self,
-            i: usize,
-            s_p: usize,
-            within_p: u64,
-            s_k: usize,
-            within_k: u64,
-            best: &mut i32,
-        ) {
+        fn rec_k(&mut self, t: usize, remaining: usize, k_idx: usize, r_idx: usize) {
+            if remaining == 0 {
+                // SAFETY: k_idx is the rank of the drawn complement K (|K| <= rack_size), built up
+                // from 0 one tile at a time via the add table, so < lat.len(); leave is
+                // lat.len()-sized.
+                let cand = self.sp_val + unsafe { *self.leave.get_unchecked(k_idx) };
+                // SAFETY: r_idx is the rank of R = P+K (|R| = rack_size), built up from the word
+                // index pj via the add table, so < lat.len(); best is lat.len()-sized.
+                let cur = unsafe { self.best.get_unchecked_mut(r_idx) };
+                if cand > *cur {
+                    *cur = cand;
+                }
+                return;
+            }
+            if t == self.n || (self.suffix_cap[t] as usize) < remaining {
+                return;
+            }
+            // c = 0: skip letter t.
+            self.rec_k(t + 1, remaining, k_idx, r_idx);
+            // c >= 1: take c of letter t into both K and R.
+            let cap = (self.avail[t] as usize).min(remaining);
+            let mut kk = k_idx;
+            let mut rr = r_idx;
+            for c in 1..=cap {
+                kk = self.add.add(kk, t);
+                rr = self.add.add(rr, t);
+                self.rec_k(t + 1, remaining - c, kk, rr);
+            }
+        }
+    }
+    let mut p_tally = [0u8; MAX_LETTERS];
+    let mut avail = [0u8; MAX_LETTERS];
+    let mut suffix_cap = [0u32; MAX_LETTERS + 1];
+    // Words live only at sizes 1..=rack_size (sheet[empty] is the 0 exchange floor).
+    for pj in 1..lat.len() {
+        // SAFETY: pj is the loop index over 1..lat.len(), so pj < lat.len() = sheet.len().
+        let sp_val = unsafe { *sheet.get_unchecked(pj) };
+        if sp_val <= 0 {
+            continue;
+        }
+        lat.unrank_into(pj, &mut p_tally[..n]);
+        let psize: usize = p_tally[..n].iter().map(|&c| c as usize).sum();
+        let krem = rack_size - psize;
+        // drawable complement budget per letter, and its suffix sums for pruning.
+        for t in 0..n {
+            avail[t] = unseen[t].saturating_sub(p_tally[t]);
+        }
+        suffix_cap[n] = 0;
+        for t in (0..n).rev() {
+            suffix_cap[t] = suffix_cap[t + 1] + (avail[t] as u32).min(krem as u32);
+        }
+        Ctx {
+            sp_val,
+            n,
+            add,
+            leave,
+            avail: &avail,
+            suffix_cap: &suffix_cap,
+            best: &mut *best,
+        }
+        .rec_k(0, krem, 0, pj);
+    }
+}
+
+/// The read-only per-board arrays [`apportion_fused`] consumes: the play-value sheet,
+/// the current leave table, and the unseen draw pool. Grouped into one struct so the
+/// function stays under the argument-count lint without an allow.
+#[derive(Clone, Copy)]
+pub struct ApportionBoard<'a> {
+    pub sheet: &'a [i32],
+    pub leave: &'a [i32],
+    pub unseen: &'a [u8],
+}
+
+/// Output accumulators for [`apportion_fused`]: the per-board num/den arrays the
+/// weighted rack values are summed into, bundled so the signature stays under the
+/// argument-count lint. Both are lat.len()-sized and caller-owned.
+pub struct ApportionOut<'a> {
+    pub num: &'a mut [f64],
+    pub den: &'a mut [f64],
+}
+
+/// Which best_equity / apportion strategy [`apportion_fused`] takes (see its doc): `zeta`
+/// folds with the superset-sum transform instead of the per-rack push; `null_leave`
+/// takes the gen-1 subset-max; `scatter` the gens > 1 word-scatter.
+#[derive(Clone, Copy)]
+pub struct ApportionMode {
+    pub zeta: bool,
+    pub null_leave: bool,
+    pub scatter: bool,
+}
+
+/// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
+/// best_equity(R) inline (max over splits) and account its weighted contribution
+/// w(R)*best(R) to every subrack S <= R -- ONE lattice pass, no materialized best[]
+/// array. Equivalent to best_equity_table followed by apportion_table (proven
+/// by apportion_fused_matches_split). The entering path can NOT fuse this
+/// way: its draw-average pulls best[S+d] at random across racks, so it needs best[]
+/// fully materialized. num/den caller-owned, zeroed per board.
+///
+/// Two ways to apportion each rack's contribution to its subracks, selected by `zeta`:
+///   * `zeta == false` -- PUSH: each drawable rack walks its own subrack lattice and
+///     adds (w, w*best) to each. Cost scales with the number of drawable racks times
+///     subracks-per-rack, so it is cheap when few racks are drawable (small pool).
+///   * `zeta == true` -- ZETA (superset-sum) transform: seed num[R]=w*best, den[R]=w
+///     on the full-rack block, then fold each rack into all its subracks with one
+///     pass per letter (a single +1-tile suffix-sum via the add table, indices
+///     high->low so each +1-tile superset is finalized first; composing over letters
+///     yields num[S]=sum_{full R>=S} w*best, den[S]=sum w). Cost is the FIXED
+///     O(full_rack_start * num_letters) regardless of pool -- a big win on full pools
+///     (about 10x fewer subrack touches than the push) but wasteful on tiny pools (where
+///     the push visits only a handful of racks). The caller picks `zeta` by pool size.
+///
+/// `null_leave` flags the gen-1 bootstrap where every leave is 0 (a null klv). Then
+/// best_equity(R) = max over splits of sheet[P] + leave[R-P] collapses to the pure
+/// SUBSET-MAX max_{P <= R} sheet[P], which one downward (subset-max) scan over
+/// `maxsheet` computes for every rack in a single shared O(full_rack_start *
+/// num_letters) pass -- replacing the per-rack `rec_max` descent (the dominant big-pool
+/// cost) with an array read at each drawable rack. `maxsheet` is a caller-owned
+/// lattice-length scratch, written only on this path. The scan is the same fixed cost
+/// as the apportionment zeta, so it pays off on the same big pools; it is taken only
+/// when `null_leave && zeta` (small pools keep the cheaper per-rack rec_max).
+///
+/// `scatter` requests the gens > 1 (leave != 0) analog: best_equity uses the same
+/// precomputed-into-`maxsheet` read, but `maxsheet` is built by `scatter_words` (the
+/// leave subset-max seed plus a word-keyed scatter) instead of the per-rack rec_max.
+/// Also `zeta`-gated, and exact; an opt-in alternative to rec_max for big pools.
+pub fn apportion_fused(
+    lat: &MultisetLattice,
+    add: &AddTable,
+    board: &ApportionBoard,
+    out: ApportionOut,
+    maxsheet: &mut [i32],
+    mode: ApportionMode,
+) {
+    let ApportionBoard {
+        sheet,
+        leave,
+        unseen,
+    } = *board;
+    let ApportionMode {
+        zeta,
+        null_leave,
+        scatter,
+    } = mode;
+    let n = lat.num_letters();
+    // best_equity(R) is precomputed into `maxsheet` for every rack on two paths, both
+    // replacing the per-rack rec_max descent with an array read at each drawable rack;
+    // each rides the big-pool `zeta` gate (the per-rack rec_max is cheaper on small
+    // pools, where few racks are drawable):
+    //   * subset_max -- gen-1 null leave: best(R) = max_{P<=R} sheet[P], a single
+    //     subset-max of the sheet.
+    //   * scatter -- gens > 1: best(R) = max(maxleave(R), over word splits), seeded by
+    //     the subset-max of the leave and folded by scatter_words.
+    let subset_max = null_leave && zeta;
+    let scatter_active = scatter && !null_leave && zeta;
+    if subset_max {
+        subset_max_transform(lat, add, sheet, maxsheet);
+    } else if scatter_active {
+        subset_max_transform(lat, add, leave, maxsheet);
+        scatter_words(lat, add, sheet, leave, unseen, maxsheet);
+    }
+    let best_from_maxsheet = subset_max || scatter_active;
+    // Constant context for the per-rack recursions and the drawable-rack enumeration;
+    // best/w vary per rack and are passed as arguments -- no clippy::too_many_arguments.
+    // nz is the incrementally-built rack buffer; num/den accumulate across racks.
+    let rack_size = lat.rack_size();
+    // suffix_cap[t] = total unseen tiles (capped at rack_size) from letter t onward;
+    // prunes enum_drawable branches that can no longer fill a full rack.
+    let mut suffix_cap = [0u32; MAX_LETTERS + 1];
+    for t in (0..n).rev() {
+        suffix_cap[t] = suffix_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
+    }
+    struct Ctx<'a> {
+        n: usize,
+        unseen: &'a [u8],
+        suffix_cap: &'a [u32],
+        add: &'a AddTable,
+        sheet: &'a [i32],
+        leave: &'a [i32],
+        num: &'a mut [f64],
+        den: &'a mut [f64],
+        zeta: bool,
+        best_from_maxsheet: bool,
+        maxsheet: &'a [i32],
+        nz: &'a mut [(usize, u8)],
+    }
+    impl Ctx<'_> {
+        // max over splits -> best_equity(R): build the played P and kept K subracks up
+        // from the empty multiset by add-table lookup (one lookup per tile) instead of
+        // the binomial rank-skip.
+        fn rec_max(&self, i: usize, p_idx: usize, k_idx: usize, best: &mut i32) {
             if i == 0 {
-                let pr = (self.lat.size_offset[s_p] + within_p) as usize;
-                let kr = (self.lat.size_offset[s_k] + within_k) as usize;
-                let v = unsafe { *self.sheet.get_unchecked(pr) }
-                    + unsafe { *self.leave.get_unchecked(kr) };
+                // SAFETY: p_idx and k_idx are the ranks of the played P and kept K subracks
+                // (P+K = R, a full rack), built up from 0 via the add table, so each is
+                // < lat.len(); sheet and leave are lat.len()-sized.
+                let v = unsafe { *self.sheet.get_unchecked(p_idx) }
+                    + unsafe { *self.leave.get_unchecked(k_idx) };
                 if v > *best {
                     *best = v;
                 }
                 return;
             }
             let (t, cnt) = self.nz[i - 1];
-            let parts = self.n - 1 - t;
+            // split cnt tiles of letter t into cp played (-> P) and cnt - cp kept (-> K).
+            let mut pk = p_idx;
             for cp in 0..=cnt {
-                let ck = cnt - cp;
-                let (mut dwp, mut dwk) = (0u64, 0u64);
-                if t + 1 < self.n {
-                    let mut a = s_p + cp as usize;
-                    for _ in 0..cp {
-                        dwp += self.lat.c(a + parts - 1, parts - 1);
-                        a -= 1;
-                    }
-                    let mut b = s_k + ck as usize;
-                    for _ in 0..ck {
-                        dwk += self.lat.c(b + parts - 1, parts - 1);
-                        b -= 1;
-                    }
+                let mut kk = k_idx;
+                for _ in 0..(cnt - cp) {
+                    kk = self.add.add(kk, t);
                 }
-                self.rec_max(
-                    i - 1,
-                    s_p + cp as usize,
-                    within_p + dwp,
-                    s_k + ck as usize,
-                    within_k + dwk,
-                    best,
-                );
+                self.rec_max(i - 1, pk, kk, best);
+                if cp < cnt {
+                    pk = self.add.add(pk, t);
+                }
             }
         }
-        // apportion (w, we) to every subrack (same incremental rank as apportion_table).
-        fn apportion_rec(&mut self, i: usize, s_s: usize, within_s: u64, w: f64, we: f64) {
+        // apportion (w, we) to every subrack: build S up from the empty multiset by
+        // add-table lookup.
+        fn apportion_rec(&mut self, i: usize, s_idx: usize, w: f64, we: f64) {
             if i == 0 {
-                let sr = (self.lat.size_offset[s_s] + within_s) as usize;
+                // SAFETY: s_idx is the rank of a subrack S of a full rack, built up from 0 via
+                // the add table, so < lat.len(); num and den are lat.len()-sized.
                 unsafe {
-                    *self.num.get_unchecked_mut(sr) += we;
-                    *self.den.get_unchecked_mut(sr) += w;
+                    *self.num.get_unchecked_mut(s_idx) += we;
+                    *self.den.get_unchecked_mut(s_idx) += w;
                 }
                 return;
             }
             let (t, cnt) = self.nz[i - 1];
-            let parts = self.n - 1 - t;
+            let mut idx = s_idx;
             for cs in 0..=cnt {
-                let mut dw = 0u64;
-                if t + 1 < self.n {
-                    let mut a = s_s + cs as usize;
-                    for _ in 0..cs {
-                        dw += self.lat.c(a + parts - 1, parts - 1);
-                        a -= 1;
+                self.apportion_rec(i - 1, idx, w, we);
+                if cs < cnt {
+                    idx = self.add.add(idx, t);
+                }
+            }
+        }
+        // Enumerate ONLY the full racks drawable from `unseen` (each letter t taken
+        // 0..=min(unseen[t], remaining) times, total == rack_size), building the nz list
+        // and draw-ways weight w(R) = prod_t C(unseen[t], R[t]) incrementally with f64
+        // binomials -- no per-rack n_choose_k and no multiplying out a weight only to
+        // find a later factor is zero. Impossible racks are never visited: a big win on
+        // small-pool boards (most of lat.len() is undrawable there), and elsewhere it
+        // trades the unrank for an incremental build. suffix_cap prunes branches that
+        // cannot still reach a full rack. `idx` is the lattice rank of the partial rack
+        // chosen so far, advanced one tile at a time by the add table; at a complete
+        // rack it is the full-rack index, so the zeta path seeds num/den there directly
+        // (no subrack walk) while the push path apportions from the empty multiset.
+        fn enum_drawable(&mut self, t: usize, remaining: usize, w: f64, idx: usize, m: usize) {
+            if remaining == 0 {
+                // best_equity(R): precomputed at R's full-rack index in `maxsheet` on the
+                // subset-max (gen-1) and word-scatter (gens > 1) paths, else the per-rack
+                // max-over-splits descent.
+                let best = if self.best_from_maxsheet {
+                    // SAFETY: idx is the full-rack lattice index built up from 0 via the add
+                    // table, so < lat.len(); maxsheet is lat.len()-sized (filled above).
+                    unsafe { *self.maxsheet.get_unchecked(idx) }
+                } else {
+                    let mut b = UNPLAYABLE;
+                    self.rec_max(m, 0, 0, &mut b);
+                    b
+                };
+                if self.zeta {
+                    // seed the superset-sum source on the full-rack index `idx`.
+                    // SAFETY: idx is the full-rack lattice index built up from 0 via the add
+                    // table, so < lat.len(); num and den are lat.len()-sized.
+                    unsafe {
+                        *self.num.get_unchecked_mut(idx) = w * best as f64;
+                        *self.den.get_unchecked_mut(idx) = w;
+                    }
+                } else {
+                    self.apportion_rec(m, 0, w, w * best as f64);
+                }
+                return;
+            }
+            if t == self.n || (self.suffix_cap[t] as usize) < remaining {
+                return;
+            }
+            // c = 0: skip letter t (idx unchanged).
+            self.enum_drawable(t + 1, remaining, w, idx, m);
+            // c >= 1: take c of letter t; C(nt, c) built incrementally from C(nt, c-1)
+            // and idx advanced one t at a time (source size < rack_size, so add is valid).
+            let nt = self.unseen[t] as usize;
+            let cap = nt.min(remaining);
+            let mut binom = 1.0f64;
+            let mut idx_c = idx;
+            for c in 1..=cap {
+                binom = binom * (nt - c + 1) as f64 / c as f64;
+                idx_c = self.add.add(idx_c, t);
+                self.nz[m] = (t, c as u8);
+                self.enum_drawable(t + 1, remaining - c, w * binom, idx_c, m + 1);
+            }
+        }
+        // Superset-sum (zeta) transform: fold every full rack's seeded (num, den) into
+        // all of its subracks. One pass per letter t turns the arrays into the suffix-sum
+        // along t's count (a single +1-tile step via the add table); iterating idx
+        // high->low means the +1-tile superset add(idx, t) -- a strictly higher index
+        // (larger size) -- is already finalized for the letters done so far, so composing
+        // the n passes gives the full multiset superset-sum. Only sub-full-rack indices
+        // are written; the full-rack seeds are the maximal elements and stay as
+        // w*best / w (== best for a full-rack "leave").
+        fn fold_zeta(&mut self, lo: usize) {
+            for t in 0..self.n {
+                for idx in (0..lo).rev() {
+                    let sp = self.add.add(idx, t);
+                    // SAFETY: sp = add.add(idx, t) with idx in 0..lo and t < num_letters is a
+                    // lattice index < lat.len(); num and den are lat.len()-sized.
+                    let (sn, sd) =
+                        unsafe { (*self.num.get_unchecked(sp), *self.den.get_unchecked(sp)) };
+                    // SAFETY: idx ranges 0..lo (< lat.len()); num and den are lat.len()-sized.
+                    unsafe {
+                        *self.num.get_unchecked_mut(idx) += sn;
+                        *self.den.get_unchecked_mut(idx) += sd;
                     }
                 }
-                self.apportion_rec(i - 1, s_s + cs as usize, within_s + dw, w, we);
             }
         }
     }
-    let lo = lat.full_rack_start();
-    for ridx in lo..lat.len() {
-        lat.unrank_into(ridx, &mut r[..n]);
-        let mut w = 1.0f64;
-        let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
-        let mut m = 0;
-        let mut drawable = true;
-        for (t, &c) in r[..n].iter().enumerate() {
-            if c > 0 {
-                nz[m] = (t, c);
-                m += 1;
-                w *= n_choose_k(unseen[t] as u64, c as u64) as f64;
-                if w == 0.0 {
-                    drawable = false;
-                    break;
-                }
-            }
-        }
-        if !drawable {
-            continue;
-        }
-        let mut best = UNPLAYABLE;
-        let mut ctx = Ctx {
-            n,
-            lat,
-            sheet,
-            leave,
-            nz: &nz[..m],
-            num: &mut *num,
-            den: &mut *den,
-        };
-        ctx.rec_max(m, 0, 0, 0, 0, &mut best);
-        ctx.apportion_rec(m, 0, 0, w, w * best as f64);
+    let mut nz = [(0usize, 0u8); MAX_LETTERS];
+    let mut ctx = Ctx {
+        n,
+        unseen,
+        suffix_cap: &suffix_cap,
+        add,
+        sheet,
+        leave,
+        num: out.num,
+        den: out.den,
+        zeta,
+        best_from_maxsheet,
+        maxsheet,
+        nz: &mut nz,
+    };
+    ctx.enum_drawable(0, rack_size, 1.0, 0, 0);
+    if zeta {
+        ctx.fold_zeta(lat.full_rack_start());
     }
 }
 
@@ -775,6 +1134,148 @@ fn n_choose_k(n: u64, k: u64) -> u64 {
     (num / den) as u64
 }
 
+/// Blank-spelling sheet recorder: given ONE all-real GADDAG traversal (its recounted
+/// `real_score` and the per-placed-tile `(letter, drop)` list from
+/// `play_scorer::score_and_blank_deltas`, where `drop` is how much the score falls
+/// if that tile becomes a blank), enumerate every feasible blank designation of
+/// that traversal and raise the play-value `sheet` for each resulting played
+/// multiset. This reproduces, without the wildcard descent, exactly what the
+/// wildcard sheet build records: for each placed letter L appearing `placed_L`
+/// times, at least `forced_L = max(0, placed_L - real_avail_L)` of them must be
+/// blanks (too few real copies in the pool), and up to `num_blanks_eff` blanks
+/// total may be used (optionally "wasting" a real tile as a blank, which the
+/// wildcard path also produces). For a given blank count per letter, the best
+/// (max) score blanks that letter's lowest-`drop` positions, so the deltas are
+/// sorted ascending per letter and consumed cheapest-first. The played multiset
+/// for a designation keeps `placed_L - blank_L` real copies of L plus the total
+/// blanks at letter 0 -- matching the wildcard recorder, which keys a blank tile
+/// as 0. `placed` is sorted in place. Pure: only the lattice and arithmetic.
+pub fn record_blank_variants(
+    lat: &MultisetLattice,
+    sheet: &mut [i32],
+    real_score: i32,
+    placed: &mut [(u8, i32)],
+    unseen_tally: &[u8],
+    num_blanks_eff: usize,
+) {
+    let n = placed.len();
+    if n == 0 {
+        return;
+    }
+    let rack_size = lat.rack_size();
+    if n > rack_size {
+        return;
+    }
+    let num_letters = lat.num_letters();
+    // group by letter (ascending), and within a letter by ascending drop so the
+    // cheapest positions are blanked first.
+    placed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    // runs[r] = (letter, start index in `placed`, count, forced blanks).
+    let mut runs = [(0u8, 0u8, 0u8, 0u8); MAX_LETTERS];
+    let mut num_runs = 0;
+    let mut total_forced = 0usize;
+    let mut i = 0;
+    while i < n {
+        let letter = placed[i].0;
+        let start = i;
+        while i < n && placed[i].0 == letter {
+            i += 1;
+        }
+        let count = i - start;
+        let real_avail = (unseen_tally[letter as usize] as usize).min(rack_size);
+        let forced = count.saturating_sub(real_avail);
+        total_forced += forced;
+        runs[num_runs] = (letter, start as u8, count as u8, forced as u8);
+        num_runs += 1;
+    }
+    if total_forced > num_blanks_eff {
+        // not enough blanks to make this word at all.
+        return;
+    }
+    let leftover = num_blanks_eff - total_forced;
+    let mut tally = [0u8; MAX_LETTERS];
+
+    // Constant context for the blank-assignment recursion, so rec carries only the
+    // changing run index, leftover blanks, running blank total and dropped score -- no
+    // clippy::too_many_arguments. tally is the rank scratch; sheet is the output.
+    struct Ctx<'a> {
+        runs: &'a [(u8, u8, u8, u8)],
+        num_runs: usize,
+        placed: &'a [(u8, i32)],
+        tally: &'a mut [u8],
+        lat: &'a MultisetLattice,
+        sheet: &'a mut [i32],
+        real_score: i32,
+    }
+    impl Ctx<'_> {
+        fn rec(&mut self, ri: usize, leftover: usize, blanks_total: usize, drop_acc: i32) {
+            if ri == self.num_runs {
+                // Rank the variant straight from its non-zero entries -- the blanks
+                // (letter 0, ascending-first) then each run's kept real count (runs
+                // ascending) -- with no materialized items array. Every placed tile
+                // is either blanked or kept real, so the multiset size is the whole
+                // played word, `placed.len()`.
+                let size = self.placed.len();
+                let items = (blanks_total > 0)
+                    .then_some((0u8, blanks_total as u8))
+                    .into_iter()
+                    .chain(self.runs.iter().take(self.num_runs).filter_map(|r| {
+                        let real = self.tally[r.0 as usize];
+                        (real > 0).then_some((r.0, real))
+                    }));
+                let key = self.lat.rank_sparse_iter(size, items);
+                if key != !0 {
+                    let slot = &mut self.sheet[key as usize];
+                    let val = self.real_score - drop_acc;
+                    if val > *slot {
+                        *slot = val;
+                    }
+                }
+                return;
+            }
+            let (letter, start, count, forced) = self.runs[ri];
+            let (letter, start, count, forced) = (
+                letter as usize,
+                start as usize,
+                count as usize,
+                forced as usize,
+            );
+            let max_extra = (count - forced).min(leftover);
+            // drop for the mandatory `forced` cheapest blanks of this letter.
+            let mut drop_run = 0i32;
+            for e in &self.placed[start..start + forced] {
+                drop_run += e.1;
+            }
+            for extra in 0..=max_extra {
+                if extra > 0 {
+                    // include the next-cheapest position as an optional blank.
+                    drop_run += self.placed[start + forced + extra - 1].1;
+                }
+                let b = forced + extra;
+                self.tally[letter] = (count - b) as u8;
+                self.rec(
+                    ri + 1,
+                    leftover - extra,
+                    blanks_total + b,
+                    drop_acc + drop_run,
+                );
+            }
+            self.tally[letter] = 0;
+        }
+    }
+
+    Ctx {
+        runs: &runs,
+        num_runs,
+        placed,
+        tally: &mut tally[..num_letters],
+        lat,
+        sheet,
+        real_score,
+    }
+    .rec(0, leftover, 0, 0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,6 +1302,27 @@ mod tests {
             lat.unrank_into(idx, &mut buf);
             assert_eq!(lat.rank(&buf), idx as u32, "roundtrip idx {idx}");
         }
+    }
+
+    #[test]
+    fn rank_sparse_matches_rank() {
+        // rank_sparse over the non-zero letters must equal rank over the full tally.
+        let lat = MultisetLattice::new(27, 7);
+        let mut buf = vec![0u8; 27];
+        for idx in (0..lat.len()).step_by(733) {
+            lat.unrank_into(idx, &mut buf);
+            let mut items = Vec::new();
+            let mut s = 0usize;
+            for (t, &c) in buf.iter().enumerate() {
+                if c > 0 {
+                    items.push((t as u8, c));
+                    s += c as usize;
+                }
+            }
+            assert_eq!(lat.rank_sparse(s, &items), idx as u32, "sparse idx {idx}");
+        }
+        // empty multiset: rank 0, no items.
+        assert_eq!(lat.rank_sparse(0, &[]), lat.rank(&[0u8; 27]));
     }
 
     #[test]
@@ -954,7 +1476,10 @@ mod tests {
     #[test]
     fn apportion_fused_matches_split() {
         // the fused step2+step3 must equal best_equity_table then
-        // apportion_table, bit-for-bit (same ops, same order).
+        // apportion_table for BOTH modes (push and zeta). The push adds
+        // in the same order as the reference; the zeta reorders the sums, but every
+        // term is an integer (w * best) far below 2^53, so f64 addition is exact and
+        // order-free -- exact equality still holds.
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
@@ -971,12 +1496,166 @@ mod tests {
         let mut num_a = vec![0f64; lat.len()];
         let mut den_a = vec![0f64; lat.len()];
         apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
-        let mut num_b = vec![0f64; lat.len()];
-        let mut den_b = vec![0f64; lat.len()];
-        apportion_fused(&lat, &sheet, &leave, &unseen, &mut num_b, &mut den_b);
-        for idx in 0..lat.len() {
-            assert_eq!(num_a[idx], num_b[idx], "num at {idx}");
-            assert_eq!(den_a[idx], den_b[idx], "den at {idx}");
+        let add = AddTable::new(&lat);
+        let mut maxsheet = vec![0i32; lat.len()];
+        // leave is nonzero here, so null_leave is false. Cover the per-rack rec_max
+        // path (scatter=false) and the word-scatter path (scatter=true, engages only
+        // with zeta); both must reproduce the reference exactly.
+        for scatter in [false, true] {
+            for zeta in [false, true] {
+                let mut num_b = vec![0f64; lat.len()];
+                let mut den_b = vec![0f64; lat.len()];
+                apportion_fused(
+                    &lat,
+                    &add,
+                    &ApportionBoard {
+                        sheet: &sheet,
+                        leave: &leave,
+                        unseen: &unseen,
+                    },
+                    ApportionOut {
+                        num: &mut num_b,
+                        den: &mut den_b,
+                    },
+                    &mut maxsheet,
+                    ApportionMode {
+                        zeta,
+                        null_leave: false,
+                        scatter,
+                    },
+                );
+                for idx in 0..lat.len() {
+                    assert_eq!(
+                        num_a[idx], num_b[idx],
+                        "num at {idx} (zeta={zeta}, scatter={scatter})"
+                    );
+                    assert_eq!(
+                        den_a[idx], den_b[idx],
+                        "den at {idx} (zeta={zeta}, scatter={scatter})"
+                    );
+                }
+            }
         }
+    }
+
+    #[test]
+    fn apportion_fused_null_leave_matches() {
+        // gen-1 bootstrap: with an all-zero leave, best_equity(R) = max_{P<=R} sheet[P].
+        // The subset-max fast path (null_leave=true, zeta=true) must equal the reference
+        // (best_equity_table + apportion_table) AND the general rec_max path
+        // (null_leave=false), confirming the subset-max is an exact stand-in for the
+        // per-rack descent on a null leave.
+        let lat = MultisetLattice::new(4, 4);
+        let unseen = [3u8, 2u8, 4u8, 1u8];
+        let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
+        let leave = vec![0i32; lat.len()]; // null klv -> all zero
+        for (idx, slot) in sheet.iter_mut().enumerate() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                *slot = h.rem_euclid(20_000);
+            }
+        }
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best);
+        let mut num_a = vec![0f64; lat.len()];
+        let mut den_a = vec![0f64; lat.len()];
+        apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
+        let add = AddTable::new(&lat);
+        let mut maxsheet = vec![0i32; lat.len()];
+        // subset_max engages only when null_leave && zeta; the other three combinations
+        // fall back to rec_max. All four must reproduce the reference exactly.
+        for null_leave in [false, true] {
+            for zeta in [false, true] {
+                let mut num_b = vec![0f64; lat.len()];
+                let mut den_b = vec![0f64; lat.len()];
+                apportion_fused(
+                    &lat,
+                    &add,
+                    &ApportionBoard {
+                        sheet: &sheet,
+                        leave: &leave,
+                        unseen: &unseen,
+                    },
+                    ApportionOut {
+                        num: &mut num_b,
+                        den: &mut den_b,
+                    },
+                    &mut maxsheet,
+                    ApportionMode {
+                        zeta,
+                        null_leave,
+                        scatter: false,
+                    },
+                );
+                for idx in 0..lat.len() {
+                    assert_eq!(
+                        num_a[idx], num_b[idx],
+                        "num at {idx} (zeta={zeta}, null_leave={null_leave})"
+                    );
+                    assert_eq!(
+                        den_a[idx], den_b[idx],
+                        "den at {idx} (zeta={zeta}, null_leave={null_leave})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn record_blank_variants_enumerates_designations() {
+        // lattice: blank=0, A=1, B=2, C=3; racks up to 4 tiles.
+        let lat = MultisetLattice::new(4, 4);
+        let key = |tally: &[u8]| lat.rank(tally) as usize;
+        let run = |placed: &mut [(u8, i32)], unseen: &[u8], blanks: usize, real_score: i32| {
+            let mut sheet = vec![0i32; lat.len()];
+            record_blank_variants(&lat, &mut sheet, real_score, placed, unseen, blanks);
+            sheet
+        };
+
+        // two A's placed (drops 4 and 10), 2 real A available, 1 blank: forced 0,
+        // leftover 1 -> {A,A} (no blank) and {blank,A} (blank the cheaper A, drop 4).
+        let sheet = run(&mut [(1, 10), (1, 4)], &[0, 2, 0, 0], 1, 100);
+        assert_eq!(sheet[key(&[0, 2, 0, 0])], 100); // {A,A}
+        assert_eq!(sheet[key(&[1, 1, 0, 0])], 96); // {blank,A}, dropped 4
+        assert_eq!(sheet[key(&[2, 0, 0, 0])], 0); // {blank,blank}: only 1 blank, unreached
+
+        // same word, only 1 real A but 2 blanks: forced 1, leftover 1 -> {blank,A}
+        // and {blank,blank}; the all-real {A,A} is infeasible (one real A).
+        let sheet = run(&mut [(1, 10), (1, 4)], &[0, 1, 0, 0], 2, 100);
+        assert_eq!(sheet[key(&[0, 2, 0, 0])], 0); // {A,A} infeasible
+        assert_eq!(sheet[key(&[1, 1, 0, 0])], 96); // {blank,A}: drop the cheaper (4)
+        assert_eq!(sheet[key(&[2, 0, 0, 0])], 86); // {blank,blank}: drop both (4+10)
+
+        // three distinct unavailable letters, only 2 blanks: forced 3 > 2 -> skip all.
+        let sheet = run(&mut [(1, 8), (2, 5), (3, 3)], &[0, 0, 0, 0], 2, 70);
+        assert!(sheet.iter().all(|&v| v == 0));
+
+        // A + B, one real each, 1 blank: blank at most one of the two.
+        let sheet = run(&mut [(1, 8), (2, 6)], &[0, 1, 1, 0], 1, 50);
+        assert_eq!(sheet[key(&[0, 1, 1, 0])], 50); // {A,B} all real
+        assert_eq!(sheet[key(&[1, 0, 1, 0])], 42); // {blank,B}: A is the blank, drop 8
+        assert_eq!(sheet[key(&[1, 1, 0, 0])], 44); // {blank,A}: B is the blank, drop 6
+        assert_eq!(sheet[key(&[2, 0, 0, 0])], 0); // two blanks unreached (1 blank)
+
+        // max-merge: a higher-scoring word for the same multiset wins.
+        let mut sheet = vec![0i32; lat.len()];
+        record_blank_variants(
+            &lat,
+            &mut sheet,
+            100,
+            &mut [(1, 10), (1, 4)],
+            &[0, 2, 0, 0],
+            1,
+        );
+        record_blank_variants(
+            &lat,
+            &mut sheet,
+            120,
+            &mut [(1, 10), (1, 4)],
+            &[0, 2, 0, 0],
+            1,
+        );
+        assert_eq!(sheet[key(&[0, 2, 0, 0])], 120); // {A,A} from the better word
+        assert_eq!(sheet[key(&[1, 1, 0, 0])], 116); // {blank,A} likewise
     }
 }

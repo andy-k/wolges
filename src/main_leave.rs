@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
     alphabet, bites, census, display, equity, error, fash, game_config, game_state, klv, kwg,
-    move_filter, move_picker, movegen, prob, stats,
+    move_filter, move_picker, movegen, play_scorer, prob, stats,
 };
 
 static BASE62: &[u8; 62] = b"\
@@ -3175,6 +3175,128 @@ const fn census_mix64(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+// Param bundles for build_sheet_spell_once, grouped so it stays within
+// clippy::too_many_arguments. SpellTables is the static game/lexicon/lattice
+// context; SpellPool is the unseen pool and its per-letter rack caps.
+struct SpellTables<'a, N: kwg::Node, L: kwg::Node> {
+    game_config: &'a game_config::GameConfig,
+    kwg: &'a kwg::Kwg<N>,
+    klv: &'a klv::Klv<L>,
+    lat: &'a census::MultisetLattice,
+}
+
+struct SpellPool<'a> {
+    unseen_tally: &'a [u8],
+    num_blanks_eff: usize,
+    rack_size: usize,
+    blank_cap: usize,
+}
+
+// Spell-once STEP 1 sheet build: produce the same play-value `sheet` as the wildcard
+// descent without wildcarding blanks over every letter. The generator is put in
+// real-before-blank mode (set_spell_once), so it descends the ACTUAL unseen rack (real
+// letters capped at rack_size, blanks at blank_cap -- identical to the wildcard rack)
+// and emits each feasible word ONCE (a blank is used for a letter only when no real
+// copy remains; the global blank budget is enforced by the rack's blank count). Each
+// all-real traversal is then expanded into its feasible blank designations
+// arithmetically (play_scorer::score_and_blank_deltas gives the per-placed-tile score
+// drop; census::record_blank_variants raises the sheet for every designation, incl.
+// playing a blank for a letter we hold). `sheet` must be pre-initialized to the
+// exchange floor (0); only raised here. The set_spell_once flag is reset afterwards so the
+// generator is safe for ordinary use. Returns the candidate count for diagnostics.
+fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_tiles: &[u8],
+    tables: SpellTables<'_, N, L>,
+    pool: SpellPool<'_>,
+    movegen_rack: &mut Vec<u8>,
+    blank_deltas: &mut Vec<(u8, i32)>,
+    sheet: &mut [i32],
+) -> u64 {
+    let SpellTables {
+        game_config,
+        kwg,
+        klv,
+        lat,
+    } = tables;
+    let SpellPool {
+        unseen_tally,
+        num_blanks_eff,
+        rack_size,
+        blank_cap,
+    } = pool;
+    movegen_rack.clear();
+    for (t, &c) in unseen_tally.iter().enumerate() {
+        let cap = if t == 0 { blank_cap } else { rack_size };
+        for _ in 0..(c as usize).min(cap) {
+            movegen_rack.push(t as u8);
+        }
+    }
+    let mut n_cand = 0u64;
+    let board_snapshot = &movegen::BoardSnapshot {
+        board_tiles,
+        game_config,
+        kwg,
+        klv,
+    };
+    let params = movegen::GenMovesParams {
+        board_snapshot,
+        rack: &movegen_rack[..],
+        max_gen: 1,
+        num_exchanges_by_this_player: i16::MAX,
+        always_include_pass: false,
+    };
+    move_generator.set_spell_once(true);
+    move_generator.gen_moves_filtered(
+        &params,
+        |down, lane, idx, word: &[u8], _score: i32| {
+            n_cand += 1;
+            let real_score = play_scorer::score_and_blank_deltas(
+                board_snapshot,
+                down,
+                lane,
+                idx,
+                word,
+                blank_deltas,
+            );
+            census::record_blank_variants(
+                lat,
+                sheet,
+                real_score,
+                blank_deltas,
+                unseen_tally,
+                num_blanks_eff,
+            );
+            false // never keep the move
+        },
+        |leave_value| leave_value,
+        |_equity, _play| false,
+    );
+    move_generator.set_spell_once(false);
+    n_cand
+}
+
+// how WOLGES_CENSUS_SCATTER builds best_equity on a big multi-generation pool:
+// off, on, or auto (decide from the lattice size). parse it once into a typed
+// value so an unknown setting fails loud instead of silently picking a mode.
+#[derive(Clone, Copy)]
+enum Scatter {
+    Off,
+    On,
+    Auto,
+}
+
+fn wolges_census_scatter() -> error::Returns<Scatter> {
+    match std::env::var("WOLGES_CENSUS_SCATTER").ok().as_deref() {
+        None | Some("auto") => Ok(Scatter::Auto),
+        Some("off") => Ok(Scatter::Off),
+        Some("on") => Ok(Scatter::On),
+        Some(other) => {
+            Err(format!("WOLGES_CENSUS_SCATTER must be off, on, or auto, got {other:?}").into())
+        }
+    }
+}
+
 fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -3284,6 +3406,50 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         lat.len(),
     );
 
+    // Parent (add-tile) index table for apportion_fused's step-3 apportion/max walks --
+    // built once and shared read-only across the board threads (the non-full-rack
+    // paths do not use it, so build only when WOLGES_APPORTION=full-rack is set).
+    let add_table = if full_rack {
+        let t = std::time::Instant::now();
+        let at = census::AddTable::new(&lat);
+        eprintln!(
+            "census: add-table {} rows x {num_letters} letters built in {:?}",
+            lat.full_rack_start(),
+            t.elapsed(),
+        );
+        Some(at)
+    } else {
+        None
+    };
+    // apportion_fused step-3 method: ZETA (superset-sum) transform when the
+    // board's unseen pool has at least this many tiles, else the per-rack PUSH. The
+    // zeta cost is fixed (about full_rack_start * num_letters), so it wins on big pools
+    // (the push touches about 2^distinct subracks per drawable rack, of which there are
+    // millions) but loses on tiny pools (few drawable racks -> the push is cheaper
+    // than the fixed transform). The default crossover is tuned on English; 0 forces
+    // zeta always, a value above num_tiles forces the push always. English crossover:
+    // the per-rack push beats the zeta below about a 35-tile pool (where the zeta's fixed
+    // full_rack_start*num_letters transform outweighs touching the few drawable
+    // racks) and loses above it; 36 keeps every expensive (big-pool) board on the zeta.
+    let zeta_pool_min = env_usize("WOLGES_CENSUS_ZETA_POOL", 36);
+    // WOLGES_CENSUS_SCATTER (gens > 1, big pool): build best_equity by a word-keyed
+    // scatter (leave subset-max seed + scatter_words) instead of the per-rack rec_max
+    // descent. Exact. Net-positive on realistic mixed-pool runs for the 27-29 letter
+    // lattices (English +4%, French +7%, super-English +5.3%, Spanish +5%): it wins at
+    // large pools (many drawable racks, the slow boards that dominate wall time) and
+    // loses only a small absolute margin at the smallest zeta-gated pools. But it is
+    // net-NEGATIVE on the 33-letter lattices (Polish/Norwegian, about 19M leaves: -5%),
+    // where the larger maxleave subset-max pass and the scattered best[] writes over a
+    // 3x bigger array outweigh the eval savings. So the default is on only below
+    // a lattice-size cutoff (between Spanish's 8.35M and Polish's 18.6M); off or on
+    // force it either way (on to try a big lattice, off for rec_max).
+    // Values: off | on | auto, default auto.
+    let scatter = match wolges_census_scatter()? {
+        Scatter::Off => false,
+        Scatter::On => true,
+        Scatter::Auto => lat.len() <= 12_000_000,
+    };
+
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
     let seed = seed.unwrap_or_else(rand::random);
     // current leave table (millipoints), loaded from klv0 by lattice multiset.
@@ -3351,6 +3517,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut sheet = vec![census::UNPLAYABLE; lat_len];
+                // spell-once scratch: the per-traversal (letter, score-drop) list,
+                // reused across words.
+                let mut blank_deltas = Vec::<(u8, i32)>::new();
                 // entering path materializes best[]; the full-rack path fuses step2 into step3.
                 let mut best = if full_rack {
                     Vec::new()
@@ -3361,6 +3530,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 // full-rack apportionment scratch (num/den per leave); empty unless full_rack.
                 let mut num_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
                 let mut den_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
+                // gen-1 (null-leave) subset-max scratch for apportion_fused: holds the
+                // sheet's subset-max so best_equity is an array read, not a per-rack
+                // descent. Only touched on the null-leave + big-pool (zeta) path.
+                let mut maxsheet = if full_rack { vec![0i32; lat_len] } else { Vec::new() };
                 // entering push-apportion scratch (i128 num/den); empty unless
                 // entering_push.
                 let mut num_e = if !full_rack && entering_push {
@@ -3377,7 +3550,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut unseen_pool = Vec::<u8>::new();
                 let mut movegen_rack = Vec::<u8>::new();
-                let mut played_buf = Vec::<u8>::new();
                 let mut verify_rack = Vec::<u8>::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
 
@@ -3395,6 +3567,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                        game_state: &game_state::GameState,
                                        rng: &mut rand::rngs::ChaCha20Rng,
                                        leave: &[i32],
+                                       null_leave: bool,
                                        log_first: bool,
                                        do_verify: bool| {
                     // unseen pool = full distribution minus tiles on the board
@@ -3410,77 +3583,46 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         }
                     }
 
-                    // STEP 1 -- play-value sheet: one movegen over the unseen pool
-                    // (each tile capped at rack_size, since a real rack holds at most
-                    // rack_size of any letter), recording best score per played
-                    // tile-multiset. Score only; the leave term is irrelevant here so
-                    // any klv works. Pass = empty play, 0.
-                    movegen_rack.clear();
-                    for (t, &c) in unseen_tally.iter().enumerate() {
-                        // blank (tile 0) plays as any letter, so each blank in the
-                        // pool sends the movegen search down every word path the
-                        // board allows; cap it separately to probe whether blanks
-                        // drive the blowup.
-                        let cap = if t == 0 { blank_cap } else { rack_size };
-                        for _ in 0..(c as usize).min(cap) {
-                            movegen_rack.push(t as u8);
-                        }
-                    }
+                    // STEP 1 -- play-value sheet: one movegen over the unseen
+                    // pool (each tile capped at rack_size, since a real rack
+                    // holds at most rack_size of any letter), recording best
+                    // score per played tile-multiset. Score only; the leave
+                    // term is irrelevant here so any klv works. Pass = empty
+                    // play, 0.
                     // init the sheet to 0 = the exchange floor: every played
-                    // multiset P is worth at least 0 (dispose it via exchange, bag
-                    // non-empty). The build only RAISES an entry when a word scores
-                    // higher, so an unreached or negative-scoring P keeps 0; the
-                    // empty P (pass / keep-all) is 0 too.
+                    // multiset P is worth at least 0 (dispose it via exchange,
+                    // bag non-empty). The build only RAISES an entry when a
+                    // word scores higher, so an unreached or negative-scoring
+                    // P keeps 0; the empty P (pass / keep-all) is 0 too.
                     sheet.iter_mut().for_each(|v| *v = 0);
+                    let num_blanks_eff = (unseen_tally[0] as usize).min(blank_cap);
                     let ts = std::time::Instant::now();
-                    let mut n_cand = 0u64;
-                    {
-                        let board_snapshot = &movegen::BoardSnapshot {
-                            board_tiles: &game_state.board_tiles,
+                    // STEP 1 build: a real-before-blank descent emits each feasible word
+                    // once (a blank stands in for a letter only when no real copy is
+                    // left), then play_scorer::score_and_blank_deltas and
+                    // census::record_blank_variants reconstruct every blank designation
+                    // arithmetically. This avoids fanning each blank out over the whole
+                    // alphabet in the GADDAG word search, and produces the same sheet a
+                    // plain wildcard descent would.
+                    let n_cand = build_sheet_spell_once(
+                        move_generator,
+                        &game_state.board_tiles,
+                        SpellTables {
                             game_config: &game_config,
                             kwg: &kwg,
                             klv: &arc_klv0,
-                        };
-                        let params = movegen::GenMovesParams {
-                            board_snapshot,
-                            rack: &movegen_rack,
-                            max_gen: 1,
-                            // suppress exchange-move generation: over the whole unseen
-                            // pool it enumerates about 2^pool subsets (the actual cost,
-                            // not the gaddag word search). The sheet wants place moves
-                            // only; exchange is modeled by the convolution disposal
-                            // floor.
-                            num_exchanges_by_this_player: i16::MAX,
-                            always_include_pass: false,
-                        };
-                        // Record the best score per played multiset directly in the
-                        // place predicate and return false: the play is never stored
-                        // (the pool can yield billions of candidates) and its
-                        // equity/leave is never computed. The GADDAG traversal still
-                        // visits each candidate.
-                        move_generator.gen_moves_filtered(
-                            &params,
-                            |_down, _lane, _idx, word: &[u8], score: i32| {
-                                n_cand += 1;
-                                played_buf.clear();
-                                for &tile in word {
-                                    if tile != 0 {
-                                        played_buf.push(tile & !((tile as i8) >> 7) as u8);
-                                    }
-                                }
-                                if played_buf.len() <= rack_size {
-                                    played_buf.sort_unstable();
-                                    let pr = lat.rank_bytes(&played_buf);
-                                    if pr != !0 && score > sheet[pr as usize] {
-                                        sheet[pr as usize] = score;
-                                    }
-                                }
-                                false // never keep the move
-                            },
-                            |leave_value| leave_value,
-                            |_equity, _play| false,
-                        );
-                    }
+                            lat: &lat,
+                        },
+                        SpellPool {
+                            unseen_tally: &unseen_tally,
+                            num_blanks_eff,
+                            rack_size,
+                            blank_cap,
+                        },
+                        &mut movegen_rack,
+                        &mut blank_deltas,
+                        &mut sheet,
+                    );
                     if log_first {
                         eprintln!(
                             "  step1 sheet: {} tiles in pool -> {} candidate plays (unstored) in {:?}",
@@ -3592,13 +3734,25 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     if full_rack {
                         num_board.iter_mut().for_each(|x| *x = 0.0);
                         den_board.iter_mut().for_each(|x| *x = 0.0);
+                        let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
                         census::apportion_fused(
                             &lat,
-                            &sheet,
-                            leave,
-                            &unseen_tally,
-                            &mut num_board,
-                            &mut den_board,
+                            add_table.as_ref().unwrap(),
+                            &census::ApportionBoard {
+                                sheet: &sheet,
+                                leave,
+                                unseen: &unseen_tally,
+                            },
+                            census::ApportionOut {
+                                num: &mut num_board,
+                                den: &mut den_board,
+                            },
+                            &mut maxsheet,
+                            census::ApportionMode {
+                                zeta: pool >= zeta_pool_min,
+                                null_leave,
+                                scatter,
+                            },
                         );
                         for (idx, slot) in contrib.iter_mut().enumerate() {
                             *slot = if den_board[idx] > 0.0 {
@@ -3672,6 +3826,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     // holds it. In the default path this guard is held for the one batch.
                     {
                         let leave = leave_lock.read().unwrap();
+                        // gen-1 bootstrap: an all-zero leave lets apportion_fused take
+                        // the subset-max fast path. Checked once per batch (the leave is
+                        // constant within a batch; the SGD leader only rewrites it under
+                        // the barrier between batches).
+                        let null_leave = leave.iter().all(|&x| x == 0);
                         loop {
                             let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if b >= batch_end {
@@ -3725,6 +3884,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     &game_state,
                                     &mut rng,
                                     &leave,
+                                    null_leave,
                                     lf,
                                     verify && lf,
                                 );
@@ -3857,6 +4017,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             &game_state,
                             &mut rng,
                             &leave,
+                            null_leave,
                             b == 0,
                             verify && b == 0,
                         );
