@@ -1642,6 +1642,21 @@ The knob stays off by default.
 New knobs: WOLGES_WINPCT, WOLGES_WINPCT_BLEND, WOLGES_WINPCT_TABLE.
 
 
+MERGING WIN% TABLES (english-winpct-combine)
+
+A trustworthy table needs many games, and one process is slow, so a table can
+be recorded on several seeds or machines and merged:
+
+  cargo run --release --bin leave -- \
+    english-winpct-combine win_pct.csv part1.csv part2.csv [...]
+
+The first argument is the output ("-" for standard output); the rest are input
+files. The merge adds the per-count-state tallies together. Because those are
+integer counts, combining is exact -- there is no rounding error from having
+split the work, which averaging finished tables would introduce. This mirrors
+english-resummarize, which combines the samplers' rack summaries the same way.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to

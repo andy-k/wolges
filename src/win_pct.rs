@@ -384,4 +384,35 @@ mod tests {
         assert_eq!(first, "winpct,2,bag,my,opp");
         assert!(!csv.lines().any(|l| l.starts_with('#')), "no '#' comments");
     }
+
+    // The english-winpct-combine pipeline: parse several raw CSVs, merge, and
+    // the result equals one table built from all the records at once. Exercises
+    // the CSV boundary (to_csv/from_csv) that the CLI crosses, not just an
+    // in-memory merge.
+    #[test]
+    fn combine_csvs_sums_counts() {
+        let mut a = WinPctAccumulator::new();
+        let mut b = WinPctAccumulator::new();
+        let mut both = WinPctAccumulator::new();
+        for &v in &[-30, -10, 5, 40] {
+            a.record(50, 7, 7, 0, v);
+            both.record(50, 7, 7, 0, v);
+        }
+        for &v in &[10, 25, 60] {
+            b.record(50, 7, 7, 0, v);
+            both.record(50, 7, 7, 0, v);
+            b.record(12, 3, 4, 2, v); // a key only b has
+            both.record(12, 3, 4, 2, v);
+        }
+        let mut acc = WinPctAccumulator::from_csv(&a.to_csv()).unwrap();
+        acc.merge(&WinPctAccumulator::from_csv(&b.to_csv()).unwrap());
+        let tc = acc.finalize();
+        let tb = both.finalize();
+        for &(s, bag, my, opp) in &[(0, 50, 7, 7), (15, 50, 7, 7), (2, 12, 3, 4)] {
+            assert!(
+                (tc.get(s, bag, my, opp) - tb.get(s, bag, my, opp)).abs() < EPS,
+                "combine mismatch at ({s},{bag},{my},{opp})"
+            );
+        }
+    }
 }
