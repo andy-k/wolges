@@ -26,7 +26,9 @@ time, and needs no environment variables:
 
 That builds a competitive table with no tuning: 4 generations of 256 boards,
 which is enough for the leaves to settle, iterated from the null starting
-tables (the two "-"). Every default is already the one to ship. The census
+tables (the two "-"). Every default is already the one to ship. The 256-board
+count is measured on this English word list; for a different tile set, let the
+adaptive stop described below size the run to the leaves themselves. The census
 builds faster than plain self-play or board sampling and plays at least as
 well, which is why it is the one to reach for. Those alternatives, and every
 lever that turned out not to help, are described below; the best current way to
@@ -1433,6 +1435,37 @@ New knobs: WOLGES_CENSUS_CI_CONF, WOLGES_CENSUS_CI_REPORT,
 WOLGES_CENSUS_CI_TARGET.
 
 
+STOPPING ONCE THE LEAVES HAVE SETTLED
+
+Given a per-leave interval, the census no longer has to grind out a preset
+board count. Often about half the boards already produce settled, same-quality
+leaves, and the rest is wasted work. WOLGES_CENSUS_CI_STOP_FRAC (default 0.0,
+which is off and byte-identical to the fixed count) is the fraction of leaves
+that must sit inside their target interval before the pass stops early; any
+value above zero turns the stop on. Every WOLGES_CENSUS_CI_STOP_EVERY boards
+(default 64) exactly one worker runs the per-leave interval check; once the
+fraction inside reaches the target it raises a shared flag and every worker
+breaks out of the board loop. It is a single global stop, not a per-leave one
+-- one sampled board values every rack, so there is no way to stop measuring
+one leave while another keeps going; a single threshold ends the whole pass.
+The board count on the command line stays a hard cap, so if the target is never
+reached the pass still ends there, exactly as before. The stop is available on
+the rack-summary path, which is what tracks the per-rack bounce the leave
+intervals are built from.
+
+In a fresh head-to-head the adaptive stop ended well short of the fixed count
+and showed no meaningful quality difference. Against a 2048-board cap the stop
+met its target and ended at 576 boards, and the table it built ties the
+full-cap table (50.01, confidence 60). This is a cost feature, not a
+leave-quality change: the same table, in a fraction of the boards. (The
+accuracy check that drives the stop reuses one set of scratch buffers across
+checks instead of rebuilding catalog-sized arrays each time, so turning the
+stop on does not thrash memory; with the stop off the buffers stay empty and
+nothing is allocated.)
+
+New knobs: WOLGES_CENSUS_CI_STOP_EVERY, WOLGES_CENSUS_CI_STOP_FRAC.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1446,10 +1479,13 @@ then averages over many boards.
     cargo run --release --bin leave -- english-census CSW24.kwg - - 4x256
 
 4 generations of 256 boards settles the leaves: adding more boards or
-generations no longer moves the table. WOLGES_POOL_* shift the board window;
-for dynamic leaves add WOLGES_FULL=1 to keep the full-length values. (To
-measure how settled a run is, or to size a run for a new tile-set, see the
-confidence-interval section earlier in this file.)
+generations no longer moves the table. That 256 is measured on this English
+word list, not a universal constant; for a different tile set, let the run
+size itself with the adaptive stop (WOLGES_CENSUS_CI_STOP_FRAC, in the
+confidence-interval section earlier in this file), which ends a run once the
+leaves have settled to a target width instead of at a preset count.
+WOLGES_POOL_* shift the board window; for dynamic leaves add WOLGES_FULL=1 to
+keep the full-length values.
 
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
@@ -1599,6 +1635,12 @@ Census:
       rack   report how tightly each rack has been measured
       leave  report how tightly each leave has been measured (several times
              tighter -- the real target)
+  WOLGES_CENSUS_CI_STOP_EVERY (a whole number of boards; default 64) -- boards
+    between adaptive-stop checks.
+  WOLGES_CENSUS_CI_STOP_FRAC (a decimal fraction; default 0.0, off) -- fraction
+    of leaves that must sit inside their target interval before the pass stops
+    early; the command-line board count stays a hard cap. 0.0 disables the
+    early stop.
   WOLGES_CENSUS_CI_TARGET (a whole number of millipoints; default 500) --
     target interval width in millipoints (thousandths of a point).
   WOLGES_CENSUS_GLOBAL_WEIGHTS (0 or 1; default 0) -- how racks are weighted.

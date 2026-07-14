@@ -4510,7 +4510,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         CiReport::Rack => 1,
         CiReport::Leave => 2,
     };
-    let ci_report = full_rack && ci_report_level != 0;
     let ci_conf = env_parse::<f64>("WOLGES_CENSUS_CI_CONF", 0.999);
     let ci_conf = if ci_conf > 0.0 && ci_conf < 1.0 {
         ci_conf
@@ -4519,6 +4518,33 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     };
     // target CI half-width in millipoints for the "boards needed" estimate.
     let ci_target_mp = env_usize("WOLGES_CENSUS_CI_TARGET", 500) as f64;
+    // WOLGES_CENSUS_CI_STOP_FRAC (default 0.0 = OFF, fixed board count, byte-identical
+    // to the prior binary): adaptive global board-stop. When > 0 (e.g. 0.90) the census
+    // keeps sampling boards and, every WOLGES_CENSUS_CI_STOP_EVERY completed boards,
+    // computes the leave-level CI (the same entering_leave_ci_fused / CI_REPORT=2
+    // machinery) and STOPS the gen once that fraction of leaves are within
+    // WOLGES_CENSUS_CI_TARGET at WOLGES_CENSUS_CI_CONF. This is a GLOBAL stop -- one
+    // board values every rack, so there is no per-leave stop -- replacing the fixed
+    // board count with an accuracy target. The gen's configured board count (the CLI
+    // board-count spec) is the hard cap that bounds runaway: if the target fraction is
+    // never met, the pass ends at that many boards exactly as the fixed path would.
+    // Requires the rack_summary path (full_rack, no SGD, no multigen-batching); off
+    // otherwise. Forces the CI accumulator (sumsq) on.
+    let ci_stop_frac = env_parse::<f64>("WOLGES_CENSUS_CI_STOP_FRAC", 0.0);
+    let ci_stop_frac = if ci_stop_frac > 0.0 && ci_stop_frac <= 1.0 {
+        ci_stop_frac
+    } else {
+        0.0
+    };
+    let ci_stop_every = env_usize("WOLGES_CENSUS_CI_STOP_EVERY", 64).max(1) as u64;
+    // adaptive stop only on the rack_summary path (the leave-CI propagation needs the
+    // per-rack across-board variances, exactly what rack_summary accumulates), and only
+    // as the default single-batch pass (no SGD mini-batching, no multigen mid-stream
+    // resets that would invalidate the running variance).
+    let ci_stop = ci_stop_frac > 0.0 && full_rack && rack_summary && !sgd && !multigen;
+    // the CI accumulator (sumsq) is needed by the post-run report AND by the adaptive
+    // stop; turn it on for either.
+    let ci_report = full_rack && (ci_report_level != 0 || ci_stop);
     // WOLGES_CENSUS_SHEET_REUSE (default on; multi-gen + reset-per-board + uniform
     // spec only): the step-1 play-value sheet depends only on the board and the unseen
     // pool, NOT on the leaves, so with the deterministic reset-per-board sampler (same
@@ -4784,6 +4810,14 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let num_threads = wolges_threads().max(1).min(max_boards as usize);
     let lat_len = lat.len();
     let next_board = std::sync::atomic::AtomicU64::new(0);
+    // adaptive global board-stop (WOLGES_CENSUS_CI_STOP_FRAC): set true by the periodic
+    // leave-CI check once the target leave fraction is pinned, so all workers break out
+    // of the board loop early. Stays false (and is never read on the hot path beyond a
+    // relaxed load) when the adaptive stop is off.
+    let stop_now = std::sync::atomic::AtomicBool::new(false);
+    // serialize the (relatively expensive) periodic leave-CI check so only one thread
+    // runs it per STOP_EVERY window; others skip past.
+    let ci_check_at = std::sync::atomic::AtomicU64::new(ci_stop_every);
     // (accum_sum, accum_cnt, boards_completed, distinct_leaves_valued, ever_valued).
     // In SGD, accum_sum/cnt are the CURRENT mini-batch (zeroed by the leader after
     // each batch's EMA); ever_valued is persistent (which leaves to write at the end).
@@ -4809,6 +4843,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         Vec::new()
     });
+    // Reusable scratch for the periodic leave-CI check (varr, den, w2v), so the
+    // check does not allocate three lat_len Vecs every STOP_EVERY boards. Only
+    // one thread runs the check at a time (the compare_exchange claim), but
+    // distinct checkpoints can overlap, so it is guarded by its own lock.
+    // Empty (no alloc) unless the adaptive stop is on.
+    let ci_scratch: std::sync::Mutex<(Vec<f64>, Vec<f64>, Vec<f64>)> =
+        std::sync::Mutex::new((Vec::new(), Vec::new(), Vec::new()));
     // mini-batch barrier (SGD only): all workers finish a batch, the leader EMA-updates
     // leave_cur, all resume on the next batch with the improved leaves.
     let barrier = std::sync::Barrier::new(num_threads);
@@ -5361,6 +5402,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         // the barrier between batches).
                         let null_leave = leave.iter().all(|&x| x == 0);
                         loop {
+                            if ci_stop && stop_now.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
                             let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if b >= batch_end {
                                 break;
@@ -5636,6 +5680,102 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 }
                                 sum[idx] += milli as f64 * opening_weight as f64;
                                 cnt[idx] += opening_weight;
+                            }
+                        }
+                    }
+                    // adaptive global board-stop: every ci_stop_every completed boards,
+                    // one thread snapshots the accumulators and recomputes the leave-level
+                    // CI. If the target fraction of leaves is pinned, raise stop_now so
+                    // all workers break. Skipped entirely (one relaxed load) when off.
+                    if ci_stop {
+                        let completed = {
+                            let g = shared.lock().unwrap();
+                            g.2
+                        };
+                        // claim this window: only the first thread past the next
+                        // checkpoint runs the (lattice-walk) check; others move on.
+                        let due = ci_check_at.load(std::sync::atomic::Ordering::Relaxed);
+                        if completed >= due
+                            && ci_check_at
+                                .compare_exchange(
+                                    due,
+                                    due + ci_stop_every,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                )
+                                .is_ok()
+                        {
+                            // snapshot per-rack across-board variance, propagate to leaves.
+                            let (frac, n_boards) = {
+                                let g = shared.lock().unwrap();
+                                let sq = ci_sumsq.lock().unwrap();
+                                let mut scratch = ci_scratch.lock().unwrap();
+                                let (sum, cnt, comp, _, _) = &*g;
+                                let z = stats::NormalDistribution::reverse_ci(ci_conf);
+                                let (varr, den, w2v) = &mut *scratch;
+                                if varr.len() != lat_len {
+                                    *varr = vec![0.0f64; lat_len];
+                                    *den = vec![0.0f64; lat_len];
+                                    *w2v = vec![0.0f64; lat_len];
+                                }
+                                for v in varr[..full_rack_start].iter_mut() {
+                                    *v = -1.0;
+                                }
+                                for idx in full_rack_start..lat_len {
+                                    let n = cnt[idx];
+                                    varr[idx] = if n >= 2 {
+                                        let var = ((sq[idx] - sum[idx] * sum[idx] / n as f64)
+                                            / (n as f64 - 1.0))
+                                            .max(0.0);
+                                        var / n as f64
+                                    } else if n == 1 {
+                                        0.0
+                                    } else {
+                                        -1.0
+                                    };
+                                }
+                                for idx in 0..lat_len {
+                                    den[idx] = 0.0;
+                                    w2v[idx] = 0.0;
+                                }
+                                census::entering_leave_ci_fused(
+                                    &lat,
+                                    varr,
+                                    &base_freqs,
+                                    den,
+                                    w2v,
+                                );
+                                let mut total = 0usize;
+                                let mut under = 0usize;
+                                for idx in 0..full_rack_start {
+                                    if den[idx] > 0.0 {
+                                        total += 1;
+                                        let ci_half =
+                                            z * (w2v[idx] / (den[idx] * den[idx])).sqrt();
+                                        if ci_half <= ci_target_mp {
+                                            under += 1;
+                                        }
+                                    }
+                                }
+                                let frac = if total > 0 {
+                                    under as f64 / total as f64
+                                } else {
+                                    0.0
+                                };
+                                (frac, *comp)
+                            };
+                            eprintln!(
+                                "census CI-stop check: {n_boards} boards, {:.1}% of leaves \
+                                 within target {:.0} mp (need {:.1}%)",
+                                100.0 * frac,
+                                ci_target_mp,
+                                100.0 * ci_stop_frac,
+                            );
+                            if frac >= ci_stop_frac {
+                                stop_now.store(true, std::sync::atomic::Ordering::Relaxed);
+                                eprintln!(
+                                    "census CI-stop: target met at {n_boards} boards; stopping."
+                                );
                             }
                         }
                     }
