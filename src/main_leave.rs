@@ -5,8 +5,8 @@ use std::fmt::Write;
 use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
-    alphabet, bites, display, equity, error, fash, game_config, game_state, klv, kwg, move_filter,
-    move_picker, movegen, prob, stats,
+    alphabet, bites, census, display, equity, error, fash, game_config, game_state, klv, kwg,
+    move_filter, move_picker, movegen, prob, stats,
 };
 
 static BASE62: &[u8; 62] = b"\
@@ -276,6 +276,52 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     arc_klv1,
                     num_games,
                     min_samples,
+                    seed,
+                )?;
+                Ok(true)
+            }
+            "-census" => {
+                // english-census CSW24.kwg leave0.klv leave1.klv 500 [seed]
+                let args3 = if args.len() > 3 { &args[3] } else { "-" };
+                let args4 = if args.len() > 4 { &args[4] } else { "-" };
+                let num_boards = if args.len() > 5 {
+                    u64::from_str(&args[5])?
+                } else {
+                    500
+                };
+                let seed = if args.len() > 6 {
+                    Some(u64::from_str(&args[6])?)
+                } else {
+                    None
+                };
+                let kwg =
+                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                let arc_klv0 = if args3 == "-" {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
+                } else {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args3,
+                    )?))
+                };
+                let arc_klv1 = if args3 == args4 {
+                    std::sync::Arc::clone(&arc_klv0)
+                } else if args4 == "-" {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
+                        klv::EMPTY_KLV_BYTES,
+                    ))
+                } else {
+                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
+                        args4,
+                    )?))
+                };
+                generate_census_leaves(
+                    make_game_config(),
+                    kwg,
+                    arc_klv0,
+                    arc_klv1,
+                    num_boards,
                     seed,
                 )?;
                 Ok(true)
@@ -3107,6 +3153,338 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
         csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
     }
 
+    Ok(())
+}
+
+// Reset-board census. Per random midgame board, value EVERY leave at once:
+// build a play-value sheet (best score for each playable tile-multiset) from one
+// movegen over the board's unseen pool, max-plus-convolve it with the current
+// leave table to get best_equity(R) for every rack R, then draw-average
+// best_equity(S + drawn) to re-value each leave S (entering semantics).
+// Accumulate across hard-reset boards. Output a leaves CSV directly (the census
+// values are final, not a summary to be decomposed), mean-centered on the empty
+// leave, ready for buildlex. klv0 (== klv1) seeds the leave table; null klv = the
+// score-only gen-1 bootstrap. Single-threaded first cut: correctness over speed.
+fn generate_census_leaves<N: kwg::Node, L: kwg::Node>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    arc_klv0: std::sync::Arc<klv::Klv<L>>,
+    arc_klv1: std::sync::Arc<klv::Klv<L>>,
+    num_boards: u64,
+    seed: Option<u64>,
+) -> error::Returns<()> {
+    let t0 = std::time::Instant::now();
+    let alphabet = game_config.alphabet();
+    let num_letters = alphabet.len() as usize;
+    let rack_size = game_config.rack_size() as usize;
+    let num_tiles: usize = (0..alphabet.len()).map(|t| alphabet.freq(t) as usize).sum();
+    // Board-fill window. The play-value sheet is one movegen over the WHOLE unseen
+    // pool, whose play count explodes super-linearly with pool size (duplicate tile
+    // assignments + blank wildcards): pool 27 -> about 2.3M plays (fast), pool 44 ->
+    // about 3 BILLION plays (intractable). So default to LATE-midgame boards where the
+    // unseen pool (= num_tiles - board) stays small but the bag is still non-empty
+    // (pre-endgame, klv-applicable). pool_max keeps it tractable; pool_min keeps it
+    // pre-endgame. Tune via WOLGES_POOL_MIN/MAX (the board edges follow). (This
+    // enumerative builder covers only the pool-bounded window, not the full 25-75%
+    // midgame.)
+    let pool_max = env_usize("WOLGES_POOL_MAX", 28);
+    let pool_min = env_usize("WOLGES_POOL_MIN", 3 * rack_size);
+    let low_tiles = num_tiles.saturating_sub(pool_max);
+    let high_tiles = num_tiles.saturating_sub(pool_min);
+    let verify = env_flag("WOLGES_CENSUS_VERIFY", false);
+
+    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
+    eprintln!(
+        "census: lattice {} leaves (letters {num_letters}, rack_size {rack_size}), \
+         window [{low_tiles},{high_tiles}] of {num_tiles} tiles",
+        lat.len(),
+    );
+
+    let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
+    let seed = seed.unwrap_or_else(rand::random);
+    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+
+    let mut game_state = game_state::GameState::new(&game_config);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+
+    // current leave table (millipoints), loaded from klv0 by lattice multiset.
+    // null klv -> all zero -> best_equity is pure best score (gen-1 bootstrap).
+    let mut leave_cur = vec![0i32; lat.len()];
+    let mut tally_buf = vec![0u8; num_letters];
+    for (idx, slot) in leave_cur.iter_mut().enumerate() {
+        lat.unrank_into(idx, &mut tally_buf);
+        *slot = arc_klv0.leave_value_from_tally(&tally_buf);
+    }
+
+    // cross-board accumulators of the entering-equity of each leave.
+    let mut accum_sum = vec![0f64; lat.len()];
+    let mut accum_cnt = vec![0u64; lat.len()];
+
+    let mut unseen_tally = vec![0u8; num_letters];
+    let mut unseen_pool = Vec::<u8>::new();
+    let mut sheet = vec![census::UNPLAYABLE; lat.len()];
+    let mut movegen_rack = Vec::<u8>::new();
+    let mut played_buf = Vec::<u8>::new();
+    let mut verify_rack = Vec::<u8>::new();
+    let mut final_scores = vec![0; game_config.num_players() as usize];
+
+    let mut boards_done = 0u64;
+    while boards_done < num_boards {
+        // greedy-play a fresh game to a board fill inside the midgame window.
+        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+        let mut reached = false;
+        loop {
+            let fill = game_state.board_tiles.iter().filter(|&&t| t != 0).count();
+            if fill > high_tiles {
+                break; // overshot the window; abandon and try a fresh game.
+            }
+            if fill >= low_tiles {
+                reached = true;
+                break;
+            }
+            game_state.players[game_state.turn as usize]
+                .rack
+                .sort_unstable();
+            let board_snapshot = &movegen::BoardSnapshot {
+                board_tiles: &game_state.board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                klv: if game_state.turn == 0 {
+                    &arc_klv0
+                } else {
+                    &arc_klv1
+                },
+            };
+            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot,
+                rack: &game_state.current_player().rack,
+                max_gen: 1,
+                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                always_include_pass: false,
+            });
+            game_state
+                .play(&game_config, &mut rng, &move_generator.plays[0].play)
+                .unwrap();
+            let ended = game_state.check_game_ended(&game_config, &mut final_scores);
+            game_state.next_turn();
+            if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
+                break; // game ended before reaching the window; try a fresh game.
+            }
+        }
+        if !reached {
+            continue;
+        }
+
+        // unseen pool = full distribution minus tiles on the board (blank-masked).
+        // (opponent racks count as unseen/drawable, as in gilles -- the sampled
+        // racks are hypothetical draws from everything not yet on the board.)
+        unseen_tally.clone_from_slice(&base_freqs);
+        for &t in game_state.board_tiles.iter() {
+            if t != 0 {
+                let base = t & !((t as i8) >> 7) as u8;
+                unseen_tally[base as usize] = unseen_tally[base as usize].saturating_sub(1);
+            }
+        }
+
+        // STEP 1 -- play-value sheet: one movegen over the unseen pool (each tile
+        // capped at rack_size, since a real rack holds at most rack_size of any
+        // letter), recording best score per played tile-multiset. Score only; the
+        // leave term is irrelevant here so any klv works. Pass = empty play, 0.
+        movegen_rack.clear();
+        for (t, &c) in unseen_tally.iter().enumerate() {
+            for _ in 0..(c as usize).min(rack_size) {
+                movegen_rack.push(t as u8);
+            }
+        }
+        sheet.iter_mut().for_each(|v| *v = census::UNPLAYABLE);
+        sheet[empty_rank] = 0;
+        let ts = std::time::Instant::now();
+        {
+            let board_snapshot = &movegen::BoardSnapshot {
+                board_tiles: &game_state.board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                klv: &arc_klv0,
+            };
+            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot,
+                rack: &movegen_rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                always_include_pass: false,
+            });
+        }
+        eprintln!(
+            "  step1 movegen: {} tiles in pool -> {} plays in {:?}",
+            movegen_rack.len(),
+            move_generator.plays.len(),
+            ts.elapsed(),
+        );
+        for vm in &move_generator.plays {
+            if let movegen::Play::Place { word, score, .. } = &vm.play {
+                played_buf.clear();
+                for &tile in word.iter() {
+                    if tile != 0 {
+                        played_buf.push(tile & !((tile as i8) >> 7) as u8);
+                    }
+                }
+                if played_buf.len() > rack_size {
+                    continue; // not reachable from a real rack_size-tile rack.
+                }
+                played_buf.sort_unstable();
+                let pr = lat.rank_bytes(&played_buf);
+                if pr != !0 && *score > sheet[pr as usize] {
+                    sheet[pr as usize] = *score;
+                }
+            }
+        }
+
+        // STEP 2 -- best_equity(R) for every rack, max-plus of sheet and leave_cur.
+        let ts = std::time::Instant::now();
+        let best = census::best_equity_table(&lat, &sheet, &leave_cur);
+        eprintln!("  step2 best_equity_table: {:?}", ts.elapsed());
+
+        // NULL-KLV / engine invariant: census best_equity(R) must equal the engine's
+        // best-play equity for R using the SAME leaves (klv0 == leave_cur), since
+        // both maximize score(P) + leave(R-P). Sample real racks and check.
+        if verify && boards_done == 0 {
+            unseen_pool.clear();
+            for (t, &c) in unseen_tally.iter().enumerate() {
+                for _ in 0..c {
+                    unseen_pool.push(t as u8);
+                }
+            }
+            let mut ok = 0u32;
+            let mut bad = 0u32;
+            if unseen_pool.len() >= rack_size {
+                for _ in 0..32 {
+                    // draw a random rack_size-tile rack from the unseen pool.
+                    for i in 0..rack_size {
+                        let j = rng.random_range(i..unseen_pool.len());
+                        unseen_pool.swap(i, j);
+                    }
+                    verify_rack.clear();
+                    verify_rack.extend_from_slice(&unseen_pool[..rack_size]);
+                    verify_rack.sort_unstable();
+                    let rr = lat.rank_bytes(&verify_rack);
+                    if rr == !0 {
+                        continue;
+                    }
+                    let board_snapshot = &movegen::BoardSnapshot {
+                        board_tiles: &game_state.board_tiles,
+                        game_config: &game_config,
+                        kwg: &kwg,
+                        klv: &arc_klv0,
+                    };
+                    move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                        board_snapshot,
+                        rack: &verify_rack,
+                        max_gen: 1,
+                        num_exchanges_by_this_player: 0,
+                        always_include_pass: false,
+                    });
+                    let engine_mp = (move_generator.plays[0].equity.as_f64() * equity::SCALE as f64)
+                        .round() as i32;
+                    let census_mp = best[rr as usize];
+                    if engine_mp == census_mp {
+                        ok += 1;
+                    } else {
+                        bad += 1;
+                        if bad <= 5 {
+                            eprintln!(
+                                "  census VERIFY mismatch rack {:?}: engine {} census {}",
+                                verify_rack, engine_mp, census_mp,
+                            );
+                        }
+                    }
+                }
+            }
+            eprintln!("census VERIFY: {ok} ok, {bad} mismatch (null-klv/engine invariant)");
+        }
+
+        // STEP 3 -- value each leave by draw-averaging best_equity(S + drawn),
+        // weighted by how many ways each completion is drawn from the unseen
+        // pool (no replacement).
+        let ts = std::time::Instant::now();
+        for idx in 0..lat.len() {
+            lat.unrank_into(idx, &mut tally_buf);
+            let v = census::leave_value_by_draw(&lat, &best, &unseen_tally, &tally_buf);
+            if v != census::UNPLAYABLE {
+                accum_sum[idx] += v as f64;
+                accum_cnt[idx] += 1;
+            }
+        }
+
+        eprintln!("  step3 draw-average: {:?}", ts.elapsed());
+
+        boards_done += 1;
+        eprintln!(
+            "census: board {}/{} ({}s), {} of {} leaves valued so far",
+            boards_done,
+            num_boards,
+            t0.elapsed().as_secs(),
+            accum_cnt.iter().filter(|&&c| c > 0).count(),
+            lat.len(),
+        );
+    }
+
+    // mean-center on the empty leave (its entering-equity is the average best
+    // full-rack equity = the baseline), then write (leave, value_in_points).
+    let baseline = if accum_cnt[empty_rank] > 0 {
+        accum_sum[empty_rank] / accum_cnt[empty_rank] as f64
+    } else {
+        0.0
+    };
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let out_name = format!("census-leaves-{epoch:08x}.csv");
+    // non-full by default: a play table never keeps a full rack (a pass is
+    // almost never the best move mid-game, and the empty-bag endgame scores with a
+    // penalty term, not the klv), so dropping the length-rack_size values is a
+    // smaller, play-identical table. WOLGES_FULL=1 keeps the full lengths.
+    let emit_full = env_flag("WOLGES_FULL", false);
+    let max_keep = if emit_full {
+        rack_size
+    } else {
+        rack_size.saturating_sub(1)
+    };
+    let mut rows: Vec<(usize, String, f64)> = Vec::new();
+    let mut leave_ser = String::new();
+    for idx in 0..lat.len() {
+        if accum_cnt[idx] == 0 {
+            continue;
+        }
+        lat.unrank_into(idx, &mut tally_buf);
+        let size: usize = tally_buf.iter().map(|&c| c as usize).sum();
+        if size == 0 || size > max_keep {
+            continue; // skip empty (baseline), over-size, and (non-full) full racks.
+        }
+        let centered_points =
+            (accum_sum[idx] / accum_cnt[idx] as f64 - baseline) / equity::SCALE as f64;
+        leave_ser.clear();
+        for (t, &c) in tally_buf.iter().enumerate() {
+            for _ in 0..c {
+                leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
+            }
+        }
+        rows.push((size, leave_ser.clone(), centered_points));
+    }
+    rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut csv_out = csv::Writer::from_path(&out_name)?;
+    for (_, leave, value) in &rows {
+        csv_out.serialize((leave, value))?;
+    }
+    csv_out.flush()?;
+    eprintln!(
+        "census: wrote {} leaves to {} in {}s (baseline {:.3} pts)",
+        rows.len(),
+        out_name,
+        t0.elapsed().as_secs(),
+        baseline / equity::SCALE as f64,
+    );
     Ok(())
 }
 
