@@ -45,3 +45,16 @@ value), so no real search run today ever returns this placeholder as its final
 answer. But a depth-limited leaf is still a real, reachable position, not a
 sentinel that should never be valued -- it deserves its correct value
 regardless of whether today's search ever stops there.
+
+
+BATCH-SOLVING HARVESTED POSITIONS
+
+autoplay can now harvest the bag-empty positions it plays through into a file.
+An opt-in batch mode (set WOLGES_ENDGAME_BATCH to that file's path) reads the
+harvested positions back, prunes each one's word list to what is reachable,
+solves each with solve() (silent and deterministic, from the previous entry),
+and prints only each line's index and its value -- nothing else, so a whole
+run's output can be hashed or diffed byte for byte. That makes it easy to
+bulk-time the solver over many real positions, or to catch an accidental value
+change in one pass. With the env var unset, the existing hardcoded demo
+positions run exactly as before.
