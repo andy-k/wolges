@@ -1036,6 +1036,20 @@ New knobs: WOLGES_CENSUS_WITHHOLD, WOLGES_CENSUS_WITHHOLD_FRAC,
 WOLGES_OPPDENIAL_LEAVE_MARGINAL.
 
 
+CHOOSING THE DEFAULT ATTRIBUTION
+
+Since the two attributions come out even on CSW24 -- entering held a negligible
+edge at ten million game pairs (50.0296, about 0.03 pp) -- the choice is
+settled on design grounds, not on play strength. Full-rack is the fuller, more
+natural attribution: it credits every subrack the census already computes, in
+one inline pass over the board, and it is what every run worth shipping
+selected by hand. The old default was entering, so a plain census run silently
+produced the narrower leaves, an easy mistake to walk into. The default is
+flipped: a plain run now gives full-rack, and entering becomes opt-in with
+WOLGES_APPORTION=entering. A plain run is byte-identical to an explicit
+WOLGES_APPORTION=full-rack run.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1110,7 +1124,7 @@ Decompose (english-generate):
          double-counts draw frequency
 
 Shared across builders:
-  WOLGES_APPORTION (full-rack or entering; default entering) -- how a board's
+  WOLGES_APPORTION (full-rack or entering; default full-rack) -- how a board's
     value becomes leave values; read by the census and by autoplay's recording:
       full-rack  credit every subrack of each rack (the complete attribution)
       entering   credit only the leave carried into the turn
