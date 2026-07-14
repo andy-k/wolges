@@ -94,11 +94,17 @@ struct WorkBuffer {
 
 impl WorkBuffer {
     fn new(game_config: &game_config::GameConfig) -> Self {
+        // the placed-tile scratch holds at most one tile per board square, so
+        // its length is bounded by the board area; reserve that once up front
+        // so the search reallocates it zero times (the debug_assert in
+        // get_new_state_idx proves the bound holds).
+        let dim = game_config.board_layout().dim();
+        let board_area = dim.rows as usize * dim.cols as usize;
         Self {
             t0: std::time::Instant::now(),
             tick_periods: move_picker::Periods(0),
             dur_movegen: Default::default(),
-            vec_placed_tile: Vec::new(),
+            vec_placed_tile: Vec::with_capacity(board_area),
             current_ply_buffer: Default::default(),
             movegen: movegen::KurniaMoveGenerator::new(game_config),
             states: Vec::new(),
@@ -223,6 +229,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         });
                     }
                 }
+
+                // the placed-tile scratch never holds more than one tile per
+                // board square, so it stays within the board area reserved in
+                // WorkBuffer::new -- the search does not reallocate it.
+                debug_assert!(
+                    self.work_buffer.vec_placed_tile.len() <= dim.rows as usize * dim.cols as usize,
+                    "placed-tile buffer exceeded the board area"
+                );
 
                 // normalize the ordering
                 self.work_buffer
