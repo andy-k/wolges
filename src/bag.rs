@@ -40,7 +40,7 @@ impl Bag {
 
     pub fn shuffle_n(&mut self, mut rng: &mut dyn Rng, amount: usize) {
         // this "correctly" puts the shuffled amount at the end
-        self.tiles[self.fc..].partial_shuffle(&mut rng, amount);
+        let _ = self.tiles[self.fc..].partial_shuffle(&mut rng, amount);
     }
 
     pub fn pop(&mut self) -> Option<u8> {
