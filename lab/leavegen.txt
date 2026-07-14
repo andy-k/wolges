@@ -902,6 +902,104 @@ which is its selling point over sampling.
 New knobs: WOLGES_CENSUS_SCATTER, WOLGES_CENSUS_ZETA_POOL.
 
 
+CREDITING WHAT THE OPPONENT CANNOT DRAW
+
+Every leave value so far measures only what a leave does for the holder's own
+next turn: the best play it makes possible once the rest of the rack is drawn.
+But the tiles a player keeps are also tiles the opponent cannot draw. Keeping
+the Q, the Z, or a fistful of blanks starves the other side's next rack a
+little, so their best reply comes out slightly worse. That harm -- the value of
+what your kept tiles deny the opponent -- is nowhere in the leave table. The
+experiments here try to add it, and none of them pays off; they are kept as
+recorded dead-ends.
+
+All of them share one piece of per-board work. On a sampled board, the census
+machinery already values every full rack that could be drawn from the pool of
+tiles not yet seen. Reusing that, these terms ask a second question about the
+opponent: how much worse is the opponent's expected best play once some of the
+unseen tiles are locked up in your hand? Because the same valuation answers
+both questions, the opponent term is just an extra fold on top of a board the
+sampler already studied. Each term is a knob whose value is the weight -- a
+multiplier -- given to the opponent piece; every one defaults to zero (off),
+and off leaves the leave tables byte for byte identical to the plain method.
+
+
+THE PER-LETTER OPPONENT TERM (one tile at a time)
+
+The cheap version measures the denial one letter at a time. On a sampled board,
+take the opponent's expected best play over all the racks they could draw from
+the unseen pool. Now remove one tile of a given letter from that pool and take
+the same expectation again: it drops a little, because a slightly worse set of
+racks is now drawable. That drop is what a single tile of that letter denies
+the opponent. Doing this for every letter gives a per-letter drop, and
+averaging those over all the sampled boards gives one denial figure per letter.
+
+There are two places to fold that per-letter drop in, and the code exposes
+both:
+
+  WOLGES_OPPDENIAL_LEAVE adds it straight into the finished table. The sampler
+  writes the board-averaged per-letter drops to a companion file next to the
+  summary, and the decompose step adds the weight times the sum of a leave's
+  own per-letter drops to that leave's value.
+
+  WOLGES_OPPDENIAL_RACK adds it earlier, to each drawn rack's recorded value
+  before the summary is written, so it rides through the same summarize-and-
+  decompose path as every other recorded value with no companion file.
+
+Both use the same per-letter drops, and both are linear: each kept tile's
+denial is counted on its own and the counts are summed. That is the built-in
+weakness. Leave values are not additive -- the worth of keeping Q and U
+together is not the worth of Q plus the worth of U -- so adding up each tile's
+denial separately can only estimate the true joint effect of holding several
+tiles at once. Still, it is the obvious first cut and it costs almost nothing
+on top of the census, so it is worth measuring.
+
+Verdict. Running the census with each term turned on against the census with it
+off, one million game pairs, our tables against our own tables:
+
+  WOLGES_OPPDENIAL_LEAVE: the term-on table scores 49.9691, confidence 80.9 --
+    a hair below an even split, meaning the denial credit made the table very
+    slightly worse, but the lead is under one standard error (the roughly 0.035
+    pp noise floor at a million pairs), so it is really no change either way,
+    if anything a tiny loss.
+
+  WOLGES_OPPDENIAL_RACK: the term-on table scores 49.9931, confidence 57.7 -- a
+    tie, well inside the noise.
+
+Neither per-letter term earns its place; both stay off by default.
+
+
+THE EXACT JOINT OPPONENT TERM
+
+Because the per-letter estimate double-counts when several kept tiles all help
+the same opponent play, the next step computes the opponent effect exactly,
+with no per-tile shortcut. For each full rack the holder might draw, it works
+out the opponent's expected best play from the pool that whole rack leaves
+behind -- the average of the opponent's best play over every full rack they
+could draw from what is left -- using the very best-play values the census
+already has. That is the honest joint quantity the per-letter term was
+approximating.
+
+The exact term then subtracts a second piece: what the holder's own next turn
+recovers from that same leftover pool. WOLGES_OPPDENIAL_EXACT folds the weight
+times this joint correction into each drawn rack's value.
+
+Exactness is not free. The opponent's expectation is an average over every
+drawable full rack, computed once for every full rack the holder might draw, so
+the cost grows with the square of the number of drawable racks. To keep that
+bounded the term only runs on boards whose unseen pool is small:
+WOLGES_OPPDENIAL_EXACT_POOL_MAX (default 32 tiles) is the ceiling, and boards
+with a larger pool skip the term.
+
+Verdict. Census with WOLGES_OPPDENIAL_EXACT on against census with it off, one
+million pairs, our-vs-our: 50.0014, confidence 51.5 -- a dead tie. Doing the
+opponent term exactly rather than one tile at a time changes nothing
+measurable; it too stays off.
+
+New knobs: WOLGES_OPPDENIAL_EXACT, WOLGES_OPPDENIAL_EXACT_POOL_MAX,
+WOLGES_OPPDENIAL_LEAVE, WOLGES_OPPDENIAL_RACK.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -985,6 +1083,19 @@ Shared across builders:
     source, and the rack-summary census:
       1  force the rack's tiles onto the board, so rare racks still get covered
       0  record only what the board could really deal
+  WOLGES_OPPDENIAL_EXACT (a decimal weight; default 0.0, off) -- weight on the
+    exact joint opponent correction folded into each drawn rack's value. 0.0
+    disables it.
+  WOLGES_OPPDENIAL_EXACT_POOL_MAX (a whole number of tiles; default 32) --
+    largest unseen pool on which the exact joint term is computed; larger
+    boards skip it.
+  WOLGES_OPPDENIAL_LEAVE (a decimal weight; default 0.0, off) -- weight on the
+    per-letter opponent-denial term, folded into the finished table through a
+    companion file; read by all three builders. 0.0 disables it. A recorded
+    dead-end.
+  WOLGES_OPPDENIAL_RACK (a decimal weight; default 0.0, off) -- the same
+    per-letter drop folded into each drawn rack's recorded value instead of
+    through a file. 0.0 disables it.
 
 Board sampling (gilles):
   It also reads the shared knobs above. Its own knobs:
