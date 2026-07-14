@@ -6,7 +6,6 @@ env:
   CARGO_TERM_COLOR: always
 jobs:
   build:
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     strategy:
       matrix:
         os:
@@ -15,7 +14,7 @@ jobs:
         - macos-latest
     runs-on: "${{ matrix.os }}"
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@v6
     - name: System Rust version
       run: cargo version
     - uses: dtolnay/rust-toolchain@stable

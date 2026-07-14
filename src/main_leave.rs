@@ -420,6 +420,12 @@ fn main() -> error::Returns<()> {
     same as english-resummarize but sorts differently (by playability first)
   english-compare CSW24.kwg klv0.klv2 klv1.klv2 10000 [seed]
     play game pairs to compare two sets of leaves.
+    p0 uses klv0, p1 uses klv1 for move selection (static play, max=1).
+    reports wins/losses/draws, score stats, divergent games, and
+    confidence that one set of leaves is better.
+    if klv is \"-\" or omitted, uses no leave.
+    number of game pairs is optional (default 10000).
+    seed is optional; prints auto-generated seed to stderr if not provided.
     each pair: same tile draw, alternating starting player.
     p0 uses klv0, p1 uses klv1 for move selection (static play, max=1).
     reports wins/losses/draws, score stats, divergent games, and
