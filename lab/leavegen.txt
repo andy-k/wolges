@@ -348,6 +348,51 @@ estimated.
 New knobs: WOLGES_GILLES_RESERVE, WOLGES_GILLES_RESERVE_BUDGET.
 
 
+THE REAL DRAWN RACK
+
+Board sampling builds its racks from the worst group on each board -- the
+least-likely tiles -- which is what the method is for, but it has a side
+effect. The racks it studies lean toward odd, rare-tile holdings and rarely
+toward the common vowel-heavy ones. So the method tends to undervalue
+vowel-rich leaves and overvalue rare-tile leaves. That slant in the valuations,
+more than any gap in rare-rack coverage, looks like the method's main remaining
+weakness -- which suggests a different fix: instead of manufacturing more rare
+racks, also study the ordinary racks the player actually held.
+
+WOLGES_GILLES_REAL_RACK turns that on. On each greedy turn the game has already
+found the player's best play, so recording the rack that was held that turn,
+scored by that best play, costs almost nothing, and it feeds the sampling the
+natural mix of racks the worst-group draw skips over. The knob picks when to
+record: off (the default) leaves the plain method untouched; all-turns records
+every turn, the way autoplay does; in-window records only while the board sits
+inside the snapshot window. It records only while the bag still has tiles, so
+there is always a real leave to value, and it stores each real rack exactly
+like a worst-group rack, so everything decomposes into leaves the same way.
+
+There is a scale mismatch, though: the worst-group draw floods many
+manufactured racks per game while the real rack adds only about one per turn,
+so at par the real rack is swamped in the totals.
+WOLGES_GILLES_REAL_RACK_WEIGHT counts each real-rack sample this many times
+(default 1, a no-op), so a large weight lets the natural rack mix dominate -- a
+way to test whether real-rack sampling helps the leaves at all.
+
+The verdict, our table against our own at one million game pairs, plain board
+sampling as the yardstick:
+
+  real-rack sampling vs plain board sampling: english-compare reports 50.0135
+    for the real-rack table (the first table), inside the noise -- a tie.
+
+And pushing the weight high (for example 200) makes the vowel undervaluation
+worse, not better. That points the finger at how each rack is measured -- a
+single greedy best-play score -- rather than at which racks are chosen:
+rebalancing the mix of racks toward the common ones does not cure the slant, so
+the slant is baked into the one-play scoring, not into the sampling. Real-rack
+sampling stays off by default and the weight stays 1, both changing nothing
+unless asked.
+
+New knobs: WOLGES_GILLES_REAL_RACK, WOLGES_GILLES_REAL_RACK_WEIGHT.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -415,6 +460,14 @@ Board sampling (gilles):
     snapshot before keeping the least likely one.
   WOLGES_GILLES_GROUP (a whole number of tiles; default two rack-sizes minus
     one, 13 EN) -- worst-group size drawn per snapshot.
+  WOLGES_GILLES_REAL_RACK (off, all-turns, or in-window; default off) --
+    besides the manufactured racks, whether to also record the real rack held
+    each turn. A no-op measured at par:
+      off        the plain method, no real racks recorded
+      all-turns  record the real rack held every turn
+      in-window  record it only while the board sits in the snapshot window
+  WOLGES_GILLES_REAL_RACK_WEIGHT (a whole number; default 1) -- counts each
+    real-rack sample this many times.
   WOLGES_GILLES_RESERVE (0 or 1; default 0) -- only with a nonzero min-sample
     target:
       1  hold the tiles the uncovered racks need out of the deal, so they

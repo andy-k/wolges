@@ -1500,6 +1500,28 @@ fn env_usize(name: &str, default: usize) -> usize {
     env_parse(name, default)
 }
 
+// how WOLGES_GILLES_REAL_RACK samples the real drawn rack alongside the
+// worst-group synthetic racks: off, on every turn, or only inside the snapshot
+// window. parse it once into a typed value so an unknown setting fails loud
+// instead of silently reverting to off.
+#[derive(Clone, Copy)]
+enum GillesRealRack {
+    Off,
+    AllTurns,
+    InWindow,
+}
+
+fn wolges_gilles_real_rack() -> error::Returns<GillesRealRack> {
+    match std::env::var("WOLGES_GILLES_REAL_RACK").ok().as_deref() {
+        None | Some("off") => Ok(GillesRealRack::Off),
+        Some("all-turns") => Ok(GillesRealRack::AllTurns),
+        Some("in-window") => Ok(GillesRealRack::InWindow),
+        Some(other) => Err(format!(
+            "WOLGES_GILLES_REAL_RACK must be off, all-turns, or in-window, got {other:?}"
+        )
+        .into()),
+    }
+}
 // GillesB's leave generation by board sampling. Produces the same summary CSV
 // as <lang>-autoplay-summarize-only (a leading ("", total_equity, total_count)
 // row then rack,equity_sum,count rows), so its output merges via -resummarize
@@ -1580,6 +1602,27 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let growth_cap = env_usize("WOLGES_GILLES_GROWTH", rack_size as usize);
     let max_no_progress = env_usize("WOLGES_GILLES_MAX_NO_PROGRESS", 2) as u32;
     let force_recompute_games = env_usize("WOLGES_GILLES_FORCE_RECOMPUTE_GAMES", 2000) as u64;
+    // also record the real rack the player actually held, not just the
+    // synthetic racks drawn from the worst group. that group is the
+    // least-probable tiles, so it structurally starves common vowel-rich
+    // leaves (and on the rare turns they appear they come paired with junk),
+    // making pure gilles undervalue vowels and overvalue rare tiles.
+    // recording the real rack adds the observed mix those leaves actually
+    // occur in. off (default) = pure gilles; all-turns = every turn, like
+    // autoplay; in-window = only while the board is in the snapshot window.
+    // the greedy movegen already found the best play, so this is nearly free.
+    let (real_rack_enabled, real_rack_in_window_only, real_rack_mode) =
+        match wolges_gilles_real_rack()? {
+            GillesRealRack::Off => (false, false, "off"),
+            GillesRealRack::AllTurns => (true, false, "all-turns"),
+            GillesRealRack::InWindow => (true, true, "in-window"),
+        };
+    // weight per real-rack sample: count each one this many times. the worst
+    // group floods many synthetic samples per game while the real rack adds
+    // about one per turn, so at weight 1 the real rack is swamped; a large
+    // weight lets the observed mix dominate, to test whether real-rack
+    // sampling improves the leaves at all.
+    let real_rack_weight = env_usize("WOLGES_GILLES_REAL_RACK_WEIGHT", 1) as u64;
     // reserved-tile-pool remediation (off by default). single-copy rare tiles
     // (e.g. Q) are usually played before the snapshot window, so racks needing
     // them stay undersampled and are expensive to reach by normal sampling.
@@ -1601,7 +1644,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         ),
     );
     eprintln!(
-        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget}"
+        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget} real_rack={real_rack_mode}"
     );
 
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1678,6 +1721,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                 // remediation thread-local state (used only when min_samples > 0).
                 let mut local_undersampled = fash::MyHashSet::<bites::Bites>::default();
                 let mut reserved_tally = vec![0u8; num_letters];
+                let mut real_rack_buf = Vec::<u8>::with_capacity(rack_size as usize);
                 let mut remediation_begun = false;
                 let mut thread_generation_id = 0u64;
                 let mut games_this_gen = 0u64;
@@ -2160,6 +2204,32 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
                         });
+                        // record the real rack's best-play equity (observed
+                        // mix) before playing it. only while the bag is
+                        // non-empty, so there is a real leave to value (matches
+                        // autoplay).
+                        if real_rack_enabled
+                            && !game_state.bag.is_empty()
+                            && (!real_rack_in_window_only
+                                || (pool_count >= pool_min
+                                    && pool_count <= pool_max))
+                        {
+                            let w = real_rack_weight;
+                            let eq = move_generator.plays[0].equity.as_f64() * w as f64;
+                            real_rack_buf.clone_from(&game_state.current_player().rack);
+                            real_rack_buf.sort_unstable();
+                            thread_map
+                                .entry(real_rack_buf[..].into())
+                                .and_modify(|e| {
+                                    e.equity += eq;
+                                    e.count += w;
+                                })
+                                .or_insert(Cumulate {
+                                    equity: eq,
+                                    count: w,
+                                });
+                            completed_samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
                         let play = &move_generator.plays[0];
                         game_state.play(&game_config, &mut rng, &play.play).unwrap();
                         let game_ended =
