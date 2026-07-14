@@ -22,15 +22,15 @@ TL;DR -- IF YOU JUST WANT A GOOD TABLE
 Run this. The census works out every leave's value exactly, one board at a
 time, and needs no environment variables:
 
-  cargo run --release --bin leave -- english-census CSW24.kwg - - 500
+  cargo run --release --bin leave -- english-census CSW24.kwg - - 4x256
 
-The two "-" are the null starting tables; feed the finished table back in as
-both players' table and repeat until it stops changing. Every default is
-already the one to ship. The census builds faster than plain self-play or board
-sampling and plays at least as well, which is why it is the one to reach for.
-Those alternatives, and every lever that turned out not to help, are described
-below; the best current way to run each method is collected at the end of this
-file.
+That builds a competitive table with no tuning: 4 generations of 256 boards,
+which is enough for the leaves to settle, iterated from the null starting
+tables (the two "-"). Every default is already the one to ship. The census
+builds faster than plain self-play or board sampling and plays at least as
+well, which is why it is the one to reach for. Those alternatives, and every
+lever that turned out not to help, are described below; the best current way to
+run each method is collected at the end of this file.
 
 
 GENERATING A TABLE BY SELF-PLAY
@@ -1228,6 +1228,47 @@ a flag; set WOLGES_GENERATE_PER_RACK=0 to opt back to per-occurrence, kept only
 for reproducing the older tables.
 
 
+A GENERATION-AWARE, CONFIG-DERIVED CENSUS
+
+Three changes make the census safe to run across several generations and across
+tile-sets other than the classic English game, without touching the leaves it
+produces.
+
+A multi-generation run may value a different number of boards per generation.
+The board-count specification "1,3", for instance, means one board in the first
+generation and three in the second. The shared cap on worker threads and the
+cache of one play-value sheet per board were both sized from the first
+generation's board count, so a later, larger generation was starved of threads
+and cache slots and could stall where the generations synchronize. Both are now
+sized from the largest generation instead. This changes only the thread count
+on uneven specifications; the leaves are identical, because each board seeds
+its own randomness from its own slot, so the result never depends on how many
+threads happened to run.
+
+A census can also resume from per-generation snapshot files, picking up at the
+generation after the last one saved. If the specification given on resume asks
+for fewer generations than the snapshots already on disk, the resume index
+would run off the end of the specification and a worker would panic. It now
+stops with a clear error -- extend the specification or remove the snapshots --
+instead of crashing. Fresh runs are unaffected.
+
+Finally, the census window's bounds -- the range of unseen-pool sizes it
+studies --
+are derived from the game configuration rather than hand-picked for the English
+game, so they carry over to any tile-set. The low end is the endgame floor
+established earlier: one more than the tiles both players hold at once, the
+smallest pool that still leaves a non-empty bag (below it the bag is empty and
+the leave table is not consulted). The high end is the tile count minus the
+tiles both players hold (boards with at least that many tiles already played).
+For the classic two-player English game this widens the default window from an
+unseen pool of 21 to 28 tiles out to 15 to 86. The method actually supports
+every board but the all-empty one; the default stops short of the near-empty
+opening boards because the value of leaves there is unsettled. WOLGES_POOL_MIN
+and WOLGES_POOL_MAX still override, and a too-small WOLGES_POOL_MIN is raised
+to the floor with a warning rather than silently valuing endgame boards whose
+leaves are never used.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1236,14 +1277,13 @@ get the most competitive leaves out of each method. Each recipe is one command
 good table, use the census.
 
 Census -- exact, and the one to use. It values every leave on a board exactly,
-then averages over many boards; more boards mean less board-to-board noise.
+then averages over many boards.
 
-    cargo run --release --bin leave -- english-census CSW24.kwg - - 500
+    cargo run --release --bin leave -- english-census CSW24.kwg - - 4x256
 
-500 boards is a starting point, not the strongest table. Feed the finished
-table back in as both players' table and repeat until it stops changing,
-raising the board count until the leaves settle. WOLGES_POOL_* shift the board
-window; the WOLGES_CENSUS_* knobs tune it.
+4 generations of 256 boards settles the leaves: adding more boards or
+generations no longer moves the table. WOLGES_POOL_* shift the board window;
+for dynamic leaves add WOLGES_FULL=1 to keep the full-length values.
 
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
