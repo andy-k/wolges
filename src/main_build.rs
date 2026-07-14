@@ -752,7 +752,7 @@ fn old_main() -> error::Returns<()> {
                 tmp_vec.sort_unstable();
                 let alphagram: bites::Bites = tmp_vec[..].into();
                 max_len = max_len.max(word.len());
-                (alphagram, word_prob.count_ways(word))
+                (alphagram, word_prob.word_draw_ways(word))
             })
             .collect::<Box<_>>();
         let mut iter_indexes = (0u32..v.len() as u32).collect::<Box<_>>();
@@ -828,7 +828,7 @@ fn old_main() -> error::Returns<()> {
             if v_ecwl_bits[byte_index] & bit != 0 {
                 print!(" ECWL");
             }
-            print!(" wp={}", word_prob.count_ways(&out_vec));
+            print!(" wp={}", word_prob.word_draw_ways(&out_vec));
             print!(
                 " pi={}",
                 u32::from_le_bytes(

@@ -865,7 +865,7 @@ fn do_wg_prob<R: WgReader>(
         None,
         &mut |s: &str| {
             let word = word_cell.borrow();
-            let this_wp = word_prob.count_ways(&word);
+            let this_wp = word_prob.word_draw_ways(&word);
             let mut vec_out = vec_out_cell.borrow_mut();
             let vec_len = vec_out.len();
             let mut anagram_key = word.clone();
@@ -1085,7 +1085,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             return Err("invalid tile".into());
                         }
                     }
-                    println!("{}", word_prob.count_ways(&v));
+                    println!("{}", word_prob.word_draw_ways(&v));
                 }
                 Ok(true)
             }

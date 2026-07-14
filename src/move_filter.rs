@@ -153,7 +153,7 @@ impl<'a> Tilt<'a> {
             false
         } else {
             let word_len = word.len();
-            let this_wp = self.word_prob.count_ways(word);
+            let this_wp = self.word_prob.word_draw_ways(word);
             let max_wp = self.max_prob_by_len[word_len];
             // Accept if: importance[len] * p*(2-p) >= tilt_factor,
             // where p = this_wp / max_wp.

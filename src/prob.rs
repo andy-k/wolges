@@ -32,6 +32,26 @@ impl Pascal {
         let start = row * (row + 1) / 2;
         &self.raw[start..start + row + 1]
     }
+
+    // Eagerly build rows 0..num_rows so binom() can read immutably (and across
+    // threads) without the lazy &mut growth.
+    pub fn with_rows(num_rows: usize) -> Self {
+        let mut p = Self::new();
+        if num_rows > 1 {
+            p.row(num_rows - 1);
+        }
+        p
+    }
+
+    // C(n, k), 0 when k > n. SAFETY: row n must already be built (with_rows).
+    #[inline(always)]
+    pub fn binom(&self, n: usize, k: usize) -> u64 {
+        if k > n {
+            0
+        } else {
+            unsafe { *self.raw.get_unchecked(n * (n + 1) / 2 + k) }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -48,15 +68,18 @@ impl WordProbability {
             .map(|tile| alphabet.freq(tile))
             .collect::<Box<_>>();
         let word_tally = vec![0; alphabet_freqs.len()].into_boxed_slice();
+        // build Pascal eagerly up to the largest single-letter count, so binom()
+        // reads immutably -- this lets the draw-ways helpers take &self.
+        let max_freq = alphabet_freqs.iter().copied().max().unwrap_or(0) as usize;
         Self {
             dp: vec![0; alphabet_freqs[0] as usize + 1].into_boxed_slice(),
-            pascal: Pascal::new(),
+            pascal: Pascal::with_rows(max_freq + 1),
             alphabet_freqs,
             word_tally,
         }
     }
 
-    pub fn count_ways(&mut self, word: &[u8]) -> u64 {
+    pub fn word_draw_ways(&mut self, word: &[u8]) -> u64 {
         self.dp.iter_mut().for_each(|m| *m = 0);
         self.dp[0] = 1;
         self.word_tally.iter_mut().for_each(|m| *m = 0);
@@ -100,7 +123,7 @@ impl WordProbability {
                 while v.len() <= l {
                     v.push(0);
                 }
-                v[l] = v[l].max(self.count_ways(word));
+                v[l] = v[l].max(self.word_draw_ways(word));
             }
             if node.arc_index() != 0 {
                 self.get_max_probs_by_len_iter(kwg, word, v, node.arc_index());
@@ -124,19 +147,49 @@ impl WordProbability {
         *self.pascal.row(n).get(r).unwrap_or(&0)
     }
 
-    // may crash if racks did not come from alphabet.
-    pub fn count_ways_for_leave_completion(
-        &mut self,
+    // the full bag, the draw source for the global (board-independent)
+    // decompose. board-conditional apportionments pass a board's unseen pool instead.
+    #[inline(always)]
+    pub fn bag(&self) -> &[u8] {
+        &self.alphabet_freqs
+    }
+
+    // number of ways to draw the completion R-S (the tiles added to fill a held
+    // leave S up to the full rack R) from `source` with S removed: the product
+    // over letters of C(source[t]-S[t], R[t]-S[t]). returns 0 (never panics) when
+    // the draw is impossible -- S is not a subrack of R, or R is not drawable from
+    // `source`. `source` is bag() for the global decompose, or a board's unseen
+    // pool for a board-conditional apportionment.
+    pub fn completion_draw_ways(
+        &self,
         full_rack_tally: &[u8],
         subrack_tally: &[u8],
+        source: &[u8],
     ) -> u64 {
-        let mut v = 1;
+        let mut v: u64 = 1;
         for c in 0..self.alphabet_freqs.len() {
-            let n_c_in_completion = full_rack_tally[c] as isize - subrack_tally[c] as isize;
-            if n_c_in_completion != 0 {
-                let n_c_in_bag = self.alphabet_freqs[c] as isize - subrack_tally[c] as isize;
-                v *= self.combination(n_c_in_bag as usize, n_c_in_completion as usize);
+            let target = full_rack_tally[c] as isize - subrack_tally[c] as isize;
+            let avail = source[c] as isize - subrack_tally[c] as isize;
+            if target < 0 || avail < 0 || target > avail {
+                return 0;
             }
+            v = v.saturating_mul(self.pascal.binom(avail as usize, target as usize));
+        }
+        v
+    }
+
+    // number of ways to draw the full rack R from `source`: the product over
+    // letters of C(source[t], R[t]). returns 0 when R is not drawable from source.
+    pub fn full_rack_draw_ways(&self, full_rack_tally: &[u8], source: &[u8]) -> u64 {
+        let mut v: u64 = 1;
+        for c in 0..self.alphabet_freqs.len() {
+            if full_rack_tally[c] > source[c] {
+                return 0;
+            }
+            v = v.saturating_mul(
+                self.pascal
+                    .binom(source[c] as usize, full_rack_tally[c] as usize),
+            );
         }
         v
     }
