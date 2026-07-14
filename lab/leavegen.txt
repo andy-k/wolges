@@ -1000,6 +1000,28 @@ New knobs: WOLGES_OPPDENIAL_EXACT, WOLGES_OPPDENIAL_EXACT_POOL_MAX,
 WOLGES_OPPDENIAL_LEAVE, WOLGES_OPPDENIAL_RACK.
 
 
+DIALING BACK THE RECOVERY PIECE
+
+The joint correction has two halves: what the opponent still expects from the
+leftover pool, minus what the holder's own next turn recovers from it. That
+second half can over-credit. The census leave value is already a fixed point
+that sums the holder's own future turns -- the leaves that reproduce themselves
+when fed back in -- so subtracting the holder's recovery again partly counts
+the same future twice. WOLGES_OPPDENIAL_EXACT_ME2 (default 1.0) scales just
+that recovery half: 1.0 keeps the full correction exactly as above, 0.0 drops
+the recovery half and counts only the opponent's expectation (the opponent-only
+denial, which the fixed point does not already contain), and values in between
+temper it.
+
+At the default 1.0 this is the same dead-tie result as WOLGES_OPPDENIAL_EXACT
+above. The opponent-only setting (0.0) is a distinct variant, and it does not
+help: in a fresh head-to-head the full correction (1.0) beats it 50.13 to 49.87
+(confidence 100), so dropping the holder's-recovery half is a small negative,
+not a win. The knob stays at 1.0.
+
+New knobs: WOLGES_OPPDENIAL_EXACT_ME2.
+
+
 COVERING RARE-TILE LEAVES BY HOLDING TILES BACK
 
 A separate coverage experiment, kept in the same recorded-dead-end spirit. The
@@ -1353,6 +1375,64 @@ opening signal amplified 256-fold (49.9923, confidence 56).
 New knobs: WOLGES_OPENING_SAMPLES, WOLGES_OPENING_WEIGHT.
 
 
+HOW MANY BOARDS IS ENOUGH -- THE CONFIDENCE INTERVAL
+
+The census values a fixed number of boards. Is that too many, or too few?
+Answering it needs a confidence interval on each measured value (the range the
+true value likely sits in): a range around the average, wide enough that the
+true average -- the number you would get from every board rather than a sample
+of them -- is very likely inside it. The interval's width is what matters. It
+says how much the reported value could still wobble if you had happened to
+sample a different set of boards; a narrow interval means the average is well
+pinned down, a wide one means it is not. This is the same idea as the
+confidence on a compare result, applied to a single value rather than to a win
+share.
+
+WOLGES_CENSUS_CI_REPORT switches on a diagnostic that measures this and changes
+no leaves (off, the census is byte-identical). It accepts three values: off
+(the default), rack, and leave; any other value stops with a clear error. On
+rack it keeps, for each rack, a running total and a running total of squares of
+the best-play values it saw across boards -- kept off the hot path and not
+allocated at all unless the diagnostic is on -- and from those computes how
+much the value bounces from board to board. The half-width of each interval is
+that board-to-board bounce turned into a range through the same normal-curve
+model the compare uses: the per-board bounce, divided by the square root of the
+number of boards (so the interval narrows as more boards are sampled), times a
+multiplier read off the normal curve for the chosen confidence.
+WOLGES_CENSUS_CI_CONF sets that confidence (default 0.999).
+WOLGES_CENSUS_CI_TARGET sets a target width in millipoints -- thousandths of a
+point -- with a default of 500, which is half a point. At the end the census
+prints, to standard error, the range of the intervals and, for each value not
+inside the target, an estimate of how many boards it would take to get there
+(the width shrinks with the square root of the board count, so reaching a
+target width of a given size takes a predictable multiple of the boards sampled
+so far).
+
+One caution the diagnostic cannot escape: the interval tells you how tightly
+you have measured an average, not whether it is the right average to measure. A
+wrong mix of boards would still report a tight interval, just around a wrong
+number.
+
+The finding, on the English game: aiming for a tight interval on each
+individual rack wants far more boards than the census actually samples, because
+a single rack's best play is noisy from board to board. But the table does not
+store rack values; it stores leaves, and a leave is an average over many racks,
+so it is far more pinned down than any one rack. WOLGES_CENSUS_CI_REPORT=leave
+reports the tighter, correct target: it apportions each rack's board-to-board
+bounce down onto the leaves through the very same completion weighting the
+english-generate decompose uses, so a leave's interval is the wobble of its own
+weighted average. (An exact routine walks every rack-and-kept-combination pair
+to do this, checked against a slow brute-force computation by a unit test.) The
+confidence and target knobs apply the same way, and rack still prints the
+per-rack report. The leaves come out several times tighter than the racks, so
+aiming at the per-leave interval needs far fewer boards than a per-rack target
+would demand. That per-leave interval is the accuracy target worth chasing: it
+reports, honestly, how tightly the leaves themselves have been measured.
+
+New knobs: WOLGES_CENSUS_CI_CONF, WOLGES_CENSUS_CI_REPORT,
+WOLGES_CENSUS_CI_TARGET.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1367,7 +1447,9 @@ then averages over many boards.
 
 4 generations of 256 boards settles the leaves: adding more boards or
 generations no longer moves the table. WOLGES_POOL_* shift the board window;
-for dynamic leaves add WOLGES_FULL=1 to keep the full-length values.
+for dynamic leaves add WOLGES_FULL=1 to keep the full-length values. (To
+measure how settled a run is, or to size a run for a new tile-set, see the
+confidence-interval section earlier in this file.)
 
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
@@ -1446,6 +1528,10 @@ Shared across builders:
   WOLGES_OPPDENIAL_EXACT (a decimal weight; default 0.0, off) -- weight on the
     exact joint opponent correction folded into each drawn rack's value. 0.0
     disables it.
+  WOLGES_OPPDENIAL_EXACT_ME2 (a decimal; default 1.0) -- scales the
+    holder's-recovery half of the joint correction: 1.0 keeps it in full, 0.0
+    keeps only the opponent's expectation, values between temper it; read only
+    when WOLGES_OPPDENIAL_EXACT is nonzero.
   WOLGES_OPPDENIAL_EXACT_POOL_MAX (a whole number of tiles; default 32) --
     largest unseen pool on which the exact joint term is computed; larger
     boards skip it.
@@ -1504,6 +1590,17 @@ Census:
   WOLGES_CENSUS_BUCKETS (a whole number; default 0, every fill level) --
     coarsen the fill-level cycle to this many evenly spaced levels; changes
     only the spacing, not the leaves.
+  WOLGES_CENSUS_CI_CONF (a decimal probability from 0 to 1; default 0.999) --
+    confidence level for the interval.
+  WOLGES_CENSUS_CI_REPORT (off, rack, or leave; default off) -- a diagnostic
+    that changes no leaves and also estimates the boards needed to reach a
+    target width:
+      off    no report
+      rack   report how tightly each rack has been measured
+      leave  report how tightly each leave has been measured (several times
+             tighter -- the real target)
+  WOLGES_CENSUS_CI_TARGET (a whole number of millipoints; default 500) --
+    target interval width in millipoints (thousandths of a point).
   WOLGES_CENSUS_GLOBAL_WEIGHTS (0 or 1; default 0) -- how racks are weighted.
     Measured a no-op:
       1  weight every rack by full-starting-bag draw odds, and value
