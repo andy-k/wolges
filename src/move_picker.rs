@@ -5,6 +5,9 @@ use super::{game_config, game_state, klv, kwg, move_filter, movegen, simmer, sta
 struct Candidate {
     play_index: usize,
     stats: stats::Stats,
+    // stable identity for this candidate within a decision, so a retired
+    // candidate can be named for readmit even as the vectors are reordered.
+    stream_id: u64,
 }
 
 // Default per-decision rollout budget (see Simmer::num_sim_iters).
@@ -103,6 +106,55 @@ fn leader_is_separated(candidates: &[Candidate], delta: f64) -> bool {
         .all(|(i, candidate)| i == leader_idx || leader_low >= candidate.stats.ci_max(z))
 }
 
+// Move the candidates the prune drops -- those whose upper confidence bound is
+// below `low_bar` -- into `retired`, preserving the order of the survivors so
+// the kept set is identical to a plain retain. Their statistics are kept for a
+// later resume or inspection rather than thrown away.
+#[inline(always)]
+fn retire_below(
+    candidates: &mut Vec<Candidate>,
+    retired: &mut Vec<Candidate>,
+    z: f64,
+    low_bar: f64,
+) {
+    // Compact the survivors to the front in place, preserving their order (no
+    // reallocation, unlike collecting into a new vec), then drain the dropped
+    // tail into retired.
+    let mut write = 0;
+    for read in 0..candidates.len() {
+        if candidates[read].stats.ci_max(z) >= low_bar {
+            candidates.swap(write, read);
+            write += 1;
+        }
+    }
+    retired.extend(candidates.drain(write..));
+}
+
+// Retire the weakest survivors (by lower confidence bound) until at most
+// max_candidates_allowed remain, moving each into `retired` instead of dropping
+// it. The swap_remove order matches the previous discard-only version, so the
+// surviving set is unchanged.
+#[inline(always)]
+fn limit_surviving_candidates(
+    candidates: &mut Vec<Candidate>,
+    retired: &mut Vec<Candidate>,
+    z: f64,
+    max_candidates_allowed: usize,
+) {
+    while candidates.len() > max_candidates_allowed {
+        // pruning regularly means binary heap is not justified here.
+        // also, this means candidates are almost indistinguishable.
+        let idx = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, candidate)| (i, candidate.stats.ci_max(-z)))
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .unwrap()
+            .0;
+        retired.push(candidates.swap_remove(idx));
+    }
+}
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
@@ -128,6 +180,15 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     // statistically separated, and the target error for that stop.
     stop_rule: StopRule,
     stop_delta: f64,
+    // Candidates dropped by the prune, kept with their statistics instead of
+    // discarded, so a study session can resume and inspect them later.
+    retired: Vec<Candidate>,
+    // How many rollout iterations the current decision has run, so a resumed
+    // decision continues from the next iteration instead of restarting.
+    iters_done: u64,
+    // Next stream id to hand out, so added candidates get ids distinct from the
+    // initial 0..num_plays.
+    next_stream_id: u64,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -147,6 +208,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             allocator: Allocator::RoundRobin,
             stop_rule: StopRule::FixedCap,
             stop_delta: DEFAULT_STOP_DELTA,
+            retired: Vec::new(),
+            iters_done: 0,
+            next_stream_id: 0,
         }
     }
 
@@ -201,9 +265,254 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             candidates.push(Candidate {
                 play_index: idx,
                 stats: stats::Stats::new(),
+                stream_id: idx as u64,
             });
         }
         candidates
+    }
+
+    // Run `count` more rollout iterations on the retained candidate set,
+    // pruning (and retiring the dropped candidates) at the cadence boundaries
+    // and, in Confidence mode, stopping once the leader is separated. `budget`
+    // is the whole decision's iteration budget; it only tightens the survivor cap
+    // toward the end, and may be exceeded when resuming past it. Advances the
+    // iteration cursor; does not reset the candidate set or commit a winner.
+    fn run_iterations(
+        &mut self,
+        move_generator: &movegen::KurniaMoveGenerator,
+        budget: u64,
+        count: u64,
+    ) {
+        let mut candidates = std::mem::take(&mut self.candidates);
+        let mut retired = std::mem::take(&mut self.retired);
+        const Z: f64 = 1.96; // 95% confidence interval
+        let start = self.iters_done;
+        for sim_iter in (start + 1)..=(start + count) {
+            self.iters_done = sim_iter;
+            self.simmer.prepare_iteration();
+            // Round-robin warm-up: until the first prune, every candidate must
+            // gather samples, or the shared prune below sees count-zero arms
+            // (whose confidence interval is NaN) and empties the field. Adaptive
+            // only takes over after.
+            let effective_allocator = if sim_iter <= PRUNE_CADENCE {
+                Allocator::RoundRobin
+            } else {
+                self.allocator
+            };
+            match effective_allocator {
+                Allocator::RoundRobin => {
+                    for candidate in candidates.iter_mut() {
+                        let value = rollout_objective(
+                            &mut self.simmer,
+                            self.game_config,
+                            self.kwg,
+                            self.klv,
+                            &move_generator.plays[candidate.play_index].play,
+                        );
+                        candidate.stats.update(value);
+                    }
+                }
+                Allocator::Adaptive => {
+                    // leader = highest running mean.
+                    let leader_idx = candidates
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
+                        .unwrap()
+                        .0;
+                    let leader_mean = candidates[leader_idx].stats.mean();
+                    let leader_var = candidates[leader_idx].stats.variance();
+                    let leader_n = candidates[leader_idx].stats.count();
+                    // strongest challenger = the non-leader that minimizes the
+                    // standardized gap (leader_mean - mean) / sqrt(var_l/n_l +
+                    // var_c/n_c): the closest rival. an arm with fewer than two
+                    // samples has no variance estimate yet, so treat it as
+                    // maximally uncertain (gap 0) to make sure it gets sampled.
+                    // Ties break deterministically: the strict `<` below keeps
+                    // the lowest-indexed arm, and max_by above keeps the last
+                    // leader on a mean tie -- so a co-leader falls through here as
+                    // the zero-gap challenger and is still sampled, while a
+                    // tied-out challenger becomes the least-sampled arm and the
+                    // floor picks it up next.
+                    let mut challenger_idx = leader_idx;
+                    let mut best_gap = f64::INFINITY;
+                    for (i, candidate) in candidates.iter().enumerate() {
+                        if i == leader_idx {
+                            continue;
+                        }
+                        let n_c = candidate.stats.count();
+                        let gap = if n_c < 2.0 || leader_n < 2.0 {
+                            0.0
+                        } else {
+                            let denom =
+                                (leader_var / leader_n + candidate.stats.variance() / n_c).sqrt();
+                            if denom > 0.0 {
+                                (leader_mean - candidate.stats.mean()) / denom
+                            } else {
+                                0.0
+                            }
+                        };
+                        if gap < best_gap {
+                            best_gap = gap;
+                            challenger_idx = i;
+                        }
+                    }
+                    // floor = least-sampled candidate, so every arm keeps a live
+                    // confidence interval for the prune.
+                    let floor_idx = candidates
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| a.stats.count().total_cmp(&b.stats.count()))
+                        .unwrap()
+                        .0;
+                    // sample the deduplicated set {leader, challenger, floor}.
+                    let mut to_sample = [leader_idx, challenger_idx, floor_idx];
+                    to_sample.sort_unstable();
+                    let mut prev = usize::MAX;
+                    for &idx in &to_sample {
+                        if idx == prev {
+                            continue;
+                        }
+                        prev = idx;
+                        let play_index = candidates[idx].play_index;
+                        let value = rollout_objective(
+                            &mut self.simmer,
+                            self.game_config,
+                            self.kwg,
+                            self.klv,
+                            &move_generator.plays[play_index].play,
+                        );
+                        candidates[idx].stats.update(value);
+                    }
+                }
+            }
+            if sim_iter % PRUNE_CADENCE == 0 {
+                let low_bar = candidates
+                    .iter()
+                    .map(|candidate| candidate.stats.ci_max(-Z))
+                    .max_by(|a, b| a.total_cmp(b))
+                    .unwrap();
+                retire_below(&mut candidates, &mut retired, Z, low_bar);
+                // Hard cap on survivors that tightens as the fixed budget is
+                // spent, so the field narrows toward a single winner by the last
+                // iteration even when candidates are so close that the
+                // confidence-interval prune above cannot separate them.
+                let prune_periods_remaining = budget.saturating_sub(sim_iter) / PRUNE_CADENCE;
+                limit_surviving_candidates(
+                    &mut candidates,
+                    &mut retired,
+                    Z,
+                    1 + 2 * prune_periods_remaining as usize,
+                );
+                if candidates.len() < 2 {
+                    break;
+                }
+                // Confidence stop: once the leader is separated from the whole
+                // field at the corrected z, the rest of the budget is only a
+                // safety cap, so stop early.
+                if self.stop_rule == StopRule::Confidence
+                    && leader_is_separated(&candidates, self.stop_delta)
+                {
+                    break;
+                }
+            }
+        }
+        self.candidates = candidates;
+        self.retired = retired;
+    }
+
+    // Study entry point: prepare the position, reset the candidate set and its
+    // retired side list, and run `iters` rollout iterations WITHOUT committing a
+    // winner, so the caller can inspect the leader or resume with more. The
+    // caller must have populated move_generator.plays (via gen_moves) first.
+    pub fn begin_decision(
+        &mut self,
+        move_generator: &movegen::KurniaMoveGenerator,
+        game_state: &game_state::GameState,
+        iters: u64,
+    ) {
+        self.simmer.prepare(self.game_config, game_state, 2);
+        self.candidates = self.take_candidates(move_generator.plays.len());
+        self.next_stream_id = self.candidates.len() as u64;
+        self.retired.clear();
+        self.iters_done = 0;
+        let budget = self.num_sim_iters;
+        self.run_iterations(move_generator, budget, iters);
+    }
+
+    // Study continuation: run `extra_iters` more rollouts on the retained
+    // candidate set, continuing the same rollout stream (no reseed) so the
+    // result matches having run the larger budget in one begin_decision call.
+    // Does not commit a winner.
+    pub fn resume(&mut self, move_generator: &movegen::KurniaMoveGenerator, extra_iters: u64) {
+        let budget = self.num_sim_iters;
+        self.run_iterations(move_generator, budget, extra_iters);
+    }
+
+    // The current leader's play index, mean objective, and sample count, read
+    // without committing or stopping -- for study sessions and self-checks.
+    pub fn leader_summary(&self) -> (usize, f64, f64) {
+        let leader = self
+            .candidates
+            .iter()
+            .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
+            .unwrap();
+        (leader.play_index, leader.stats.mean(), leader.stats.count())
+    }
+
+    // Add an already-generated play (by its index in move_generator.plays) to
+    // the working set as a fresh candidate with zero samples, so a study session
+    // can bring an unselected move into contention. Returns its stream id.
+    pub fn add_play(&mut self, play_index: usize) -> u64 {
+        let stream_id = self.next_stream_id;
+        self.next_stream_id += 1;
+        self.candidates.push(Candidate {
+            play_index,
+            stats: stats::Stats::new(),
+            stream_id,
+        });
+        stream_id
+    }
+
+    // Readmit a retired candidate to the working set WITH its accumulated
+    // statistics, named by its stream id. Returns true if it was found.
+    pub fn readmit_with_history(&mut self, stream_id: u64) -> bool {
+        if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
+            let candidate = self.retired.swap_remove(pos);
+            self.candidates.push(candidate);
+            true
+        } else {
+            false
+        }
+    }
+
+    // Readmit a retired candidate's play with FRESH (zeroed) statistics, named
+    // by its stream id: the play returns to contention but its old rollouts are
+    // dropped. Returns true if it was found.
+    pub fn readmit_fresh(&mut self, stream_id: u64) -> bool {
+        if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
+            let play_index = self.retired.swap_remove(pos).play_index;
+            self.add_play(play_index);
+            true
+        } else {
+            false
+        }
+    }
+
+    // The stream ids currently retired, so a study session can pick one to
+    // readmit.
+    pub fn retired_stream_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.retired.iter().map(|c| c.stream_id)
+    }
+
+    // The sample count of the candidate with this stream id, whether it is
+    // active or retired, or None if there is no such candidate.
+    pub fn stream_count(&self, stream_id: u64) -> Option<f64> {
+        self.candidates
+            .iter()
+            .chain(self.retired.iter())
+            .find(|c| c.stream_id == stream_id)
+            .map(|c| c.stats.count())
     }
 }
 
@@ -238,27 +547,6 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
 
 impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
     #[inline(always)]
-    fn limit_surviving_candidates(
-        candidates: &mut Vec<Candidate>,
-        z: f64,
-        max_candidates_allowed: usize,
-    ) {
-        while candidates.len() > max_candidates_allowed {
-            // pruning regularly means binary heap is not justified here.
-            // also, this means candidates are almost indistinguishable.
-            candidates.swap_remove(
-                candidates
-                    .iter()
-                    .enumerate()
-                    .map(|(i, candidate)| (i, candidate.stats.ci_max(-z)))
-                    .min_by(|(_, a), (_, b)| a.total_cmp(b))
-                    .unwrap()
-                    .0,
-            );
-        }
-    }
-
-    #[inline(always)]
     pub fn pick_a_move(
         &mut self,
         filtered_movegen: &mut move_filter::GenMoves<'_>,
@@ -285,166 +573,27 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                     game_state.current_player().num_exchanges,
                     100,
                 );
-                simmer.simmer.prepare(simmer.game_config, game_state, 2);
-                let mut candidates = simmer.take_candidates(move_generator.plays.len());
-                let num_sim_iters = simmer.num_sim_iters;
-                const Z: f64 = 1.96; // 95% confidence interval
-                for sim_iter in 1..=num_sim_iters {
-                    simmer.simmer.prepare_iteration();
-                    // Round-robin warm-up: until the first prune, every
-                    // candidate must gather samples, or the shared prune below
-                    // sees count-zero arms (whose confidence interval is NaN)
-                    // and empties the field. Adaptive only takes over after.
-                    let effective_allocator = if sim_iter <= PRUNE_CADENCE {
-                        Allocator::RoundRobin
-                    } else {
-                        simmer.allocator
-                    };
-                    match effective_allocator {
-                        Allocator::RoundRobin => {
-                            for candidate in candidates.iter_mut() {
-                                let value = rollout_objective(
-                                    &mut simmer.simmer,
-                                    simmer.game_config,
-                                    simmer.kwg,
-                                    simmer.klv,
-                                    &move_generator.plays[candidate.play_index].play,
-                                );
-                                candidate.stats.update(value);
-                            }
-                        }
-                        Allocator::Adaptive => {
-                            // leader = highest running mean.
-                            let leader_idx = candidates
-                                .iter()
-                                .enumerate()
-                                .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
-                                .unwrap()
-                                .0;
-                            let leader_mean = candidates[leader_idx].stats.mean();
-                            let leader_var = candidates[leader_idx].stats.variance();
-                            let leader_n = candidates[leader_idx].stats.count();
-                            // strongest challenger = the non-leader that minimizes the
-                            // standardized gap (leader_mean - mean) / sqrt(var_l/n_l +
-                            // var_c/n_c): the closest rival. an arm with fewer
-                            // than two samples has no variance estimate yet, so treat it as
-                            // maximally uncertain (gap 0) to make sure it gets sampled.
-                            // Ties break deterministically: the strict `<` below
-                            // keeps the lowest-indexed arm, and max_by above keeps
-                            // the last leader on a mean tie -- so a co-leader falls
-                            // through here as the zero-gap challenger and is still
-                            // sampled, while a tied-out challenger becomes the
-                            // least-sampled arm and the floor picks it up next.
-                            let mut challenger_idx = leader_idx;
-                            let mut best_gap = f64::INFINITY;
-                            for (i, candidate) in candidates.iter().enumerate() {
-                                if i == leader_idx {
-                                    continue;
-                                }
-                                let n_c = candidate.stats.count();
-                                let gap = if n_c < 2.0 || leader_n < 2.0 {
-                                    0.0
-                                } else {
-                                    let denom = (leader_var / leader_n
-                                        + candidate.stats.variance() / n_c)
-                                        .sqrt();
-                                    if denom > 0.0 {
-                                        (leader_mean - candidate.stats.mean()) / denom
-                                    } else {
-                                        0.0
-                                    }
-                                };
-                                if gap < best_gap {
-                                    best_gap = gap;
-                                    challenger_idx = i;
-                                }
-                            }
-                            // floor = least-sampled candidate, so every arm keeps a live
-                            // confidence interval for the prune.
-                            let floor_idx = candidates
-                                .iter()
-                                .enumerate()
-                                .min_by(|(_, a), (_, b)| {
-                                    a.stats.count().total_cmp(&b.stats.count())
-                                })
-                                .unwrap()
-                                .0;
-                            // sample the deduplicated set {leader, challenger, floor}.
-                            let mut to_sample = [leader_idx, challenger_idx, floor_idx];
-                            to_sample.sort_unstable();
-                            let mut prev = usize::MAX;
-                            for &idx in &to_sample {
-                                if idx == prev {
-                                    continue;
-                                }
-                                prev = idx;
-                                let play_index = candidates[idx].play_index;
-                                let value = rollout_objective(
-                                    &mut simmer.simmer,
-                                    simmer.game_config,
-                                    simmer.kwg,
-                                    simmer.klv,
-                                    &move_generator.plays[play_index].play,
-                                );
-                                candidates[idx].stats.update(value);
-                            }
-                        }
-                    }
-                    if sim_iter % PRUNE_CADENCE == 0 {
-                        let low_bar = candidates
-                            .iter()
-                            .map(|candidate| candidate.stats.ci_max(-Z))
-                            .max_by(|a, b| a.total_cmp(b))
-                            .unwrap();
-                        candidates.retain(|candidate| candidate.stats.ci_max(Z) >= low_bar);
-                        // Hard cap on survivors that shrinks as the fixed budget
-                        // is spent, so the field narrows toward a single winner by
-                        // the last iteration even when candidates are so close that
-                        // the confidence-interval prune above cannot separate them.
-                        let prune_periods_remaining = (num_sim_iters - sim_iter) / PRUNE_CADENCE;
-                        Self::limit_surviving_candidates(
-                            &mut candidates,
-                            Z,
-                            1 + 2 * prune_periods_remaining as usize,
-                        );
-                        if candidates.len() < 2 {
-                            break;
-                        }
-                        // Confidence stop: once the leader is separated from the
-                        // whole field at the corrected z, the rest of the budget
-                        // is only a safety cap, so stop early.
-                        if simmer.stop_rule == StopRule::Confidence
-                            && leader_is_separated(&candidates, simmer.stop_delta)
-                        {
-                            break;
-                        }
-                    }
-                }
-                let top_idx = candidates
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
-                    .unwrap()
-                    .0;
+                let budget = simmer.num_sim_iters;
+                simmer.begin_decision(move_generator, game_state, budget);
+                let winner_play_index = top_candidate_play_index_by_mean(&simmer.candidates);
                 if simmer.verbose {
+                    const Z: f64 = 1.96; // 95% confidence interval
+                    let leader = simmer
+                        .candidates
+                        .iter()
+                        .find(|candidate| candidate.play_index == winner_play_index)
+                        .unwrap();
                     println!(
                         "top candidate mean = {} (sd={} count={} range {}..{})",
-                        candidates[top_idx].stats.mean(),
-                        candidates[top_idx].stats.standard_deviation(),
-                        candidates[top_idx].stats.count(),
-                        candidates[top_idx].stats.ci_max(-Z),
-                        candidates[top_idx].stats.ci_max(Z),
+                        leader.stats.mean(),
+                        leader.stats.standard_deviation(),
+                        leader.stats.count(),
+                        leader.stats.ci_max(-Z),
+                        leader.stats.ci_max(Z),
                     );
                 }
-                assert_eq!(
-                    candidates[top_idx].play_index,
-                    top_candidate_play_index_by_mean(&candidates)
-                );
-                move_generator
-                    .plays
-                    .swap(0, top_candidate_play_index_by_mean(&candidates));
+                move_generator.plays.swap(0, winner_play_index);
                 move_generator.plays.truncate(1);
-                simmer.candidates = candidates;
             }
         }
     }
@@ -466,6 +615,7 @@ mod tests {
         Candidate {
             play_index,
             stats: stats_from(values),
+            stream_id: play_index as u64,
         }
     }
 
@@ -495,5 +645,24 @@ mod tests {
         // a single survivor is trivially separated.
         let one = vec![candidate_from(0, &[10.0, 10.0])];
         assert!(leader_is_separated(&one, 0.05));
+    }
+
+    #[test]
+    fn retire_below_keeps_survivors_in_order() {
+        // means 20, 1, 20: a low_bar of 10 drops the middle one and keeps the
+        // outer two in their original order; the dropped one lands in retired.
+        let mut candidates = vec![
+            candidate_from(0, &[20.0, 20.0].repeat(50)),
+            candidate_from(1, &[1.0, 1.0].repeat(50)),
+            candidate_from(2, &[19.0, 21.0].repeat(50)),
+        ];
+        let mut retired = Vec::new();
+        retire_below(&mut candidates, &mut retired, 1.96, 10.0);
+        assert_eq!(
+            candidates.iter().map(|c| c.play_index).collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].play_index, 1);
     }
 }
