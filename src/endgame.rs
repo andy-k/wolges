@@ -397,8 +397,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
-    pub fn evaluate(&mut self, player_idx: u8) {
-        self.run_id_loop(player_idx, true);
+    pub fn evaluate(&mut self, player_idx: u8) -> f32 {
+        self.run_id_loop(player_idx, true)
     }
 
     // headless entry point: returns the root valuation as data, with no
@@ -1061,25 +1061,33 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
     // Solve a pre-endgame that has exactly ONE tile left in the bag, without
     // knowing which unseen tile it is. Every tile that is not on the board and
-    // not on the mover's rack is UNSEEN; exactly one of them sits in the bag and
-    // the rest form the opponent's rack, so |unseen| = opponent_rack_size + 1.
+    // not on the mover's rack is UNSEEN; exactly one of them sits in the bag
+    // and the rest form the opponent's rack, so
+    // |unseen| = opponent_rack_size + 1.
     //
     // The mover cannot see the bag tile, so this tries every distinct unseen
-    // tile T as the bag tile, weighting each hypothesis by how many copies of T
-    // are unseen (a tile with 3 copies unseen is 3x as likely to be the one in
-    // the bag). For each T the opponent rack is the unseen multiset with one T
-    // removed, which makes the position fully known, and the one-known-bag-tile
-    // solver returns that hypothesis's scaled point margin from the mover's
-    // view. peg_aggregate then averages win/draw/loss and the point margin.
+    // tile T as the bag tile, weighting each hypothesis by how many copies of
+    // T are unseen (a tile with 3 copies unseen is 3x as likely to be the one
+    // in the bag). For each T the opponent rack is the unseen multiset with
+    // one T removed, which makes the position fully known, and the
+    // one-known-bag-tile solver returns that hypothesis's scaled point margin
+    // from the mover's view. peg_aggregate then averages win/draw/loss and the
+    // point margin.
     //
     // `unseen_tally[t]` is the count of tile t in the unseen multiset (index 0
     // is the blank). This is full enumeration, not sampling.
+    // score_diff is the mover's current game score minus the opponent's,
+    // scaled (equity::SCALE = 1000 per point) -- add it to each hypothesis's
+    // point margin so win_pct and expected_margin reflect the mover's actual
+    // chances in the whole game, not just the value of the tiles left to play.
+    // 0 asks only about the rest of the game, ignoring the board score so far.
     pub fn solve_peg_one_in_bag(
         &mut self,
         mover: u8,
         board: &[u8],
         mover_rack: &[u8],
         unseen_tally: &[u8],
+        score_diff: f32,
     ) -> Result<PegResult, PegUnsupported> {
         // When an exchange is legal against the one-tile bag (Spanish sets
         // exchange_tile_limit to 1), the mover could exchange instead of playing
@@ -1111,7 +1119,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             racks[mover as usize] = mover_rack;
             racks[(mover ^ 1) as usize] = &opp_rack;
             self.init(board, racks);
-            let v = self.solve_one_in_bag(mover, bag_tile);
+            let v = self.solve_one_in_bag(mover, bag_tile) + score_diff;
             hypotheses.push((bag_tile, count as u32, v));
         }
         let weighted: Vec<(u32, f32)> = hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
@@ -1675,13 +1683,39 @@ mod tests {
 
         let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
         let result = egs
-            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally)
+            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
             .expect("english one-in-bag is always solvable");
 
         // hypotheses come out in ascending tile order (H = 8, then T = 20).
         assert_eq!(result.hypotheses, vec![(8, 1, -2000.0), (20, 1, 1000.0)]);
         assert_eq!(result.win_pct, 0.5);
         assert_eq!(result.expected_margin, -500.0);
+    }
+
+    // Same position, but the mover is already up 3 points on the board before
+    // this PEG position: score_diff shifts every hypothesis's margin by that
+    // much, so what was a 50/50 split (one win, one loss) becomes two wins.
+    #[test]
+    fn peg_one_in_bag_score_diff_shifts_the_outcome() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+
+        let board = empty_board();
+        let mover_rack = [2u8]; // B
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        unseen_tally[8] = 1; // H
+        unseen_tally[20] = 1; // T
+
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let result = egs
+            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 3000.0)
+            .expect("english one-in-bag is always solvable");
+
+        // -2000 + 3000 = 1000 (win); 1000 + 3000 = 4000 (win).
+        assert_eq!(result.hypotheses, vec![(8, 1, 1000.0), (20, 1, 4000.0)]);
+        assert_eq!(result.win_pct, 1.0);
+        assert_eq!(result.expected_margin, 2500.0);
     }
 
     // ---- PV-playout invariant -------------------------------------------------
