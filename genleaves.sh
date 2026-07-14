@@ -7,6 +7,7 @@ klv1_mode=""
 logs_mode=""
 smooth_mode=""
 no_smooth_mode=""
+gilles_mode=""
 while :; do
   if [ "${1:-}" = "--" ]; then
     shift
@@ -34,6 +35,11 @@ while :; do
   fi
   if [ "${1:-}" = "--no-smooth" ]; then
     no_smooth_mode=1
+    shift
+    continue
+  fi
+  if [ "${1:-}" = "--gilles" ]; then
+    gilles_mode=1
     shift
     continue
   fi
@@ -76,6 +82,9 @@ options:
   --logs        log complete games (not recommended if not needed)
   --smooth      enable smoothing (default without :min_samples_per_rack or with :0)
   --no-smooth   disable smoothing (default with :min_samples_per_rack)
+  --gilles      collect samples via gillesb board-sampling instead
+                of autoplay; :min_samples_per_rack is ignored (every rack is
+                enumerated) but :N still toggles smoothing as usual
 EOF
   exit 2
 fi
@@ -125,6 +134,7 @@ while [ "${!i:-}" != "" ]; do
 done
 
 autoplay_subcommand="${leave_param}${kbwg_modifier}-autoplay-summarize"
+gilles_subcommand="${leave_param}${kbwg_modifier}-gilles"
 generate_subcommand="${leave_param}-generate"
 buildlex_subcommand="${buildlex_param}-klv2"
 klv_ext="klv2"
@@ -185,10 +195,17 @@ while [ "${!i:-}" != "" ]; do
     leave_name="leaves"
   fi
 
-  time cargo run --release --bin leave -- "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
-  log_file="$(ls -1td games-log-* | head -1 | cut -f2- -d-)"
-  echo "$log_file"
-  mv -fv "summary-${log_file}" "summary${num_processed}.csv"
+  if [ "$gilles_mode" ]; then
+    time cargo run --release --bin leave -- "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon"
+    summary_file="$(ls -1td gilles-summary-* | head -1)"
+    echo "$summary_file"
+    mv -fv "$summary_file" "summary${num_processed}.csv"
+  else
+    time cargo run --release --bin leave -- "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
+    log_file="$(ls -1td games-log-* | head -1 | cut -f2- -d-)"
+    echo "$log_file"
+    mv -fv "summary-${log_file}" "summary${num_processed}.csv"
+  fi
   last_leave="${leave_name}$[num_processed + 1]"
   time cargo run --release --bin leave -- "$effective_generate_subcommand" "summary${num_processed}.csv" "${last_leave}.csv"
   time cargo run --release --bin buildlex -- "$buildlex_subcommand" "$last_leave".{csv,"$klv_ext"}

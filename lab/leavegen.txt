@@ -19,16 +19,16 @@ it may hold.
 
 TL;DR -- IF YOU JUST WANT A GOOD TABLE
 
-wolges builds a leave table by playing games against itself. The genleaves.sh
-script runs the whole loop -- play a generation, summarize, generate, compile,
-then play the next generation with the table just built:
+Board sampling is the strongest table shown so far, a little ahead of plain
+self-play and far ahead of no table at all. The genleaves.sh script runs the
+whole loop; pass --gilles and give it a few generations of about two million
+games each:
 
-  ./genleaves.sh english english 2000000 2000000 2000000
+  ./genleaves.sh --gilles english english 2000000 2000000 2000000
 
-That is three generations of about two million games each, a reasonable
-starting point rather than a tuned optimum; run more of either for a better
-table, with shrinking returns as they climb. How it works, and how well it
-plays, is below.
+Drop --gilles for the self-play baseline, which is simpler and only a hair
+behind. The counts above are a starting point, not a tuned optimum -- run more
+for a better table, with shrinking returns.
 
 
 GENERATING A TABLE BY SELF-PLAY
@@ -199,12 +199,83 @@ change only how fast a run goes, never the table it produces.
 New knobs: WOLGES_THREADS.
 
 
+BOARD-SAMPLING LEAVES
+
+The board-sampling method, published by GillesB, manufactures racks instead of
+waiting for self-play to deal them. english-gilles plays greedy games and,
+every few turns while a game is in its middle, takes a snapshot of the board.
+"Middle" means the number of tiles not yet on the board is between a quarter
+and three-quarters of the full set -- for the classic English game, between 25
+and 75 of the 100 tiles -- never the empty opening board, and never the endgame
+once the bag is empty (with an empty bag no tiles are drawn, so the leave table
+is not consulted there).
+
+At each snapshot it draws several random groups of tiles -- by default from the
+whole starting bag -- keeps the least likely group, meaning the rarest,
+hardest-to-draw combination, and then forms every full rack that can be made
+from that group, valuing each rack's best play on that board. Drawing from the
+whole bag lets a group include rares this board has already used up; such a
+rack is then valued with its tiles forced onto the board, since the move
+generator plays it whether or not the bag still holds those tiles. (The
+WOLGES_IMPOSSIBLE_OK knob introduced above switches the draw source to this
+board's leftover pool.) Forming every rack from one chosen group yields a
+dense, related batch of racks per board at once, which is what makes it
+efficient.
+
+The output is exactly the autoplay summary format -- a totals row, then rack,
+equity-sum, count rows -- so a board-sampling run and an autoplay run merge
+with each other through english-resummarize and decompose into leaves through
+english-generate in the very same way.
+
+The rules of thumb -- when to snapshot, how big a group to draw, how many
+groups to try, how far apart to snapshot -- are GillesB's. The group size and
+the snapshot window scale with the game's tile count so they fit any variant;
+for the classic English game they reduce to his values (snapshot at 25 to 75
+tiles left, a group of 13 tiles, 7-tile racks). Each is exposed as a knob, but
+the defaults are those published values.
+
+New knobs: WOLGES_GILLES_DRAWS, WOLGES_GILLES_GROUP, WOLGES_GILLES_STRIDE,
+WOLGES_POOL_MAX, WOLGES_POOL_MIN.
+
+
+HOW THE METHODS COMPARE
+
+All three tables are measured with english-compare at one million game pairs,
+fresh, our own against our own. Board sampling is ahead:
+
+  board sampling vs the autoplay baseline: english-compare reports 47.8800 for
+    the autoplay table (the first table), confidence 100 -- so board sampling
+    wins, its lead about 2.1 pp above an even split.
+
+  board sampling vs null: english-compare reports 35.3946 for null, confidence
+    100 -- so board sampling wins by about 14.6 pp.
+
+  null vs null: 50.00, the calibration check.
+
+The autoplay baseline likewise beats null by a wide margin: in a direct
+head-to-head the null table wins only about 37.5 percent of the pairs against
+it (confidence 100).
+
+So at this point board sampling is the strongest table, ahead of the self-play
+autoplay baseline, and both are far ahead of null. The autoplay baseline here
+is the existing self-play table described above, and the numbers are on that
+footing.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
 get the most competitive leaves out of each method. Each recipe is one command
 (indented) followed by a note on how to push it further. If you only want a
 good table, use the census.
+
+Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
+manufactures rare racks by snapshotting midgame boards.
+
+    ./genleaves.sh --gilles english english 2000000 2000000 2000000
+
+Its snapshot heuristics are the WOLGES_POOL_* and WOLGES_GILLES_* knobs. The
+genleaves.sh arguments are explained under RUNNING GENLEAVES.SH below.
 
 Self-play autoplay -- wolges's original baseline. It plays games and learns
 from the racks held.
@@ -229,6 +300,9 @@ compiled for. They are usually the same, which is why the examples read
 three numbers means three generations; append :N to a count to ask for N
 samples of every rack that generation.
 
+Options, each written before the configs:
+  --gilles  collect samples by board sampling instead of self-play autoplay
+
 
 ENVIRONMENT KNOBS
 
@@ -248,6 +322,20 @@ Shared across builders:
     source, and the rack-summary census:
       1  force the rack's tiles onto the board, so rare racks still get covered
       0  record only what the board could really deal
+
+Board sampling (gilles):
+  It also reads the shared knobs above. Its own knobs:
+  WOLGES_GILLES_DRAWS (a whole number; default 10) -- random groups drawn per
+    snapshot before keeping the least likely one.
+  WOLGES_GILLES_GROUP (a whole number of tiles; default two rack-sizes minus
+    one, 13 EN) -- worst-group size drawn per snapshot.
+  WOLGES_GILLES_STRIDE (a whole number; default 3) -- turns between snapshots.
+  WOLGES_POOL_MAX (a whole number of tiles; default the tile count minus
+    WOLGES_POOL_MIN, 75 EN) -- high edge of the snapshot window.
+  WOLGES_POOL_MIN (a whole number of tiles; default a quarter of the tile
+    count, 25 EN) -- low edge of the snapshot window, counted in tiles not yet
+    on the board. The census reads the same variable with its own default
+    window.
 
 Compare and dynamic leaves:
   WOLGES_COMPARE_PORCELAIN (0 or 1; default 0) -- english-compare's output;
