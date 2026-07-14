@@ -1733,6 +1733,32 @@ table, read a little less statically, plays measurably better.
 New knobs: WOLGES_DYNAMIC_LEAVES, WOLGES_DYNAMIC_LEAVES_MIN_KEEP.
 
 
+DYNAMIC LEAVES REACH THE SAMPLERS' OWN MOVE CHOICE
+
+The pool-aware reweight described above -- replacing a kept subrack's static
+leave value with the live-pool completion average of a full-rack table -- was
+only wired into english-compare, the head-to-head harness. The samplers that
+actually build leave tables in the first place (autoplay, gilles, census) still
+chose which move to play at each self-play turn using the flat static klv, even
+when WOLGES_DYNAMIC_LEAVES was set.
+
+The same optional reweight context, built once per run and gated on that same
+knob, is now threaded into the greedy trajectory-advancing move choice of all
+three samplers, so turning the knob on changes which moves they actually play
+(and therefore which boards and racks they sample), not only which move
+english-compare picks. With the knob off, no context is built and every site
+passes none through, so a bare run generates leaves exactly as before.
+
+The reweight needs a full-length (kept racks of size one through seven, not
+just the usual six-or-fewer a leave keeps) table to read full-rack values from;
+running this against anything shorter than a --full klv collapses the dynamic
+block back to static. For census specifically this changes only which board
+trajectories get sampled -- its leave values still come from the exhaustive
+per-board pass described earlier in this file, not from the move it happens to
+play -- so there the effect is a shift in which boards get sampled, not a
+change in how any leave is valued.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
