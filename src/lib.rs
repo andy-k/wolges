@@ -29,3 +29,4 @@ pub mod play_scorer;
 pub mod prob;
 pub mod simmer;
 pub mod stats;
+pub mod win_pct;
