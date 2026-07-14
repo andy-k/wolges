@@ -487,18 +487,41 @@ pub struct AddTable {
 
 impl AddTable {
     pub fn new(lat: &MultisetLattice) -> Self {
+        Self::new_with_threads(lat, num_cpus::get())
+    }
+
+    /// Same as `new` but caps the parallel build at `num_threads` workers (clamped to
+    /// at least one and at most the row count). `new` uses all cores; main_leave passes
+    /// the WOLGES_THREADS override so a memory- or core-constrained run can dial the
+    /// add-table build down. The result is byte-identical to the serial build
+    /// regardless of the thread count.
+    pub fn new_with_threads(lat: &MultisetLattice, num_threads: usize) -> Self {
         let n = lat.num_letters();
         let rows = lat.full_rack_start();
         let mut add = vec![0u32; rows * n];
-        let mut tally = vec![0u8; n];
-        for (idx, row) in add.chunks_exact_mut(n).enumerate() {
-            lat.unrank_into(idx, &mut tally);
-            for (t, slot) in row.iter_mut().enumerate() {
-                tally[t] += 1;
-                *slot = lat.rank(&tally);
-                tally[t] -= 1;
+        // Each row idx is computed from idx alone (unrank idx + n ranks of idx plus one
+        // tile), so the rows are independent: build them in parallel over disjoint row
+        // ranges. Byte-identical to the serial build; matters most for the big lattices
+        // (the 33-letter add-table is hundreds of MB). Built once per run.
+        let num_threads = num_threads.max(1).min(rows.max(1));
+        let chunk_rows = rows.div_ceil(num_threads);
+        std::thread::scope(|s| {
+            for (ci, add_chunk) in add.chunks_mut(chunk_rows * n).enumerate() {
+                let base = ci * chunk_rows;
+                s.spawn(move || {
+                    let mut tally = vec![0u8; n];
+                    for (j, row) in add_chunk.chunks_exact_mut(n).enumerate() {
+                        let idx = base + j;
+                        lat.unrank_into(idx, &mut tally);
+                        for (t, slot) in row.iter_mut().enumerate() {
+                            tally[t] += 1;
+                            *slot = lat.rank(&tally);
+                            tally[t] -= 1;
+                        }
+                    }
+                });
             }
-        }
+        });
         Self {
             num_letters: n,
             add,
