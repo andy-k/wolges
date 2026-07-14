@@ -514,6 +514,24 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             .find(|c| c.stream_id == stream_id)
             .map(|c| c.stats.count())
     }
+
+    // Anytime query: read the run's state between resume calls without
+    // disturbing it -- pause, inspect the current leader, decide whether to
+    // keep going or stop, then resume or commit.
+
+    // The play index of the current leader (highest mean), read WITHOUT stopping
+    // or committing -- the anytime query-best.
+    pub fn best_so_far(&self) -> usize {
+        top_candidate_play_index_by_mean(&self.candidates)
+    }
+
+    // Whether the leader is already confidently separated from the field at the
+    // current stop_delta, i.e. whether the confidence stop would fire now, so a
+    // manager can move on without spending the rest of the budget. No side
+    // effect.
+    pub fn is_decided(&self) -> bool {
+        leader_is_separated(&self.candidates, self.stop_delta)
+    }
 }
 
 #[inline(always)]

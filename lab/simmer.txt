@@ -154,3 +154,23 @@ None of this touches ordinary batch play: pick_a_move never calls these
 operations, so its output is unchanged. english-sim-mutate-check is a headless
 self-check confirming a readmitted candidate really does keep its statistics
 across the round trip.
+
+
+LOOKING IN ON A DECISION WITHOUT DISTURBING IT
+
+The confidence stop and the ability to resume a decision in pieces already let
+a study session spread one decision's rollouts over several calls. What was
+still missing was a way to check on a decision between those calls without
+changing anything. best_so_far reports the current leader's play index (the
+candidate with the highest running mean right now); is_decided reports whether
+the confidence stop would fire at this instant, at the currently configured
+target. Both are read-only -- calling them runs no rollouts and changes no
+state.
+
+Together with set_num_sim_iters (the per-decision rollout cap) and
+set_stop_delta (the confidence stop's target error, described above), a caller
+now has everything it needs to budget one decision from the outside: cap the
+work, set how sure the stop must be, then between resume calls poll best_so_far
+and is_decided to pause, look at the current leader, and decide whether to keep
+going or stop -- instead of only being able to run the whole budget blind or
+abandon the decision outright.
