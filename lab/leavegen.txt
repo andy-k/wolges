@@ -1573,6 +1573,75 @@ table read straight off played-out games predicts winners a touch better than a
 formula nobody had to hand-tune.
 
 
+VALUING RACKS BY WIN% (WOLGES_WINPCT)
+
+With a table in hand, all three builders -- census, gilles, and autoplay -- can
+be switched from valuing a rack by its best play's points to valuing it by the
+win chance that best play implies. Setting WOLGES_WINPCT on (it reads the table
+from WOLGES_WINPCT_TABLE, default win_pct.csv) does this; off, the builders
+record raw equity and the leave tables come out byte-for-byte unchanged.
+
+The remap works per board. At a board's count-state the table gives a curve
+from point lead to win chance. Near an even game each point is worth a fixed
+slice of win chance -- that curve's slope at zero lead. To value a play, take
+the points its best move yields, look up the win chance that lead implies,
+subtract the even-game 0.5, and divide by that slope. The result is the point
+lead that would carry the same win chance near an even game -- call it the
+play's win-adjusted value. By construction it equals the play's points for
+small leads, and it bends toward a ceiling for large ones -- a big lead is
+nearly a won game either way, so extra points past it buy very little win
+chance. That concave bend (flattening toward a ceiling) is the only thing win%
+adds on top of points.
+
+Each board's best-play value is remapped this way before the samples are summed
+and handed to the decompose step, so the leave tables see a per-board remap,
+not a remap of the averaged total -- the two differ because the bend is not a
+straight line. Because the win% objective is one whole objective, it is not
+combined with the opponent terms (denial, and the exact opponent correction):
+loading a win% table switches that machinery off.
+
+WOLGES_WINPCT_BLEND dials how much of the remap to apply. A rack's value
+becomes (1 - blend) times its points plus blend times that win-adjusted value.
+At 1.0, the default, it is the pure win% objective just described; at 0.0 it is
+pure points (and identical to the win%-off tables); in between it keeps points
+dominant and adds a win-chance nudge.
+
+
+THE VERDICT: WIN% DOES NOT BEAT POINTS FOR A STATIC LEAVE
+
+It does not help, and it slightly hurts. Building gilles leaves with the win%
+objective on and comparing them against the same gilles leaves with it off, the
+win%-on table wins only about 49.36 percent of the pairs -- roughly 0.64 pp
+below an even split, a clear loss. This is a fresh, high-volume gilles
+self-play head-to-head, our own tables against our own, and it is as confident
+as the comparison gets (confidence 100): the win% objective is a settled
+negative.
+
+Dialing WOLGES_WINPCT_BLEND down from 1.0 toward 0.0 shrinks the loss back
+toward a tie, as expected -- less remap means closer to plain points. The
+full-blend end is the pure win% objective just measured; the smaller blends
+were only spot-checked on a census-side run at lower volume, and they land
+between that loss and a tie, which is all the sign predicts.
+
+The reason is structural, and it holds no matter how good the table is. For any
+fixed count-state the table's win chance never decreases as the lead grows --
+it is monotone in the lead. So the play with the highest win chance is always
+the very same play with the highest points: the remap re-scales the value
+credited to each leave but never changes which play is chosen. And a leave
+table is static -- one value per kept group of tiles, consulted with no
+lookahead. The one thing win% could add over points is a preference about
+variance -- when you are ahead you may want the safer play even if it scores a
+touch less, and when behind the riskier one -- but choosing on variance means
+weighing how the game could branch from here, which is lookahead the one-move
+builders do not do. A per-board monotone re-scaling of a single number cannot
+smuggle that in. So even though the measured table predicts winners a hair
+better than the old formula, it cannot make the leaves themselves any better,
+and the small nonlinearity it does inject nudges them slightly the wrong way.
+The knob stays off by default.
+
+New knobs: WOLGES_WINPCT, WOLGES_WINPCT_BLEND, WOLGES_WINPCT_TABLE.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1688,6 +1757,15 @@ Shared across builders:
   WOLGES_OPPDENIAL_RACK (a decimal weight; default 0.0, off) -- the same
     per-letter drop folded into each drawn rack's recorded value instead of
     through a file. 0.0 disables it.
+  WOLGES_WINPCT (0 or 1; default 0) -- read by all three builders; not combined
+    with the opponent terms. A recorded negative:
+      1  value each rack by the win chance its best play implies
+      0  value each rack by points, and the leave tables are byte-identical
+  WOLGES_WINPCT_BLEND (a decimal from 0.0 to 1.0; default 1.0) -- blend from
+    pure points (0.0) to the pure win% remap (1.0); used only when
+    WOLGES_WINPCT is 1.
+  WOLGES_WINPCT_TABLE (a file path; default win_pct.csv) -- the win% table;
+    used only when WOLGES_WINPCT is 1.
 
 Board sampling (gilles):
   It also reads the shared knobs above. Its own knobs:
