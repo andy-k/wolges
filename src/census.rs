@@ -17,8 +17,9 @@ const MAX_LETTERS: usize = 64;
 pub struct MultisetLattice {
     num_letters: usize,
     rack_size: usize,
-    // binom[n][k] = C(n, k) for n in 0..=rack_size+num_letters, k in 0..=num_letters.
-    binom: Vec<Vec<u64>>,
+    // flat Pascal triangle (reused from prob), for the closed-form rank binomials
+    // (a binomial coefficient C(n,k) counts the ways to choose k of n).
+    pascal: crate::prob::Pascal,
     // size_offset[s] = number of multisets of size < s = C(s+L-1, L); len rack_size+2.
     size_offset: Vec<u64>,
 }
@@ -27,66 +28,53 @@ impl MultisetLattice {
     pub fn new(num_letters: usize, rack_size: usize) -> Self {
         assert!((1..=MAX_LETTERS).contains(&num_letters));
         let n_max = rack_size + num_letters;
-        let k_max = num_letters;
-        let mut binom = vec![vec![0u64; k_max + 1]; n_max + 1];
-        for row in binom.iter_mut() {
-            row[0] = 1; // C(n, 0) = 1
-        }
-        for n in 1..=n_max {
-            for k in 1..=k_max.min(n) {
-                // Pascal: C(n,k) = C(n-1,k-1) + C(n-1,k).
-                binom[n][k] = binom[n - 1][k - 1] + binom[n - 1][k];
-            }
-        }
+        // need rows 0..=n_max, i.e. n_max + 1 rows.
+        let pascal = crate::prob::Pascal::with_rows(n_max + 1);
         // size_offset[s] = C(s+L-1, L), the count of multisets of size < s.
         let mut size_offset = vec![0u64; rack_size + 2];
         for (s, slot) in size_offset.iter_mut().enumerate() {
-            let n = s + num_letters - 1;
-            *slot = if num_letters <= n {
-                binom[n][num_letters]
-            } else {
-                0
-            };
+            *slot = pascal.binom(s + num_letters - 1, num_letters);
         }
         Self {
             num_letters,
             rack_size,
-            binom,
+            pascal,
             size_offset,
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn c(&self, n: usize, k: usize) -> u64 {
-        if k > n { 0 } else { self.binom[n][k] }
+        self.pascal.binom(n, k)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.size_offset[self.rack_size + 1] as usize
     }
-    #[inline]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    #[inline]
+    #[inline(always)]
     pub fn num_letters(&self) -> usize {
         self.num_letters
     }
-    #[inline]
+    #[inline(always)]
     pub fn rack_size(&self) -> usize {
         self.rack_size
     }
     /// First lattice index of the full (size == rack_size) racks. The full-rack
     /// block is [full_rack_start(), len()); those are the only entries Step 3's
     /// draw-average reads, so best_equity_table only fills that block.
-    #[inline]
+    #[inline(always)]
     pub fn full_rack_start(&self) -> usize {
         self.size_offset[self.rack_size] as usize
     }
 
     /// Rank of a multiset given as a per-letter tally (len num_letters). Returns
     /// !0 if the total size exceeds rack_size (outside the lattice).
+    #[inline(always)]
     pub fn rank(&self, tally: &[u8]) -> u32 {
         let l = self.num_letters;
         let s: usize = tally.iter().map(|&c| c as usize).sum();
@@ -121,6 +109,7 @@ impl MultisetLattice {
     }
 
     /// Decode `idx` into a per-letter tally written to `out` (len num_letters).
+    #[inline(always)]
     pub fn unrank_into(&self, idx: usize, out: &mut [u8]) {
         let l = self.num_letters;
         let mut s = 0usize;
@@ -187,10 +176,9 @@ pub fn naive_best_equity(
                 if pr == !0 {
                     return;
                 }
+                // the sheet has the exchange floor baked in (entries are >= 0; an
+                // unreached or negative-scoring P is 0). See best_equity_table.
                 let sv = self.sheet[pr as usize];
-                if sv <= UNPLAYABLE {
-                    return;
-                }
                 let mut kept = vec![0u8; self.n];
                 for (k, (&rc, &pc)) in kept
                     .iter_mut()
@@ -237,66 +225,96 @@ pub fn naive_best_equity(
 }
 
 /// best_equity(R)=max over P<=R of sheet[P]+leave[R-P], for every FULL rack R
-/// (size == rack_size; the only entries Step 3 reads). Returns a lattice-indexed
-/// flat array with UNPLAYABLE outside the full-rack block. Alloc-free per rack
-/// (stack scratch + closed-form rank), recursing only over R's nonzero letters.
-/// Validated == naive_best_equity on the full-rack block. The kept-side split is
-/// not materialized: the entering attribution comes from the draw-average
-/// in leave_value_by_draw, not from a per-rack argmax.
-pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) -> Vec<i32> {
+/// (size == rack_size; the only entries Step 3 reads). Fills the full-rack block
+/// of `out` (a lattice-length, lattice-indexed buffer); entries outside that block
+/// are left untouched (never read). The buffer is caller-owned so it is allocated
+/// ONCE and reused across boards, not per call. Alloc-free per rack (stack scratch
+/// and closed-form rank), recursing only over R's nonzero letters. Validated to
+/// match naive_best_equity on the full-rack block. The kept-side split is not
+/// materialized: the entering attribution comes from the draw-average in
+/// leave_value_by_draw, not from a per-rack argmax.
+pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], out: &mut [i32]) {
     let n = lat.num_letters();
-    let mut equity = vec![UNPLAYABLE; lat.len()];
     let mut r = [0u8; MAX_LETTERS];
-    let mut p = [0u8; MAX_LETTERS];
-    let mut k = [0u8; MAX_LETTERS]; // k = r - p, maintained incrementally
-    // recurse over the (letter, count) of R's nonzero letters only. Constant +
-    // per-rack context, so rec carries only the changing letter index -- no
-    // clippy::too_many_arguments. p/k are the played/kept scratch; best accumulates.
+    // Rank BOTH sides of each split incrementally instead of an O(L) lat.rank per
+    // split. The lattice rank of a multiset is size_offset[size] + within, where
+    // within = sum over letters t (except the implicit last one, t == n-1) of a
+    // binomial run whose argument is the SUFFIX size from t (= size - prefix). So
+    // if R's nonzero letters are added HIGH-to-LOW, each letter's contribution is
+    // known the moment it is added (its suffix size is fixed), and within/size are
+    // carried by value down the recursion -- the base case is O(1) and p[]/k[] need
+    // not be materialized. Constant context, so rec carries only the changing letter
+    // index and carried ranks -- no clippy::too_many_arguments. The kept-side split
+    // is not stored: the entering attribution comes from the draw-average in
+    // leave_value_by_draw.
     struct Ctx<'a> {
         nz: &'a [(usize, u8)],
         n: usize,
         lat: &'a MultisetLattice,
         sheet: &'a [i32],
         leave: &'a [i32],
-        p: &'a mut [u8],
-        k: &'a mut [u8],
         best: &'a mut i32,
     }
     impl Ctx<'_> {
-        fn rec(&mut self, i: usize) {
-            if i == self.nz.len() {
-                let pr = self.lat.rank(&self.p[..self.n]);
-                let sv = self.sheet[pr as usize];
-                if sv <= UNPLAYABLE {
-                    return;
-                }
-                let kr = self.lat.rank(&self.k[..self.n]);
-                let v = sv + self.leave[kr as usize];
+        fn rec(&mut self, i: usize, s_p: usize, within_p: u64, s_k: usize, within_k: u64) {
+            if i == 0 {
+                // disposing the played tiles P is worth max(best word score, 0): you
+                // can always EXCHANGE them for 0 (pre-endgame, bag non-empty). That
+                // floor is baked into the sheet at build time (init 0; a word only
+                // RAISES an entry), so an unreached or negative-scoring P reads as 0 +
+                // leave(K) = the exchange-keep-K value.
+                // SAFETY: s_p, s_k <= rack_size and within_p, within_k are valid
+                // within-size offsets, so pr, kr are in-range lattice indices
+                // (< sheet.len() == leave.len()).
+                let pr = (self.lat.size_offset[s_p] + within_p) as usize;
+                let kr = (self.lat.size_offset[s_k] + within_k) as usize;
+                let v = unsafe { *self.sheet.get_unchecked(pr) }
+                    + unsafe { *self.leave.get_unchecked(kr) };
                 if v > *self.best {
                     *self.best = v;
                 }
                 return;
             }
-            let (t, cnt) = self.nz[i];
-            for c in 0..=cnt {
-                self.p[t] = c;
-                self.k[t] = cnt - c;
-                self.rec(i + 1);
+            // process R's nonzero letters from highest index (nz is ascending) down.
+            let (t, cnt) = self.nz[i - 1];
+            let parts = self.n - 1 - t;
+            for cp in 0..=cnt {
+                let ck = cnt - cp;
+                // within contribution of this letter to each side. rem_t (the rank's
+                // suffix size from t) = (size from higher letters) + (this count). The
+                // last letter (t == n-1) is the rank's implicit remainder: no within.
+                let (mut dwp, mut dwk) = (0u64, 0u64);
+                if t + 1 < self.n {
+                    let mut a = s_p + cp as usize;
+                    for _ in 0..cp {
+                        dwp += self.lat.c(a + parts - 1, parts - 1);
+                        a -= 1;
+                    }
+                    let mut b = s_k + ck as usize;
+                    for _ in 0..ck {
+                        dwk += self.lat.c(b + parts - 1, parts - 1);
+                        b -= 1;
+                    }
+                }
+                self.rec(
+                    i - 1,
+                    s_p + cp as usize,
+                    within_p + dwp,
+                    s_k + ck as usize,
+                    within_k + dwk,
+                );
             }
-            self.p[t] = 0;
-            self.k[t] = cnt; // restore for the caller's frame
         }
     }
     let lo = lat.full_rack_start();
     let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
-    for (off, slot) in equity[lo..].iter_mut().enumerate() {
+    for (off, slot) in out[lo..].iter_mut().enumerate() {
         let ridx = lo + off;
         lat.unrank_into(ridx, &mut r[..n]);
         let mut m = 0;
         for (t, &c) in r[..n].iter().enumerate() {
             if c > 0 {
                 nz[m] = (t, c);
-                k[t] = c; // k starts at r (p == 0)
                 m += 1;
             }
         }
@@ -307,18 +325,11 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32]) ->
             lat,
             sheet,
             leave,
-            p: &mut p,
-            k: &mut k,
             best: &mut best,
         }
-        .rec(0);
-        // reset k's touched entries back to zero for the next rack.
-        for &(t, _) in &nz[..m] {
-            k[t] = 0;
-        }
+        .rec(m, 0, 0, 0, 0);
         *slot = best;
     }
-    equity
 }
 
 /// leave_new(S)=sum_d ways(d)*best[S+d]/sum_d ways(d), where the completion d is
@@ -382,7 +393,8 @@ pub fn leave_value_by_draw(
                 if ri == !0 {
                     return;
                 }
-                *self.num += w * self.best[ri as usize] as i128;
+                // SAFETY: ri != !0 and r has size rack_size, so ri < best.len().
+                *self.num += w * unsafe { *self.best.get_unchecked(ri as usize) } as i128;
                 *self.den += w;
                 return;
             }
@@ -459,14 +471,15 @@ mod tests {
     #[test]
     fn naive_best_equity_matches_hand_calc() {
         let lat = MultisetLattice::new(2, 2);
-        let mut sheet = vec![UNPLAYABLE; lat.len()];
-        sheet[lat.rank(&[0, 0]) as usize] = 0;
+        // sheet has the exchange floor baked in (init 0; entries non-negative).
+        let mut sheet = vec![0i32; lat.len()];
         sheet[lat.rank(&[1, 0]) as usize] = 5_000;
         sheet[lat.rank(&[0, 1]) as usize] = 3_000;
         let mut leave = vec![0i32; lat.len()];
         leave[lat.rank(&[1, 0]) as usize] = 4_000;
         leave[lat.rank(&[0, 1]) as usize] = 1_000;
-        // rack [1,1]: play0 keep1 =5+1=6 ; play1 keep0 =3+4=7 ; play both = unplayable
+        // rack [1,1]: play0 keep1 = 5+1 = 6 ; play1 keep0 = 3+4 = 7 ;
+        // play both keep nothing = 0 (exchange floor). best = 7.
         let (eq, kept) = naive_best_equity(&lat, &sheet, &leave, &[1, 1]);
         assert_eq!(eq, 7_000);
         assert_eq!(kept, vec![0u8]);
@@ -475,17 +488,19 @@ mod tests {
     #[test]
     fn fast_conv_matches_naive() {
         let lat = MultisetLattice::new(4, 4);
-        let mut sheet = vec![UNPLAYABLE; lat.len()];
+        // sheet has the exchange floor baked in: init 0, entries non-negative
+        // (the empty/pass entry is 0 from the init).
+        let mut sheet = vec![0i32; lat.len()];
         let mut leave = vec![0i32; lat.len()];
         for idx in 0..lat.len() {
             let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
             if (h & 3) != 0 {
-                sheet[idx] = h.rem_euclid(20_000) - 5_000;
+                sheet[idx] = h.rem_euclid(20_000);
             }
             leave[idx] = h.rem_euclid(8_000) - 4_000;
         }
-        sheet[lat.rank(&[0, 0, 0, 0]) as usize] = 0; // pass always available
-        let best = best_equity_table(&lat, &sheet, &leave);
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best);
         // best_equity_table only fills the full-rack (size == rack_size) block.
         for (idx, &b) in best.iter().enumerate().skip(lat.full_rack_start()) {
             let tally = lat.tally(idx);

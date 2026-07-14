@@ -19,16 +19,18 @@ it may hold.
 
 TL;DR -- IF YOU JUST WANT A GOOD TABLE
 
-Board sampling is the strongest table shown so far, a little ahead of plain
-self-play and far ahead of no table at all. The genleaves.sh script runs the
-whole loop; pass --gilles and give it a few generations of about two million
-games each:
+Run this. The census works out every leave's value exactly, one board at a
+time, and needs no environment variables:
 
-  ./genleaves.sh --gilles english english 2000000 2000000 2000000
+  cargo run --release --bin leave -- english-census CSW24.kwg - - 500
 
-Drop --gilles for the self-play baseline, which is simpler and only a hair
-behind. The counts above are a starting point, not a tuned optimum -- run more
-for a better table, with shrinking returns.
+The two "-" are the null starting tables; feed the finished table back in as
+both players' table and repeat until it stops changing. Every default is
+already the one to ship. The census builds faster than plain self-play or board
+sampling and plays at least as well, which is why it is the one to reach for.
+Those alternatives, and every lever that turned out not to help, are described
+below; the best current way to run each method is collected at the end of this
+file.
 
 
 GENERATING A TABLE BY SELF-PLAY
@@ -599,6 +601,90 @@ those rows gives a smaller, play-identical file; WOLGES_FULL=1 keeps them.
 New knobs: WOLGES_FULL.
 
 
+EXCHANGING, AND WHY GOOD LEAVES FAN OUT
+
+Weighing only "play a word" against "pass and keep the whole rack" would
+under-rate good leaves. A particular good leave would get credit only on the
+rare board where some word happens to play away exactly the other tiles; the
+rest of the time the rack would effectively throw that leave away, and good
+leaves' values would collapse toward the average.
+
+But before the endgame, with tiles still in the bag, you can always exchange
+the tiles you do not want: an exchange is always allowed, scores nothing, and
+keeps whatever you choose. So disposing of any played group is worth at least
+zero. The census bakes that floor into the play-value sheet: every entry starts
+at zero, and a word only ever raises it, so a group no play reaches, or that
+would only score below zero, sits at zero. Reading the sheet then already
+includes the option of exchanging that group for nothing and keeping the rest.
+This lets any leave be reached by exchanging toward it, which is exactly its
+keep-this-leave value, so good leaves fan back out instead of collapsing to the
+average. (Starting at zero and keeping the best also does the right thing in
+variants where a word can score below zero, which the ordinary game never
+does.) On the first pass there are no leaves to keep toward yet, so exchanging
+is worth the same zero as a pass and the output is unchanged; the fanning-out
+appears only once there are real leaves in hand.
+
+
+WHAT THE CENSUS COSTS TO RUN
+
+The census's whole-catalog work is heavy, and getting it to run at all, then at
+volume, is most of what these steps are about.
+
+The play-value sheet is a single move generation over the entire unseen pool,
+and the number of plays that generation finds grows far faster than the pool
+does: an unseen pool of about twenty-seven tiles yields a couple of million
+plays and builds quickly, while a pool of the mid-forties yields billions and
+is out of reach. Two things made even the tractable boards run. The plays are
+never stored -- each play's score is written into the sheet as it is found and
+the play itself is dropped -- so the memory used no longer depends on how many
+plays there are, and open boards can no longer run the machine out of memory.
+And exchange moves are switched off for the sheet's generation: profiling the
+slow midgame showed the time was going not into the word search but into the
+move generator listing exchanges, which means enumerating every subset of the
+pool to keep -- an astronomical number over forty-odd tiles. The sheet only
+needs word plays, since exchanging is already handled by the disposal floor, so
+turning exchange listing off made the midgame reachable with no new code.
+
+Beyond that, the hot inner work was sped up without changing what it computes:
+the census reuses the project's shared table of "how many ways to choose"
+counts instead of its own; the big best-rack value table is allocated once and
+handed to every board rather than rebuilt each time (around twenty-one
+megabytes for English); the catalog numbering of a rack is carried along as the
+search descends over its tiles instead of recomputed at every play-and-keep
+split (measured at roughly eight times faster in profiling); and the array
+bounds-checks on lookups that are provably in range are dropped in release
+builds. Finally, the boards are valued in parallel across cores -- each board
+is independent, builds its own sheet, and contributes its per-leave totals
+under a brief lock -- because a trustworthy table needs hundreds of boards and
+doing them one at a time was impractical. The result does not depend on the
+thread count: each board seeds its own random generator from the run's seed and
+the board's own slot number, so the exact set of boards is fixed by the seed
+and the board count alone, and a two-thread run and a four-thread run of the
+same seed produce identical output.
+
+Because the sheet is enumerative, the census studies only late-midgame boards
+by default -- boards full enough that the unseen pool is small, but with the
+bag not yet empty (once the bag is empty no tiles are drawn and the leave table
+is not consulted). Covering wide-open early boards the same exact way would
+need a play-value sheet that does not enumerate every play, which does not
+exist here yet.
+
+
+HOW THE CENSUS COMPARES
+
+The census's clear, immediate win is runtime, not a proven jump in play
+strength. It computes the exact one-move worth of every leave on a board and,
+with the passes above, does so fast enough to run across hundreds of boards on
+an ordinary many-core machine -- where board sampling and the autoplay baseline
+have to average over many manufactured or observed racks to get the same
+coverage. Like every real leave table, it beats the null table by a wide
+margin. Whether its exact per-board values play stronger than board sampling or
+the autoplay baseline, and by how much, is not something a fresh head-to-head
+settles at this point; the honest claim is the runtime one.
+
+New knobs: WOLGES_CENSUS_BLANK_CAP, WOLGES_CENSUS_VERIFY.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -712,6 +798,12 @@ Census:
   It also reads the shared knobs above and the board window WOLGES_POOL_MIN /
   WOLGES_POOL_MAX (listed under board sampling, but with the census's own
   default window). Its own knobs:
+  WOLGES_CENSUS_BLANK_CAP (a whole number; default a full rack's worth) -- cap
+    on blanks in the sheet's unseen pool, to measure the blank cost on its own.
+  WOLGES_CENSUS_VERIFY (0 or 1; default 0) -- whether to cross-check the census
+    against the live move generator on the first board:
+      1  run the cross-check
+      0  skip it
   WOLGES_FULL (0 or 1; default 0) -- whether to keep the full-length leave rows
     (a value for the whole rack, not just a shorter leave); a full-length table
     is what dynamic leaves read:
