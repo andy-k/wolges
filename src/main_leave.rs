@@ -648,6 +648,26 @@ fn wolges_threads() -> usize {
         .unwrap_or_else(num_cpus::get)
 }
 
+// how WOLGES_APPORTION splits a sampled board's value back onto leaves:
+// full-rack (the default) or the opt-in entering path. parse it once
+// into a typed value so an unknown setting fails loud instead of silently
+// falling back to full-rack.
+#[derive(Clone, Copy)]
+enum Apportion {
+    FullRack,
+    Entering,
+}
+
+fn wolges_apportion() -> error::Returns<Apportion> {
+    match std::env::var("WOLGES_APPORTION").ok().as_deref() {
+        None | Some("full-rack") => Ok(Apportion::FullRack),
+        Some("entering") => Ok(Apportion::Entering),
+        Some(other) => {
+            Err(format!("WOLGES_APPORTION must be full-rack or entering, got {other:?}").into())
+        }
+    }
+}
+
 fn generate_autoplay_logs<
     const WRITE_LOGS: bool,
     const SUMMARIZE: bool,
@@ -686,6 +706,16 @@ fn generate_autoplay_logs<
     // anyway, so every undersampled subrack reaches min_samples_per_rack
     // (no smoothing).
     let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
+
+    // entering-leave attribution. Off (default): record each turn's best-play
+    // equity keyed by the drawn rack R (full-rack attribution). On: record it
+    // keyed by the entering leave L = the tiles the player walked into the turn
+    // holding (= last turn's kept leave). -generate decomposes either key to its
+    // subracks identically; only the recording key changes, play is unchanged.
+    let entering = match wolges_apportion()? {
+        Apportion::Entering => true,
+        Apportion::FullRack => false,
+    };
 
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -856,6 +886,21 @@ fn generate_autoplay_logs<
                 let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
                 let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
                 let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                // entering-leave attribution: each player's last kept leave (the
+                // tiles remaining after their action, before drawing replacements),
+                // which is what they walk into their next turn holding. None until
+                // the player has acted this game (so their first turn is skipped).
+                // Reset per game. aft_rack_entering is the reused scratch leftover.
+                let mut last_kept: Vec<Option<Vec<u8>>> = if SUMMARIZE && entering {
+                    vec![None; game_config.num_players() as usize]
+                } else {
+                    Vec::new()
+                };
+                let mut aft_rack_entering = if SUMMARIZE && entering {
+                    Vec::with_capacity(game_config.rack_size() as usize)
+                } else {
+                    Vec::new()
+                };
                 // rare (direct) samples, keyed by the target subrack S
                 // and attributed to S only (never decomposed). kept separate from the
                 // full-rack map so the full-rack mean and per-subrack decomposition are
@@ -1155,6 +1200,9 @@ fn generate_autoplay_logs<
                     game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
                     game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    if SUMMARIZE && entering {
+                        last_kept.iter_mut().for_each(|slot| *slot = None);
+                    }
                     loop {
                         num_moves += 1;
 
@@ -1409,16 +1457,71 @@ fn generate_autoplay_logs<
 
                         if SUMMARIZE && old_bag_len > 0 {
                             let rounded_equity = play.equity.as_f64(); // no rounding
-                            thread_full_rack_map
-                                .entry(cur_rack_as_vec[..].into())
-                                .and_modify(|e| {
-                                    e.equity += rounded_equity;
-                                    e.count += 1;
-                                })
-                                .or_insert(Cumulate {
-                                    equity: rounded_equity,
-                                    count: 1,
-                                });
+                            if entering {
+                                // record this turn's equity keyed by the entering
+                                // leave L (what this player walked in holding =
+                                // their last kept). game_state.turn is restored to
+                                // old_turn here, so old_turn is the player who moved.
+                                // Skip the first turn (None) and keep-nothing (empty
+                                // L, which would also collide with the totals key).
+                                if let Some(l) = &last_kept[old_turn as usize]
+                                    && !l.is_empty()
+                                {
+                                    thread_full_rack_map
+                                        .entry(l[..].into())
+                                        .and_modify(|e| {
+                                            e.equity += rounded_equity;
+                                            e.count += 1;
+                                        })
+                                        .or_insert(Cumulate {
+                                            equity: rounded_equity,
+                                            count: 1,
+                                        });
+                                }
+                                // update this player's entering leave for next turn:
+                                // the drawn rack minus the tiles this play used.
+                                // Keep-everything (a pass) leaves L = full rack and
+                                // is recorded next turn (not skipped).
+                                aft_rack_entering.clone_from(&cur_rack_as_vec);
+                                match &play.play {
+                                    movegen::Play::Exchange { tiles } => {
+                                        game_state::use_tiles(
+                                            &mut aft_rack_entering,
+                                            tiles.iter().copied(),
+                                        )
+                                        .unwrap();
+                                    }
+                                    movegen::Play::Place { word, .. } => {
+                                        game_state::use_tiles(
+                                            &mut aft_rack_entering,
+                                            word.iter().filter_map(|&tile| {
+                                                if tile != 0 {
+                                                    Some(tile & !((tile as i8) >> 7) as u8)
+                                                } else {
+                                                    None
+                                                }
+                                            }),
+                                        )
+                                        .unwrap();
+                                    }
+                                }
+                                aft_rack_entering.sort_unstable();
+                                match &mut last_kept[old_turn as usize] {
+                                    Some(v) => v.clone_from(&aft_rack_entering),
+                                    slot => *slot = Some(aft_rack_entering.clone()),
+                                }
+                            } else {
+                                thread_full_rack_map
+                                    .entry(cur_rack_as_vec[..].into())
+                                    .and_modify(|e| {
+                                        e.equity += rounded_equity;
+                                        e.count += 1;
+                                    })
+                                    .or_insert(Cumulate {
+                                        equity: rounded_equity,
+                                        count: 1,
+                                    });
+                            }
                         }
 
                         if WRITE_LOGS {
@@ -3007,6 +3110,22 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     Ok(())
 }
 
+// per-rack contribution to a subrack's running (equity, count) accumulator
+// during `-generate` decomposition. `fv` is the full rack's (equity_sum,
+// sample_count); `w` is completion_draw_ways (global-bag combos for the drawn
+// completion). Per-occurrence (per_rack false) folds the sampled count(R) into
+// the weight, so a rack drawn often pulls on the common subracks it shares by
+// that draw count on top of its average -- double-counting the draw frequency.
+// per_rack weights the rack's MEAN by the global-bag combos alone, so a rack
+// counts once at its average and its draw count never inflates the weight.
+fn decompose_contribution(fv: &Cumulate, w: u64, per_rack: bool) -> (f64, u64) {
+    if per_rack {
+        (fv.equity / fv.count as f64 * w as f64, w)
+    } else {
+        (fv.equity * w as f64, fv.count * w)
+    }
+}
+
 fn generate_leaves<
     Readable: std::io::Read,
     W: std::io::Write,
@@ -3019,6 +3138,11 @@ fn generate_leaves<
     rare_path: Option<&str>,
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
+    // per-rack decomposition (opt-in, off = byte-identical). Default
+    // off weights each rack by its sampled count; on weights each rack's mean by
+    // the global-bag combos alone so a rack's draw count does not inflate its
+    // pull on shared subracks. See decompose_contribution.
+    let per_rack = env_flag("WOLGES_GENERATE_PER_RACK", false);
     let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
     let mut exchange_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let mut rack_bytes = Vec::new();
@@ -3070,15 +3194,16 @@ fn generate_leaves<
                         &subrack_tally,
                         word_prob.bag(),
                     );
+                    let (add_equity, add_count) = decompose_contribution(fv, w, per_rack);
                     subrack_map
                         .entry(subrack_bytes.into())
                         .and_modify(|v| {
-                            v.equity += fv.equity * w as f64;
-                            v.count += fv.count * w;
+                            v.equity += add_equity;
+                            v.count += add_count;
                         })
                         .or_insert_with(|| Cumulate {
-                            equity: fv.equity * w as f64,
-                            count: fv.count * w,
+                            equity: add_equity,
+                            count: add_count,
                         });
                 },
                 rack_tally: &mut rack_tally,
@@ -4026,6 +4151,27 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_rack_decompose_weights_by_mean_not_count() {
+        // full rack R: equity_sum 10 over count 2 (mean 5), completion ways w = 3.
+        let fv = Cumulate {
+            equity: 10.0,
+            count: 2,
+        };
+        // per-occurrence: contribute equity_sum*w and count*w, so the
+        // sampled count enters both, then -generate divides them back out ->
+        // per-occurrence mean. a rack's draw count inflates its pull here.
+        let (eq, cnt) = decompose_contribution(&fv, 3, false);
+        assert!((eq - 30.0).abs() < 1e-9); // 10 * 3
+        assert_eq!(cnt, 6); // 2 * 3
+        // per-rack: contribute mean*w and w, so the sampled count drops
+        // out of the weight -> leave(S) = sum mean(R)*w / sum w. a rack
+        // counts once at its mean, never inflated by its draw count.
+        let (eq, cnt) = decompose_contribution(&fv, 3, true);
+        assert!((eq - 15.0).abs() < 1e-9); // (10/2) * 3
+        assert_eq!(cnt, 3); // w only
+    }
 
     #[test]
     fn rare_pools_by_count_into_subrack_map() {
