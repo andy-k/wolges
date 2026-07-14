@@ -1269,6 +1269,29 @@ to the floor with a warning rather than silently valuing endgame boards whose
 leaves are never used.
 
 
+WEIGHTING FULL RACKS BY THE WHOLE BAG
+
+The full-rack census only credits a rack on boards where its tiles are still in
+the bag, so a rack full of rare or high-value tiles is valued only on early,
+near-full boards -- a thin, lopsided sample. As a step toward making the census
+comparable to self-play, WOLGES_CENSUS_GLOBAL_WEIGHTS (default off, and off is
+byte-for-byte the same table) scores every rack by its odds of being drawn from
+the full starting bag, the same for every board no matter how picked-over this
+one is, and it also values racks this board could not deal at all, since their
+tiles can still be played somewhere. It builds each board's play-value sheet
+over the whole bag so a depleted rack still gets a real best play, and weights
+each rack by the whole-bag draw odds instead of this board's leftover pool.
+
+It comes out a no-op. A rack's best value on a board does not depend on the
+pool, so racks that were already drawable here keep the exact same value; only
+board-impossible racks are newly added, and those are a small, rarely-decisive
+share of the table. In our own head-to-head english-compare reports 49.9996 at
+confidence 50.5 -- an even split, no measurable difference. Kept opt-in as a
+recorded dead-end.
+
+New knobs: WOLGES_CENSUS_GLOBAL_WEIGHTS.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1420,6 +1443,11 @@ Census:
   WOLGES_CENSUS_BUCKETS (a whole number; default 0, every fill level) --
     coarsen the fill-level cycle to this many evenly spaced levels; changes
     only the spacing, not the leaves.
+  WOLGES_CENSUS_GLOBAL_WEIGHTS (0 or 1; default 0) -- how racks are weighted.
+    Measured a no-op:
+      1  weight every rack by full-starting-bag draw odds, and value
+         board-impossible racks too
+      0  weight by this board's leftover pool
   WOLGES_CENSUS_PER_GAME (0 or 1; default 0) -- how boards are chosen:
       1  value every in-window board along one real game per worker (the board
          count then counts games)
