@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{equity, game_config, game_state, klv, kwg, movegen};
+use super::{equity, game_config, game_state, klv, kwg, movegen, win_pct};
 use rand::SeedableRng;
 
 /// Whole-point spread from a millipoint spread. Player scores and klv leave
@@ -12,6 +12,16 @@ use rand::SeedableRng;
 #[inline(always)]
 pub fn spread_points(millipoints: i32) -> f64 {
     millipoints as f64 / equity::SCALE as f64
+}
+
+/// How the simmer estimates the win probability at an unfinished terminal
+/// position. Sigmoid is the shipped default: a hand-tuned sigmoid of the score
+/// margin. Table looks the position up in an empirical WinPctTable and falls
+/// back to the sigmoid for any count-and-margin the table never sampled.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WinProbSource {
+    Sigmoid,
+    Table,
 }
 
 /// Tunable weights for the simmer's win-probability model and objective. Default
@@ -31,6 +41,9 @@ pub struct SimmerConfig {
     pub sigmoid_spread: f64,
     /// Win probability the sigmoid assigns at +sigmoid_spread points of lead.
     pub sigmoid_prob: f64,
+    /// Where the unfinished-game win probability comes from. Default Sigmoid
+    /// keeps the shipped config unchanged; Table opts into the empirical table.
+    pub win_prob_source: WinProbSource,
 }
 
 impl Default for SimmerConfig {
@@ -41,6 +54,7 @@ impl Default for SimmerConfig {
             w_out: 10000.0,
             sigmoid_spread: 30.0,
             sigmoid_prob: 0.9,
+            win_prob_source: WinProbSource::Sigmoid,
         }
     }
 }
@@ -331,7 +345,12 @@ impl Simmer {
     }
 
     #[inline(always)]
-    pub fn compute_win_prob(&self, game_ended: bool, final_spread: i32) -> f64 {
+    pub fn compute_win_prob(
+        &self,
+        game_ended: bool,
+        final_spread: i32,
+        table: Option<&win_pct::WinPctTable>,
+    ) -> f64 {
         if game_ended {
             match final_spread.signum() {
                 1 => 1.0,
@@ -339,14 +358,31 @@ impl Simmer {
                 _ => 0.5,
             }
         } else {
-            let num_unseen_tiles = self.game_state.bag.len()
-                + self
-                    .game_state
-                    .players
-                    .iter()
-                    .map(|player| player.rack.len())
-                    .sum::<usize>();
-            win_prob_unfinished(final_spread, num_unseen_tiles, &self.config)
+            let bag = self.game_state.bag.len();
+            let racks_total = self
+                .game_state
+                .players
+                .iter()
+                .map(|player| player.rack.len())
+                .sum::<usize>();
+            // Where the empirical table is selected and has data for this
+            // count-state and margin, use it; otherwise fall through to the
+            // sigmoid. The default (Sigmoid, or no table) runs neither branch
+            // and is byte-identical to the pre-table path.
+            if self.config.win_prob_source == WinProbSource::Table
+                && let Some(table) = table
+            {
+                let my = self.game_state.players[self.initial_game_state.turn as usize]
+                    .rack
+                    .len();
+                let opp = racks_total - my;
+                if let Some(win_prob) =
+                    table.get_opt(equity::descale_score(final_spread), bag, my, opp)
+                {
+                    return win_prob as f64;
+                }
+            }
+            win_prob_unfinished(final_spread, bag + racks_total, &self.config)
         }
     }
 
@@ -480,5 +516,84 @@ mod tests {
         assert_eq!(opponent_draw(777), opponent_draw(777));
         // a different seed almost surely draws a different rack.
         assert_ne!(opponent_draw(777), opponent_draw(778));
+    }
+
+    // Prepare a simmer on a freshly dealt english position and report its
+    // (bag, my, opp) count-state so a test table can be keyed to it exactly.
+    fn prepared_simmer() -> (Simmer, usize, usize, usize) {
+        let game_config = game_config::make_english_game_config();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = rand::rngs::ChaCha20Rng::seed_from_u64(1);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        let mut simmer = Simmer::new(&game_config);
+        simmer.prepare(&game_config, &game_state, 2);
+        let bag = simmer.game_state.bag.len();
+        let turn = simmer.initial_game_state.turn as usize;
+        let my = simmer.game_state.players[turn].rack.len();
+        let total: usize = simmer
+            .game_state
+            .players
+            .iter()
+            .map(|player| player.rack.len())
+            .sum();
+        (simmer, bag, my, total - my)
+    }
+
+    // With WinProbSource::Table, an unfinished terminal whose count-state the
+    // table sampled reads the table value, and one it never sampled falls back
+    // to the sigmoid.
+    #[test]
+    fn table_source_uses_table_where_sampled_else_sigmoid() {
+        let (mut simmer, bag, my, opp) = prepared_simmer();
+        let cfg = SimmerConfig {
+            win_prob_source: WinProbSource::Table,
+            ..SimmerConfig::default()
+        };
+        simmer.set_config(cfg);
+
+        // a +40-point lead in millipoints; the sigmoid reads well under 1.0 here.
+        let final_spread = 40 * equity::SCALE;
+        let sigmoid = win_prob_unfinished(final_spread, bag + my + opp, &cfg);
+        assert!(sigmoid < 0.99, "sigmoid {sigmoid} unexpectedly saturated");
+
+        // a table keyed exactly to this state, with swings so tight that a
+        // +40 lead is a certain win (past the observed range) -> 1.0 != sigmoid.
+        let mut acc = win_pct::WinPctAccumulator::new();
+        for &v in &[-5, 5] {
+            acc.record(bag, my, opp, 0, v);
+        }
+        let table = acc.finalize();
+        let got = simmer.compute_win_prob(false, final_spread, Some(&table));
+        assert_eq!(got, 1.0, "table value should be used at the sampled key");
+
+        // a table that only has a different key leaves this state to the sigmoid.
+        let mut acc_other = win_pct::WinPctAccumulator::new();
+        for &v in &[-5, 5] {
+            acc_other.record(bag + 1, my, opp, 0, v);
+        }
+        let table_other = acc_other.finalize();
+        let fell_back = simmer.compute_win_prob(false, final_spread, Some(&table_other));
+        assert_eq!(
+            fell_back, sigmoid,
+            "absent key should fall back to the sigmoid"
+        );
+    }
+
+    // WinProbSource::Sigmoid (the default) ignores a provided table entirely.
+    #[test]
+    fn sigmoid_source_ignores_table() {
+        let (mut simmer, bag, my, opp) = prepared_simmer();
+        let cfg = SimmerConfig::default();
+        simmer.set_config(cfg);
+        let final_spread = 40 * equity::SCALE;
+
+        // a table that WOULD return 1.0 at this key if consulted.
+        let mut acc = win_pct::WinPctAccumulator::new();
+        for &v in &[-5, 5] {
+            acc.record(bag, my, opp, 0, v);
+        }
+        let table = acc.finalize();
+        let got = simmer.compute_win_prob(false, final_spread, Some(&table));
+        assert_eq!(got, win_prob_unfinished(final_spread, bag + my + opp, &cfg));
     }
 }
