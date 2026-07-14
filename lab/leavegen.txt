@@ -1050,6 +1050,99 @@ WOLGES_APPORTION=entering. A plain run is byte-identical to an explicit
 WOLGES_APPORTION=full-rack run.
 
 
+VALUING LEAVES BY WHOLE GAMES
+
+Every method so far values a leave by looking one move ahead: given a board and
+a rack, take the best play available this turn and credit its equity to the
+leave that play would keep. The census does this exactly, averaging over the
+racks a leave could complete to. A whole-game rollout asks a different question
+-- can a leave be worth more, or less, than any single move can show, because
+of tiles you keep that only pay off two or three turns later? To find out, it
+stops looking one move ahead and plays entire games to the finish.
+
+The english-rollout subcommand plays many complete self-play games, both
+players choosing their plays with the same leave table (the table is a
+parameter; the null table by default). At each turn it records the mover's full
+rack. When a game ends it takes the final score difference -- the margin,
+positive for the winner -- and credits it to every rack held during that game,
+from the point of view of whoever held it. Each rack's credit is weighted by
+how many ways the bag could have dealt that rack (the same draw-combination
+weight the census uses), and is then apportioned down to all of that rack's
+subracks. A leave's value is the weighted average of the game margins of every
+rack that contained it, centered so the empty leave is worth zero. This is a
+fourth way to build a leave table, run separately from the census.
+
+What it buys is reach: a one-move look is blind to a leave whose payoff is two
+turns out, but a finished game has already collected that payoff. The danger is
+the opposite of reach -- the final margin is decided mostly by later draws and
+by what the opponent does, and only faintly by any one leave you held early, so
+it is a very noisy signal for that leave.
+
+The danger won. The plain whole-game form -- credit each leave with the raw
+game margin -- is a clear negative: the leaves it produced played worse than
+keeping no leave values at all. The reason is exactly the noise. A common leave
+is held in enough games that its margins average out, but a rare multi-tile
+leave is held in only a handful, so its average margin is wild, and a wild
+leave value swings the move generator into bad plays. The census never has this
+problem because it values every leave exactly rather than by sampling.
+
+Three more elaborate forms each try to tame that noise, and each still fails in
+a way that teaches why.
+
+  Census-fallback. For each leave, trust the rollout only as far as it was well
+  sampled and otherwise keep the census's exact value: blend them as
+  census-value plus trust times (rollout-value minus census-value), where trust
+  rises from zero toward one as the sample count grows (WOLGES_ROLLOUT_SHRINK
+  sets how many samples are needed before the rollout is trusted much; feed the
+  census leaves in as both the players' table and the fallback). Pulling a
+  noisy estimate toward a trusted value in proportion to how well it is
+  measured is a standard statistical technique called shrinkage, which the knob
+  is named for. This too is a negative: every setting plays strictly worse than
+  the census, and the only setting that matches the census is the one that
+  falls back to it completely. So the trouble is not merely noise that more
+  games would shrink -- the whole-game margin is, on average, a worse target
+  than the census's exact one-move value.
+
+  Subtract-what-you-knew. Much of the margin's wobble comes from something
+  known before the tiles are drawn -- above all, how strong your own play this
+  turn was. So credit each leave with the margin minus the census's one-move
+  value of that turn's rack, then add the census value back at the end
+  (WOLGES_ROLLOUT_CV turns this on). The intent is to cancel the part of the
+  wobble you could already predict and keep only the multi-turn remainder.
+  Subtracting a quantity cancels wobble only when that quantity rises and falls
+  together with what you are measuring, and one turn's one-move value barely
+  tracks a whole game's margin -- which is driven by the opponent and by future
+  draws the one-move value cannot see. So the subtraction adds scatter instead
+  of removing it: another negative.
+
+  Future-only. The plain whole-game form is unfair in a second way: it credits
+  a leave with the entire game margin, including plays made before that leave
+  was ever held. The future-only form credits a leave only with what happens
+  from the turn it is held onward, and adds a dial between two honest extremes
+  -- at one end use the real future outcome in full, at the other trust the
+  census's one-move value of the very next position after a single step
+  (WOLGES_ROLLOUT_LAMBDA picks the point on the dial). At the use-the-future
+  end the rare leaves are still too noisy and wreck play; as the dial leans on
+  the census it draws closer to the census but never reaches it, let alone
+  beats it. This is the decisive negative, and it pins down the cause: the
+  whole-game outcome is on average a worse target than the census's exact
+  one-move value -- a systematic error, not just random wobble -- and leaning
+  on a trusted value can shrink the wobble but cannot remove a systematic
+  error.
+
+So the whole-game rollout is negative four ways -- the raw margin, the census
+fallback, the subtract-what-you-knew correction, and the future-only dial. Each
+one can recover the census by leaning on it, none can beat it. The census's
+exact one-move value is kept as the target, and the rollout is left as a
+recorded negative that the knobs above still reproduce. A fresh head-to-head is
+decisive: the census's leaves beat the whole-game rollout table 97.7 to 2.3
+(confidence 100), the rollout that far behind because one generation of
+whole-game outcomes is far noisier per leave than the census's exact one-move
+value.
+
+New knobs: WOLGES_ROLLOUT_CV, WOLGES_ROLLOUT_LAMBDA, WOLGES_ROLLOUT_SHRINK.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1082,6 +1175,11 @@ from the racks held.
 
 More games mean lower best-play noise. The genleaves.sh arguments are explained
 under RUNNING GENLEAVES.SH below.
+
+Whole-game rollout -- a recorded negative, kept for reference. It credits whole
+finished games to the racks held; too noisy to beat the census.
+
+    cargo run --release --bin leave -- english-rollout CSW24.kwg - 1000000
 
 RUNNING GENLEAVES.SH
 
@@ -1222,6 +1320,21 @@ Census:
     is what dynamic leaves read:
       1  also write the full-length values
       0  drop them, giving a smaller, play-identical file
+
+Whole-game rollout:
+  It also reads WOLGES_THREADS. Its own knobs:
+  WOLGES_ROLLOUT_CV (0 or 1; default 0) -- how each leave is credited:
+      1  credit the game margin minus the census one-move value of that turn's
+         rack
+      0  credit the raw game margin
+  WOLGES_ROLLOUT_LAMBDA (a decimal from 0 to 1; unset by default, off) -- when
+    unset the dial is not applied; set it to any value from 0.0 to 1.0 to turn
+    it on -- credit a leave only from the turn it is held onward, on a dial
+    from the real outcome in full (1.0) to the census one-move value (toward
+    0.0). Overrides WOLGES_ROLLOUT_CV.
+  WOLGES_ROLLOUT_SHRINK (a whole number; default 0) -- how many samples a leave
+    needs before its whole-game value is trusted over the census fallback; 0 is
+    the pure rollout with no fallback.
 
 Compare and dynamic leaves:
   WOLGES_COMPARE_PORCELAIN (0 or 1; default 0) -- english-compare's output;
