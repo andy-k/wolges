@@ -554,6 +554,21 @@ when low disk space, note that in bash:
     }
 }
 
+// read a value from an env var, or fall back to a default. one helper so every
+// algorithm reads its settings the same way -- no recompile to tune a run.
+fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
+// a boolean env var: unset (or invalid) falls back to `default`. one bool
+// convention everywhere -- any nonzero integer is true, so `NAME=1` turns it on.
+fn env_flag(name: &str, default: bool) -> bool {
+    env_parse::<u64>(name, default as u64) != 0
+}
+
 fn generate_autoplay_logs<
     const WRITE_LOGS: bool,
     const SUMMARIZE: bool,
@@ -571,6 +586,14 @@ fn generate_autoplay_logs<
     if !SUMMARIZE && min_samples_per_rack != 0 {
         return Err("min_samples_per_rack requires summarize".into());
     }
+
+    // WOLGES_IMPOSSIBLE_OK (default on): when a sampled rack needs a tile that
+    // is already on this board, do we still record it? On (the bag-draw
+    // baseline): yes -- value it anyway, the move generator plays the rack
+    // regardless of the depleted bag. Off: only record it when it is still
+    // drawable from this board's unseen pool, else skip (the original
+    // board-faithful behavior; costs a per-sample possibility check).
+    let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
 
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -971,7 +994,8 @@ fn generate_autoplay_logs<
                             let play = &plays[0];
 
                             // opponent calls director if two Q's on board.
-                            let is_possible = match &play.play {
+                            let is_possible = impossible_ok
+                                || match &play.play {
                                 movegen::Play::Exchange { .. } => true,
                                 movegen::Play::Place { word, .. } => {
                                     unseen_tally.clone_from_slice(&alphabet_freqs);
