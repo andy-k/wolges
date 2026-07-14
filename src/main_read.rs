@@ -2108,55 +2108,58 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         bits[0] -= 1;
                     }
 
-                    let num_word_buckets;
-                    let num_blank_buckets;
-                    let num_double_blank_buckets;
-                    if is_v3_plus {
-                        num_word_buckets = (b0_bits.len() as u32).next_power_of_two();
-                        num_blank_buckets = (b1_bits.len() as u32).next_power_of_two();
-                        num_double_blank_buckets = (b2_bits.len() as u32).next_power_of_two();
-                    } else if allow_overflow {
-                        // numbers of buckets in v1/v2.
-                        // these are still not correct and will cause overflow.
-                        // they are based on top 15 available non-letters
-                        // (??ZYYXWW... with the ?s being valued as Z)
-                        // even if there is a word like PIZZAZZ.
-                        num_word_buckets = next_prime(b0_bits.len() as u32).max(min_num_buckets);
-                        num_blank_buckets = next_prime(b1_bits.len() as u32).max(min_num_buckets);
-                        num_double_blank_buckets =
-                            next_prime(b2_bits.len() as u32).max(min_num_buckets);
-                    } else {
-                        let adjust_num_word_buckets = |len: u32, biggest: u128| {
-                            let guess = next_prime(len);
-                            let target = 1u128 << 96;
-                            if biggest / (guess as u128) < target {
-                                // intentional floor division.
-                                guess
-                            } else {
-                                // intentional floor division.
-                                // this can still overflow if given 15 of everything!
-                                next_prime(((biggest / target) as u32).saturating_add(1))
-                            }
+                    let (num_word_buckets, num_blank_buckets, num_double_blank_buckets) =
+                        if is_v3_plus {
+                            (
+                                (b0_bits.len() as u32).next_power_of_two(),
+                                (b1_bits.len() as u32).next_power_of_two(),
+                                (b2_bits.len() as u32).next_power_of_two(),
+                            )
+                        } else if allow_overflow {
+                            // numbers of buckets in v1/v2.
+                            // these are still not correct and will cause overflow.
+                            // they are based on top 15 available non-letters
+                            // (??ZYYXWW... with the ?s being valued as Z)
+                            // even if there is a word like PIZZAZZ.
+                            (
+                                next_prime(b0_bits.len() as u32).max(min_num_buckets),
+                                next_prime(b1_bits.len() as u32).max(min_num_buckets),
+                                next_prime(b2_bits.len() as u32).max(min_num_buckets),
+                            )
+                        } else {
+                            let adjust_num_word_buckets = |len: u32, biggest: u128| {
+                                let guess = next_prime(len);
+                                let target = 1u128 << 96;
+                                if biggest / (guess as u128) < target {
+                                    // intentional floor division.
+                                    guess
+                                } else {
+                                    // intentional floor division.
+                                    // this can still overflow if given 15 of everything!
+                                    next_prime(((biggest / target) as u32).saturating_add(1))
+                                }
+                            };
+                            (
+                                adjust_num_word_buckets(
+                                    b0_bits.len() as u32,
+                                    b0_bits.keys().fold(0u128, |acc, bits| {
+                                        acc.max(u128::from_le_bytes(*bits))
+                                    }),
+                                ),
+                                adjust_num_word_buckets(
+                                    b1_bits.len() as u32,
+                                    b1_bits.keys().fold(0u128, |acc, bits| {
+                                        acc.max(u128::from_le_bytes(*bits))
+                                    }),
+                                ),
+                                adjust_num_word_buckets(
+                                    b2_bits.len() as u32,
+                                    b2_bits.keys().fold(0u128, |acc, bits| {
+                                        acc.max(u128::from_le_bytes(*bits))
+                                    }),
+                                ),
+                            )
                         };
-                        num_word_buckets = adjust_num_word_buckets(
-                            b0_bits.len() as u32,
-                            b0_bits
-                                .keys()
-                                .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
-                        );
-                        num_blank_buckets = adjust_num_word_buckets(
-                            b1_bits.len() as u32,
-                            b1_bits
-                                .keys()
-                                .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
-                        );
-                        num_double_blank_buckets = adjust_num_word_buckets(
-                            b2_bits.len() as u32,
-                            b2_bits
-                                .keys()
-                                .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
-                        );
-                    }
 
                     // 0-blank section
                     {

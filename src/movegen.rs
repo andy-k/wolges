@@ -2270,14 +2270,14 @@ fn gen_place_moves_at<
 ) {
     let dim = board_snapshot.game_config.board_layout().dim();
     let strip_range_start;
-    let strip_range_end;
-    if placement.down {
+
+    let strip_range_end = if placement.down {
         strip_range_start = (placement.lane as isize * dim.rows as isize) as usize;
-        strip_range_end = strip_range_start + dim.rows as usize;
+        strip_range_start + dim.rows as usize
     } else {
         strip_range_start = (placement.lane as isize * dim.cols as isize) as usize;
-        strip_range_end = strip_range_start + dim.cols as usize;
-    }
+        strip_range_start + dim.cols as usize
+    };
     gen_place_moves(
         &mut GenPlaceMovesParams {
             board_snapshot,

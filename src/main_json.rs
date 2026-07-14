@@ -157,48 +157,38 @@ fn main() -> error::Returns<()> {
     */
     let question = serde_json::from_str::<Question>(data)?;
 
-    let kwg;
-    let klv;
-    let game_config;
-
     // of course this should be cached
-    match question.lexicon.as_str() {
-        "CSW24" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
-            klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "super-CSW24" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
-            klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                "lexbin/super-CSW24.klv2",
-            )?);
-            game_config = game_config::make_super_english_game_config();
-        }
-        "NWL23" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
-            klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.klv2")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "super-NWL23" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
-            klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                "lexbin/super-NWL23.klv2",
-            )?);
-            game_config = game_config::make_english_game_config();
-        }
-        "ECWL" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
-            klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.klv2")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "super-ECWL" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
-            klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                "lexbin/super-ECWL.klv2",
-            )?);
-            game_config = game_config::make_english_game_config();
-        }
+    let (kwg, klv, game_config) = match question.lexicon.as_str() {
+        "CSW24" => (
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
+            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
+            game_config::make_english_game_config(),
+        ),
+        "super-CSW24" => (
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
+            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/super-CSW24.klv2")?),
+            game_config::make_super_english_game_config(),
+        ),
+        "NWL23" => (
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?),
+            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.klv2")?),
+            game_config::make_english_game_config(),
+        ),
+        "super-NWL23" => (
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?),
+            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/super-NWL23.klv2")?),
+            game_config::make_english_game_config(),
+        ),
+        "ECWL" => (
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?),
+            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.klv2")?),
+            game_config::make_english_game_config(),
+        ),
+        "super-ECWL" => (
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?),
+            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/super-ECWL.klv2")?),
+            game_config::make_english_game_config(),
+        ),
         _ => {
             wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
         }

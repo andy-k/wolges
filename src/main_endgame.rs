@@ -1367,19 +1367,16 @@ fn build_pruned_kwg(
 // hardcoded demo below, which ships its own small kwg per lexicon; the CLI
 // (run_cli) loads a caller-given kwg file instead, via solve_position.
 fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
-    let kwg;
-    let game_config;
-
     // of course this should be cached
-    match question.lexicon.as_str() {
-        "CSW24" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
-            game_config = game_config::make_english_game_config();
-        }
-        "NWL23" => {
-            kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
-            game_config = game_config::make_english_game_config();
-        }
+    let (kwg, game_config) = match question.lexicon.as_str() {
+        "CSW24" => (
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
+            game_config::make_english_game_config(),
+        ),
+        "NWL23" => (
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?),
+            game_config::make_english_game_config(),
+        ),
         _ => {
             wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
         }
