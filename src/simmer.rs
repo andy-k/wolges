@@ -1,7 +1,80 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{game_config, game_state, klv, kwg, movegen};
+use super::{equity, game_config, game_state, klv, kwg, movegen};
 use rand::SeedableRng;
+
+/// Whole-point spread from a millipoint spread. Player scores and klv leave
+/// values are accumulated in millipoints (equity::SCALE = 1000), but the
+/// win-probability sigmoid and its weightage were tuned in whole points. Feed a
+/// spread through this before the sigmoid or the objective so a lead of, say, 30
+/// points reads as 30.0 rather than 30000.0 (which would saturate the sigmoid to
+/// a step and swamp the win-probability term in the objective).
+#[inline(always)]
+pub fn spread_points(millipoints: i32) -> f64 {
+    millipoints as f64 / equity::SCALE as f64
+}
+
+/// Tunable weights for the simmer's win-probability model and objective. Default
+/// is the shipped configuration. `descale: false` reproduces the pre-descale
+/// units mismatch on purpose; it exists only as an A/B baseline and is never
+/// shipped.
+#[derive(Clone, Copy)]
+pub struct SimmerConfig {
+    /// Feed the spread to the sigmoid and objective in points (true) instead of
+    /// raw millipoints (false, the pre-descale baseline).
+    pub descale: bool,
+    /// Win-probability weightage when the game cannot be played out this sim.
+    pub w_no_out: f64,
+    /// Win-probability weightage when the game can be played out this sim.
+    pub w_out: f64,
+    /// Lead (in points) at which the unfinished-game sigmoid reads sigmoid_prob.
+    pub sigmoid_spread: f64,
+    /// Win probability the sigmoid assigns at +sigmoid_spread points of lead.
+    pub sigmoid_prob: f64,
+}
+
+impl Default for SimmerConfig {
+    fn default() -> Self {
+        Self {
+            descale: true,
+            w_no_out: 10.0,
+            w_out: 10000.0,
+            sigmoid_spread: 30.0,
+            sigmoid_prob: 0.9,
+        }
+    }
+}
+
+/// The unfinished-game win-probability sigmoid: handwavily, a lead of
+/// +/- (sigmoid_spread + num_unseen_tiles) points reads as sigmoid_prob /
+/// (1 - sigmoid_prob) (default 90%/10%). final_spread is in millipoints and is
+/// descaled to points first, unless cfg.descale is false (the A/B baseline).
+#[inline(always)]
+pub fn win_prob_unfinished(final_spread: i32, num_unseen_tiles: usize, cfg: &SimmerConfig) -> f64 {
+    // this could be precomputed for every possible num_unseen_tiles (1 to 93)
+    let exp_width =
+        -(cfg.sigmoid_spread + num_unseen_tiles as f64) / (1.0 / cfg.sigmoid_prob - 1.0).ln();
+    let spread = if cfg.descale {
+        spread_points(final_spread)
+    } else {
+        final_spread as f64
+    };
+    1.0 / (1.0 + (-spread / exp_width).exp())
+}
+
+/// The per-candidate objective: the sim spread (descaled to points unless the
+/// A/B baseline disables descaling) plus the win probability scaled by its
+/// weightage. Both callers route their per-candidate stat through this so the
+/// objective is defined in exactly one place.
+#[inline(always)]
+pub fn sim_objective(sim_spread: i32, win_prob: f64, weightage: f64, descale: bool) -> f64 {
+    let spread = if descale {
+        spread_points(sim_spread)
+    } else {
+        sim_spread as f64
+    };
+    spread + win_prob * weightage
+}
 
 fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen::Play) {
     rack_tally.iter_mut().for_each(|m| *m = 0);
@@ -24,14 +97,6 @@ fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen:
     };
 }
 
-thread_local! {
-    // Always concretely a ChaCha20 generator (nothing swaps in another Rng
-    // impl), so store it unboxed rather than behind a trait object.
-    static RNG: std::cell::RefCell<rand::rngs::ChaCha20Rng> = std::cell::RefCell::new(
-        rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
-    );
-}
-
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at KurniaMoveGenerator.)
 // This is not enforced.
@@ -51,6 +116,10 @@ pub struct Simmer {
     // simulate() reuses these internally
     move_generator: movegen::KurniaMoveGenerator,
     rack_tally: Box<[u8]>,
+
+    // per-instance Monte-Carlo RNG (was a thread_local) + tunable config
+    rng: rand::rngs::ChaCha20Rng,
+    config: SimmerConfig,
 }
 
 impl Simmer {
@@ -70,7 +139,31 @@ impl Simmer {
 
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
+
+            // system entropy by default, so existing callers keep their original
+            // nondeterministic behavior until they opt into reseed().
+            rng: rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
+            config: SimmerConfig::default(),
         }
+    }
+
+    /// Reseed the per-instance RNG for a reproducible sim stream: the same seed
+    /// and config replay the same draws, independent of thread count. new()
+    /// seeds from system entropy instead, so nondeterministic callers are
+    /// unaffected until they opt in.
+    #[inline(always)]
+    pub fn reseed(&mut self, seed: u64) {
+        self.rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+    }
+
+    #[inline(always)]
+    pub fn set_config(&mut self, config: SimmerConfig) {
+        self.config = config;
+    }
+
+    #[inline(always)]
+    pub fn config(&self) -> &SimmerConfig {
+        &self.config
     }
 
     #[inline(always)]
@@ -98,18 +191,18 @@ impl Simmer {
                 num_unseen_tiles += player.rack.len();
             }
         }
-        const W_NO_OUT: f64 = 10.0;
-        const W_OUT: f64 = 10000.0;
+        let w_no_out = self.config.w_no_out;
+        let w_out = self.config.w_out;
         self.win_prob_weightage = if num_unseen_tiles <= self.num_tiles_that_matter {
             // possible to play out
-            W_OUT
+            w_out
         } else if num_unseen_tiles < 2 * self.num_tiles_that_matter {
-            W_OUT
+            w_out
                 + ((num_unseen_tiles - self.num_tiles_that_matter) as f64
                     / self.num_tiles_that_matter as f64)
-                    * (W_NO_OUT - W_OUT)
+                    * (w_no_out - w_out)
         } else {
-            W_NO_OUT
+            w_no_out
         };
     }
 
@@ -123,11 +216,10 @@ impl Simmer {
                 player.rack.clear();
             }
         }
-        RNG.with(|rng| {
-            self.initial_game_state
-                .bag
-                .shuffle_n(&mut *rng.borrow_mut(), self.num_tiles_that_matter);
-        });
+        let num_tiles_that_matter = self.num_tiles_that_matter;
+        self.initial_game_state
+            .bag
+            .shuffle_n(&mut self.rng, num_tiles_that_matter);
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
             if i != initial_turn {
                 self.initial_game_state.bag.replenish(
@@ -152,17 +244,16 @@ impl Simmer {
         // reset leave values from previous iteration
         self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
         // Copy-on-write rollout rng, for common random numbers across candidates.
-        // prepare_iteration() left the shared thread-local rng at the state every
-        // candidate in this iteration must roll out from. A Place ply draws its
-        // replenishment tiles off the front of the already-shuffled bag (no rng
-        // needed) and an empty exchange (a pass) draws nothing either; only a
-        // real exchange consumes randomness (returning the exchanged tiles to a
-        // random bag position). So this rollout never mutates the shared
-        // thread-local directly: the first ply that needs randomness snapshots it
-        // into a stack-local ChaCha20 generator (serialize_state/deserialize_state,
-        // no heap allocation) and every later draw in this rollout advances that
-        // local copy instead, leaving the shared state untouched for the next
-        // candidate.
+        // prepare_iteration() left self.rng at the state every candidate in this
+        // iteration must roll out from. A Place ply draws its replenishment tiles
+        // off the front of the already-shuffled bag (no rng needed) and an empty
+        // exchange (a pass) draws nothing either; only a real exchange consumes
+        // randomness (returning the exchanged tiles to a random bag position). So
+        // this rollout never mutates self.rng directly: the first ply that needs
+        // randomness snapshots it into a stack-local ChaCha20 generator
+        // (serialize_state/deserialize_state, no heap allocation) and every later
+        // draw in this rollout advances that local copy instead, leaving self.rng
+        // untouched for the next candidate.
         let mut rollout_rng: Option<rand::rngs::ChaCha20Rng> = None;
         let mut next_play = movegen::Play::Exchange {
             tiles: [][..].into(),
@@ -198,9 +289,7 @@ impl Simmer {
             self.last_seen_leave_values[self.game_state.turn as usize] =
                 klv.leave_value_from_tally(&self.rack_tally);
             let rng = rollout_rng.get_or_insert_with(|| {
-                RNG.with(|rng| {
-                    rand::rngs::ChaCha20Rng::deserialize_state(&rng.borrow().serialize_state())
-                })
+                rand::rngs::ChaCha20Rng::deserialize_state(&self.rng.serialize_state())
             });
             self.game_state.play(game_config, rng, &next_play).unwrap();
             match self
@@ -250,8 +339,6 @@ impl Simmer {
                 _ => 0.5,
             }
         } else {
-            // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
-            // (to adjust these, adjust the 30.0 and 0.9 consts below)
             let num_unseen_tiles = self.game_state.bag.len()
                 + self
                     .game_state
@@ -259,9 +346,7 @@ impl Simmer {
                     .iter()
                     .map(|player| player.rack.len())
                     .sum::<usize>();
-            // this could be precomputed for every possible num_unseen_tiles (1 to 93)
-            let exp_width = -(30.0 + num_unseen_tiles as f64) / (1.0f64 / 0.9 - 1.0).ln();
-            1.0 / (1.0 + (-(final_spread as f64) / exp_width).exp())
+            win_prob_unfinished(final_spread, num_unseen_tiles, &self.config)
         }
     }
 
@@ -275,13 +360,13 @@ impl Simmer {
 mod tests {
     use super::*;
 
-    // A rollout that exchanges tiles must draw from a copy of the shared
-    // thread-local rng, not the thread-local itself, so the shared
-    // post-prepare_iteration state stays put for the next candidate (common
-    // random numbers: every candidate in the iteration rolls out from the same
-    // randomness). This drives one candidate's rollout through an exchange and
-    // checks the shared state is unchanged afterwards, then repeats the same
-    // rollout from that unchanged state and checks it reproduces exactly.
+    // A rollout that exchanges tiles must draw from a copy of self.rng, not
+    // self.rng itself, so the shared post-prepare_iteration state stays put for
+    // the next candidate (common random numbers: every candidate in the
+    // iteration rolls out from the same randomness). This drives one
+    // candidate's rollout through an exchange and checks self.rng is unchanged
+    // afterwards, then repeats the same rollout from that unchanged state and
+    // checks it reproduces exactly.
     #[test]
     fn exchanging_rollout_leaves_shared_rng_untouched() {
         let game_config = game_config::make_english_game_config();
@@ -295,7 +380,7 @@ mod tests {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00");
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut simmer = Simmer::new(&game_config);
-        RNG.with(|rng| *rng.borrow_mut() = rand::rngs::ChaCha20Rng::seed_from_u64(99));
+        simmer.reseed(99);
         simmer.prepare(&game_config, &game_state, 0);
         simmer.prepare_iteration();
 
@@ -308,14 +393,14 @@ mod tests {
         };
 
         // the shared state right after the shared draw.
-        let shared_state = RNG.with(|rng| rng.borrow().serialize_state());
+        let shared_state = simmer.rng.serialize_state();
 
         simmer.simulate(&game_config, &kwg, &klv, &candidate);
         let rack_after_first = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();
-        // the exchange drew from a copy, so the shared state is untouched.
-        assert_eq!(RNG.with(|rng| rng.borrow().serialize_state()), shared_state);
+        // the exchange drew from a copy, so self.rng is untouched.
+        assert_eq!(simmer.rng.serialize_state(), shared_state);
 
         // a second rollout of the same candidate, from the same untouched
         // shared state, reproduces the first exactly: identical randomness per
@@ -324,7 +409,76 @@ mod tests {
         let rack_after_second = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();
-        assert_eq!(RNG.with(|rng| rng.borrow().serialize_state()), shared_state);
+        assert_eq!(simmer.rng.serialize_state(), shared_state);
         assert_eq!(rack_after_first, rack_after_second);
+    }
+
+    #[test]
+    fn spread_points_descales_millipoints_to_points() {
+        // one point is SCALE (1000) millipoints.
+        assert_eq!(spread_points(0), 0.0);
+        assert_eq!(spread_points(equity::SCALE), 1.0);
+        assert_eq!(spread_points(30 * equity::SCALE), 30.0);
+        assert_eq!(spread_points(-500), -0.5);
+    }
+
+    #[test]
+    fn win_prob_unfinished_hits_sigmoid_prob_at_the_crafted_lead() {
+        // by construction a lead of (sigmoid_spread + num_unseen) points reads as
+        // sigmoid_prob, and its negation as 1 - sigmoid_prob. num_unseen = 10 ->
+        // a 40-point lead = 40000 millipoints.
+        let cfg = SimmerConfig::default();
+        let lead_points = cfg.sigmoid_spread + 10.0; // 40.0
+        let lead_millipoints = (lead_points * equity::SCALE as f64) as i32;
+        assert!((win_prob_unfinished(lead_millipoints, 10, &cfg) - cfg.sigmoid_prob).abs() < 1e-9);
+        assert!(
+            (win_prob_unfinished(-lead_millipoints, 10, &cfg) - (1.0 - cfg.sigmoid_prob)).abs()
+                < 1e-9
+        );
+        assert_eq!(win_prob_unfinished(0, 10, &cfg), 0.5);
+
+        // descale: false feeds raw millipoints, so the same numeric input reads as
+        // a 1000x larger lead and saturates far past sigmoid_prob.
+        let raw = SimmerConfig {
+            descale: false,
+            ..cfg
+        };
+        assert!(win_prob_unfinished(lead_millipoints, 10, &raw) > 0.999);
+    }
+
+    #[test]
+    fn sim_objective_descales_spread_and_scales_win_prob() {
+        // descale true: spread reads in points and the win term adds weightage.
+        assert_eq!(sim_objective(30 * equity::SCALE, 0.0, 10.0, true), 30.0);
+        assert_eq!(sim_objective(0, 1.0, 10.0, true), 10.0);
+        assert_eq!(sim_objective(0, 1.0, 10000.0, true), 10000.0);
+        assert_eq!(sim_objective(0, 0.5, 10.0, true), 5.0);
+        // descale false: spread stays in raw millipoints (the A/B baseline).
+        assert_eq!(sim_objective(30 * equity::SCALE, 0.0, 10.0, false), 30000.0);
+    }
+
+    #[test]
+    fn per_instance_rng_reseed_is_deterministic() {
+        let game_config = game_config::make_english_game_config();
+        let mut game_state = game_state::GameState::new(&game_config);
+        // deal a full random position so prepare_iteration has tiles to draw.
+        let mut deal_rng = rand::rngs::ChaCha20Rng::seed_from_u64(1);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+
+        // draw the opponent (player 1) rack that prepare_iteration replenishes,
+        // from a fresh Simmer prepared on the same position and reseeded to `seed`.
+        let opponent_draw = |seed: u64| -> Vec<u8> {
+            let mut simmer = Simmer::new(&game_config);
+            simmer.prepare(&game_config, &game_state, 2);
+            simmer.reseed(seed);
+            simmer.prepare_iteration();
+            // turn is 0, so player 1 is the opponent redrawn from the shuffled bag.
+            simmer.initial_game_state.players[1].rack.clone()
+        };
+
+        // two independent instances, same seed -> identical (and reproducible) draw.
+        assert_eq!(opponent_draw(777), opponent_draw(777));
+        // a different seed almost surely draws a different rack.
+        assert_ne!(opponent_draw(777), opponent_draw(778));
     }
 }
