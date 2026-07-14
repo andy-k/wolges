@@ -229,7 +229,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 Ok(true)
             }
             "-gilles" => {
-                // english-gilles CSW24.kwg leave0.klv leave1.klv 1000000 [seed]
+                // english-gilles CSW24.kwg leave0.klv leave1.klv 1000000 [min_samples] [seed]
                 let args3 = if args.len() > 3 { &args[3] } else { "-" };
                 let args4 = if args.len() > 4 { &args[4] } else { "-" };
                 let num_games = if args.len() > 5 {
@@ -237,8 +237,13 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 } else {
                     1_000_000
                 };
-                let seed = if args.len() > 6 {
-                    Some(u64::from_str(&args[6])?)
+                let min_samples = if args.len() > 6 {
+                    u64::from_str(&args[6])?
+                } else {
+                    0
+                };
+                let seed = if args.len() > 7 {
+                    Some(u64::from_str(&args[7])?)
                 } else {
                     None
                 };
@@ -270,6 +275,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     arc_klv0,
                     arc_klv1,
                     num_games,
+                    min_samples,
                     seed,
                 )?;
                 Ok(true)
@@ -444,12 +450,17 @@ fn main() -> error::Returns<()> {
     same as english-autoplay and also save summary file.
   english-autoplay-summarize-only CSW24.kwg leave0.klv leave1.klv 1000000 0 [seed]
     same as english-autoplay-summarize but do not save the log files.
-  english-gilles CSW24.kwg leave0.klv leave1.klv 1000000 [seed]
+  english-gilles CSW24.kwg leave0.klv leave1.klv 1000000 [min_samples] [seed]
     GillesB board-sampling leave generation. plays greedy (leave-modified)
     games, snapshots boards, samples worst racks, records best-play equity.
     writes a gilles-summary-* csv in the same format as autoplay-summarize,
     so it merges via -resummarize and decomposes via -generate.
     parameters scale with the game config (works on any variant).
+    min_samples is optional (default 0 = pure board sampling); when nonzero,
+    remediation games keep playing after the first 1000000 and direct their
+    samples at racks still seen fewer than min_samples times, growing the worst
+    group as needed, until every rack reaches min_samples or no further progress
+    is possible. tune via WOLGES_GILLES_* env vars.
     seed is optional; prints auto-generated seed to stderr if not provided.
   english-summarize logfile summary.csv
     summarize logfile into summary.csv
@@ -1507,6 +1518,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
     num_games: u64,
+    min_samples: u64,
     seed: Option<u64>,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
@@ -1545,17 +1557,75 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     .max(rack_size as usize);
     let num_draws = env_usize("WOLGES_GILLES_DRAWS", 10);
     let turn_stride = env_usize("WOLGES_GILLES_STRIDE", 3) as u32;
+    // min-samples coverage knobs (used only when min_samples > 0). after the
+    // mandatory num_games of pure board sampling, remediation games keep playing
+    // and aim each snapshot's movegens at racks still seen fewer than min_samples
+    // times, until every rack reaches min_samples or no further progress is made.
+    // samples_per_snapshot = movegens per remediation snapshot (kept near the pure
+    // C(group_size, rack_size) for throughput); min_undersampled = how many of
+    // those must hit undersampled racks before random top-up; growth_cap = how many
+    // extra worst tiles the group may grow by to find more undersampled racks; the
+    // run stops after max_no_progress consecutive recomputes with no shrink in the
+    // remaining deficit, and force_recompute_games bounds how long a stuck
+    // (unreachable) tail is chased before such a recompute happens.
+    let samples_per_snapshot = env_usize(
+        "WOLGES_GILLES_SAMPLES_PER_SNAPSHOT",
+        n_choose_k(group_size, rack_size as usize),
+    ) as u32;
+    let min_undersampled = env_usize(
+        "WOLGES_GILLES_MIN_UNDERSAMPLED",
+        samples_per_snapshot as usize,
+    )
+    .min(samples_per_snapshot as usize) as u32;
+    let growth_cap = env_usize("WOLGES_GILLES_GROWTH", rack_size as usize);
+    let max_no_progress = env_usize("WOLGES_GILLES_MAX_NO_PROGRESS", 2) as u32;
+    let force_recompute_games = env_usize("WOLGES_GILLES_FORCE_RECOMPUTE_GAMES", 2000) as u64;
+    // reserved-tile-pool remediation (off by default). single-copy rare tiles
+    // (e.g. Q) are usually played before the snapshot window, so racks needing
+    // them stay undersampled and are expensive to reach by normal sampling.
+    // when WOLGES_GILLES_RESERVE is set, each remediation game holds a batch
+    // of still undersampled racks' tiles out of the bag during the draw, so
+    // they remain unseen at the snapshots and become directly drawable -- at
+    // the correct midgame phase and with no impossible-rack sampling. the
+    // batch is filled until reserve_budget tiles are held out, so it scales
+    // with the bag: reserve_budget defaults to what the bag can spare and
+    // still build a board into the snapshot window (num_tiles - pool_min -
+    // opening racks - a rack of slack). left off by default because the
+    // held-out boards are mildly biased; enable for the rare tail and validate
+    // via compare.
+    let reserve_enabled = env_flag("WOLGES_GILLES_RESERVE", false);
+    let reserve_budget = env_usize(
+        "WOLGES_GILLES_RESERVE_BUDGET",
+        (num_tiles as usize).saturating_sub(
+            pool_min + rack_size as usize * game_config.num_players() as usize + rack_size as usize,
+        ),
+    );
     eprintln!(
-        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride}"
+        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget}"
     );
 
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_samples = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let mutexed_map = std::sync::Arc::new(std::sync::Mutex::new(fash::MyHashMap::<
-        bites::Bites,
-        Cumulate,
-    >::default()));
+    // remediation coordination (mirrors generate_autoplay_logs' undersampling
+    // barrier). state: 0 = mandatory sampling, 1 = one thread computing the
+    // undersampled set, 2 = remediating, 3 = done. with min_samples == 0 there is
+    // no remediation: threads stop once num_games have been played.
+    let remediation_state =
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(if min_samples == 0 {
+            3
+        } else {
+            0
+        }));
+    let remediation_submission = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let remediation_countdown = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let remediation_generation_id = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mutexed = std::sync::Arc::new(std::sync::Mutex::new(GillesMutexed {
+        full_rack_map: fash::MyHashMap::<bites::Bites, Cumulate>::default(),
+        undersampled_racks: Vec::new(),
+        best_remaining: u64::MAX,
+        no_progress: 0,
+    }));
     let mutexed_tick = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
     let t0 = std::time::Instant::now();
 
@@ -1569,7 +1639,11 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             let num_processed_games = std::sync::Arc::clone(&num_processed_games);
             let completed_games = std::sync::Arc::clone(&completed_games);
             let completed_samples = std::sync::Arc::clone(&completed_samples);
-            let mutexed_map = std::sync::Arc::clone(&mutexed_map);
+            let remediation_state = std::sync::Arc::clone(&remediation_state);
+            let remediation_submission = std::sync::Arc::clone(&remediation_submission);
+            let remediation_countdown = std::sync::Arc::clone(&remediation_countdown);
+            let remediation_generation_id = std::sync::Arc::clone(&remediation_generation_id);
+            let mutexed = std::sync::Arc::clone(&mutexed);
             let mutexed_tick = std::sync::Arc::clone(&mutexed_tick);
             let run_identifier = run_identifier.clone();
             threads.push(s.spawn(move || {
@@ -1594,11 +1668,19 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut cand_tally = vec![0u8; num_letters];
                 let mut best_group_tally = vec![0u8; num_letters];
+                let mut grown_tally = vec![0u8; num_letters];
                 let mut rack_tally = vec![0u8; num_letters];
                 let mut unseen_pool = Vec::<u8>::new();
+                let mut group_pool = Vec::<u8>::new();
                 let mut exchange_buffer = Vec::with_capacity(rack_size as usize);
                 let mut thread_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
+                // remediation thread-local state (used only when min_samples > 0).
+                let mut local_undersampled = fash::MyHashSet::<bites::Bites>::default();
+                let mut reserved_tally = vec![0u8; num_letters];
+                let mut remediation_begun = false;
+                let mut thread_generation_id = 0u64;
+                let mut games_this_gen = 0u64;
                 // ln C(n, k) via precomputed ln-factorials (n <= num_tiles).
                 let ln_fact = {
                     let mut v = vec![0.0f64; num_tiles as usize + 1];
@@ -1618,12 +1700,188 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                 loop {
                     let num_prior_games =
                         num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if num_prior_games >= num_games {
-                        num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        break;
+                    let remediating = num_prior_games >= num_games;
+                    if remediating {
+                        if min_samples == 0 {
+                            num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            break;
+                        }
+                        // first crossing into remediation: flush this thread's
+                        // samples into the shared map, wait for every thread, then
+                        // one thread computes the initial undersampled set.
+                        if !remediation_begun {
+                            {
+                                let mut g = mutexed.lock().unwrap();
+                                merge_rack_map(&mut g.full_rack_map, &mut thread_map);
+                            }
+                            remediation_submission
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            while remediation_submission.load(std::sync::atomic::Ordering::Relaxed)
+                                != num_threads as u64
+                            {}
+                            if remediation_state
+                                .compare_exchange(
+                                    0,
+                                    1,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                )
+                                .is_ok()
+                            {
+                                let mut g = mutexed.lock().unwrap();
+                                let remaining = recompute_undersampled(
+                                    &mut g,
+                                    &mut thread_map,
+                                    &base_freqs,
+                                    &mut rack_tally,
+                                    &mut exchange_buffer,
+                                    rack_size,
+                                    min_samples,
+                                );
+                                g.best_remaining = remaining;
+                                remediation_countdown
+                                    .store(remaining as i64, std::sync::atomic::Ordering::Relaxed);
+                                eprintln!(
+                                    "After {} seconds, remediation begins: {} racks below min_samples, {remaining} total deficit, into {run_identifier}",
+                                    t0.elapsed().as_secs(),
+                                    g.undersampled_racks.len(),
+                                );
+                                remediation_state.store(2, std::sync::atomic::Ordering::Relaxed);
+                            } else {
+                                while remediation_state.load(std::sync::atomic::Ordering::Relaxed)
+                                    < 2
+                                {}
+                            }
+                            remediation_begun = true;
+                        }
+                        // refresh the thread-local undersampled view when the
+                        // generation advances or it empties; one thread recomputes
+                        // the global set once the countdown drains (or a stuck,
+                        // unreachable tail has been chased long enough).
+                        let cur_gen =
+                            remediation_generation_id.load(std::sync::atomic::Ordering::Relaxed);
+                        if thread_generation_id != cur_gen
+                            || local_undersampled.is_empty()
+                            || remediation_countdown.load(std::sync::atomic::Ordering::Relaxed) <= 0
+                            || games_this_gen >= force_recompute_games
+                        {
+                            let mut g = mutexed.lock().unwrap();
+                            merge_rack_map(&mut g.full_rack_map, &mut thread_map);
+                            let want_recompute = (remediation_countdown
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                <= 0
+                                || games_this_gen >= force_recompute_games)
+                                && remediation_generation_id
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                    == cur_gen;
+                            if want_recompute {
+                                let remaining = recompute_undersampled(
+                                    &mut g,
+                                    &mut thread_map,
+                                    &base_freqs,
+                                    &mut rack_tally,
+                                    &mut exchange_buffer,
+                                    rack_size,
+                                    min_samples,
+                                );
+                                if remaining == 0 || remaining >= g.best_remaining {
+                                    g.no_progress += 1;
+                                } else {
+                                    g.no_progress = 0;
+                                    g.best_remaining = remaining;
+                                }
+                                if remaining == 0 || g.no_progress >= max_no_progress {
+                                    remediation_state
+                                        .store(3, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                remediation_countdown
+                                    .store(remaining as i64, std::sync::atomic::Ordering::Relaxed);
+                                remediation_generation_id
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                eprintln!(
+                                    "After {} seconds, remediation recompute: {} racks below min_samples, {remaining} deficit, {} samples, into {run_identifier}",
+                                    t0.elapsed().as_secs(),
+                                    g.undersampled_racks.len(),
+                                    completed_samples.load(std::sync::atomic::Ordering::Relaxed),
+                                );
+                            }
+                            games_this_gen = 0;
+                            thread_generation_id = remediation_generation_id
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            local_undersampled.clear();
+                            for r in g.undersampled_racks.iter() {
+                                local_undersampled.insert(r.clone());
+                            }
+                        }
+                        if remediation_state.load(std::sync::atomic::Ordering::Relaxed) >= 3 {
+                            num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            break;
+                        }
+                        games_this_gen += 1;
                     }
+
                     rng.set_stream(num_prior_games);
-                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    if remediating && reserve_enabled && !local_undersampled.is_empty() {
+                        // reserved-tile-pool draw: hold a batch of undersampled
+                        // racks' tiles (union, max per tile) out of the bag so they
+                        // stay unseen at the snapshots and the racks become drawable
+                        // midgame. the batch grows until reserve_budget tiles are
+                        // held out (so it scales with the bag); otherwise identical
+                        // to reset_and_draw_tiles_double_ended. scan a bounded slice
+                        // of the undersampled set since it can be huge.
+                        reserved_tally.iter_mut().for_each(|m| *m = 0);
+                        let mut reserved_total = 0usize;
+                        for rack in local_undersampled.iter().take(1024) {
+                            if reserved_total + rack_size as usize > reserve_budget {
+                                break;
+                            }
+                            // max-merge this rack into reserved_tally if it fits.
+                            let mut delta = 0usize;
+                            let mut i = 0;
+                            while i < rack.len() {
+                                let t = rack[i] as usize;
+                                let mut c = 0u8;
+                                while i < rack.len() && rack[i] as usize == t {
+                                    c += 1;
+                                    i += 1;
+                                }
+                                if c > reserved_tally[t] {
+                                    delta += (c - reserved_tally[t]) as usize;
+                                }
+                            }
+                            if reserved_total + delta > reserve_budget {
+                                continue;
+                            }
+                            let mut i = 0;
+                            while i < rack.len() {
+                                let t = rack[i] as usize;
+                                let mut c = 0u8;
+                                while i < rack.len() && rack[i] as usize == t {
+                                    c += 1;
+                                    i += 1;
+                                }
+                                if c > reserved_tally[t] {
+                                    reserved_tally[t] = c;
+                                }
+                            }
+                            reserved_total += delta;
+                        }
+                        game_state.reset();
+                        game_state.bag.shuffle(&mut rng);
+                        for (t, &c) in reserved_tally.iter().enumerate() {
+                            for _ in 0..c {
+                                game_state.bag.remove_tile(t as u8);
+                            }
+                        }
+                        let rsz = game_config.rack_size() as usize;
+                        let bag = &mut game_state.bag;
+                        let players = &mut game_state.players;
+                        for (i, player) in players.iter_mut().enumerate() {
+                            bag.replenish(&mut player.rack, rsz, i);
+                        }
+                    } else {
+                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                    }
 
                     let mut turn_idx = 0u32;
                     let mut base_turn: Option<u32> = None;
@@ -1654,12 +1912,10 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             // gilles draws its worst-K group from this pool:
                             // the board's unseen tiles normally, or (impossible)
                             // the whole starting bag.
-                            let group_src: &[u8] = if impossible {
-                                &base_freqs
-                            } else {
-                                &unseen_tally
-                            };
-                            let num_unseen = group_src.iter().map(|&c| c as usize).sum::<usize>();
+                            let group_src: &[u8] =
+                                if impossible { &base_freqs } else { &unseen_tally };
+                            let num_unseen =
+                                group_src.iter().map(|&c| c as usize).sum::<usize>();
                             if num_unseen >= group_size {
                                 unseen_pool.clear();
                                 for (tile, &c) in group_src.iter().enumerate() {
@@ -1683,7 +1939,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     let mut lnp = 0.0f64;
                                     for (tile, &k) in cand_tally.iter().enumerate() {
                                         if k > 0 {
-                                            lnp += ln_choose(group_src[tile] as usize, k as usize);
+                                            lnp +=
+                                                ln_choose(group_src[tile] as usize, k as usize);
                                         }
                                     }
                                     if lnp < best_lnp {
@@ -1692,13 +1949,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     }
                                 }
 
-                                // enumerate every rack_size rack of the worst group;
-                                // record each rack's best-play equity, evaluated
-                                // with the turn player's leave file (klv0 for p0,
-                                // klv1 for p1) just like autoplay records the
-                                // turn player's rack. with klv0 == klv1 (the usual
-                                // klv_n vs klv_n run) this is moot.
-                                rack_tally.clone_from(&best_group_tally);
                                 let board_snapshot = movegen::BoardSnapshot {
                                     board_tiles: &game_state.board_tiles,
                                     game_config: &game_config,
@@ -1709,36 +1959,186 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                         &arc_klv1
                                     },
                                 };
-                                let move_generator = &mut move_generator;
-                                let thread_map = &mut thread_map;
-                                let completed_samples = &completed_samples;
-                                generate_exchanges(&mut ExchangeEnv {
-                                    found_exchange_move: |rack_bytes: &[u8]| {
-                                        move_generator.gen_moves_unfiltered(
-                                            &movegen::GenMovesParams {
-                                                board_snapshot: &board_snapshot,
-                                                rack: rack_bytes,
-                                                max_gen: 1,
-                                                num_exchanges_by_this_player: 0,
-                                                always_include_pass: false,
-                                            },
-                                        );
-                                        let equity = move_generator.plays[0].equity.as_f64();
-                                        thread_map
-                                            .entry(rack_bytes.into())
-                                            .and_modify(|e| {
-                                                e.equity += equity;
-                                                e.count += 1;
-                                            })
-                                            .or_insert(Cumulate { equity, count: 1 });
-                                        completed_samples
-                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    },
-                                    rack_tally: &mut rack_tally,
-                                    min_len: rack_size,
-                                    max_len: rack_size,
-                                    exchange_buffer: &mut exchange_buffer,
-                                });
+
+                                if !remediating {
+                                    // mandatory phase: enumerate every rack of the
+                                    // worst group and record its best-play equity,
+                                    // evaluated with the turn player's leave file
+                                    // (klv0 for p0, klv1 for p1), just like autoplay
+                                    // records the turn player's rack. with the usual
+                                    // klv_n vs klv_n run (klv0 == klv1) this is moot.
+                                    rack_tally.clone_from(&best_group_tally);
+                                    let move_generator = &mut move_generator;
+                                    let thread_map = &mut thread_map;
+                                    let completed_samples = &completed_samples;
+                                    generate_exchanges(&mut ExchangeEnv {
+                                        found_exchange_move: |rack_bytes: &[u8]| {
+                                            move_generator.gen_moves_unfiltered(
+                                                &movegen::GenMovesParams {
+                                                    board_snapshot: &board_snapshot,
+                                                    rack: rack_bytes,
+                                                    max_gen: 1,
+                                                    num_exchanges_by_this_player: 0,
+                                                    always_include_pass: false,
+                                                },
+                                            );
+                                            let equity = move_generator.plays[0].equity.as_f64();
+                                            thread_map
+                                                .entry(rack_bytes.into())
+                                                .and_modify(|e| {
+                                                    e.equity += equity;
+                                                    e.count += 1;
+                                                })
+                                                .or_insert(Cumulate { equity, count: 1 });
+                                            completed_samples
+                                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        },
+                                        rack_tally: &mut rack_tally,
+                                        min_len: rack_size,
+                                        max_len: rack_size,
+                                        exchange_buffer: &mut exchange_buffer,
+                                    });
+                                } else {
+                                    // remediation phase: aim this snapshot's movegens
+                                    // at racks still below min_samples. every drawn
+                                    // rack is a subset of this board's unseen pool,
+                                    // hence possible -- no is_possible test needed.
+                                    let mut movegens_done = 0u32;
+                                    let mut undersampled_done = 0u32;
+                                    // step 1: undersampled racks of the worst group.
+                                    rack_tally.clone_from(&best_group_tally);
+                                    sample_undersampled(
+                                        rack_size,
+                                        &mut move_generator,
+                                        &board_snapshot,
+                                        &mut thread_map,
+                                        &mut local_undersampled,
+                                        SampleScratch {
+                                            rack_tally: &mut rack_tally,
+                                            exchange_buffer: &mut exchange_buffer,
+                                        },
+                                        SampleBudget {
+                                            countdown: &remediation_countdown,
+                                            completed_samples: &completed_samples,
+                                            movegens_done: &mut movegens_done,
+                                            undersampled_done: &mut undersampled_done,
+                                            samples_per_snapshot,
+                                            target: samples_per_snapshot,
+                                        },
+                                    );
+                                    // step 2: grow the worst group toward
+                                    // min_undersampled by adding the tiles that most
+                                    // lower the group's draw probability (rarest
+                                    // first), then sample the newly reachable
+                                    // undersampled racks.
+                                    let mut grew = false;
+                                    if undersampled_done < min_undersampled {
+                                        grown_tally.clone_from(&best_group_tally);
+                                        let mut cur_group = group_size;
+                                        while cur_group < num_unseen
+                                            && cur_group - group_size < growth_cap
+                                        {
+                                            let mut best_i = usize::MAX;
+                                            let mut best_ratio = f64::INFINITY;
+                                            for i in 0..num_letters {
+                                                if unseen_tally[i] as usize
+                                                    > grown_tally[i] as usize
+                                                {
+                                                    let ratio = (unseen_tally[i] as f64
+                                                        - grown_tally[i] as f64)
+                                                        / (grown_tally[i] as f64 + 1.0);
+                                                    if ratio < best_ratio {
+                                                        best_ratio = ratio;
+                                                        best_i = i;
+                                                    }
+                                                }
+                                            }
+                                            if best_i == usize::MAX {
+                                                break;
+                                            }
+                                            grown_tally[best_i] += 1;
+                                            cur_group += 1;
+                                            grew = true;
+                                        }
+                                        if grew {
+                                            rack_tally.clone_from(&grown_tally);
+                                            sample_undersampled(
+                                                rack_size,
+                                                &mut move_generator,
+                                                &board_snapshot,
+                                                &mut thread_map,
+                                                &mut local_undersampled,
+                                                SampleScratch {
+                                                    rack_tally: &mut rack_tally,
+                                                    exchange_buffer: &mut exchange_buffer,
+                                                },
+                                                SampleBudget {
+                                                    countdown: &remediation_countdown,
+                                                    completed_samples: &completed_samples,
+                                                    movegens_done: &mut movegens_done,
+                                                    undersampled_done: &mut undersampled_done,
+                                                    samples_per_snapshot,
+                                                    target: min_undersampled,
+                                                },
+                                            );
+                                        }
+                                    }
+                                    // step 3: random top-up from the (grown) group
+                                    // to keep about samples_per_snapshot movegens per
+                                    // snapshot.
+                                    if movegens_done < samples_per_snapshot {
+                                        group_pool.clear();
+                                        let cur_tally = if grew {
+                                            &grown_tally
+                                        } else {
+                                            &best_group_tally
+                                        };
+                                        for (tile, &c) in cur_tally.iter().enumerate() {
+                                            for _ in 0..c {
+                                                group_pool.push(tile as u8);
+                                            }
+                                        }
+                                        while movegens_done < samples_per_snapshot
+                                            && group_pool.len() >= rack_size as usize
+                                        {
+                                            for i in 0..rack_size as usize {
+                                                let j = rng.random_range(i..group_pool.len());
+                                                group_pool.swap(i, j);
+                                            }
+                                            exchange_buffer.clear();
+                                            exchange_buffer.extend_from_slice(
+                                                &group_pool[..rack_size as usize],
+                                            );
+                                            exchange_buffer.sort_unstable();
+                                            move_generator.gen_moves_unfiltered(
+                                                &movegen::GenMovesParams {
+                                                    board_snapshot: &board_snapshot,
+                                                    rack: &exchange_buffer,
+                                                    max_gen: 1,
+                                                    num_exchanges_by_this_player: 0,
+                                                    always_include_pass: false,
+                                                },
+                                            );
+                                            let equity = move_generator.plays[0].equity.as_f64();
+                                            thread_map
+                                                .entry(exchange_buffer[..].into())
+                                                .and_modify(|e| {
+                                                    e.equity += equity;
+                                                    e.count += 1;
+                                                })
+                                                .or_insert(Cumulate { equity, count: 1 });
+                                            completed_samples
+                                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                            movegens_done += 1;
+                                            if local_undersampled.remove(&exchange_buffer[..]) {
+                                                remediation_countdown.fetch_sub(
+                                                    1,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -1783,17 +2183,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                     }
                 }
 
-                let mut map = mutexed_map.lock().unwrap();
-                for (k, v) in thread_map.into_iter() {
-                    if v.count > 0 {
-                        map.entry(k)
-                            .and_modify(|e| {
-                                e.equity += v.equity;
-                                e.count += v.count;
-                            })
-                            .or_insert(v);
-                    }
-                }
+                let mut g = mutexed.lock().unwrap();
+                merge_rack_map(&mut g.full_rack_map, &mut thread_map);
             }));
         }
         for thread in threads {
@@ -1804,7 +2195,17 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     });
 
     // write the summary CSV (same format as autoplay-summarize).
-    let map = mutexed_map.lock().unwrap();
+    let g = mutexed.lock().unwrap();
+    let map = &g.full_rack_map;
+    if min_samples != 0 && !g.undersampled_racks.is_empty() {
+        // report (do not silently drop) any racks the remediation could not lift
+        // to min_samples: a blocked tail of rare tiles that get played before the
+        // snapshot window, addressed separately by the reserved-pool remediation.
+        eprintln!(
+            "gilles: {} racks still below min_samples after remediation (blocked tail)",
+            g.undersampled_racks.len(),
+        );
+    }
     let mut total_equity = 0.0;
     let mut row_count = 0u64;
     for v in map.values() {
@@ -1848,6 +2249,163 @@ fn parse_rack(
 struct Cumulate {
     equity: f64,
     count: u64,
+}
+
+// shared state guarded by the gilles mutex during min_samples remediation.
+struct GillesMutexed {
+    full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
+    // racks still seen fewer than min_samples times, recomputed each generation.
+    undersampled_racks: Vec<bites::Bites>,
+    // smallest total remaining deficit observed, for no-progress detection.
+    best_remaining: u64,
+    no_progress: u32,
+}
+
+// merge a thread-local rack map into the shared map, emptying the source.
+fn merge_rack_map(
+    dst: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+    src: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+) {
+    for (k, v) in src.drain() {
+        if v.count > 0 {
+            dst.entry(k)
+                .and_modify(|e| {
+                    e.equity += v.equity;
+                    e.count += v.count;
+                })
+                .or_insert(v);
+        }
+    }
+}
+
+// rebuild undersampled_racks from the shared map (every rack_size rack seen fewer
+// than min_samples times) and return the total remaining deficit. scratch_map is
+// swapped with the shared map so the map can be read while undersampled_racks is
+// written, then restored (left empty) on return.
+fn recompute_undersampled(
+    g: &mut GillesMutexed,
+    scratch_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+    base_freqs: &[u8],
+    rack_tally: &mut Vec<u8>,
+    exchange_buffer: &mut Vec<u8>,
+    rack_size: u8,
+    min_samples: u64,
+) -> u64 {
+    std::mem::swap(&mut g.full_rack_map, scratch_map);
+    g.undersampled_racks.clear();
+    rack_tally.clear();
+    rack_tally.extend_from_slice(base_freqs);
+    let mut remaining = 0u64;
+    {
+        let map = &*scratch_map;
+        let undersampled = &mut g.undersampled_racks;
+        generate_exchanges(&mut ExchangeEnv {
+            found_exchange_move: |rack_bytes: &[u8]| {
+                let count = map.get(rack_bytes).map_or(0, |v| v.count);
+                if count < min_samples {
+                    undersampled.push(rack_bytes.into());
+                    remaining += min_samples - count;
+                }
+            },
+            rack_tally: &mut rack_tally[..],
+            min_len: rack_size,
+            max_len: rack_size,
+            exchange_buffer,
+        });
+    }
+    std::mem::swap(&mut g.full_rack_map, scratch_map);
+    remaining
+}
+
+// movegen and record the racks of rack_tally still below min_samples, drawn
+// straight from the worst (or grown) group so each is possible on this board --
+// no is_possible test. stops once samples_per_snapshot movegens or `target` undersampled
+// samples are reached this snapshot.
+struct SampleScratch<'a> {
+    rack_tally: &'a mut [u8],
+    exchange_buffer: &'a mut Vec<u8>,
+}
+
+// Cross-thread progress plus the per-snapshot stopping budget for the
+// undersampled pass, grouped so sample_undersampled stays within
+// clippy::too_many_arguments.
+struct SampleBudget<'a> {
+    countdown: &'a std::sync::atomic::AtomicI64,
+    completed_samples: &'a std::sync::atomic::AtomicU64,
+    movegens_done: &'a mut u32,
+    undersampled_done: &'a mut u32,
+    samples_per_snapshot: u32,
+    target: u32,
+}
+
+fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
+    rack_size: u8,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    thread_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+    local_undersampled: &mut fash::MyHashSet<bites::Bites>,
+    scratch: SampleScratch<'_>,
+    budget: SampleBudget<'_>,
+) {
+    let SampleScratch {
+        rack_tally,
+        exchange_buffer,
+    } = scratch;
+    let SampleBudget {
+        countdown,
+        completed_samples,
+        movegens_done,
+        undersampled_done,
+        samples_per_snapshot,
+        target,
+    } = budget;
+    generate_exchanges(&mut ExchangeEnv {
+        found_exchange_move: |rack_bytes: &[u8]| {
+            if *movegens_done >= samples_per_snapshot || *undersampled_done >= target {
+                return;
+            }
+            if !local_undersampled.contains(rack_bytes) {
+                return;
+            }
+            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot,
+                rack: rack_bytes,
+                max_gen: 1,
+                num_exchanges_by_this_player: 0,
+                always_include_pass: false,
+            });
+            let equity = move_generator.plays[0].equity.as_f64();
+            thread_map
+                .entry(rack_bytes.into())
+                .and_modify(|e| {
+                    e.equity += equity;
+                    e.count += 1;
+                })
+                .or_insert(Cumulate { equity, count: 1 });
+            completed_samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *movegens_done += 1;
+            local_undersampled.remove(rack_bytes);
+            *undersampled_done += 1;
+            countdown.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        },
+        rack_tally,
+        min_len: rack_size,
+        max_len: rack_size,
+        exchange_buffer,
+    });
+}
+
+// exact binomial coefficient via integer partial products (n, k small).
+fn n_choose_k(n: usize, k: usize) -> usize {
+    if k > n {
+        return 0;
+    }
+    let k = k.min(n - k);
+    let mut result = 1usize;
+    for i in 0..k {
+        result = result * (n - i) / (i + 1);
+    }
+    result
 }
 
 fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
@@ -1956,6 +2514,10 @@ fn generate_exchanges<FoundExchangeMove: FnMut(&[u8])>(
             }
         }
     }
+    // the recursion is balanced (push then pop), so it both requires and leaves
+    // an empty buffer; clear first to be robust against a caller that left tiles
+    // in it (e.g. gilles's random top-up).
+    env.exchange_buffer.clear();
     generate_exchanges_inner(env, 0);
 }
 
