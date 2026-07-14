@@ -3198,7 +3198,27 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // enumerative builder covers only the pool-bounded window, not the full 25-75%
     // midgame.)
     let pool_max = env_usize("WOLGES_POOL_MAX", 28);
-    let pool_min = env_usize("WOLGES_POOL_MIN", 3 * rack_size);
+    // The window is pool-native: a board is in-window while its unseen pool (tiles not
+    // on the board) lies in [pool_min, pool_max]. movegen and play_scorer both stop
+    // adding the klv leave once the bag is empty (num_tiles_in_bag <= 0 -> endgame
+    // penalty leaves), so a board is klv-relevant only while the bag holds >= 1 tile.
+    // The bag is the pool minus the tiles held in racks (at most num_players *
+    // rack_size), so pool > num_players * rack_size guarantees a non-empty bag for any
+    // rack sizes. Floor pool_min there; a smaller WOLGES_POOL_MIN is raised with a
+    // warning rather than silently valuing endgame boards whose leaves are never used.
+    let min_pool = game_config.num_players() as usize * rack_size + 1;
+    let pool_min = {
+        let req = env_usize("WOLGES_POOL_MIN", 3 * rack_size);
+        if req < min_pool {
+            eprintln!(
+                "census: raising pool_min {req} -> {min_pool} (a smaller unseen pool \
+                 implies an empty bag = endgame, where the klv leave is unused)"
+            );
+            min_pool
+        } else {
+            req
+        }
+    };
     let blank_cap = env_usize("WOLGES_CENSUS_BLANK_CAP", rack_size);
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
@@ -3217,6 +3237,44 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             );
         }
     };
+    // entering step 3: 0 = pull (leave_value_by_draw per leave, the default), 1 =
+    // push (census::entering_fused, one lattice walk for the whole table, about
+    // 20x faster and bit-identical -- both exact i128). The push trades speed for
+    // memory: two i128 lat_len arrays per thread (16 bytes/leave each); cut
+    // WOLGES_THREADS if that is too large. Ignored on the full-rack path.
+    let entering_push = env_flag("WOLGES_CENSUS_ENTERING_PUSH", false);
+    // board sampling: 0 = reset-per-board (the default) -- each board slot greedy-
+    // plays a fresh game to one random in-window fill, values it, and resets. 1 =
+    // per-game -- each slot plays one real game through and values EVERY board whose
+    // fill lands in the window (consecutive real plies), so the sampled boards
+    // follow a real game's phase mix (closer to autoplay's) and plies are
+    // reused instead of replayed. In per-game mode num_boards counts GAMES, not
+    // boards (one game yields a variable number of in-window boards).
+    let per_game = env_flag("WOLGES_CENSUS_PER_GAME", false);
+    // online mini-batch SGD. WOLGES_CENSUS_BATCH = boards per mini-batch (default =
+    // num_boards = one batch = the plain batch-mean path, byte-identical). When BATCH
+    // < num_boards the leaves update ONLINE: after each mini-batch the leader thread
+    // EMA-blends the batch's centered mean into leave_cur at rate WOLGES_CENSUS_ALPHA,
+    // so later mini-batches value with improved leaves and the run converges in fewer
+    // board-evals. The output is then the EMA leave_cur itself (not the batch mean).
+    let batch_size = (env_usize("WOLGES_CENSUS_BATCH", num_boards as usize) as u64).max(1);
+    let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
+    let sgd = batch_size < num_boards;
+    // reset-per-board target granularity. 0 (default) = per-tile: round-robin over
+    // every fill in [low,high]. K >= 2 = round-robin over K fill targets EVENLY SPACED
+    // across [low,high] ("percentage buckets" -- K=11 is 10 intervals + fencepost,
+    // 10% steps): coarser, so each bucket gets more boards (less per-bucket noise at
+    // low board counts), and the spacing is relative to the window so it expresses the
+    // same phases on any board size. Does not change the converged leaves, only the
+    // sampling granularity. The full pre-endgame span is [num_players*rack_size,
+    // num_tiles - num_players*rack_size - 1] (the two racks worth of fill up to a
+    // bag>=1 board); reach it with POOL_MAX = num_tiles - num_players*rack_size and
+    // POOL_MIN = num_players*rack_size + 1 (English: POOL_MAX=86 POOL_MIN=15 -> fill
+    // [14,85]; super-english: POOL_MAX=186 POOL_MIN=15 -> fill [14,185]). The step-1
+    // sheet stays tractable even on the bigger super 21x21 board because the sheet rack
+    // is capped at rack_size per letter (so its size is bounded by the alphabet, not
+    // the pool) and exchange moves are skipped; an emptiest super board takes about 3s.
+    let num_buckets = env_usize("WOLGES_CENSUS_BUCKETS", 0);
 
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
@@ -3236,6 +3294,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         lat.unrank_into(idx, &mut tally_buf);
         *slot = arc_klv0.leave_value_from_tally(&tally_buf);
     }
+    // RwLock so the online-SGD path can rewrite leave_cur between mini-batches while
+    // worker threads read it. In the default (one-batch) path it is only ever read.
+    let leave_lock = std::sync::RwLock::new(leave_cur);
 
     // Boards are independent: each is one play-value sheet + best-equity
     // convolution + draw-average pass that values every leave once. Compute them in
@@ -3248,8 +3309,39 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let num_threads = wolges_threads().max(1).min(num_boards.max(1) as usize);
     let lat_len = lat.len();
     let next_board = std::sync::atomic::AtomicU64::new(0);
-    // (accum_sum, accum_cnt, boards_completed, distinct_leaves_valued)
-    let shared = std::sync::Mutex::new((vec![0f64; lat_len], vec![0u64; lat_len], 0u64, 0u64));
+    // (accum_sum, accum_cnt, boards_completed, distinct_leaves_valued, ever_valued).
+    // In SGD, accum_sum/cnt are the CURRENT mini-batch (zeroed by the leader after
+    // each batch's EMA); ever_valued is persistent (which leaves to write at the end).
+    // In the default one-batch path nothing is reset, so accum_sum/cnt accumulate all
+    // boards across the run and ever_valued is unused.
+    let shared = std::sync::Mutex::new((
+        vec![0f64; lat_len],
+        vec![0u64; lat_len],
+        0u64,
+        0u64,
+        if sgd {
+            vec![false; lat_len]
+        } else {
+            Vec::new()
+        },
+    ));
+    // mini-batch barrier (SGD only): all workers finish a batch, the leader EMA-updates
+    // leave_cur, all resume on the next batch with the improved leaves.
+    let barrier = std::sync::Barrier::new(num_threads);
+    // Per-pool sample histogram for the per-game pseudo-round-robin sampler: each game
+    // steers toward the least-covered pools so coverage across [pool_min, pool_max]
+    // stays uniform while reusing one game's plies. Lock-free atomic counters shared
+    // across threads -- this makes the per-game sample SET schedule-dependent (NOT
+    // bit-reproducible, unlike reset-per-board), but the leaves converge to the same
+    // seed-independent fixed point, so it is fine for generation. Unused (empty) in
+    // reset-per-board mode, which stays deterministic.
+    let pool_hist: Vec<std::sync::atomic::AtomicU64> = if per_game {
+        (0..=num_tiles)
+            .map(|_| std::sync::atomic::AtomicU64::new(0))
+            .collect()
+    } else {
+        Vec::new()
+    };
     eprintln!("census: {num_threads} threads over {num_boards} boards");
 
     std::thread::scope(|s| {
@@ -3259,11 +3351,28 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut sheet = vec![census::UNPLAYABLE; lat_len];
-                let mut best = vec![census::UNPLAYABLE; lat_len];
+                // entering path materializes best[]; the full-rack path fuses step2 into step3.
+                let mut best = if full_rack {
+                    Vec::new()
+                } else {
+                    vec![census::UNPLAYABLE; lat_len]
+                };
                 let mut contrib = vec![census::UNPLAYABLE; lat_len];
                 // full-rack apportionment scratch (num/den per leave); empty unless full_rack.
                 let mut num_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
                 let mut den_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
+                // entering push-apportion scratch (i128 num/den); empty unless
+                // entering_push.
+                let mut num_e = if !full_rack && entering_push {
+                    vec![0i128; lat_len]
+                } else {
+                    Vec::new()
+                };
+                let mut den_e = if !full_rack && entering_push {
+                    vec![0i128; lat_len]
+                } else {
+                    Vec::new()
+                };
                 let mut tally_buf = vec![0u8; num_letters];
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut unseen_pool = Vec::<u8>::new();
@@ -3272,90 +3381,22 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut verify_rack = Vec::<u8>::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
 
-                loop {
-                    let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if b >= num_boards {
-                        break;
-                    }
-                    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
-                        seed.wrapping_add(census_mix64(b)),
-                    ));
-
-                    // greedy-play fresh games (from this slot's own rng) until one
-                    // reaches this slot's random target fill. The target is drawn
-                    // uniformly across [low,high] so recorded boards range across
-                    // game phases (matching autoplay's all-phase leave coverage)
-                    // instead of clustering at the low edge. The retry cap guards
-                    // against an unreachable target. The window is set in POOL
-                    // (unseen-tile) terms via WOLGES_POOL_MAX/MIN, which
-                    // derive [low,high] per game config: low is bounded by step-1
-                    // sheet tractability (a pool property), high by staying
-                    // pre-endgame (bag non-empty, so draws and the exchange floor
-                    // are valid). Since the exchange-skip, even open boards (large
-                    // pool) are tractable, so the window can reach early phases.
-                    let target = if high_tiles > low_tiles {
-                        rng.random_range(low_tiles..=high_tiles)
-                    } else {
-                        low_tiles
-                    };
-                    let mut tries = 0u32;
-                    let reached = loop {
-                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                        let mut got = false;
-                        loop {
-                            let fill =
-                                game_state.board_tiles.iter().filter(|&&t| t != 0).count();
-                            if fill >= target {
-                                got = true;
-                                break;
-                            }
-                            game_state.players[game_state.turn as usize]
-                                .rack
-                                .sort_unstable();
-                            let board_snapshot = &movegen::BoardSnapshot {
-                                board_tiles: &game_state.board_tiles,
-                                game_config: &game_config,
-                                kwg: &kwg,
-                                klv: if game_state.turn == 0 {
-                                    &arc_klv0
-                                } else {
-                                    &arc_klv1
-                                },
-                            };
-                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                board_snapshot,
-                                rack: &game_state.current_player().rack,
-                                max_gen: 1,
-                                num_exchanges_by_this_player: game_state
-                                    .current_player()
-                                    .num_exchanges,
-                                always_include_pass: false,
-                            });
-                            game_state
-                                .play(&game_config, &mut rng, &move_generator.plays[0].play)
-                                .unwrap();
-                            let ended =
-                                game_state.check_game_ended(&game_config, &mut final_scores);
-                            game_state.next_turn();
-                            if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
-                                break; // game ended before the window; try a fresh game.
-                            }
-                        }
-                        if got {
-                            break true;
-                        }
-                        tries += 1;
-                        if tries >= 1_000_000 {
-                            break false;
-                        }
-                    };
-                    if !reached {
-                        eprintln!(
-                            "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping"
-                        );
-                        continue;
-                    }
-
+                // Value one in-window board: build the play-value sheet from one
+                // movegen over the unseen pool, fold it with the current leaves into
+                // best_equity, optionally cross-check the null-klv/engine invariant,
+                // then attribute equity to leaves (entering draw-average or full-rack
+                // apportionment) and merge into the shared accumulators. Factored into a
+                // closure so it reuses this thread's scratch and can be called for
+                // each sampled board; the live move_generator, game_state and rng are
+                // passed in so the sampler can keep driving them. `log_first` emits the
+                // per-step timing diagnostics for the very first valued board;
+                // `do_verify` runs the engine cross-check.
+                let mut value_board = |move_generator: &mut movegen::KurniaMoveGenerator,
+                                       game_state: &game_state::GameState,
+                                       rng: &mut rand::rngs::ChaCha20Rng,
+                                       leave: &[i32],
+                                       log_first: bool,
+                                       do_verify: bool| {
                     // unseen pool = full distribution minus tiles on the board
                     // (blank-masked). Opponent racks count as unseen/drawable, as in
                     // gilles -- sampled racks are hypothetical draws from everything
@@ -3440,7 +3481,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             |_equity, _play| false,
                         );
                     }
-                    if b == 0 {
+                    if log_first {
                         eprintln!(
                             "  step1 sheet: {} tiles in pool -> {} candidate plays (unstored) in {:?}",
                             movegen_rack.len(),
@@ -3450,18 +3491,22 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
 
                     // STEP 2 -- best_equity(R) for every rack, max-plus of sheet and
-                    // leave_cur.
+                    // leave_cur. Entering path only: it materializes best[] for the
+                    // draw-average's random best[S+d] reads. The full-rack path fuses
+                    // step 2 into step 3 (apportion_fused) -- no best[] array.
                     let ts = std::time::Instant::now();
-                    census::best_equity_table(&lat, &sheet, &leave_cur, &mut best);
-                    if b == 0 {
-                        eprintln!("  step2 best_equity_table: {:?}", ts.elapsed());
+                    if !full_rack {
+                        census::best_equity_table(&lat, &sheet, leave, &mut best);
+                        if log_first {
+                            eprintln!("  step2 best_equity_table: {:?}", ts.elapsed());
+                        }
                     }
 
                     // NULL-KLV / engine invariant (first board only): census
                     // best_equity(R) must equal the engine's best-play equity for R
                     // using the SAME leaves (klv0 == leave_cur), since both maximize
                     // score(P) + leave(R-P). Sample real racks and check.
-                    if verify && b == 0 {
+                    if do_verify {
                         unseen_pool.clear();
                         for (t, &c) in unseen_tally.iter().enumerate() {
                             for _ in 0..c {
@@ -3503,7 +3548,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     * equity::SCALE as f64)
                                     .round()
                                     as i32;
-                                let census_mp = best[rr as usize];
+                                let census_mp = if full_rack {
+                                    // best[] is not materialized in the full-rack
+                                    // path; recompute best_equity for this rack.
+                                    tally_buf.iter_mut().for_each(|x| *x = 0);
+                                    for &t in &verify_rack {
+                                        tally_buf[t as usize] += 1;
+                                    }
+                                    census::naive_best_equity(
+                                        &lat, &sheet, leave, &tally_buf,
+                                    )
+                                    .0
+                                } else {
+                                    best[rr as usize]
+                                };
                                 if engine_mp == census_mp {
                                     ok += 1;
                                 } else {
@@ -3534,9 +3592,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     if full_rack {
                         num_board.iter_mut().for_each(|x| *x = 0.0);
                         den_board.iter_mut().for_each(|x| *x = 0.0);
-                        census::apportion_table(
+                        census::apportion_fused(
                             &lat,
-                            &best,
+                            &sheet,
+                            leave,
                             &unseen_tally,
                             &mut num_board,
                             &mut den_board,
@@ -3544,6 +3603,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         for (idx, slot) in contrib.iter_mut().enumerate() {
                             *slot = if den_board[idx] > 0.0 {
                                 (num_board[idx] / den_board[idx]).round() as i32
+                            } else {
+                                census::UNPLAYABLE
+                            };
+                        }
+                    } else if entering_push {
+                        // push form: one lattice walk apportions best[] to every leave
+                        // (bit-identical to the per-leave pull below, about 20x faster).
+                        num_e.iter_mut().for_each(|x| *x = 0);
+                        den_e.iter_mut().for_each(|x| *x = 0);
+                        census::entering_fused(&lat, &best, &unseen_tally, &mut num_e, &mut den_e);
+                        for (idx, slot) in contrib.iter_mut().enumerate() {
+                            *slot = if den_e[idx] != 0 {
+                                (num_e[idx] / den_e[idx]) as i32
                             } else {
                                 census::UNPLAYABLE
                             };
@@ -3559,7 +3631,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             );
                         }
                     }
-                    if b == 0 {
+                    if log_first {
                         eprintln!(
                             "  step3 {}: {:?}",
                             if full_rack { "full-rack" } else { "draw-average" },
@@ -3569,7 +3641,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                     // merge this board's contribution into the shared accumulators.
                     let mut g = shared.lock().unwrap();
-                    let (sum, cnt, completed, valued) = &mut *g;
+                    let (sum, cnt, completed, valued, _ever) = &mut *g;
                     for idx in 0..lat_len {
                         let v = contrib[idx];
                         if v != census::UNPLAYABLE {
@@ -3589,20 +3661,265 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         *valued,
                         lat_len,
                     );
+                };
+
+                // outer loop over mini-batches (one batch = the whole run unless SGD).
+                let mut batch_start = 0u64;
+                loop {
+                    let batch_end = (batch_start + batch_size).min(num_boards);
+                    // read-guard the leave table for this batch; the leader rewrites it
+                    // (write-guard) between batches under the barrier, when no reader
+                    // holds it. In the default path this guard is held for the one batch.
+                    {
+                        let leave = leave_lock.read().unwrap();
+                        loop {
+                            let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if b >= batch_end {
+                                break;
+                            }
+                    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
+                        seed.wrapping_add(census_mix64(b)),
+                    ));
+
+                    if per_game {
+                        // Per-game pseudo-round-robin sampling: walk one real game and
+                        // sample the plies whose pool bucket is currently least covered,
+                        // driving toward uniform per-pool coverage while reusing the
+                        // game's plies (cheaper than reset-per-board, which replays a
+                        // whole game per board). `goal` = the current minimum bucket
+                        // count + 1, so only buckets sitting at that minimum (the
+                        // laggards) are sampled this game. `deepest` = the lowest-pool
+                        // laggard; the pool only shrinks as the board fills, so once it
+                        // drops below `deepest` no fillable bucket remains -- early-return
+                        // instead of playing out the rest of the game. A pool that is
+                        // only rarely landed on (plays jump several tiles) converges
+                        // slowly but is bounded by the game budget; every pool is
+                        // reachable, so it does not truly starve. `num_boards` counts
+                        // GAMES here. The shared histogram makes the sample set
+                        // schedule-dependent (see pool_hist).
+                        use std::sync::atomic::Ordering::Relaxed;
+                        let goal = 1 + (pool_min..=pool_max)
+                            .map(|p| pool_hist[p].load(Relaxed))
+                            .min()
+                            .unwrap_or(0);
+                        let deepest = (pool_min..=pool_max)
+                            .find(|&p| pool_hist[p].load(Relaxed) < goal)
+                            .unwrap_or(pool_min);
+                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                        let mut logged = false;
+                        loop {
+                            let fill =
+                                game_state.board_tiles.iter().filter(|&&t| t != 0).count();
+                            let pool = num_tiles - fill;
+                            if pool < deepest {
+                                break; // no under-goal bucket remains below (and pool
+                                // only shrinks); also subsumes the pool_min floor.
+                            }
+                            if pool <= pool_max && pool_hist[pool].load(Relaxed) < goal {
+                                pool_hist[pool].fetch_add(1, Relaxed);
+                                // log step timings once, on the very first valued board.
+                                let lf = b == 0 && !logged;
+                                logged |= lf;
+                                value_board(
+                                    &mut move_generator,
+                                    &game_state,
+                                    &mut rng,
+                                    &leave,
+                                    lf,
+                                    verify && lf,
+                                );
+                            }
+                            // advance the board by one greedy (leave-modified) ply.
+                            game_state.players[game_state.turn as usize]
+                                .rack
+                                .sort_unstable();
+                            let board_snapshot = &movegen::BoardSnapshot {
+                                board_tiles: &game_state.board_tiles,
+                                game_config: &game_config,
+                                kwg: &kwg,
+                                klv: if game_state.turn == 0 {
+                                    &arc_klv0
+                                } else {
+                                    &arc_klv1
+                                },
+                            };
+                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot,
+                                rack: &game_state.current_player().rack,
+                                max_gen: 1,
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                always_include_pass: false,
+                            });
+                            game_state
+                                .play(&game_config, &mut rng, &move_generator.plays[0].play)
+                                .unwrap();
+                            let ended =
+                                game_state.check_game_ended(&game_config, &mut final_scores);
+                            game_state.next_turn();
+                            if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
+                                break; // game ended; this game is done.
+                            }
+                        }
+                    } else {
+                        // greedy-play fresh games (from this slot's own rng) until one
+                        // reaches this slot's target fill. The target ROUND-ROBINS across
+                        // [low_tiles, high_tiles] by slot index, so every fill bucket
+                        // gets an equal number of boards (uniform phase coverage) rather
+                        // than the noisy bucket counts a random target gives at low
+                        // board counts. Slot b's greedy games are still seeded by b, so
+                        // boards stay independent and reproducible. The retry cap guards
+                        // an unreachable target. The window is pool-native
+                        // (WOLGES_POOL_MAX/MIN -> [low,high]): low is bounded by
+                        // step-1 sheet tractability, high by the endgame floor (bag
+                        // non-empty). Since the exchange-skip, even open boards (large
+                        // pool) are tractable, so the window can reach early phases.
+                        let target = if high_tiles <= low_tiles {
+                            low_tiles
+                        } else if num_buckets >= 2 {
+                            // K fill targets evenly spaced across [low,high]; slot b
+                            // round-robins them. j=0 -> low, j=K-1 -> high.
+                            let span = high_tiles - low_tiles;
+                            let j = b as usize % num_buckets;
+                            low_tiles + (j * span + (num_buckets - 1) / 2) / (num_buckets - 1)
+                        } else {
+                            // per-tile: every fill in [low,high] is its own bucket.
+                            low_tiles + (b as usize % (high_tiles - low_tiles + 1))
+                        };
+                        let mut tries = 0u32;
+                        let reached = loop {
+                            game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                            let mut got = false;
+                            loop {
+                                let fill =
+                                    game_state.board_tiles.iter().filter(|&&t| t != 0).count();
+                                if fill >= target {
+                                    // a single play places several tiles at once, so
+                                    // fill can overshoot `target` and even the window's
+                                    // high end (into endgame). Count this board only if
+                                    // it is still in-window (fill <= high_tiles, i.e.
+                                    // pool >= pool_min); otherwise this game missed the
+                                    // window -- retry a fresh game for the same target so
+                                    // the sampled fill stays within [low_tiles,
+                                    // high_tiles] and never reaches an empty bag.
+                                    got = fill <= high_tiles;
+                                    break;
+                                }
+                                game_state.players[game_state.turn as usize]
+                                    .rack
+                                    .sort_unstable();
+                                let board_snapshot = &movegen::BoardSnapshot {
+                                    board_tiles: &game_state.board_tiles,
+                                    game_config: &game_config,
+                                    kwg: &kwg,
+                                    klv: if game_state.turn == 0 {
+                                        &arc_klv0
+                                    } else {
+                                        &arc_klv1
+                                    },
+                                };
+                                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                    board_snapshot,
+                                    rack: &game_state.current_player().rack,
+                                    max_gen: 1,
+                                    num_exchanges_by_this_player: game_state
+                                        .current_player()
+                                        .num_exchanges,
+                                    always_include_pass: false,
+                                });
+                                game_state
+                                    .play(&game_config, &mut rng, &move_generator.plays[0].play)
+                                    .unwrap();
+                                let ended =
+                                    game_state.check_game_ended(&game_config, &mut final_scores);
+                                game_state.next_turn();
+                                if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
+                                    break; // game ended before the window; try a fresh game.
+                                }
+                            }
+                            if got {
+                                break true;
+                            }
+                            tries += 1;
+                            if tries >= 1_000_000 {
+                                break false;
+                            }
+                        };
+                        if !reached {
+                            eprintln!(
+                                "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping"
+                            );
+                            continue;
+                        }
+                        value_board(
+                            &mut move_generator,
+                            &game_state,
+                            &mut rng,
+                            &leave,
+                            b == 0,
+                            verify && b == 0,
+                        );
+                    }
+                    }
+                    }
+                    // mini-batch boundary (SGD only): the read guard is dropped above,
+                    // so the leader can write-guard leave_cur with no readers. It
+                    // EMA-blends this batch's centered mean into leave_cur, marks the
+                    // valued leaves, zeroes the accumulators, and resets next_board so
+                    // the next batch re-pulls from batch_end (the inner loop overshoots
+                    // next_board past batch_end by up to num_threads breaking pulls).
+                    if sgd {
+                        if barrier.wait().is_leader() {
+                            let mut g = shared.lock().unwrap();
+                            let (sum, cnt, _completed, _valued, ever) = &mut *g;
+                            let mut lv = leave_lock.write().unwrap();
+                            let base = if cnt[empty_rank] > 0 {
+                                sum[empty_rank] / cnt[empty_rank] as f64
+                            } else {
+                                0.0
+                            };
+                            for idx in 0..lat_len {
+                                if cnt[idx] > 0 {
+                                    ever[idx] = true;
+                                    let centered = sum[idx] / cnt[idx] as f64 - base;
+                                    lv[idx] = ((1.0 - alpha) * lv[idx] as f64 + alpha * centered)
+                                        .round() as i32;
+                                }
+                                sum[idx] = 0.0;
+                                cnt[idx] = 0;
+                            }
+                            next_board.store(batch_end, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        barrier.wait();
+                    }
+                    batch_start = batch_end;
+                    if batch_start >= num_boards {
+                        break;
+                    }
                 }
             });
         }
     });
 
-    let (accum_sum, accum_cnt, _, _) = shared.into_inner().unwrap();
+    let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
+    let leave_final = leave_lock.into_inner().unwrap();
 
-    // mean-center on the empty leave (its entering-equity is the average best
-    // full-rack equity = the baseline), then write (leave, value_in_points).
-    let baseline = if accum_cnt[empty_rank] > 0 {
-        accum_sum[empty_rank] / accum_cnt[empty_rank] as f64
-    } else {
-        0.0
+    // Write (leave, value_in_points), mean-centered on the empty leave (its
+    // entering-equity = the average best full-rack equity = the baseline). The
+    // default one-batch path reports each leave's accumulated best-equity mean; the
+    // SGD path reports the online EMA leave_cur itself (already in the same millipoint
+    // frame), restricted to leaves valued in some mini-batch.
+    let value_mp = |idx: usize| -> f64 {
+        if sgd {
+            leave_final[idx] as f64
+        } else if accum_cnt[idx] > 0 {
+            accum_sum[idx] / accum_cnt[idx] as f64
+        } else {
+            0.0
+        }
     };
+    let baseline = value_mp(empty_rank);
     let epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -3621,7 +3938,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
     for idx in 0..lat.len() {
-        if accum_cnt[idx] == 0 {
+        let valued = if sgd { ever[idx] } else { accum_cnt[idx] > 0 };
+        if !valued {
             continue;
         }
         lat.unrank_into(idx, &mut tally_buf);
@@ -3629,8 +3947,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         if size == 0 || size > max_keep {
             continue; // skip empty (baseline), over-size, and (non-full) full racks.
         }
-        let centered_points =
-            (accum_sum[idx] / accum_cnt[idx] as f64 - baseline) / equity::SCALE as f64;
+        let centered_points = (value_mp(idx) - baseline) / equity::SCALE as f64;
         leave_ser.clear();
         for (t, &c) in tally_buf.iter().enumerate() {
             for _ in 0..c {

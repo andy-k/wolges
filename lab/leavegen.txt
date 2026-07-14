@@ -738,6 +738,111 @@ window removes that bias, the same way sampling whole games already covers
 every phase.
 
 
+KEEP THE WINDOW OUT OF THE ENDGAME
+
+The census values a leave by averaging over the tiles you might draw next, and
+its exchange fallback assumes there are tiles to swap for. Once the bag is
+empty there are neither, and the move generator does not even consult the leave
+table in the endgame -- it scores that phase a different way. So studying an
+empty-bag board would invent draw value out of nothing and fold it into leaves
+that only ever get used earlier. The guard keeps the window off the endgame.
+
+The quantity that really decides the endgame is the unseen pool. The bag is the
+unseen pool minus the tiles sitting in the players' racks, so a board's leaves
+matter only while the pool is larger than what the racks hold. For the classic
+English game two full seven-tile racks hold fourteen tiles, so the pool window
+is floored at fifteen -- one more than fourteen. (Stated the other way, that is
+a board no fuller than eighty-five of a hundred tiles down; at eighty-six the
+bag is empty.) These figures come from the game's own tile count and rack size,
+not hardcoded, so the guard holds for any variant. A window setting that would
+push past the floor is raised back to it with a warning rather than quietly
+producing endgame-polluted leaves; the normal window is well inside the floor,
+so a usual run is unchanged.
+
+One subtlety: a single move can lay down several tiles at once, so a game
+played toward a target fill can overshoot it by up to a rackful. Capping the
+target is therefore not enough -- the move that first crosses a high target
+could land past the window's edge and tip into an empty bag. So the census
+checks the board that actually resulted, not the target it aimed at: it keeps
+the board only if its fill is still inside the window, and otherwise discards
+that game and tries again for the same target. This closes a leak by which a
+few percent of the supposedly clean boards were still endgame.
+
+
+EVEN COVERAGE OF THE FILL LEVELS
+
+With only a few hundred boards scattered over the window's fill levels (fewer
+per level when the window is opened wide), picking each board's target fill at
+random lands unevenly -- some levels get none, some several -- so the fill
+levels are covered lumpily. Instead the census cycles through the fill levels
+in order: board number b aims at the level b steps into the window, wrapping
+around. Every level then gets the same number of boards, so the leaves average
+over an even mix of fill levels -- the same average as random targeting, but
+less noise. Each worker still seeds its own games, so the boards stay
+independent and the run stays reproducible.
+
+WOLGES_CENSUS_BUCKETS coarsens that cycle to a fixed number of evenly spaced
+levels instead of every single one -- for example eleven levels, roughly ten
+percent of the window apart. Coarser steps collect more boards per level, which
+is less noisy when the board count is low, and because the spacing is a
+fraction of the window it picks out the same stages of the game whatever the
+board size, so a normal English board and a larger variant are sampled at
+matching stages. It changes only how the sampling is spaced, not the leaves it
+settles on; left at its default (every fill level) the run is byte-identical.
+
+
+ONE REAL GAME PER WORKER (OPTIONAL)
+
+The default sampler plays a fresh game to one chosen fill, values that single
+board, and starts over -- independent draws, evenly spaced across the window.
+That even spacing does not match how much of a real game is actually spent at
+each fill. WOLGES_CENSUS_PER_GAME turns on another way: each worker
+greedy-plays one real game and values every board along it whose fill falls in
+the window -- consecutive positions from the same game -- stopping once the
+board fills past the window rather than playing the game out. The boards then
+follow the mix a real game actually visits, closer to what our own self-play
+sees, and each position is reused rather than replayed from scratch, so it is
+cheaper too. In this mode the board count counts games, and a game yields
+however many in-window boards it happens to pass through; the fill jumps
+several tiles per move, so a narrow window catches few positions -- open the
+window wide.
+
+Left as it is, this mode follows how often a game naturally sits at each pool
+size, so common fill levels pile up and rare ones stay thin. It can also aim
+for even coverage while still reusing one game's positions: a running tally,
+shared across workers, counts how many samples each pool size has so far, and
+each game samples only the positions that land on the sizes currently furthest
+behind, so the thin buckets catch up. It stops a game early once the board has
+filled past the lowest size still behind -- the pool only shrinks as tiles go
+down, so no later position can help. Because that shared tally is updated
+without locking, exactly which positions get sampled depends on how the workers
+interleave, so this even-coverage per-game path is not bit-for-bit repeatable;
+the leaves still settle to the same answer regardless. The plain
+reset-and-cycle mode remains the reproducible one.
+
+
+UPDATING THE LEAVES AS THE RUN GOES
+
+Normally the census values a whole run of boards and only then produces the
+leaves; to improve them you run the whole thing again with those leaves fed
+back in, until they reproduce themselves (the leaves that come out match the
+leaves that went in). WOLGES_CENSUS_BATCH adds a way to improve them during a
+single run. It sets how many boards form a batch (the default is all of them --
+one batch, exactly the plain behavior). With a smaller batch, the workers value
+a batch using the current leaves, and then, at a gathering point, the leaves
+are nudged part of the way toward what that batch found before the next batch
+starts. WOLGES_CENSUS_ALPHA is how far -- half by default, so the leaves move
+halfway toward each batch's findings. Because every batch after the first
+values its boards with already-improved leaves, a run settles on the same final
+leaves in far fewer boards than re-running whole passes does. With fixed batch
+boundaries the update combines the same way whichever worker applies it, so
+this stays reproducible in the reset-and-cycle mode. Left at the default it is
+byte-identical.
+
+New knobs: WOLGES_CENSUS_ALPHA, WOLGES_CENSUS_BATCH, WOLGES_CENSUS_BUCKETS,
+WOLGES_CENSUS_PER_GAME.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -855,8 +960,21 @@ Census:
   It also reads the shared knobs above and the board window WOLGES_POOL_MIN /
   WOLGES_POOL_MAX (listed under board sampling, but with the census's own
   default window). Its own knobs:
+  WOLGES_CENSUS_ALPHA (a decimal from 0 to 1; default 0.5) -- how far the
+    leaves move toward each batch's findings; meaningful only with a batch
+    smaller than the run.
+  WOLGES_CENSUS_BATCH (a whole number of boards; default all boards, one batch)
+    -- boards per online-update batch; a smaller batch nudges the leaves toward
+    each batch's findings mid-run.
   WOLGES_CENSUS_BLANK_CAP (a whole number; default a full rack's worth) -- cap
     on blanks in the sheet's unseen pool, to measure the blank cost on its own.
+  WOLGES_CENSUS_BUCKETS (a whole number; default 0, every fill level) --
+    coarsen the fill-level cycle to this many evenly spaced levels; changes
+    only the spacing, not the leaves.
+  WOLGES_CENSUS_PER_GAME (0 or 1; default 0) -- how boards are chosen:
+      1  value every in-window board along one real game per worker (the board
+         count then counts games)
+      0  play a fresh game per board
   WOLGES_CENSUS_VERIFY (0 or 1; default 0) -- whether to cross-check the census
     against the live move generator on the first board:
       1  run the cross-check
