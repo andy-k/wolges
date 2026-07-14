@@ -393,6 +393,75 @@ unless asked.
 New knobs: WOLGES_GILLES_REAL_RACK, WOLGES_GILLES_REAL_RACK_WEIGHT.
 
 
+COVERING RARE SUBRACKS IN AUTOPLAY
+
+The same rare-coverage question applies to the autoplay baseline, and autoplay
+already has a way to chase it: alongside the racks its games naturally deal, it
+can force extra samples of the rarely-seen ones. But folding those forced
+samples in correctly turns out to matter, and the naive way does real harm.
+
+Recall that english-generate apportions each rack's average score across all
+the smaller tile-groups you could keep from it, weighting by how drawable the
+extra tiles are. That apportioning is right for a rack the games actually
+dealt. It is wrong for a forced sample: a forced rack comes from a lopsided,
+unusual board picked precisely to reach a rare holding, so apportioning its
+score across all of its leaves would leak that oddness into the common leaves
+that share those smaller groups -- the very leaves that are already well
+measured. Done that way, forcing more samples makes the common leaves worse,
+which defeats the purpose of forcing at all.
+
+The fix keeps the two kinds of samples in two separate files. The normal
+summary holds the racks the games really dealt, apportioned across their leaves
+exactly as before; when nothing is forced this file is byte for byte what
+autoplay wrote before. A second, rare file holds the forced samples, and each
+one is credited only to the single leave it was forced for -- never apportioned
+anywhere else. The rare file is written only when something was actually
+forced.
+
+To make that work, two things that autoplay used to do one full rack at a time
+now happen one leave at a time: measuring how many samples each leave has, and
+topping up the short ones. Autoplay measures each leave's coverage by breaking
+the real racks down the same way english-generate will, adds in the rare
+samples gathered so far, and tops up whichever leaves are still short by
+completing each with filler tiles drawn from the board's still-unseen pool. The
+impossible-rack switch described earlier (WOLGES_IMPOSSIBLE_OK) decides what to
+do when a leave cannot occur on the current board. So the prize here is
+precisely the undersampled leaves -- the ones the games rarely produce -- not
+the mathematically least-likely racks; a common leave that simply happened to
+come up little gets topped up just as a genuinely rare one does.
+
+english-generate takes the rare file as one more optional argument after the
+leaves file:
+
+  cargo run --release --bin leave -- \
+    english-generate summary.csv leaves.csv [rare.csv]
+
+Its rows are already counted per leave, each carrying its own score total and
+sample count, so they are added straight into the same running totals
+english-generate keeps, skipping the apportioning a full rack goes through.
+They only ever name real leaves you keep, never the empty leave that all the
+others are measured against, so the empty-leave baseline never moves: the rare
+file can only fill in coverage, it cannot tilt the whole table. (The reader
+borrows each field in place rather than copying it, so it allocates nothing per
+row, matching how the main summary is read.) The genleaves.sh driver carries
+the rare file end to end: when autoplay forcing is on it writes the rare file
+beside the normal summary, hands it to the english-generate step, and adds it
+to the result archive; when forcing is off no rare file is made or passed, so
+the plain autoplay and board-sampling paths stay byte-identical to before.
+
+This is a correctness fix rather than a new lever: it is what makes forced
+rare-subrack coverage safe to add at all. Whether the added coverage then moves
+the table is the same question the remediation above answered -- covering the
+rare tail with measured data, rather than an estimate, does not by itself make
+a stronger table -- and here too the safe default is to leave forcing off
+unless you specifically want that tail measured. The claim that folding forced
+samples into the common pile makes the leaves measurably worse is the design
+rationale for the two-file split, and it is verifiable from the code:
+apportioning lopsided-board samples pollutes the shared common leaves. It is
+argued from that mechanism, not from an at-scale english-compare of folding-in
+versus the split.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to

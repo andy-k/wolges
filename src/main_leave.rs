@@ -371,6 +371,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         .has_headers(false)
                         .from_reader(make_reader(&args[2])?),
                     csv::Writer::from_writer(make_writer(&args[3])?),
+                    args.get(4).map(|x| x.as_str()),
                 )?;
                 Ok(true)
             }
@@ -381,6 +382,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         .has_headers(false)
                         .from_reader(make_reader(&args[2])?),
                     csv::Writer::from_writer(make_writer(&args[3])?),
+                    args.get(4).map(|x| x.as_str()),
                 )?;
                 Ok(true)
             }
@@ -391,6 +393,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         .has_headers(false)
                         .from_reader(make_reader(&args[2])?),
                     csv::Writer::from_writer(make_writer(&args[3])?),
+                    args.get(4).map(|x| x.as_str()),
                 )?;
                 Ok(true)
             }
@@ -401,6 +404,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         .has_headers(false)
                         .from_reader(make_reader(&args[2])?),
                     csv::Writer::from_writer(make_writer(&args[3])?),
+                    args.get(4).map(|x| x.as_str()),
                 )?;
                 Ok(true)
             }
@@ -466,14 +470,15 @@ fn main() -> error::Returns<()> {
     summarize logfile into summary.csv
   english-resummarize concatenated_summaries.csv summary.csv
     combine multiple summaries into one summary.csv and recompute totals
-  english-generate-no-smooth summary.csv leaves.csv
+  english-generate-no-smooth summary.csv leaves.csv [rare.csv]
     generate leaves (no smoothing) up to rack_size - 1
-  english-generate summary.csv leaves.csv
+  english-generate summary.csv leaves.csv [rare.csv]
     generate leaves (with smoothing) up to rack_size - 1
-  english-generate-full-no-smooth summary.csv leaves.csv
+  english-generate-full-no-smooth summary.csv leaves.csv [rare.csv]
     generate leaves (no smoothing) up to rack_size
-  english-generate-full summary.csv leaves.csv
+  english-generate-full summary.csv leaves.csv [rare.csv]
     generate leaves (with smoothing) up to rack_size
+    [rare.csv] on any -generate adds direct coverage for undersampled subracks
   english-playability CSW24.kwg leave.klv 1000000 [seed]
     autoplay (not saved) and record prorated found best words (at the end)
     (run fewer number of games and use resummarize to merge to mitigate risks)
@@ -661,12 +666,25 @@ fn generate_autoplay_logs<
         return Err("min_samples_per_rack requires summarize".into());
     }
 
-    // WOLGES_IMPOSSIBLE_OK (default on): when a sampled rack needs a tile that
-    // is already on this board, do we still record it? On (the bag-draw
-    // baseline): yes -- value it anyway, the move generator plays the rack
-    // regardless of the depleted bag. Off: only record it when it is still
-    // drawable from this board's unseen pool, else skip (the original
-    // board-faithful behavior; costs a per-sample possibility check).
+    // impossible_ok: coverage knob for undersampled-subrack remediation.
+    //
+    // To sample subrack S we must draw it, so this tests S's tiles are still
+    // off the board -- "impossible" here is about the DRAW, a different test
+    // from the rack knob's place-time one, run earlier (before movegen, not
+    // after). The knob only matters when S is not drawable (a tile S needs,
+    // say Q, is already on the board).
+    //
+    // When drawable (either setting): build a rack = S + filler from the
+    // unseen pool, gen its best play, and record the equity keyed by S alone
+    // (never apportioned to S's subracks or the filler -- that apportioning
+    // is what polluted common leaves at rack level).
+    //
+    // Off, not drawable: skip outright -- no rack is built, no movegen
+    // runs, this board yields no S sample.
+    //
+    // On (default), not drawable: build S with a phantom tile and record
+    // anyway, so every undersampled subrack reaches min_samples_per_rack
+    // (no smoothing).
     let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
 
     let game_config = std::sync::Arc::new(game_config);
@@ -735,6 +753,8 @@ fn generate_autoplay_logs<
     let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    // rare (direct) samples, keyed by target subrack S.
+    let rare_subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
 
     // 0 = threads are collaboratively accumulating first num_games games.
     // 1 = one thread is determining which racks are undersampled after the
@@ -762,7 +782,15 @@ fn generate_autoplay_logs<
         csv_game_writer: std::fs::File,
         csv_log_writer: Option<std::fs::File>,
         full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
+        rare_subrack_map: fash::MyHashMap<bites::Bites, Cumulate>,
+        // now holds undersampled subracks S (not full racks), recomputed per
+        // generation by the subrack-level decomposition of full_rack_map.
         undersampled_racks: Vec<bites::Bites>,
+        // generation for which undersampled_racks was last recomputed. starts at
+        // u64::MAX ("not yet computed"); the 0->1 enumeration sets it to 0 and each
+        // periodic recompute advances it, so the costly subrack decomposition runs once
+        // per generation rather than once per thread.
+        undersampled_generation: u64,
         undersampling_comment: String,
         tick_periods: move_picker::Periods,
     }
@@ -770,7 +798,9 @@ fn generate_autoplay_logs<
         csv_game_writer,
         csv_log_writer,
         full_rack_map,
+        rare_subrack_map,
         undersampled_racks,
+        undersampled_generation: u64::MAX,
         undersampling_comment,
         tick_periods,
     }));
@@ -826,6 +856,12 @@ fn generate_autoplay_logs<
                 let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
                 let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
                 let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+                // rare (direct) samples, keyed by the target subrack S
+                // and attributed to S only (never decomposed). kept separate from the
+                // full-rack map so the full-rack mean and per-subrack decomposition are
+                // not skewed by the forced rare samples' equity.
+                let mut thread_rare_subrack_map =
+                    fash::MyHashMap::<bites::Bites, Cumulate>::default();
                 let mut exchange_buffer = if SUMMARIZE && min_samples_per_rack != 0 {
                     Vec::with_capacity(game_config.rack_size() as usize)
                 } else {
@@ -843,7 +879,52 @@ fn generate_autoplay_logs<
                 } else {
                     Vec::new()
                 };
+                // flat unseen pool (tile ids with multiplicity) and the full rack
+                // assembled from the target subrack S plus filler, for rare
+                // sampling. hoisted once; reused per rare sample.
+                let mut unseen_pool = Vec::<u8>::new();
+                let mut sample_rack_buf = if SUMMARIZE && min_samples_per_rack != 0 {
+                    Vec::with_capacity(game_config.rack_size() as usize)
+                } else {
+                    Vec::new()
+                };
                 let mut undersampled_thread_racks = Vec::<bites::Bites>::new();
+                // subrack length covered by forcing. matches `-generate`'s default
+                // (IS_FULL_RACK == false) decomposition, so every rare S key is a
+                // subrack `-generate` will enumerate. rare rows therefore pool cleanly
+                // into subrack_map without ever keying the empty (mean) subrack.
+                // `-generate-full`'s length-`rack_size` subracks are intentionally not
+                // force-covered: autoplay racks are always full racks, so those subracks
+                // get direct full-rack samples and need no decomposition coverage.
+                let leave_size = if SUMMARIZE && min_samples_per_rack != 0 {
+                    game_config.rack_size() - 1
+                } else {
+                    0
+                };
+                // scratch for the subrack-level undersampled recompute (a decomposition
+                // of the full-rack map into pooled per-subrack counts). hoisted once;
+                // empty / unused when no remediation is requested.
+                let mut word_prob = if SUMMARIZE && min_samples_per_rack != 0 {
+                    Some(prob::WordProbability::new(game_config.alphabet()))
+                } else {
+                    None
+                };
+                let mut subrack_count_map = fash::MyHashMap::<bites::Bites, u64>::default();
+                let mut recompute_rack_tally = if SUMMARIZE && min_samples_per_rack != 0 {
+                    vec![0u8; game_config.alphabet().len() as usize]
+                } else {
+                    Vec::new()
+                };
+                let mut full_rack_tally = if SUMMARIZE && min_samples_per_rack != 0 {
+                    vec![0u8; game_config.alphabet().len() as usize]
+                } else {
+                    Vec::new()
+                };
+                let mut subrack_tally = if SUMMARIZE && min_samples_per_rack != 0 {
+                    vec![0u8; game_config.alphabet().len() as usize]
+                } else {
+                    Vec::new()
+                };
                 let mut undersampling_remediation_thread_generation_id = 0;
                 let mut undersampling_remediation_thread_begun = false;
                 loop {
@@ -855,19 +936,17 @@ fn generate_autoplay_logs<
                             // first time this thread transitions past the first num_games games.
                             {
                                 let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                                for (k, thread_v) in thread_full_rack_map.iter() {
-                                    if thread_v.count > 0 {
-                                        mutex_guard
-                                            .full_rack_map
-                                            .entry(k[..].into())
-                                            .and_modify(|v| {
-                                                v.equity += thread_v.equity;
-                                                v.count += thread_v.count;
-                                            })
-                                            .or_insert(thread_v.clone());
-                                    }
-                                }
-                                thread_full_rack_map.clear();
+                                merge_rack_map(
+                                    &mut mutex_guard.full_rack_map,
+                                    &mut thread_full_rack_map,
+                                );
+                                // symmetry: rare map is still empty here (forcing has
+                                // not begun), but merge it too so every merge site is
+                                // uniform and robust to future reordering.
+                                merge_rack_map(
+                                    &mut mutex_guard.rare_subrack_map,
+                                    &mut thread_rare_subrack_map,
+                                );
                             }
                             undersampling_remediation_submission
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -883,32 +962,64 @@ fn generate_autoplay_logs<
                                 std::sync::atomic::Ordering::Relaxed,
                             ) {
                                 Ok(_) => {
-                                    // this thread is responsible to iterate the possible racks.
+                                    // this thread is responsible to compute generation 0
+                                    // of the undersampled subrack set. decompose the
+                                    // full-rack map into pooled per-subrack counts (mirroring
+                                    // `-generate`) and mark subracks below min_samples.
+                                    // forcing has not begun, so the rare map is empty.
                                     {
                                         let mut mutex_guard = mutexed_stuffs.lock().unwrap();
+                                        // swap both maps out of the guard so the helper
+                                        // can read them while it writes undersampled_racks
+                                        // (disjoint, but the guard deref cannot be split).
                                         std::mem::swap(
                                             &mut thread_full_rack_map,
                                             &mut mutex_guard.full_rack_map,
                                         );
-                                        generate_exchanges(&mut ExchangeEnv {
-                                            found_exchange_move: |rack_bytes: &[u8]| {
-                                                let rack_freq = thread_full_rack_map
-                                                    .get(rack_bytes)
-                                                    .map_or(0, |v| v.count);
-                                                if rack_freq < min_samples_per_rack {
-                                                    mutex_guard
-                                                        .undersampled_racks
-                                                        .push(rack_bytes.into());
-                                                }
+                                        std::mem::swap(
+                                            &mut thread_rare_subrack_map,
+                                            &mut mutex_guard.rare_subrack_map,
+                                        );
+                                        let deficit = recompute_undersampled_subracks(
+                                            &thread_full_rack_map,
+                                            &thread_rare_subrack_map,
+                                            &mut mutex_guard.undersampled_racks,
+                                            &mut subrack_count_map,
+                                            word_prob.as_mut(),
+                                            RecomputeScratch {
+                                                rack_tally: &mut recompute_rack_tally,
+                                                full_rack_tally: &mut full_rack_tally,
+                                                subrack_tally: &mut subrack_tally,
+                                                alphabet_freqs: &mut alphabet_freqs,
+                                                exchange_buffer: &mut exchange_buffer,
                                             },
-                                            rack_tally: &mut alphabet_freqs,
-                                            min_len: game_config.rack_size(),
-                                            max_len: game_config.rack_size(),
-                                            exchange_buffer: &mut exchange_buffer,
-                                        });
+                                            RecomputeParams {
+                                                leave_size,
+                                                min_samples: min_samples_per_rack,
+                                            },
+                                        );
                                         std::mem::swap(
                                             &mut thread_full_rack_map,
                                             &mut mutex_guard.full_rack_map,
+                                        );
+                                        std::mem::swap(
+                                            &mut thread_rare_subrack_map,
+                                            &mut mutex_guard.rare_subrack_map,
+                                        );
+                                        mutex_guard.undersampled_generation = 0;
+                                        mutex_guard.undersampling_comment.clear();
+                                        if deficit != 0 {
+                                            let num_undersampled =
+                                                mutex_guard.undersampled_racks.len();
+                                            write!(
+                                                mutex_guard.undersampling_comment,
+                                                " (need to force {num_undersampled} subracks over {deficit} moves)"
+                                            )
+                                            .unwrap();
+                                        }
+                                        undersampling_remediation_countdown.store(
+                                            deficit as i64,
+                                            std::sync::atomic::Ordering::Relaxed,
                                         );
                                     }
                                     undersampling_remediation_state
@@ -932,55 +1043,73 @@ fn generate_autoplay_logs<
                         }
                         if undersampled_thread_racks.is_empty() {
                             let mut mutex_guard = mutexed_stuffs.lock().unwrap();
-                            for (k, thread_v) in thread_full_rack_map.iter() {
-                                if thread_v.count > 0 {
-                                    mutex_guard
-                                        .full_rack_map
-                                        .entry(k[..].into())
-                                        .and_modify(|v| {
-                                            v.equity += thread_v.equity;
-                                            v.count += thread_v.count;
-                                        })
-                                        .or_insert(thread_v.clone());
+                            // publish this thread's full-rack and rare samples so the
+                            // recompute sees the latest pooled counts.
+                            merge_rack_map(
+                                &mut mutex_guard.full_rack_map,
+                                &mut thread_full_rack_map,
+                            );
+                            merge_rack_map(
+                                &mut mutex_guard.rare_subrack_map,
+                                &mut thread_rare_subrack_map,
+                            );
+                            // recompute the undersampled subrack set at most once per
+                            // generation: the subrack decomposition is as costly as
+                            // `-generate`, so the first thread to notice a new
+                            // generation rebuilds and the rest reuse the shared result.
+                            let current_generation = undersampling_remediation_generation_id
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            if mutex_guard.undersampled_generation != current_generation {
+                                std::mem::swap(
+                                    &mut thread_full_rack_map,
+                                    &mut mutex_guard.full_rack_map,
+                                );
+                                std::mem::swap(
+                                    &mut thread_rare_subrack_map,
+                                    &mut mutex_guard.rare_subrack_map,
+                                );
+                                let deficit = recompute_undersampled_subracks(
+                                    &thread_full_rack_map,
+                                    &thread_rare_subrack_map,
+                                    &mut mutex_guard.undersampled_racks,
+                                    &mut subrack_count_map,
+                                    word_prob.as_mut(),
+                                    RecomputeScratch {
+                                        rack_tally: &mut recompute_rack_tally,
+                                        full_rack_tally: &mut full_rack_tally,
+                                        subrack_tally: &mut subrack_tally,
+                                        alphabet_freqs: &mut alphabet_freqs,
+                                        exchange_buffer: &mut exchange_buffer,
+                                    },
+                                    RecomputeParams {
+                                        leave_size,
+                                        min_samples: min_samples_per_rack,
+                                    },
+                                );
+                                std::mem::swap(
+                                    &mut thread_full_rack_map,
+                                    &mut mutex_guard.full_rack_map,
+                                );
+                                std::mem::swap(
+                                    &mut thread_rare_subrack_map,
+                                    &mut mutex_guard.rare_subrack_map,
+                                );
+                                mutex_guard.undersampled_generation = current_generation;
+                                mutex_guard.undersampling_comment.clear();
+                                if deficit != 0 {
+                                    let num_undersampled = mutex_guard.undersampled_racks.len();
+                                    write!(
+                                        mutex_guard.undersampling_comment,
+                                        " (need to force {num_undersampled} subracks over {deficit} moves)"
+                                    )
+                                    .unwrap();
                                 }
+                                undersampling_remediation_countdown.store(
+                                    deficit as i64,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
                             }
-                            thread_full_rack_map.clear();
-                            // this part does not take into account work already done by other threads.
-                            let mut num_moves_to_force = 0u64;
-                            std::mem::swap(
-                                &mut thread_full_rack_map,
-                                &mut mutex_guard.full_rack_map,
-                            );
-                            mutex_guard
-                                .undersampled_racks
-                                .retain(|rack_bytes: &bites::Bites| {
-                                    let rack_freq =
-                                        thread_full_rack_map.get(rack_bytes).map_or(0, |v| v.count);
-                                    if rack_freq < min_samples_per_rack {
-                                        num_moves_to_force += min_samples_per_rack - rack_freq;
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                });
-                            std::mem::swap(
-                                &mut thread_full_rack_map,
-                                &mut mutex_guard.full_rack_map,
-                            );
                             undersampled_thread_racks.clone_from(&mutex_guard.undersampled_racks);
-                            mutex_guard.undersampling_comment.clear();
-                            if num_moves_to_force != 0 {
-                                let num_undersampled_racks = mutex_guard.undersampled_racks.len();
-                                write!(
-                                    mutex_guard.undersampling_comment,
-                                    " (need to force {num_undersampled_racks} racks over {num_moves_to_force} moves)"
-                                )
-                                .unwrap();
-                            }
-                            undersampling_remediation_countdown.store(
-                                num_moves_to_force as i64,
-                                std::sync::atomic::Ordering::Relaxed,
-                            );
 
                             if undersampled_thread_racks.is_empty() {
                                 // really done. this thread need not play more games.
@@ -1050,67 +1179,85 @@ fn generate_autoplay_logs<
                             },
                         };
 
-                        // supplement the undersampled thread racks.
+                        // supplement the undersampled subracks. pick a target subrack S,
+                        // complete it to a full rack with filler drawn from this board's
+                        // unseen pool (minus S), and record the best play's equity
+                        // attributed to S only (never decomposed to S's own subracks
+                        // and never to the filler).
                         if SUMMARIZE && old_bag_len > 0 && !undersampled_thread_racks.is_empty() {
                             let chosen_undersampled_thread_rack_index =
                                 rng.random_range(0..undersampled_thread_racks.len());
-                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                board_snapshot,
-                                rack: &undersampled_thread_racks
-                                    [chosen_undersampled_thread_rack_index],
-                                max_gen: 1,
-                                num_exchanges_by_this_player: game_state
-                                    .current_player()
-                                    .num_exchanges,
-                                always_include_pass: false,
-                            });
-                            let plays = &move_generator.plays;
-                            let play = &plays[0];
 
-                            // opponent calls director if two Q's on board.
-                            let is_possible = impossible_ok
-                                || match &play.play {
-                                movegen::Play::Exchange { .. } => true,
-                                movegen::Play::Place { word, .. } => {
-                                    unseen_tally.clone_from_slice(&alphabet_freqs);
-                                    game_state
-                                        .board_tiles
-                                        .iter()
-                                        .filter_map(|&tile| {
-                                            if tile != 0 {
-                                                Some(tile & !((tile as i8) >> 7) as u8)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .for_each(|t| unseen_tally[t as usize] -= 1);
-                                    word.iter()
-                                        .filter_map(|&tile| {
-                                            if tile != 0 {
-                                                Some(tile & !((tile as i8) >> 7) as u8)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .all(|t| {
-                                            if unseen_tally[t as usize] > 0 {
-                                                unseen_tally[t as usize] -= 1;
-                                                true
-                                            } else {
-                                                false
-                                            }
-                                        })
+                            // unseen = full distribution minus tiles on board.
+                            unseen_tally.clone_from_slice(&alphabet_freqs);
+                            for &tile in game_state.board_tiles.iter() {
+                                if tile != 0 {
+                                    let base = tile & !((tile as i8) >> 7) as u8;
+                                    unseen_tally[base as usize] =
+                                        unseen_tally[base as usize].saturating_sub(1);
                                 }
-                            };
+                            }
+                            // remove S's tiles from unseen. S is possible on this board
+                            // only if every one of its tiles is still available; if a
+                            // tile is short we leave that count clamped at 0 (so filler
+                            // never reuses it) and mark S impossible.
+                            let mut s_possible = true;
+                            for &tile in undersampled_thread_racks
+                                [chosen_undersampled_thread_rack_index]
+                                .iter()
+                            {
+                                if unseen_tally[tile as usize] > 0 {
+                                    unseen_tally[tile as usize] -= 1;
+                                } else {
+                                    s_possible = false;
+                                }
+                            }
 
-                            if is_possible {
+                            // opponent calls director if a needed tile is gone.
+                            // impossible_ok short-circuits this check for full coverage:
+                            // build and record S even when it is impossible here.
+                            if s_possible || impossible_ok {
+                                let s_subrack = &undersampled_thread_racks
+                                    [chosen_undersampled_thread_rack_index];
+                                // build the full rack: S plus filler drawn from the
+                                // remaining unseen pool. partial Fisher-Yates, mirroring
+                                // generate_gilles_summary's unseen draw. when S overdrew
+                                // (impossible_ok), the pool may be short and the rack is
+                                // simply smaller -- it still contains S.
+                                let num_filler =
+                                    (game_config.rack_size() as usize).saturating_sub(s_subrack.len());
+                                sample_rack_buf.clear();
+                                sample_rack_buf.extend_from_slice(s_subrack);
+                                unseen_pool.clear();
+                                for (tile, &c) in unseen_tally.iter().enumerate() {
+                                    for _ in 0..c {
+                                        unseen_pool.push(tile as u8);
+                                    }
+                                }
+                                let take = num_filler.min(unseen_pool.len());
+                                for i in 0..take {
+                                    let j = rng.random_range(i..unseen_pool.len());
+                                    unseen_pool.swap(i, j);
+                                }
+                                sample_rack_buf.extend_from_slice(&unseen_pool[..take]);
+                                sample_rack_buf.sort_unstable();
+
+                                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                    board_snapshot,
+                                    rack: &sample_rack_buf,
+                                    max_gen: 1,
+                                    num_exchanges_by_this_player: game_state
+                                        .current_player()
+                                        .num_exchanges,
+                                    always_include_pass: false,
+                                });
+                                let play = &move_generator.plays[0];
                                 let rounded_equity = play.equity.as_f64(); // no rounding
-                                thread_full_rack_map
-                                    .entry(
-                                        undersampled_thread_racks
-                                            [chosen_undersampled_thread_rack_index][..]
-                                            .into(),
-                                    )
+                                // attribute to the target subrack S only, count exactly 1
+                                // (no positional multiplicity): S is the subrack, not a
+                                // positional subset of the built rack.
+                                thread_rare_subrack_map
+                                    .entry(s_subrack[..].into())
                                     .and_modify(|e| {
                                         e.equity += rounded_equity;
                                         e.count += 1;
@@ -1430,18 +1577,11 @@ fn generate_autoplay_logs<
                     .unwrap();
 
                 if SUMMARIZE {
-                    for (k, thread_v) in thread_full_rack_map.into_iter() {
-                        if thread_v.count > 0 {
-                            mutex_guard
-                                .full_rack_map
-                                .entry(k)
-                                .and_modify(|v| {
-                                    v.equity += thread_v.equity;
-                                    v.count += thread_v.count;
-                                })
-                                .or_insert(thread_v);
-                        }
-                    }
+                    merge_rack_map(&mut mutex_guard.full_rack_map, &mut thread_full_rack_map);
+                    merge_rack_map(
+                        &mut mutex_guard.rare_subrack_map,
+                        &mut thread_rare_subrack_map,
+                    );
                 }
             }));
         }
@@ -1482,6 +1622,31 @@ fn generate_autoplay_logs<
                 cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
             }
             csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+        }
+
+        // rare (direct) samples, keyed by target subrack S. each row
+        // is (S, equity_sum, count) with count on the plain sample scale (no
+        // completion-count weight); `-generate <full-rack> <out> <rare>` pools these
+        // into subrack_map for S only. no totals line: the reader skips empty keys
+        // and the mean stays full-rack-only. skipped entirely when nothing was rare
+        // (e.g. min_samples_per_rack == 0), so that path is byte-identical to before.
+        let rare_subrack_map = &mutex_guard.rare_subrack_map;
+        if !rare_subrack_map.is_empty() {
+            let mut rare_kv = rare_subrack_map.iter().collect::<Vec<_>>();
+            rare_kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
+            let mut rare_out = csv::Writer::from_path(format!("summary-rare-{run_identifier}"))?;
+            for (k, fv) in rare_kv.iter() {
+                cur_rack_ser.clear();
+                for &tile in k.iter() {
+                    cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
+                }
+                rare_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+            }
+            eprintln!(
+                "{} rare samples over {} unique subracks into summary-rare-{run_identifier}",
+                rare_subrack_map.values().fold(0u64, |a, x| a + x.count),
+                rare_subrack_map.len(),
+            );
         }
     }
 
@@ -2321,6 +2486,24 @@ struct Cumulate {
     count: u64,
 }
 
+// pool one row that already carries its own sample count into subrack_map
+// by plain add.
+#[inline]
+fn pool_rare_one(
+    subrack_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
+    key: &[u8],
+    equity: f64,
+    count: u64,
+) {
+    subrack_map
+        .entry(key.into())
+        .and_modify(|v| {
+            v.equity += equity;
+            v.count += count;
+        })
+        .or_insert(Cumulate { equity, count });
+}
+
 // shared state guarded by the gilles mutex during min_samples remediation.
 struct GillesMutexed {
     full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
@@ -2384,6 +2567,130 @@ fn recompute_undersampled(
         });
     }
     std::mem::swap(&mut g.full_rack_map, scratch_map);
+    remaining
+}
+
+// rebuild the autoplay undersampled set at subrack granularity, mirroring
+// `-generate`'s decomposition so the rare S keys are exactly subracks that
+// decomposition enumerates. pooled count of subrack S = full-rack decomposition
+// (sum over full racks R of count(R) * ways(R, S)) plus the already
+// accumulated rare count of S (plain, no weight) -- the same pooling
+// `-generate` performs. subracks whose pooled count is below min_samples are
+// pushed into `undersampled`; returns the total remaining deficit.
+//
+// `full_rack_map` is the full-rack map, `rare_subrack_map` the rare map; both
+// are read-only here (callers swap them out of the shared mutex first so the
+// borrow checker is happy and the lock is not aliased). `subrack_count` and the
+// tallies are reused scratch. `alphabet_freqs` is used transiently by the
+// full-subrack enumeration and is restored (generate_exchanges is balanced).
+// Reused scratch buffers plus the remediation thresholds, grouped so
+// recompute_undersampled_subracks stays within clippy::too_many_arguments.
+struct RecomputeScratch<'a> {
+    rack_tally: &'a mut [u8],
+    full_rack_tally: &'a mut [u8],
+    subrack_tally: &'a mut [u8],
+    alphabet_freqs: &'a mut [u8],
+    exchange_buffer: &'a mut Vec<u8>,
+}
+
+struct RecomputeParams {
+    leave_size: u8,
+    min_samples: u64,
+}
+
+fn recompute_undersampled_subracks(
+    full_rack_map: &fash::MyHashMap<bites::Bites, Cumulate>,
+    rare_subrack_map: &fash::MyHashMap<bites::Bites, Cumulate>,
+    undersampled: &mut Vec<bites::Bites>,
+    subrack_count: &mut fash::MyHashMap<bites::Bites, u64>,
+    word_prob: Option<&mut prob::WordProbability>,
+    scratch: RecomputeScratch<'_>,
+    params: RecomputeParams,
+) -> u64 {
+    let RecomputeScratch {
+        rack_tally,
+        full_rack_tally,
+        subrack_tally,
+        alphabet_freqs,
+        exchange_buffer,
+    } = scratch;
+    let RecomputeParams {
+        leave_size,
+        min_samples,
+    } = params;
+    // no remediation requested: nothing is ever undersampled (min_samples
+    // is 0, so count >= min_samples for every rack).
+    // word_prob is None in this case; bail before touching it so the barrier
+    // stays a fast no-op (its only job then is to let overshoot threads stop).
+    let Some(word_prob) = word_prob else {
+        undersampled.clear();
+        return 0;
+    };
+    // belt-and-suspenders guard: unreachable given current call-site gating
+    // (callers pass word_prob = Some exactly when min_samples != 0), kept in
+    // case that gating ever changes.
+    if min_samples == 0 {
+        undersampled.clear();
+        return 0;
+    }
+    // pooled per-subrack count from the full racks. for each rack R,
+    // enumerate its subracks S (length 1..=leave_size, skipping the empty
+    // subrack which is the full-rack-only mean) and add count(R) * ways(R, S).
+    // mirrors generate_leaves' decomposition: rack_tally is the mutable buffer
+    // generate_exchanges walks, full_rack_tally a frozen copy for ways(R, S).
+    subrack_count.clear();
+    for (k, fv) in full_rack_map.iter() {
+        if fv.count == 0 {
+            continue;
+        }
+        rack_tally.iter_mut().for_each(|m| *m = 0);
+        k.iter().for_each(|&tile| rack_tally[tile as usize] += 1);
+        full_rack_tally.copy_from_slice(rack_tally);
+        let count = fv.count;
+        let frozen_full = &*full_rack_tally;
+        generate_exchanges(&mut ExchangeEnv {
+            found_exchange_move: |subrack_bytes: &[u8]| {
+                subrack_tally.iter_mut().for_each(|m| *m = 0);
+                subrack_bytes
+                    .iter()
+                    .for_each(|&tile| subrack_tally[tile as usize] += 1);
+                let w = word_prob.completion_draw_ways(frozen_full, subrack_tally, word_prob.bag());
+                *subrack_count.entry(subrack_bytes.into()).or_insert(0) += count * w;
+            },
+            rack_tally,
+            min_len: 1,
+            max_len: leave_size,
+            exchange_buffer,
+        });
+    }
+    // pool the already-accumulated rare samples (keyed by S, plain count).
+    for (k, fv) in rare_subrack_map.iter() {
+        if fv.count > 0 {
+            *subrack_count.entry(k[..].into()).or_insert(0) += fv.count;
+        }
+    }
+    // enumerate the full subrack space (length 1..=leave_size) exactly as
+    // `-generate`'s ev_map build does, so subracks with zero full-rack and zero
+    // rare samples are still detected as undersampled and get rare.
+    undersampled.clear();
+    let mut remaining = 0u64;
+    {
+        let subrack_count = &*subrack_count;
+        let undersampled = &mut *undersampled;
+        generate_exchanges(&mut ExchangeEnv {
+            found_exchange_move: |subrack_bytes: &[u8]| {
+                let count = subrack_count.get(subrack_bytes).copied().unwrap_or(0);
+                if count < min_samples {
+                    undersampled.push(subrack_bytes.into());
+                    remaining += min_samples - count;
+                }
+            },
+            rack_tally: alphabet_freqs,
+            min_len: 1,
+            max_len: leave_size,
+            exchange_buffer,
+        });
+    }
     remaining
 }
 
@@ -2709,6 +3016,7 @@ fn generate_leaves<
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
+    rare_path: Option<&str>,
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
     let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
@@ -2798,6 +3106,24 @@ fn generate_leaves<
     } = subrack_map
         .remove([][..].into())
         .ok_or("empty-rack entry should not be missing")?;
+
+    // pool rare samples directly into subrack_map.
+    // these rows are keyed by their target subrack and are already on the
+    // sample-count scale, so add them plainly with no ways(R, S) weight.
+    // rare rows never key the empty leave, so the mean stays full-rack-only.
+    if let Some(fp) = rare_path {
+        let mut rare_reader = csv::ReaderBuilder::new().has_headers(false).from_path(fp)?;
+        for result in rare_reader.records() {
+            let record = result?;
+            if record[0].is_empty() {
+                continue;
+            }
+            let equity = f64::from_str(&record[1])?;
+            let count = u64::from_str(&record[2])?;
+            parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
+            pool_rare_one(&mut subrack_map, &rack_bytes, equity, count);
+        }
+    }
 
     let threshold_count = if DO_SMOOTHING {
         let total_count = subrack_map.values().fold(0, |a, x| a + x.count);
@@ -3695,4 +4021,25 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rare_pools_by_count_into_subrack_map() {
+        let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+        m.insert(
+            b"\x01"[..].into(),
+            Cumulate {
+                equity: 10.0,
+                count: 2,
+            },
+        ); // full-rack A, sum10 n2
+        pool_rare_one(&mut m, &b"\x01"[..], 5.0, 3); // rare A, sum5 n3
+        let a = m.get(&b"\x01"[..]).unwrap();
+        assert_eq!(a.count, 5);
+        assert!((a.equity - 15.0).abs() < 1e-9); // mean 15/5 = 3.0
+    }
 }

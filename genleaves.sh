@@ -199,6 +199,10 @@ while [ "${!i:-}" != "" ]; do
     leave_name="leaves"
   fi
 
+  # rare-subrack coverage summary (only produced by autoplay when :min_samples > 0).
+  # left empty when forcing is off, so the gilles path and the no-forcing
+  # autoplay path stay byte-identical to before.
+  rare_summary=""
   if [ "$gilles_mode" ]; then
     time cargo run --release --bin leave -- "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
     summary_file="$(ls -1td gilles-summary-* | head -1)"
@@ -209,11 +213,18 @@ while [ "${!i:-}" != "" ]; do
     log_file="$(ls -1td games-log-* | head -1 | cut -f2- -d-)"
     echo "$log_file"
     mv -fv "summary-${log_file}" "summary${num_processed}.csv"
+    # the run identifier reconstructed above names the full-rack file exactly
+    # (summary-${log_file}), so there is no glob to disambiguate; the rare
+    # file, when present, is summary-rare-${log_file}.
+    if [ -f "summary-rare-${log_file}" ]; then
+      mv -fv "summary-rare-${log_file}" "summary${num_processed}-rare.csv"
+      rare_summary="summary${num_processed}-rare.csv"
+    fi
   fi
   last_leave="${leave_name}$[num_processed + 1]"
-  time cargo run --release --bin leave -- "$effective_generate_subcommand" "summary${num_processed}.csv" "${last_leave}.csv"
+  time cargo run --release --bin leave -- "$effective_generate_subcommand" "summary${num_processed}.csv" "${last_leave}.csv" ${rare_summary:+"$rare_summary"}
   time cargo run --release --bin buildlex -- "$buildlex_subcommand" "$last_leave".{csv,"$klv_ext"}
-  zip -9v result.zip "summary${num_processed}.csv" "$last_leave".{csv,"$klv_ext"}
+  zip -9v result.zip "summary${num_processed}.csv" ${rare_summary:+"$rare_summary"} "$last_leave".{csv,"$klv_ext"}
   last_leave="${last_leave}.${klv_ext}"
   let num_processed=num_processed+1
 
