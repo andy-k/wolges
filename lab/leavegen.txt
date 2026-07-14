@@ -1466,6 +1466,30 @@ nothing is allocated.)
 New knobs: WOLGES_CENSUS_CI_STOP_EVERY, WOLGES_CENSUS_CI_STOP_FRAC.
 
 
+A SELF-ITERATING RACK SUMMARY
+
+The rack summary began as a single pass that had to hand its file to a separate
+english-generate step to turn per-rack values into per-leave values. The
+ordinary apportioning census already iterates on its own -- each pass sharpens
+the leaves, and the next pass re-values the racks under the sharper leaves
+until the leaves reproduce themselves when fed back in -- but the rack summary
+could not, because it handed the per-leave breakdown off to the external step.
+It now does that breakdown in-process, so it can run several passes by itself.
+An exact routine apportions each valued rack's average down onto every kept
+combination with the same completion weighting english-generate uses, centered
+so that keeping nothing is worth zero -- a value-carrying twin of the per-leave
+interval routine, and likewise checked against a brute force by a unit test. At
+each generation boundary the rack-summary census builds its leaves this way,
+the next pass values racks under them, and the last pass writes the klv
+directly. A single-generation run still writes the summary file, so that path
+is unchanged. With WOLGES_IMPOSSIBLE_OK on the exhaustive census reaches every
+globally-possible leave, so a multi-pass run matches the full table the
+external english-generate would produce; without it, a sparse drawable-only run
+leaves the leaves it never reached at their prior value. As with the
+apportioning multi-pass, it never smooths or fills in leaves it did not
+measure.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
