@@ -8855,6 +8855,14 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(1_000);
+    // Threads each seat divides one decision's rollouts across (native only). 1
+    // (default) keeps the single-threaded stream; > 1 opts into the parallel
+    // path, which is A/B-testable and deterministic across thread counts. This
+    // is orthogonal to WOLGES_THREADS, which parallelizes over game pairs.
+    let sim_driver_threads = std::env::var("WOLGES_SIM_DRIVER_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1);
     let config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
     let config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
     let allocator_p0 = sim_compare_allocator("WOLGES_SIM_P0_");
@@ -8914,6 +8922,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     driver.set_verbose(false);
                     driver.set_allocator(allocator_p0);
                     driver.set_stop_rule(stop_p0);
+                    driver.set_sim_threads(sim_driver_threads);
                     if let Some(delta) = stop_delta_p0 {
                         driver.set_stop_delta(delta);
                     }
@@ -8930,6 +8939,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     driver.set_verbose(false);
                     driver.set_allocator(allocator_p1);
                     driver.set_stop_rule(stop_p1);
+                    driver.set_sim_threads(sim_driver_threads);
                     if let Some(delta) = stop_delta_p1 {
                         driver.set_stop_delta(delta);
                     }
