@@ -685,6 +685,59 @@ settles at this point; the honest claim is the runtime one.
 New knobs: WOLGES_CENSUS_BLANK_CAP, WOLGES_CENSUS_VERIFY.
 
 
+TWO WAYS TO ATTRIBUTE A BOARD'S VALUE: ENTERING VS FULL-RACK
+
+There are two honest ways to turn a board's play values into leave values, and
+the census can do either. They are selected by a knob, WOLGES_APPORTION.
+(Autoplay reads the same knob for a related choice: whether to record the full
+rack it drew or only the leave carried into the turn.)
+
+Entering attribution values a leave by the worth of walking into a turn holding
+exactly that leave: average the best play of every full rack you could complete
+that leave to, weighted by the ways(R, S) draw count from before. This credits
+only the leave carried into the turn -- and it is exactly the value the census
+has been computing all along.
+
+Full-rack apportionment is the exhaustive analog of what the sampled board
+method already does. Take every full rack the board could deal, find the best
+it can do, weight it by how likely that rack is to be drawn, and hand a share
+of that value to every subrack the rack contains -- so a leave's value is the
+total, over every full rack that contains it, of that rack's weighted value.
+Each subrack keeps a running numerator and denominator, and the leave is the
+numerator over the denominator. The census does this over every rack on the
+board exactly, not by sampling. It is worth trying because it is the complete
+attribution: every subrack of every rack is credited, including the heavy tiles
+a player rarely chooses to play but that still shape a rack's future, rather
+than only the leave that happened to be carried in.
+
+Full-rack apportionment is the new alternative here, opt-in with
+WOLGES_APPORTION=full-rack; a plain census run still gives the entering value.
+Having both lets the two be compared head to head on identical boards. The
+verdict, measured on CSW24 in our own self-play, is that they come out
+essentially even: the entering table scored 50.0791 percent of games at one
+million game pairs (about 0.08 pp above an even split) and 50.0296 at ten
+million pairs (about 0.03 pp), a real but negligible edge for entering. So the
+choice between them is not about play strength.
+
+New knobs: WOLGES_APPORTION.
+
+
+CHOOSING BOARDS ACROSS THE GAME
+
+A leave is worth different amounts at different stages of the game, so the
+boards the census studies should span a range of game stages, not sit at one
+moment. The census picks boards within a window of how full the board is --
+counted, as the board sampler counts, in tiles not yet on the board (the unseen
+pool). At first each board was recorded the instant it first dropped into that
+window, which meant every studied board sat right at the window's open edge,
+all bunched at one point in the game. Now each fresh game aims at a fill level
+chosen from across the whole window and records the board when it reaches that
+level, so the studied boards range across the window's fill levels. A board
+only ever sampled at one fill level gives biased values; sampling across the
+window removes that bias, the same way sampling whole games already covers
+every phase.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -759,6 +812,10 @@ Decompose (english-generate):
          double-counts draw frequency
 
 Shared across builders:
+  WOLGES_APPORTION (full-rack or entering; default entering) -- how a board's
+    value becomes leave values; read by the census and by autoplay's recording:
+      full-rack  credit every subrack of each rack (the complete attribution)
+      entering   credit only the leave carried into the turn
   WOLGES_IMPOSSIBLE_OK (0 or 1; default 1) -- whether to value a rack the board
     cannot currently deal; read by autoplay's forcing, board sampling's draw
     source, and the rack-summary census:

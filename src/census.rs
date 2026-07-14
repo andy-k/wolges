@@ -332,6 +332,103 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
     }
 }
 
+/// Full-rack attribution: credit each full rack R's best_equity(R), weighted
+/// by the probability w(R) of drawing R from the unseen pool, to EVERY subrack
+/// S <= R. Accumulates num[S] += w(R)*best[R] and den[S] += w(R) over the
+/// full-rack block; the caller forms leave(S) = num[S]/den[S]. This is the
+/// standard leave-gen (gilles-style) attribution -- a rack's equity is
+/// apportioned onto all its subracks, including the usually-PLAYED ones --
+/// done exhaustively over every rack the board can draw. Contrast
+/// leave_value_by_draw, which is the entering attribution (credit only the
+/// held-entering leave). num/den are caller-owned and zeroed per board.
+/// Subracks are enumerated with the same high-to-low incremental rank as
+/// best_equity_table (base case is O(1)).
+pub fn apportion_table(
+    lat: &MultisetLattice,
+    best: &[i32],
+    unseen: &[u8],
+    num: &mut [f64],
+    den: &mut [f64],
+) {
+    let n = lat.num_letters();
+    let mut r = [0u8; MAX_LETTERS];
+    // Constant + per-rack context, so rec carries only the changing letter index and
+    // carried subrack rank -- no clippy::too_many_arguments. w/we are the rack's draw
+    // weight and weighted equity; num/den accumulate.
+    struct Ctx<'a> {
+        nz: &'a [(usize, u8)],
+        n: usize,
+        lat: &'a MultisetLattice,
+        w: f64,
+        we: f64,
+        num: &'a mut [f64],
+        den: &'a mut [f64],
+    }
+    impl Ctx<'_> {
+        fn rec(&mut self, i: usize, s_s: usize, within_s: u64) {
+            if i == 0 {
+                let sr = (self.lat.size_offset[s_s] + within_s) as usize;
+                // SAFETY: sr is the rank of a sub-multiset of a size<=rack_size rack,
+                // so it is a valid lattice index (< num.len() == den.len()).
+                unsafe {
+                    *self.num.get_unchecked_mut(sr) += self.we;
+                    *self.den.get_unchecked_mut(sr) += self.w;
+                }
+                return;
+            }
+            let (t, cnt) = self.nz[i - 1];
+            let parts = self.n - 1 - t;
+            for cs in 0..=cnt {
+                let mut dw = 0u64;
+                if t + 1 < self.n {
+                    let mut a = s_s + cs as usize;
+                    for _ in 0..cs {
+                        dw += self.lat.c(a + parts - 1, parts - 1);
+                        a -= 1;
+                    }
+                }
+                self.rec(i - 1, s_s + cs as usize, within_s + dw);
+            }
+        }
+    }
+    let lo = lat.full_rack_start();
+    let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
+    for ridx in lo..lat.len() {
+        lat.unrank_into(ridx, &mut r[..n]);
+        // weight w(R) = prod_t C(unseen[t], R[t]); 0 if R is not drawable from the
+        // unseen pool (then it contributes nothing, as in the draw-average).
+        let mut w = 1.0f64;
+        let mut m = 0;
+        let mut drawable = true;
+        for (t, &c) in r[..n].iter().enumerate() {
+            if c > 0 {
+                nz[m] = (t, c);
+                m += 1;
+                w *= n_choose_k(unseen[t] as u64, c as u64) as f64;
+                if w == 0.0 {
+                    drawable = false;
+                    break;
+                }
+            }
+        }
+        if !drawable {
+            continue;
+        }
+        // SAFETY: ridx is in the full-rack block, where best is filled.
+        let e = unsafe { *best.get_unchecked(ridx) } as f64;
+        Ctx {
+            nz: &nz[..m],
+            n,
+            lat,
+            w,
+            we: w * e,
+            num,
+            den,
+        }
+        .rec(m, 0, 0);
+    }
+}
+
 /// leave_new(S)=sum_d ways(d)*best[S+d]/sum_d ways(d), where the completion d is
 /// drawn from the unseen pool with the kept S removed, |d|=rack_size-|S| and
 /// ways(d)=prod_t C(unseen[t]-S[t], d[t]). UNPLAYABLE if S is itself undrawable
@@ -526,5 +623,63 @@ mod tests {
         // S=[1,1] full: draw 0 -> best[[1,1]]=6_000.
         let f = leave_value_by_draw(&lat, &best, &unseen, &[1u8, 1u8]);
         assert_eq!(f, 6_000);
+    }
+
+    #[test]
+    fn apportion_matches_naive() {
+        // 3 letters, rack 3. Pseudo-random best[] over full racks; an unseen pool.
+        let lat = MultisetLattice::new(3, 3);
+        let unseen = [4u8, 3u8, 2u8];
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        for (idx, slot) in best.iter_mut().enumerate().skip(lat.full_rack_start()) {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            *slot = h.rem_euclid(20_000) - 5_000;
+        }
+        let mut num = vec![0f64; lat.len()];
+        let mut den = vec![0f64; lat.len()];
+        apportion_table(&lat, &best, &unseen, &mut num, &mut den);
+        // naive: enumerate full racks, brute-force every subrack, apportion w(R).
+        let n = lat.num_letters();
+        let mut num_naive = vec![0f64; lat.len()];
+        let mut den_naive = vec![0f64; lat.len()];
+        for (ridx, &bval) in best.iter().enumerate().skip(lat.full_rack_start()) {
+            let rk = lat.tally(ridx);
+            let mut w = 1.0f64;
+            for t in 0..n {
+                w *= n_choose_k(unseen[t] as u64, rk[t] as u64) as f64;
+            }
+            if w == 0.0 {
+                continue;
+            }
+            let e = bval as f64;
+            let mut s = vec![0u8; n];
+            // every subrack S <= R (independent per-letter count 0..=rk[t]).
+            for a in 0..=rk[0] {
+                for b in 0..=rk[1] {
+                    for c in 0..=rk[2] {
+                        s[0] = a;
+                        s[1] = b;
+                        s[2] = c;
+                        let sr = lat.rank(&s) as usize;
+                        num_naive[sr] += w * e;
+                        den_naive[sr] += w;
+                    }
+                }
+            }
+        }
+        for idx in 0..lat.len() {
+            assert!(
+                (num[idx] - num_naive[idx]).abs() <= 1e-6 * num_naive[idx].abs().max(1.0),
+                "num mismatch at {idx}: {} vs {}",
+                num[idx],
+                num_naive[idx]
+            );
+            assert!(
+                (den[idx] - den_naive[idx]).abs() <= 1e-6 * den_naive[idx].abs().max(1.0),
+                "den mismatch at {idx}: {} vs {}",
+                den[idx],
+                den_naive[idx]
+            );
+        }
     }
 }
