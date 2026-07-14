@@ -205,3 +205,57 @@ far. An optional trailing number says how many points the mover is ahead of the
 opponent right now (negative if behind), and it is added to the solver's margin
 so the reported outcome reflects the whole game rather than just the value of
 the remaining plays.
+
+
+EXCHANGING WITH ONE TILE IN THE BAG
+
+The one-in-bag section above weighed only plays and passes, so the PEG
+enumeration declined any config where an exchange was legal against the
+one-tile bag -- reporting an honest "exchange not modeled" rather than a number
+that assumed the exchange away. Spanish is exactly that config: its rules let a
+player exchange even with a single tile left in the bag (most rule sets require
+a fuller bag). This section solves that case, so Spanish is answered rather
+than declined.
+
+With one tile in the bag an exchange can only be a one-for-one swap: the mover
+puts one rack tile back, draws the single bag tile, and the tile just returned
+becomes the new bag tile. The bag therefore stays at exactly one tile and the
+position stays fully known, so the game is still finite and can be solved
+exactly. Alongside every play and the pass, the bag-phase search now tries each
+distinct rack tile as the one to swap out, with the opponent to move afterward.
+
+Ending the game needs more care than before. A pass leaves both racks exactly
+as they were, so a run of passes always ends in the same leftover-tile margin
+no matter how many passes it takes -- which is why the plain one-in-bag solver
+could treat two passes in a row as the end and read off that margin. An
+exchange breaks that: it changes a rack, so a later end scores a different
+leftover. The search therefore counts scoreless turns instead of assuming two
+passes end it. It keeps two counts, consecutive passes and consecutive
+scoreless turns (a pass is both; an exchange, which the rules here count as a
+scoreless turn, is only the latter and resets the pass count), and ends the
+game when either reaches the limit its rules set (num_passes_to_end or
+num_zeros_to_end). Because a position's value now depends on how close that
+scoreless-turn limit already is, the search remembers answers keyed by whose
+turn it is, both racks, the bag tile, and those two counts; the board never
+changes while the bag holds its one tile, so it is not part of the key. Plays
+still draw the bag tile and hand the now-empty-bag position to the same solver
+as before, so the empty-bag search and every English value are untouched.
+
+One honesty note. Like the enumeration it extends, this is exact only under a
+generous assumption: within each guess for the bag tile, the mover is treated
+as if it already knew that guess was right. The solver takes, for each possible
+bag tile, the mover's best line ASSUMING that tile, and then averages those
+best lines weighted by how likely each tile is. A real player cannot peek: it
+must pick one move that has to do well across every tile the bag might hold,
+then see which tile was actually there. Choosing with knowledge first and
+averaging after can only score at least as high as choosing one move for all
+cases, so this "clairvoyant" value is an upper bound on what a real player can
+guarantee, off by the worth of the peek. Every engine that solves these
+pre-endgames makes the same assumption; adding the exchange fits inside it and
+does not widen the gap.
+
+A config is still declined when an exchange is legal but its rules can never
+end the game through scoreless turns (nothing forces a run of passes and
+exchanges to stop), since then the swap-and-swap-back line need never terminate
+and there is no exact value to report. That honest decline, not a wrong number,
+is the only case left unsolved.

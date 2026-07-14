@@ -963,9 +963,25 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         // board + racks as locals so the bag phase never clobbers self.*.
         let board = self.board_tiles.clone();
         let racks = [self.racks[0].clone(), self.racks[1].clone()];
-        Self::one_in_bag_minimax(
-            gc, kwg, &klv, &mut sub, &mut mg, &board, &racks, player_idx, bag_tile, false,
-        )
+        // The bag holds exactly one tile. An exchange is legal here only when the
+        // config's exchange_tile_limit permits exchanging against a one-tile bag
+        // (Spanish sets it to 1; English and friends set it to 7). When exchange
+        // is legal the exchange-aware search is required; otherwise the only
+        // scoreless move is a pass and the plain two-pass minimax applies. The
+        // caller (solve_peg_one_in_bag) has already declined the exchange-legal
+        // configs whose scoreless-turn rule cannot force the game to end, so the
+        // exchange search below always terminates.
+        if one_in_bag_exchange_solvable(gc) {
+            let mut memo = fash::MyHashMap::<BagExchangeKey, f32>::default();
+            Self::one_in_bag_minimax_ex(
+                gc, kwg, &klv, &mut sub, &mut mg, &board, &racks, player_idx, bag_tile, 0, 0,
+                &mut memo,
+            )
+        } else {
+            Self::one_in_bag_minimax(
+                gc, kwg, &klv, &mut sub, &mut mg, &board, &racks, player_idx, bag_tile, false,
+            )
+        }
     }
 
     // Bag-phase minimax for the one-known-bag-tile case. Shape mirrors the
@@ -1059,6 +1075,188 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         best
     }
 
+    // Bag-phase minimax for the one-known-bag-tile case WHEN an exchange is legal
+    // (Spanish). It extends one_in_bag_minimax with the two missing pieces:
+    //
+    //  - Exchange. With one tile in the bag the only legal exchange is a
+    //    one-for-one swap: return one rack tile r, draw the lone bag tile, and r
+    //    becomes the new (still fully known) one-tile bag, with the opponent to
+    //    move. Each distinct rack tile is enumerated as r.
+    //  - A real scoreless-turn end. A pass leaves the racks untouched, so a run
+    //    of passes is state-preserving and still resolves to the leftover point
+    //    margin -- but an exchange CHANGES the racks, so the two-pass shortcut is
+    //    no longer valid. Instead this tracks the consecutive-pass and
+    //    consecutive-zero counts and ends the game when the config's
+    //    num_passes_to_end / num_zeros_to_end rule is met (a pass advances both
+    //    counters; an exchange, taken only when exchanges count as zeros, resets
+    //    the pass count and advances the zero count).
+    //
+    // Because a node's value now depends on how close the scoreless-turn end
+    // already is, (mover, racks, bag tile, pass count, zero count) is memoized;
+    // the board never changes in the bag phase, so it is not part of the key. A
+    // scoring play still draws the bag tile and drops into the empty-bag
+    // sub-solver exactly as in one_in_bag_minimax.
+    #[allow(clippy::too_many_arguments)]
+    fn one_in_bag_minimax_ex(
+        gc: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        klv: &klv::Klv<L>,
+        sub: &mut EndgameSolver<'a, N, L>,
+        mg: &mut movegen::KurniaMoveGenerator,
+        board: &[u8],
+        racks: &[Vec<u8>; 2],
+        mover: u8,
+        bag_tile: u8,
+        passes: u8,
+        zeros: u8,
+        memo: &mut fash::MyHashMap<BagExchangeKey, f32>,
+    ) -> f32 {
+        // canonical key: rack order does not affect value, so both racks are
+        // sorted. Return a memoized value before regenerating any moves.
+        let mut rack0 = racks[0].clone();
+        let mut rack1 = racks[1].clone();
+        rack0.sort_unstable();
+        rack1.sort_unstable();
+        let key = BagExchangeKey {
+            mover,
+            bag_tile,
+            passes,
+            zeros,
+            rack0,
+            rack1,
+        };
+        if let Some(&v) = memo.get(&key) {
+            return v;
+        }
+
+        let alphabet = gc.alphabet();
+        let opp = mover ^ 1;
+        let snapshot = movegen::BoardSnapshot {
+            board_tiles: board,
+            game_config: gc,
+            kwg,
+            klv,
+        };
+        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover as usize], 0, true);
+        // collect this node's place moves before recursing: the pass and exchange
+        // branches reuse mg for deeper generation.
+        let mut places: Vec<movegen::Play> = Vec::new();
+        for vm in &mg.plays {
+            if let movegen::Play::Place { .. } = &vm.play {
+                places.push(vm.play.clone());
+            }
+        }
+
+        // a drawn blank lands on the rack as an undesignated blank (byte 0).
+        let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
+
+        let mut best = f32::NEG_INFINITY;
+        // scoring plays: play P, draw the one bag tile so the bag empties, and
+        // hand the resulting empty-bag position to the optimized sub-solver.
+        for play in &places {
+            if let movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } = play
+            {
+                let mut nb = board.to_vec();
+                let mut nr = racks.clone();
+                {
+                    let rack = &mut nr[mover as usize];
+                    let strider = gc.board_layout().dim().lane(*down, *lane);
+                    for (i, &tile) in (*idx..).zip(word.iter()) {
+                        if tile != 0 {
+                            nb[strider.at(i)] = tile;
+                            let blanked = tile & !((tile as i8) >> 7) as u8;
+                            let p = rack.iter().rposition(|&t| t == blanked).unwrap();
+                            rack[p] = 0x80;
+                        }
+                    }
+                    rack.retain(|&t| t != 0x80);
+                    rack.push(drawn);
+                }
+                sub.init(&nb, [&nr[0], &nr[1]]);
+                let v = sub.solve(opp);
+                let val = *score as f32 - v;
+                if val > best {
+                    best = val;
+                }
+            }
+        }
+
+        // pass: a scoreless turn that advances both counters and leaves the racks
+        // untouched. If either end rule is now met the game ends by passing out
+        // (leftover point margin, bag tile unscored); otherwise the opponent
+        // moves with the same racks and bag.
+        let pass_passes = passes + 1;
+        let pass_zeros = zeros + 1;
+        let pass_val = if scoreless_turns_end(gc, pass_passes, pass_zeros) {
+            (alphabet.scaled_rack_score(&racks[opp as usize])
+                - alphabet.scaled_rack_score(&racks[mover as usize])) as f32
+        } else {
+            -Self::one_in_bag_minimax_ex(
+                gc,
+                kwg,
+                klv,
+                sub,
+                mg,
+                board,
+                racks,
+                opp,
+                bag_tile,
+                pass_passes,
+                pass_zeros,
+                memo,
+            )
+        };
+        if pass_val > best {
+            best = pass_val;
+        }
+
+        // exchange: swap one rack tile r for the drawn bag tile; r becomes the new
+        // one-tile bag. An exchange is a zero turn but not a pass, so it resets the
+        // pass count and advances the zero count. Enumerate each distinct rack tile
+        // as r, skipping r == drawn (swapping the bag tile for itself reproduces
+        // the pass branch's state).
+        let exch_zeros = zeros + 1;
+        let mut seen: u64 = 0; // bitset over rack tile values 0..=63
+        for i in 0..racks[mover as usize].len() {
+            let r = racks[mover as usize][i];
+            if r == drawn {
+                continue;
+            }
+            let bit = 1u64 << (r & 0x3f);
+            if seen & bit != 0 {
+                continue;
+            }
+            seen |= bit;
+            // new mover rack: one r out, the drawn bag tile in.
+            let mut nr = racks.clone();
+            {
+                let rack = &mut nr[mover as usize];
+                let p = rack.iter().position(|&t| t == r).unwrap();
+                rack[p] = drawn;
+            }
+            let exch_val = if scoreless_turns_end(gc, 0, exch_zeros) {
+                (alphabet.scaled_rack_score(&nr[opp as usize])
+                    - alphabet.scaled_rack_score(&nr[mover as usize])) as f32
+            } else {
+                -Self::one_in_bag_minimax_ex(
+                    gc, kwg, klv, sub, mg, board, &nr, opp, r, 0, exch_zeros, memo,
+                )
+            };
+            if exch_val > best {
+                best = exch_val;
+            }
+        }
+
+        memo.insert(key, best);
+        best
+    }
+
     // Solve a pre-endgame that has exactly ONE tile left in the bag, without
     // knowing which unseen tile it is. Every tile that is not on the board and
     // not on the mover's rack is UNSEEN; exactly one of them sits in the bag
@@ -1089,14 +1287,16 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         unseen_tally: &[u8],
         score_diff: f32,
     ) -> Result<PegResult, PegUnsupported> {
-        // When an exchange is legal against the one-tile bag (Spanish sets
-        // exchange_tile_limit to 1), the mover could exchange instead of playing
-        // or passing, and this enumeration models only plays and passes. Decline
-        // honestly for such a config rather than report a number that silently
-        // assumes the exchange away; the exchange case is handled in a later
-        // commit. Every other config (English and friends) is solved below.
-        if one_in_bag_exchange_legal(self.game_config) {
-            return Err(PegUnsupported::ExchangeNotSupported);
+        // When an exchange is legal against the one-tile bag (Spanish), solving
+        // requires the exchange-aware search, and that search only terminates when
+        // the scoreless-turn rule can force the game to end. Decline honestly --
+        // rather than silently ignore the exchange and report a no-exchange number
+        // -- for any exchange-legal config whose scoreless turns never force an
+        // end. Every other config (English, and Spanish itself, which does force
+        // an end) is solved exactly below.
+        let gc = self.game_config;
+        if one_in_bag_exchange_legal(gc) && !one_in_bag_exchange_solvable(gc) {
+            return Err(PegUnsupported::ExchangeWithoutForcedEnd);
         }
         let mut hypotheses: Vec<(u8, u32, f32)> = Vec::new();
         // opp_rack is rebuilt in place for each hypothesis (one allocation).
@@ -1144,21 +1344,36 @@ pub struct PegResult {
 // Why a one-in-bag PEG position could not be solved exactly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PegUnsupported {
-    // An exchange is legal with one tile in the bag, which this enumeration does
-    // not model, so the position is declined rather than answered with a number
-    // that assumes the exchange away.
-    ExchangeNotSupported,
+    // An exchange is legal with one tile in the bag, but the config's scoreless
+    // turns can never force the game to end, so the exchange search need not
+    // terminate. The position is not exactly solvable by this enumeration.
+    ExchangeWithoutForcedEnd,
 }
 
 impl std::fmt::Display for PegUnsupported {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PegUnsupported::ExchangeNotSupported => f.write_str(
-                "an exchange is legal with one tile in the bag, which is not \
-                 modeled, so this position is not solved",
+            PegUnsupported::ExchangeWithoutForcedEnd => f.write_str(
+                "exchange is legal with one tile in the bag but scoreless turns \
+                 never force the game to end, so this position is not solvable",
             ),
         }
     }
+}
+
+// Memo key for the exchange-aware one-in-bag search. Rack order does not affect
+// value, so both racks are stored sorted; the scoreless-turn counters are part
+// of the key because, once an exchange is possible, a node's value depends on
+// how close the scoreless-turn end rule already is. The board never changes in
+// the bag phase, so it is not part of the key.
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct BagExchangeKey {
+    mover: u8,
+    bag_tile: u8,
+    passes: u8,
+    zeros: u8,
+    rack0: Vec<u8>,
+    rack1: Vec<u8>,
 }
 
 // Whether an exchange is legal when the bag holds a single tile. Movegen would
@@ -1166,6 +1381,24 @@ impl std::fmt::Display for PegUnsupported {
 // size is one, so the test is exchange_tile_limit <= 1 (Spanish sets it to 1).
 fn one_in_bag_exchange_legal(gc: &game_config::GameConfig) -> bool {
     gc.exchange_tile_limit() <= 1
+}
+
+// Whether the exchange-aware one-in-bag search both applies and terminates: an
+// exchange must be legal, an exchange must count as a zero turn, and a run of
+// zero turns must force the game to end (num_zeros_to_end != 0). Otherwise an
+// exchange chain need never terminate and the position is not exactly solvable.
+fn one_in_bag_exchange_solvable(gc: &game_config::GameConfig) -> bool {
+    one_in_bag_exchange_legal(gc) && gc.exchanges_are_zeros() && gc.num_zeros_to_end() != 0
+}
+
+// Whether a run of scoreless turns has met the config's end rule: either enough
+// consecutive passes (num_passes_to_end, when that rule is enabled) or enough
+// consecutive zero turns (num_zeros_to_end, when enabled). A pass advances both
+// counts; an exchange advances only the zero count (and resets the pass count).
+fn scoreless_turns_end(gc: &game_config::GameConfig, passes: u8, zeros: u8) -> bool {
+    let npte = gc.num_passes_to_end();
+    let nzte = gc.num_zeros_to_end();
+    (npte != 0 && passes >= npte) || (nzte != 0 && zeros >= nzte)
 }
 
 // Aggregate one-in-bag hypotheses into a win rate and an expected point margin.
@@ -1416,6 +1649,118 @@ mod tests {
         if pass_val > best {
             best = pass_val;
         }
+        best
+    }
+
+    // Trusted, un-memoized reference for the exchange-aware one-in-bag case: the
+    // same shape as one_in_bag_minimax_ex, but built on the plain-negamax
+    // `reference` empty-bag solver and with no transposition table, so a bug in
+    // the fast search's memo or empty-bag sub-solver shows up as a disagreement.
+    // Kept correct and slow; only used on tiny positions with a short
+    // scoreless-turn end so the un-memoized recursion stays cheap.
+    #[allow(clippy::too_many_arguments)]
+    fn reference_one_in_bag_ex<N: kwg::Node, L: kwg::Node>(
+        gc: &game_config::GameConfig,
+        kwg: &kwg::Kwg<N>,
+        klv: &klv::Klv<L>,
+        mg: &mut movegen::KurniaMoveGenerator,
+        board: &[u8],
+        racks: &[Vec<u8>; 2],
+        mover: usize,
+        bag_tile: u8,
+        passes: u8,
+        zeros: u8,
+    ) -> f32 {
+        let alphabet = gc.alphabet();
+        let snapshot = movegen::BoardSnapshot {
+            board_tiles: board,
+            game_config: gc,
+            kwg,
+            klv,
+        };
+        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover], 0, true);
+        let mut places: Vec<movegen::Play> = Vec::new();
+        for vm in &mg.plays {
+            if let movegen::Play::Place { .. } = &vm.play {
+                places.push(vm.play.clone());
+            }
+        }
+
+        let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
+        let opp = mover ^ 1;
+        let mut best = f32::NEG_INFINITY;
+        for play in &places {
+            if let movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } = play
+            {
+                let mut nb = board.to_vec();
+                let mut nr = racks.clone();
+                apply_place(gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
+                nr[mover].push(drawn);
+                let val = *score as f32 - reference(gc, kwg, klv, mg, &nb, &nr, opp, false);
+                if val > best {
+                    best = val;
+                }
+            }
+        }
+
+        let pass_passes = passes + 1;
+        let pass_zeros = zeros + 1;
+        let pass_val = if super::scoreless_turns_end(gc, pass_passes, pass_zeros) {
+            (alphabet.scaled_rack_score(&racks[opp]) - alphabet.scaled_rack_score(&racks[mover]))
+                as f32
+        } else {
+            -reference_one_in_bag_ex(
+                gc,
+                kwg,
+                klv,
+                mg,
+                board,
+                racks,
+                opp,
+                bag_tile,
+                pass_passes,
+                pass_zeros,
+            )
+        };
+        if pass_val > best {
+            best = pass_val;
+        }
+
+        let exch_zeros = zeros + 1;
+        let mut seen: u64 = 0;
+        for i in 0..racks[mover].len() {
+            let r = racks[mover][i];
+            if r == drawn {
+                continue;
+            }
+            let bit = 1u64 << (r & 0x3f);
+            if seen & bit != 0 {
+                continue;
+            }
+            seen |= bit;
+            let mut nr = racks.clone();
+            {
+                let rack = &mut nr[mover];
+                let p = rack.iter().position(|&t| t == r).unwrap();
+                rack[p] = drawn;
+            }
+            let exch_val = if super::scoreless_turns_end(gc, 0, exch_zeros) {
+                (alphabet.scaled_rack_score(&nr[opp]) - alphabet.scaled_rack_score(&nr[mover]))
+                    as f32
+            } else {
+                -reference_one_in_bag_ex(gc, kwg, klv, mg, board, &nr, opp, r, 0, exch_zeros)
+            };
+            if exch_val > best {
+                best = exch_val;
+            }
+        }
+
         best
     }
 
@@ -2015,5 +2360,142 @@ mod tests {
             solvev >= pass_only,
             "playing should not be worse than the pass-only leftover: solve={solvev} pass_only={pass_only}"
         );
+    }
+
+    // ---- one-in-bag with exchange: differential vs the trusted reference ------
+    // Under a config that allows exchanging against a one-tile bag (the
+    // Spanish-style test config), assert solve_one_in_bag reproduces the
+    // un-memoized reference_one_in_bag_ex exactly, for both movers and several
+    // bag tiles. This exercises the exchange search, its zero-turn end handling,
+    // and its transposition table against an independent slow solver.
+    #[test]
+    fn differential_one_in_bag_exchange() {
+        let gc = game_config::make_exchange_test_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+
+        let bag_tiles: [u8; 2] = [1, 0]; // A, blank
+
+        let mut disagreements = 0usize;
+        let mut total = 0usize;
+        // tiny positions only (racks of at most two tiles): each exchange node
+        // fans out over the whole rack and the reference has no transposition
+        // table, so the un-memoized recursion cost climbs fast with rack size.
+        let positions: Vec<(String, Position)> = embedded_positions()
+            .into_iter()
+            .filter(|(_, pos)| pos.racks[0].len() <= 2 && pos.racks[1].len() <= 2)
+            .collect();
+        for (name, pos) in positions {
+            for &t in &bag_tiles {
+                for mover in 0u8..2 {
+                    total += 1;
+                    let refv = reference_one_in_bag_ex(
+                        &gc,
+                        &kwg,
+                        &klv,
+                        &mut mg,
+                        &pos.board,
+                        &pos.racks,
+                        mover as usize,
+                        t,
+                        0,
+                        0,
+                    );
+                    let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+                    egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                    let solvev = egs.solve_one_in_bag(mover, t);
+                    if refv.to_bits() != solvev.to_bits() {
+                        disagreements += 1;
+                        println!(
+                            "DISAGREE [{name}] mover={mover} bag={t}: ref={refv} solve={solvev}\n   {}",
+                            describe(&gc, &pos)
+                        );
+                    }
+                }
+            }
+        }
+        println!(
+            "one-in-bag exchange differential: {disagreements} disagreements out of {total} cases"
+        );
+        assert_eq!(
+            disagreements, 0,
+            "solve_one_in_bag disagreed with reference_one_in_bag_ex"
+        );
+    }
+
+    // ---- one-in-bag with exchange: hand-checkable, exchange beats passing -----
+    // Exchange-allowing config, empty board. p0 holds a lone Q (10 pts) and there
+    // is one A (1 pt) in the bag; p1 holds a lone A. A single tile on an empty
+    // board plays nothing, so p0's only moves are pass and exchange.
+    //   - Pass-out with the Q kept: leftover is p1(A=1) - p0(Q=10) = -9 pts.
+    //   - Exchange Q for the bag A: p0 becomes [A], the Q goes into the bag. p1
+    //     will not take the Q back (that only helps p0), so everyone passes out
+    //     with p0=[A] and p1=[A]: leftover 0.
+    // So exchanging is strictly better: the solved value is exactly 0, well above
+    // the -9000 pass-only leftover.
+    #[test]
+    fn one_in_bag_exchange_beats_passing() {
+        let gc = game_config::make_exchange_test_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+
+        let board = empty_board();
+        let racks = [vec![17u8], vec![1u8]]; // p0 = [Q], p1 = [A]
+        let bag = 1u8; // one A in the bag
+
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        egs.init(&board, [&racks[0][..], &racks[1][..]]);
+        let solvev = egs.solve_one_in_bag(0, bag);
+
+        let a = gc.alphabet();
+        let pass_only = (a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0])) as f32; // -9000
+        assert_eq!(solvev, 0.0, "exchange line value should be exactly 0");
+        assert!(
+            solvev > pass_only,
+            "exchange should beat passing: solve={solvev} pass_only={pass_only}"
+        );
+    }
+
+    // ---- one-in-bag PEG: exchange-legal configs are solved, not declined ------
+    // The exchange-allowing config produces a real PegResult (Ok), while a config
+    // that allows the exchange but can never force the game to end is declined
+    // honestly rather than answered with a silently wrong no-exchange number.
+    #[test]
+    fn peg_one_in_bag_exchange_solved_or_declined() {
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+
+        // solvable exchange config -> Ok with the expected hypotheses.
+        let gc = game_config::make_exchange_test_game_config();
+        let board = empty_board();
+        let mover_rack = [2u8]; // B, unplayable alone on an empty board
+        let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+        unseen_tally[8] = 1; // H
+        unseen_tally[20] = 1; // T
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let result = egs
+            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+            .expect("the exchange test config forces an end and is solvable");
+        assert_eq!(result.hypotheses.len(), 2);
+
+        // English is not exchange-legal at a one-tile bag, so it is solved too.
+        let gc_en = game_config::make_english_game_config();
+        let mut egs_en = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_en, &kwg);
+        assert!(
+            egs_en
+                .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+                .is_ok()
+        );
+
+        // a config that allows the exchange but never forces an end is declined
+        // honestly, not answered with a silently wrong no-exchange number.
+        let gc_bad = game_config::make_exchange_unsolvable_test_game_config();
+        let mut egs_bad = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_bad, &kwg);
+        assert!(matches!(
+            egs_bad.solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0),
+            Err(super::PegUnsupported::ExchangeWithoutForcedEnd)
+        ));
     }
 }
