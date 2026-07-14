@@ -15,6 +15,42 @@ const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
 // pruning against how quickly clearly-worse candidates are dropped.
 const PRUNE_CADENCE: u64 = 16;
 
+// How each iteration's rollouts are allocated across the surviving candidates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Allocator {
+    // Simulate every surviving candidate on every iteration's shared draw.
+    // Maximum common-random-number pairing, but spends as many rollouts on
+    // hopeless candidates as on the real contenders until the prune drops them.
+    RoundRobin,
+    // Simulate only the current leader, the strongest challenger, and one
+    // least-sampled candidate (a floor so every arm keeps a live confidence
+    // interval for the prune) each iteration. Concentrates the budget on the
+    // moves that might actually be best.
+    Adaptive,
+}
+
+// One rollout of `play` from the prepared position, returned as the objective
+// value fed to the candidate's running statistics. Shared by both allocators.
+#[inline(always)]
+fn rollout_objective<N: kwg::Node, L: kwg::Node>(
+    simmer: &mut simmer::Simmer,
+    game_config: &game_config::GameConfig,
+    kwg: &kwg::Kwg<N>,
+    klv: &klv::Klv<L>,
+    play: &movegen::Play,
+) -> f64 {
+    let game_ended = simmer.simulate(game_config, kwg, klv, play);
+    let final_spread = simmer.final_equity_spread();
+    let win_prob = simmer.compute_win_prob(game_ended, final_spread);
+    let sim_spread = final_spread - simmer.initial_score_spread;
+    simmer::sim_objective(
+        sim_spread,
+        win_prob,
+        simmer.win_prob_weightage(),
+        simmer.config().descale,
+    )
+}
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
@@ -34,6 +70,8 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     // When false, pick_a_move skips its per-decision debug print. The batch
     // sim-vs-sim harness turns this off; the interactive picker leaves it on.
     verbose: bool,
+    // How each iteration's rollouts are allocated across the candidates.
+    allocator: Allocator,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -50,6 +88,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             simmer: simmer::Simmer::new(game_config),
             num_sim_iters: DEFAULT_NUM_SIM_ITERS,
             verbose: true,
+            allocator: Allocator::RoundRobin,
         }
     }
 
@@ -61,6 +100,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     #[inline(always)]
     pub fn set_verbose(&mut self, verbose: bool) {
         self.verbose = verbose;
+    }
+
+    #[inline(always)]
+    pub fn set_allocator(&mut self, allocator: Allocator) {
+        self.allocator = allocator;
     }
 
     /// Reseed the inner rollout RNG so a decision replays identically. The
@@ -177,22 +221,104 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 const Z: f64 = 1.96; // 95% confidence interval
                 for sim_iter in 1..=num_sim_iters {
                     simmer.simmer.prepare_iteration();
-                    for candidate in candidates.iter_mut() {
-                        let game_ended = simmer.simmer.simulate(
-                            simmer.game_config,
-                            simmer.kwg,
-                            simmer.klv,
-                            &move_generator.plays[candidate.play_index].play,
-                        );
-                        let final_spread = simmer.simmer.final_equity_spread();
-                        let win_prob = simmer.simmer.compute_win_prob(game_ended, final_spread);
-                        let sim_spread = final_spread - simmer.simmer.initial_score_spread;
-                        candidate.stats.update(simmer::sim_objective(
-                            sim_spread,
-                            win_prob,
-                            simmer.simmer.win_prob_weightage(),
-                            simmer.simmer.config().descale,
-                        ));
+                    // Round-robin warm-up: until the first prune, every
+                    // candidate must gather samples, or the shared prune below
+                    // sees count-zero arms (whose confidence interval is NaN)
+                    // and empties the field. Adaptive only takes over after.
+                    let effective_allocator = if sim_iter <= PRUNE_CADENCE {
+                        Allocator::RoundRobin
+                    } else {
+                        simmer.allocator
+                    };
+                    match effective_allocator {
+                        Allocator::RoundRobin => {
+                            for candidate in candidates.iter_mut() {
+                                let value = rollout_objective(
+                                    &mut simmer.simmer,
+                                    simmer.game_config,
+                                    simmer.kwg,
+                                    simmer.klv,
+                                    &move_generator.plays[candidate.play_index].play,
+                                );
+                                candidate.stats.update(value);
+                            }
+                        }
+                        Allocator::Adaptive => {
+                            // leader = highest running mean.
+                            let leader_idx = candidates
+                                .iter()
+                                .enumerate()
+                                .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
+                                .unwrap()
+                                .0;
+                            let leader_mean = candidates[leader_idx].stats.mean();
+                            let leader_var = candidates[leader_idx].stats.variance();
+                            let leader_n = candidates[leader_idx].stats.count();
+                            // strongest challenger = the non-leader that minimizes the
+                            // standardized gap (leader_mean - mean) / sqrt(var_l/n_l +
+                            // var_c/n_c): the closest rival. an arm with fewer
+                            // than two samples has no variance estimate yet, so treat it as
+                            // maximally uncertain (gap 0) to make sure it gets sampled.
+                            // Ties break deterministically: the strict `<` below
+                            // keeps the lowest-indexed arm, and max_by above keeps
+                            // the last leader on a mean tie -- so a co-leader falls
+                            // through here as the zero-gap challenger and is still
+                            // sampled, while a tied-out challenger becomes the
+                            // least-sampled arm and the floor picks it up next.
+                            let mut challenger_idx = leader_idx;
+                            let mut best_gap = f64::INFINITY;
+                            for (i, candidate) in candidates.iter().enumerate() {
+                                if i == leader_idx {
+                                    continue;
+                                }
+                                let n_c = candidate.stats.count();
+                                let gap = if n_c < 2.0 || leader_n < 2.0 {
+                                    0.0
+                                } else {
+                                    let denom = (leader_var / leader_n
+                                        + candidate.stats.variance() / n_c)
+                                        .sqrt();
+                                    if denom > 0.0 {
+                                        (leader_mean - candidate.stats.mean()) / denom
+                                    } else {
+                                        0.0
+                                    }
+                                };
+                                if gap < best_gap {
+                                    best_gap = gap;
+                                    challenger_idx = i;
+                                }
+                            }
+                            // floor = least-sampled candidate, so every arm keeps a live
+                            // confidence interval for the prune.
+                            let floor_idx = candidates
+                                .iter()
+                                .enumerate()
+                                .min_by(|(_, a), (_, b)| {
+                                    a.stats.count().total_cmp(&b.stats.count())
+                                })
+                                .unwrap()
+                                .0;
+                            // sample the deduplicated set {leader, challenger, floor}.
+                            let mut to_sample = [leader_idx, challenger_idx, floor_idx];
+                            to_sample.sort_unstable();
+                            let mut prev = usize::MAX;
+                            for &idx in &to_sample {
+                                if idx == prev {
+                                    continue;
+                                }
+                                prev = idx;
+                                let play_index = candidates[idx].play_index;
+                                let value = rollout_objective(
+                                    &mut simmer.simmer,
+                                    simmer.game_config,
+                                    simmer.kwg,
+                                    simmer.klv,
+                                    &move_generator.plays[play_index].play,
+                                );
+                                candidates[idx].stats.update(value);
+                            }
+                        }
                     }
                     if sim_iter % PRUNE_CADENCE == 0 {
                         let low_bar = candidates

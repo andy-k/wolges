@@ -8490,6 +8490,24 @@ fn sim_compare_seat_config(prefix: &str) -> simmer::SimmerConfig {
     config
 }
 
+// Parse one seat's allocator from environment. Uses the typed-match pattern
+// (not a bare == comparison) so a typo falls back to the default rather than
+// silently mis-selecting. "adaptive" picks the adaptive allocator; anything
+// else (including unset) is round-robin.
+fn sim_compare_allocator(prefix: &str) -> move_picker::Allocator {
+    match std::env::var(format!("{prefix}ALLOCATOR")).ok().as_deref() {
+        Some("adaptive") => move_picker::Allocator::Adaptive,
+        _ => move_picker::Allocator::RoundRobin,
+    }
+}
+
+fn allocator_name(allocator: move_picker::Allocator) -> &'static str {
+    match allocator {
+        move_picker::Allocator::RoundRobin => "round-robin",
+        move_picker::Allocator::Adaptive => "adaptive",
+    }
+}
+
 // Play game pairs where both seats choose every move with the full 2-ply
 // simmer instead of a single greedy play, to compare two simmer configurations
 // the same way english-compare compares two leave tables. Both seats share one
@@ -8524,9 +8542,14 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         .unwrap_or(1_000);
     let config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
     let config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
+    let allocator_p0 = sim_compare_allocator("WOLGES_SIM_P0_");
+    let allocator_p1 = sim_compare_allocator("WOLGES_SIM_P1_");
     eprintln!(
-        "WOLGES_SIM_ITERS={num_sim_iters} P0.descale={} P1.descale={}",
-        config_p0.descale as u8, config_p1.descale as u8,
+        "WOLGES_SIM_ITERS={num_sim_iters} P0.descale={} P0.alloc={} P1.descale={} P1.alloc={}",
+        config_p0.descale as u8,
+        allocator_name(allocator_p0),
+        config_p1.descale as u8,
+        allocator_name(allocator_p1),
     );
 
     std::thread::scope(|s| -> error::Returns<()> {
@@ -8553,6 +8576,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     driver.set_config(config_p0);
                     driver.set_num_sim_iters(num_sim_iters);
                     driver.set_verbose(false);
+                    driver.set_allocator(allocator_p0);
                 }
                 let mut driver_p1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
                     &game_config,
@@ -8563,6 +8587,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     driver.set_config(config_p1);
                     driver.set_num_sim_iters(num_sim_iters);
                     driver.set_verbose(false);
+                    driver.set_allocator(allocator_p1);
                 }
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut saved_game_state = game_state.clone();
