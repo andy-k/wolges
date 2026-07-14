@@ -212,6 +212,7 @@ fn main() -> error::Returns<()> {
             max_gen: case.max_gen,
             num_exchanges_by_this_player: case.num_exchanges_by_this_player,
             always_include_pass: case.always_include_pass,
+            dynamic_leaves: None,
         });
         let elapsed = t0.elapsed();
         total_elapsed += elapsed;

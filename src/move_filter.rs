@@ -207,6 +207,7 @@ impl GenMoves<'_> {
                     max_gen,
                     num_exchanges_by_this_player,
                     always_include_pass: false,
+                    dynamic_leaves: None,
                 });
             }
             Self::Tilt { tilt, bot_level: _ } => {
@@ -219,6 +220,7 @@ impl GenMoves<'_> {
                         max_gen,
                         num_exchanges_by_this_player,
                         always_include_pass: false,
+                        dynamic_leaves: None,
                     },
                     |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
                         limited_vocab_checker.words_placed_are_ok(

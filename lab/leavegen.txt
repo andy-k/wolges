@@ -1657,6 +1657,82 @@ split the work, which averaging finished tables would introduce. This mirrors
 english-resummarize, which combines the samplers' rack summaries the same way.
 
 
+REWEIGHTING LEAVES FOR THE LIVE POOL (dynamic leaves)
+
+Every leave value up to here is static: the table says keeping QU is worth a
+fixed amount whether the bag is full or down to its last few tiles. But the
+worth of a kept subrack really depends on what is left to draw. QU wants a
+vowel back; if the vowels are mostly gone, holding QU is not what the full-bag
+average says it is. A dynamic leave value asks that question at the moment of
+the move: what does keeping this subrack become once it is refilled from the
+tiles that are actually still live?
+
+The tiles still live are the bag plus whatever sits on the opponent's rack --
+everything unseen except the mover's own tiles. Starting from the full
+alphabet, take out what is on the board and what is on the mover's rack, and
+what remains is exactly what a refill could draw. (A blank already played on
+the board is counted back as a blank, since that is what would return to the
+pool.) For a kept subrack S, draw the tiles needed to fill S back to a full
+rack from that live pool, without replacement, and average the static full-rack
+value over every way the draw could land. The same kept tiles score differently
+as the pool thins -- exactly the effect we are after.
+
+None of this is new arithmetic. It is the same draw-average the exact per-board
+census already computes, run over one rack's kept subracks instead of a whole
+board's -- a thin wrapper on machinery the census already trusts.
+
+Two things keep the cost down. A smallest-keep floor (default two, so keeping
+nothing or a single tile stays static) skips the tiniest keeps. Those keeps
+play almost the whole rack, the plays that lean on the leave the least, and
+they are also the ones with the most tiles to draw back, so they cost the most
+to reweight for the least return -- skipping them removes the bulk of the work.
+A kept subrack with nothing left to complete it (the pool cannot fill the rack)
+simply keeps its static value.
+
+The reweight overwrites the move generator's leave table in place, so it is
+paid once per move and every reader downstream is pool-aware for free: each
+place, exchange, and pass value, and the shadow-play bound that prunes the
+search, all read the reweighted number. Only the midgame pays -- once the bag
+is empty the endgame keeps its own leftover-penalty leaves untouched. And the
+reweight always completes the leave to a full seven-tile rack, so it needs a
+full-length table -- one with a value for every whole rack, not just the six or
+fewer tiles an ordinary leave keeps -- the kind english-generate writes with
+full racks turned on.
+
+A pair of players isolates the effect. english-compare, given the same
+full-length table to both seats, can turn the reweight on for one seat only:
+
+  WOLGES_DYNAMIC_LEAVES=1 cargo run --release --bin leave -- \
+    english-compare CSW24.kwg full.klv2 full.klv2 50000
+
+Player zero values its midgame leaves against the live pool; player one reads
+the static table. The two tables are identical, so the win rate measures one
+thing -- whether pool-aware leaves play stronger than the very same leaves read
+flat.
+
+
+THE VERDICT: POOL-AWARE LEAVES BEAT STATIC ONES
+
+They do. Reweighting the static full-rack table against the live pool wins, and
+the win is real: with the smallest-keep floor at two, pool-aware player zero
+takes 50.66 percent of fifty thousand pairs against the identical static table
+-- about 0.66 pp over an even split, at confidence 99.99. Raise the floor to
+three and it is 50.32 percent (confidence 97.8), still a win; raise it to four
+and it is 49.84 percent, back to a tie. The gain is largest when the most kept
+subracks are reweighted and fades as the floor shuts more of them out -- and
+the higher floors are the cheaper ones, so the floor trades strength against
+cost.
+
+This is worth setting beside the win% result, which lost. A win% table is a
+fixed remap of one number and cannot change which play is chosen. The pool
+reweight is not a remap: it feeds each move real information the static table
+never had -- which tiles are actually still drawable -- and that can and does
+change which leave looks best as the pool empties. It is the one place a static
+table, read a little less statically, plays measurably better.
+
+New knobs: WOLGES_DYNAMIC_LEAVES, WOLGES_DYNAMIC_LEAVES_MIN_KEEP.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1918,3 +1994,10 @@ Compare and dynamic leaves:
     changes no table:
       1  append a machine-readable result block after the normal output
       0  print the human-readable output only
+  WOLGES_DYNAMIC_LEAVES (0 or 1; default 0) -- in english-compare it applies to
+    player zero only; needs a full-length table:
+      1  reweight the midgame leave table against the live pool before valuing
+         any play
+      0  read the static table
+  WOLGES_DYNAMIC_LEAVES_MIN_KEEP (a whole number; default 2) -- smallest kept
+    subrack that gets reweighted.

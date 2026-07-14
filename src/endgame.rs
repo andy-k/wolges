@@ -453,6 +453,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                             max_gen: 1,
                             num_exchanges_by_this_player: 0, // TODO: use game_state to track this
                             always_include_pass: false,
+                            dynamic_leaves: None,
                         });
                 }
                 self.work_buffer.dur_movegen += t1.elapsed();

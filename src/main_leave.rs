@@ -1011,11 +1011,9 @@ fn generate_autoplay_logs<
         let lat = census::MultisetLattice::new(num_letters, rack_size);
         let add_table = census::AddTable::new(&lat);
         let mut leave = vec![0i32; lat.len()];
-        let mut tally = vec![0u8; num_letters];
-        for (idx, slot) in leave.iter_mut().enumerate() {
-            lat.unrank_into(idx, &mut tally);
-            *slot = arc_klv0.leave_value_from_tally(&tally);
-        }
+        census::fill_lattice_leaves(&lat, &mut leave, |tally| {
+            arc_klv0.leave_value_from_tally(tally)
+        });
         eprintln!(
             "autoplay: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} WOLGES_OPPDENIAL_EXACT={oppdenial_exact} \
              oppdenial_exact_pool_max={oppdenial_exact_pool_max} opponent-denial machinery on ({} lattice leaves)",
@@ -1808,6 +1806,7 @@ fn generate_autoplay_logs<
                                         .current_player()
                                         .num_exchanges,
                                     always_include_pass: false,
+                                    dynamic_leaves: None,
                                 });
                                 let play = &move_generator.plays[0];
                                 // value the supplemented full rack the same way the main record
@@ -1881,6 +1880,7 @@ fn generate_autoplay_logs<
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
+                            dynamic_leaves: None,
                         });
 
                         let plays = &move_generator.plays;
@@ -2577,11 +2577,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         let lat = census::MultisetLattice::new(num_letters, rack_size as usize);
         let add_table = census::AddTable::new(&lat);
         let mut leave = vec![0i32; lat.len()];
-        let mut tally = vec![0u8; num_letters];
-        for (idx, slot) in leave.iter_mut().enumerate() {
-            lat.unrank_into(idx, &mut tally);
-            *slot = arc_klv0.leave_value_from_tally(&tally);
-        }
+        census::fill_lattice_leaves(&lat, &mut leave, |tally| {
+            arc_klv0.leave_value_from_tally(tally)
+        });
         eprintln!(
             "gilles: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} WOLGES_OPPDENIAL_EXACT={oppdenial_exact} \
              oppdenial_exact_pool_max={oppdenial_exact_pool_max} opponent-denial machinery on ({} lattice leaves)",
@@ -3149,6 +3147,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     max_gen: 1,
                                                     num_exchanges_by_this_player: 0,
                                                     always_include_pass: false,
+                                                    dynamic_leaves: None,
                                                 },
                                             );
                                             let equity =
@@ -3289,6 +3288,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     max_gen: 1,
                                                     num_exchanges_by_this_player: 0,
                                                     always_include_pass: false,
+                                                    dynamic_leaves: None,
                                                 },
                                             );
                                             let equity =
@@ -3423,6 +3423,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
+                            dynamic_leaves: None,
                         });
                         // record the real rack's best-play equity (observed
                         // mix) before playing it. only while the bag is
@@ -3894,6 +3895,7 @@ fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
                 max_gen: 1,
                 num_exchanges_by_this_player: 0,
                 always_include_pass: false,
+                dynamic_leaves: None,
             });
             let equity = knob.apply(move_generator.plays[0].equity, rack_bytes);
             thread_map
@@ -4511,6 +4513,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         max_gen: 1,
         num_exchanges_by_this_player: i16::MAX,
         always_include_pass: false,
+        dynamic_leaves: None,
     };
     move_generator.set_spell_once(true);
     move_generator.gen_moves_filtered(
@@ -5474,6 +5477,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         max_gen: 1,
                                         num_exchanges_by_this_player: 0,
                                         always_include_pass: false,
+                                        dynamic_leaves: None,
                                     },
                                 );
                                 let engine_mp = (move_generator.plays[0].equity.as_f64()
@@ -5885,6 +5889,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     .current_player()
                                     .num_exchanges,
                                 always_include_pass: false,
+                                dynamic_leaves: None,
                             });
                             game_state
                                 .play(&game_config, &mut rng, &move_generator.plays[0].play)
@@ -6009,6 +6014,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         .current_player()
                                         .num_exchanges,
                                     always_include_pass: false,
+                                    dynamic_leaves: None,
                                 });
                                 if opening_samples
                                     && game_state.current_player().rack.len() == rack_size
@@ -7131,6 +7137,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                         .current_player()
                                         .num_exchanges,
                                     always_include_pass: false,
+                                    dynamic_leaves: None,
                                 },
                                 |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
                                 |leave_value: i32| leave_value,
@@ -7780,6 +7787,7 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             always_include_pass: false,
+                            dynamic_leaves: None,
                         });
                         // the mover's best-play equity = the census's 1-ply value of R,
                         // the baseline's prediction of this turn's worth, and the
@@ -8017,6 +8025,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             max_gen: 1,
             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
             always_include_pass: false,
+            dynamic_leaves: None,
         });
         let play = &move_generator.plays[0].play;
         game_state.play(game_config, rng, play).unwrap();
@@ -8217,6 +8226,57 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
+    // Dynamic leaves A/B knob. Off (the default) => byte-identical to before.
+    // When on, only the klv0 side's midgame turns reweight their leaves by the
+    // live pool, so a run with the SAME --full klv on both sides (klv0 == klv1)
+    // isolates the dynamic transform: P0 is the dynamic player, P1 the static one.
+    // WOLGES_DYNAMIC_LEAVES_MIN_KEEP sets the smallest kept subrack that is
+    // reweighted (smaller keeps stay static; see apply_dynamic_leaves).
+    let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+        != 0;
+    let dynamic_min_keep = std::env::var("WOLGES_DYNAMIC_LEAVES_MIN_KEEP")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(2);
+    // Build the board-independent v-table once (shared read-only across threads):
+    // the lattice, its add-table, and the static full-length klv0 value of every
+    // multiset. full_v needs a full-length (len 1-7) klv0, else the full-rack
+    // block reads 0 and dynamic leaves collapse.
+    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> =
+        if dynamic_leaves_on {
+            let num_letters = game_config.alphabet().len() as usize;
+            let rack_size = game_config.rack_size() as usize;
+            let lat = census::MultisetLattice::new(num_letters, rack_size);
+            let add = census::AddTable::new_with_threads(&lat, num_threads);
+            let mut full_v = vec![0i32; lat.len()];
+            census::fill_lattice_leaves(&lat, &mut full_v, |tally| {
+                arc_klv0.leave_value_from_tally(tally)
+            });
+            Some((lat, add, full_v))
+        } else {
+            None
+        };
+    let dyn_ref = dyn_ctx
+        .as_ref()
+        .map(|(lat, add, full_v)| klv::DynamicLeavesRef {
+            lat,
+            add,
+            full_v: full_v.as_slice(),
+            min_keep: dynamic_min_keep,
+        });
+    eprintln!(
+        "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
+        dynamic_leaves_on as u8,
+        if dynamic_leaves_on {
+            "dynamic leaves on for the klv0 (player 0) side"
+        } else {
+            "off, static leaves both sides"
+        },
+    );
+
     std::thread::scope(|s| -> error::Returns<()> {
         let mut thread_handles = Vec::new();
         for _ in 0..num_threads {
@@ -8263,15 +8323,15 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         }
 
                         let end_reason = loop {
+                            // The klv0 player uses arc_klv0 (swap-corrected across the
+                            // two games in the pair); it is also the side that gets
+                            // the dynamic reweight when the knob is on.
+                            let is_klv0_side = (game_state.turn == 0) != klv_swapped;
                             let board_snapshot = movegen::BoardSnapshot {
                                 board_tiles: &game_state.board_tiles,
                                 game_config: &game_config,
                                 kwg: &kwg,
-                                klv: if (game_state.turn == 0) != klv_swapped {
-                                    &arc_klv0
-                                } else {
-                                    &arc_klv1
-                                },
+                                klv: if is_klv0_side { &arc_klv0 } else { &arc_klv1 },
                             };
                             move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                                 board_snapshot: &board_snapshot,
@@ -8281,6 +8341,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     .current_player()
                                     .num_exchanges,
                                 always_include_pass: false,
+                                dynamic_leaves: if is_klv0_side { dyn_ref } else { None },
                             });
                             let play = &move_generator.plays[0].play;
                             if klv_swapped {
