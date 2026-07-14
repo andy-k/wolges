@@ -191,7 +191,13 @@ unchanged.
 
 The config name (english, french, and so on) selects only the alphabet, board
 layout, and tile set, never a particular word list, so any word graph built for
-that language works without recompiling; the file argument is that graph.
+that language works without recompiling; the file argument is that graph. The
+name also carries the board variant: a jumbled- prefix for the anagram game,
+where any arrangement of a rack's letters counts as a word and the word graph
+is an alphagram dawg rather than a spell-it-out gaddawg; a super- prefix for
+the 21x21 board; and the two combine as jumbled-super-. A -big suffix (as in
+jumbled-dutch-big) reads a word graph that uses the wider 24-bit node index,
+for word lists too large to fit the usual layout.
 
 By default the result covers only the tiles still to be played: the win, draw,
 or loss and the point margin describe the rest of the game, not the game so
