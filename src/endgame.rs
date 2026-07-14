@@ -316,7 +316,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 f32::INFINITY,
                 false,
             );
-            println!("valuation for depth {max_depth} is {valuation}");
+            println!(
+                "valuation for depth {max_depth} is {}",
+                valuation / super::equity::SCALE as f32
+            );
             self.print_progress();
             self.print_best_line(player_idx);
             // check for time limit here
@@ -696,7 +699,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 player_turn_idx,
                 self.game_config.alphabet().fmt_rack(rack),
                 "",
-                ply.equity,
+                ply.equity / super::equity::SCALE as f32,
                 ply.play.fmt(&movegen::BoardSnapshot {
                     board_tiles,
                     game_config: self.game_config,
@@ -744,7 +747,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 print!(
                     "{:width$} {}",
                     "",
-                    leftover,
+                    leftover / super::equity::SCALE as f32,
                     width = self.game_config.rack_size() as usize - rack.len(),
                 );
             }
