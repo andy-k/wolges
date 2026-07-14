@@ -313,15 +313,22 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut last_valuation = f32::NAN;
         for max_depth in 1.. {
             let old_num_state_eval = self.work_buffer.state_eval.len();
+            // reset ONCE per depth, before any aspiration re-search below, so
+            // the final accepted search's depth-limit flag is what's observed.
             self.work_buffer.depth_limited = false;
-            let valuation = self.negamax_eval(
-                0,
-                player_idx,
-                max_depth,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
-                false,
-            );
+            let valuation = if max_depth == 1 {
+                // no previous value to aim at; search the full window.
+                self.negamax_eval(
+                    0,
+                    player_idx,
+                    max_depth,
+                    f32::NEG_INFINITY,
+                    f32::INFINITY,
+                    false,
+                )
+            } else {
+                self.aspiration_search(player_idx, max_depth, last_valuation)
+            };
             last_valuation = valuation;
             if verbose {
                 println!(
@@ -343,6 +350,37 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
         last_valuation
+    }
+
+    // Aspiration window for one iterative-deepening depth. Each depth otherwise
+    // re-searches the whole tree with the full (-inf, +inf) window; instead we
+    // first search a narrow band around the previous depth's value, where the
+    // answer almost always lands, letting alpha-beta prune far more. A fail-soft
+    // result strictly inside the band is the exact value. If it falls on or
+    // outside an edge (fail-low <= lo, or fail-high >= hi), that result is only a
+    // bound, so we re-search once with the full window, which is always exact.
+    // Same converged value as the full-window search, fewer nodes.
+    fn aspiration_search(&mut self, player_idx: u8, max_depth: i8, last_valuation: f32) -> f32 {
+        // narrow band half-width, in movegen's scaled unit (equity::SCALE=1000).
+        const ASPIRATION_WINDOW: f32 = (3 * super::equity::SCALE) as f32;
+        let lo = last_valuation - ASPIRATION_WINDOW;
+        let hi = last_valuation + ASPIRATION_WINDOW;
+        let v = self.negamax_eval(0, player_idx, max_depth, lo, hi, false);
+        if v > lo && v < hi {
+            // strictly inside the band: exact.
+            v
+        } else {
+            // fail-low or fail-high: the narrow result is only a bound, so
+            // re-search the full window once for the exact value.
+            self.negamax_eval(
+                0,
+                player_idx,
+                max_depth,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                false,
+            )
+        }
     }
 
     pub fn evaluate(&mut self, player_idx: u8) {
@@ -551,16 +589,53 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 .or_insert(state_eval)
         };
 
-        // sort moves by equity desc
+        // order moves by equity descending, then negamax them in that order.
         let low_idx = state_eval.child_play_idxs[player_idx as usize];
         let high_idx = state_eval.child_play_idxs[player_idx as usize + 1];
-        self.work_buffer.child_plays[low_idx..high_idx]
-            .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
+        // Lazy move ordering (OPT-IN study lever, DEFAULT OFF). None keeps the
+        // plain full sort; Some(k) instead brings only the best k moves to the
+        // front now and sorts the remaining tail only if the search runs past
+        // them. Either way the result is value-identical -- alpha-beta returns
+        // the same value regardless of the order moves are tried. It is off by
+        // default because measurement found it SLOWER on the harvested endgame
+        // positions: bag-empty endgames have small racks, so each node's move
+        // list is short, and iterative deepening re-visits each node many
+        // times, so the full sort is already near-linear on the partly-ordered
+        // slice and the select-then-tail-sort machinery is pure overhead
+        // (about 7% slower on corpus-med at every k in 2..24). Flip to
+        // Some(6) to benchmark, or study wider/deeper position mixes.
+        const LAZY_MOVE_ORDER_PREFIX: Option<usize> = None;
+        // how far the slice is already in equity-desc order: children in
+        // [low_idx..sorted_end) are sorted, the rest keep their prior
+        // valuations until the loop reaches them and sorts the tail once.
+        let mut sorted_end = high_idx;
+        match LAZY_MOVE_ORDER_PREFIX {
+            Some(k) if high_idx - low_idx > k => {
+                let slice = &mut self.work_buffer.child_plays[low_idx..high_idx];
+                // partition the best k to the front, then order just those k.
+                slice.select_nth_unstable_by(k, |a, b| b.valuation.total_cmp(&a.valuation));
+                slice[..k].sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
+                sorted_end = low_idx + k;
+            }
+            _ => {
+                self.work_buffer.child_plays[low_idx..high_idx]
+                    .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
+            }
+        }
 
         // perform actual negamax
         let mut best_idx = !0;
         let mut best_valuation = f32::NEG_INFINITY;
         for child_play_idx in low_idx..high_idx {
+            if sorted_end < high_idx && child_play_idx == sorted_end {
+                // reached the end of the pre-selected prefix without a cutoff;
+                // sort the still-unsearched tail once and continue. the tail
+                // keeps its pre-loop valuations, so this produces exactly the
+                // order a full sort would have for those moves.
+                self.work_buffer.child_plays[sorted_end..high_idx]
+                    .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
+                sorted_end = high_idx;
+            }
             match &self.work_buffer.plays
                 [self.work_buffer.child_plays[child_play_idx].play_idx as usize]
             {

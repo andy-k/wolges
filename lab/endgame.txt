@@ -58,3 +58,35 @@ run's output can be hashed or diffed byte for byte. That makes it easy to
 bulk-time the solver over many real positions, or to catch an accidental value
 change in one pass. With the env var unset, the existing hardcoded demo
 positions run exactly as before.
+
+
+TWO SEARCH SPEEDUPS
+
+Alpha-beta search (negamax with a window of values it can stop early outside)
+prunes a branch as soon as it proves that branch cannot beat what the search
+has already found elsewhere. Both speedups here only change how fast the search
+reaches the SAME answer, never what that answer is -- alpha-beta returns the
+same value no matter how much of the tree it prunes away.
+
+Iterative deepening had been re-searching every depth from scratch with the
+widest possible window ((negative infinity, positive infinity)). Aspiration
+windows narrow that: from the second depth on, search first in a narrow band
+around the PREVIOUS depth's value, since the true value almost always lands
+close to it, which lets alpha-beta prune far more of the tree; only if the
+narrow search's result actually falls outside that band does the search widen
+and try again, so the final value is exactly what the full window would have
+found -- a modest wall-clock win, larger the deeper a position's search goes.
+
+Move ordering is the order a search tries a node's legal moves in -- trying the
+best ones first lets alpha-beta prune the rest sooner, so most nodes stop after
+a handful of moves once a cutoff fires. That makes fully sorting every node's
+whole move list on every visit look wasteful: lazy move ordering brings only
+the best few moves to the front and sorts the remainder only if the search
+actually runs past them. This is value-identical by construction -- alpha-beta
+returns the same result regardless of the order moves are tried in -- but for
+bag-empty endgames it turns out to be a slowdown, not a speedup: the move lists
+are short and iterative deepening revisits each node many times, so the full
+sort is already cheap and the extra partial-select-then-tail-sort step is pure
+overhead, about 7% slower here at every cutoff point tried. It ships off by
+default behind a const, kept as an opt-in study lever for wider or deeper
+position mixes where trying fewer moves first might still pay off.
