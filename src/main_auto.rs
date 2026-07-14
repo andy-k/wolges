@@ -439,7 +439,7 @@ fn do_it<N: kwg::Node>(
 
         display::print_game_state(game_config, &game_state, Some(&timers));
         for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
-            *d = f / equity::SCALE;
+            *d = equity::descale_score(f);
         }
         println!("Final scores: {display_scores:?}");
         let mut has_time_adjustment = false;
@@ -447,13 +447,13 @@ fn do_it<N: kwg::Node>(
             let adjustment = game_config.time_adjustment(clock_ms);
             if adjustment != 0 {
                 println!("Player {} adjustment {}", i + 1, adjustment);
-                final_scores[i] += adjustment as i32 * equity::SCALE;
+                final_scores[i] += equity::scale_score(adjustment as i32);
                 has_time_adjustment = true;
             }
         }
         if has_time_adjustment {
             for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
-                *d = f / equity::SCALE;
+                *d = equity::descale_score(f);
             }
             println!("Really final scores: {display_scores:?}");
         }

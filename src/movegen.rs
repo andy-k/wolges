@@ -2426,7 +2426,7 @@ impl<N: kwg::Node, L: kwg::Node> std::fmt::Display for WriteablePlay<'_, N, L> {
                 if inside {
                     write!(f, ")")?;
                 }
-                write!(f, " {}", score / equity::SCALE)?;
+                write!(f, " {}", equity::descale_score(*score))?;
             }
         }
         Ok(())

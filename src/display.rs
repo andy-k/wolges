@@ -383,7 +383,7 @@ impl std::fmt::Display for GameStatePrinter<'_> {
                 f,
                 "Player {}: {} {}",
                 i + 1,
-                player.score / equity::SCALE,
+                equity::descale_score(player.score),
                 self.game_config.alphabet().fmt_rack(&player.rack)
             )?;
             if let Some(game_timers) = self.optional_game_timers {

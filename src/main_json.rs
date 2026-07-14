@@ -2,8 +2,8 @@
 
 use rand::prelude::*;
 use wolges::{
-    display, error, game_config, game_state, kibitzer, klv, kwg, move_filter, move_picker, movegen,
-    play_scorer,
+    display, equity, error, game_config, game_state, kibitzer, klv, kwg, move_filter, move_picker,
+    movegen, play_scorer,
 };
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -207,8 +207,8 @@ fn main() -> error::Returns<()> {
     let mut rng = rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng)?;
     let mut game_state = game_state::GameState::new(&game_config);
     // temp hardcode
-    game_state.players[0].score = 16000;
-    game_state.players[1].score = 44000;
+    game_state.players[0].score = equity::scale_score(16);
+    game_state.players[1].score = equity::scale_score(44);
 
     let mut kibitzer = kibitzer::Kibitzer::new();
     kibitzer.prepare(&game_config, &question.rack, &question.board_tiles)?;
