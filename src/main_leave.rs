@@ -5207,19 +5207,18 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // the CI accumulator (sumsq) is needed by the post-run report AND by the adaptive
     // stop; turn it on for either.
     let ci_report = full_rack && (ci_report_level != 0 || ci_stop);
-    // WOLGES_CENSUS_SHEET_REUSE (default on; multi-gen + reset-per-board + uniform
-    // spec only): the step-1 play-value sheet depends only on the board and the unseen
-    // pool, NOT on the leaves, so with the deterministic reset-per-board sampler (same
-    // board per slot every gen, the play policy held fixed) gen 0's sheets are valid for
-    // every later gen. Cache (sheet, unseen) per board in gen 0 and reuse them in gens
-    // 1.., skipping the dominant movegen sheet build -- gens 1.. then run only
-    // best-equity + apportion. Byte-identical to recomputing; set to 0 to A/B. Disabled
-    // under the per-game sampler (different boards each gen would make the cache stale)
-    // and under a non-uniform spec (a later gen's different board count would not line
-    // up with gen 0's cached slots).
-    let uniform_boards = board_counts.iter().all(|&c| c == board_counts[0]);
-    let sheet_reuse =
-        multigen && uniform_boards && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
+    // WOLGES_CENSUS_SHEET_REUSE (default on; multi-gen + reset-per-board): the step-1
+    // play-value sheet depends only on the board and the unseen pool, NOT on the leaves,
+    // and each slot's board is a deterministic function of (seed, slot index) -- the SAME
+    // board every gen (see the per-slot rng seed below). So a slot built in any gen is
+    // valid for every later gen. Cache (sheet, unseen) per slot and reuse it: each gen
+    // builds only the slots at or beyond the running max board count of the prior gens
+    // (prior_max_boards), reusing the cached prefix below it. A uniform spec builds every
+    // slot in gen 0 and reuses in gens 1..; a growing spec (e.g. 256,512,1024) builds 256
+    // then +256 then +512 = the max (1024) once, not the sum (1792). Byte-identical to
+    // recomputing; set to 0 to A/B. Disabled under the per-game sampler (different boards
+    // each gen would make the cache stale).
+    let sheet_reuse = multigen && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
     // WOLGES_CENSUS_PERSIST_GENS (default on for multi-gen): write each completed gen's
     // leaves to census-gen-<stamp>-<NN>.klv2, so a crash loses no completed gens and
     // WOLGES_CENSUS_RESUME can continue. One in-process klv2 build per gen (cheap vs the
@@ -5588,9 +5587,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     } else {
         Vec::new()
     };
-    // per-board (sheet, unseen) cache for sheet-reuse: filled in gen 0, read in gens 1..
-    // (the multi-gen barrier orders all gen-0 writes before any gen-1 read; each board
-    // slot is written once, by whichever thread pulls it). Empty unless sheet_reuse.
+    // per-board (sheet, unseen) cache for sheet-reuse: a slot is filled by the first gen
+    // that reaches it and read by every later gen (a uniform spec fills every slot in gen
+    // 0; a growing one fills the new slots as its board count climbs). The multi-gen
+    // barrier orders a gen's writes before any later gen's reads, and each slot is written
+    // once, by whichever thread pulls it. Empty unless sheet_reuse.
     let sheet_cache: Vec<SheetCacheSlot> = if sheet_reuse {
         (0..max_boards)
             .map(|_| std::sync::Mutex::new(None))
@@ -6152,6 +6153,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 // boards for the current gen; advances with gen_idx at the
                 // multi-gen boundary below.
                 let mut num_boards = board_counts[gen_idx];
+                // running max board count of the prior gens: with sheet-reuse, a slot below
+                // this is already cached, so the growing-spec fast path builds only the new
+                // slots at or above it (0 at the start, and on resume: cache is empty).
+                let mut prior_max_boards = 0usize;
                 loop {
                     // SGD slices one gen into mini-batches; otherwise a single
                     // batch covers the whole gen (num_boards = this gen's count).
@@ -6269,11 +6274,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                         }
                     } else {
-                        // sheet-reuse: board + sheet are cached from this process's FIRST
-                        // gen (gen_idx == start_gen), so later gens skip the game replay
-                        // and re-value from the cache. On resume the cache starts empty,
-                        // so the first resumed gen rebuilds (hence > start_gen, not > 0).
-                        let reuse_board = sheet_reuse && gen_idx > start_gen;
+                        // sheet-reuse: each slot's board + sheet is cached the first gen
+                        // that reaches it. A slot below the running max of the prior gens
+                        // (prior_max_boards) is already cached, so skip the game replay and
+                        // re-value from the cache; slots at or above it are new this gen and
+                        // get built + cached. On resume the cache starts empty (prior_max 0),
+                        // so the first resumed gen rebuilds.
+                        let reuse_board = sheet_reuse && (b as usize) < prior_max_boards;
                         if !reuse_board {
                         // greedy-play fresh games (from this slot's own rng) until one
                         // reaches this slot's target fill. The target ROUND-ROBINS across
@@ -6700,6 +6707,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                             barrier.wait();
                             if gen_idx + 1 < gens {
+                                // fold the just-finished gen's board count into the running
+                                // max so the next gen reuses its cached slots (grow-to-max).
+                                prior_max_boards = prior_max_boards.max(num_boards as usize);
                                 gen_idx += 1;
                                 num_boards = board_counts[gen_idx];
                                 batch_start = 0;

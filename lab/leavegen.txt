@@ -34,6 +34,14 @@ well, which is why it is the one to reach for. Those alternatives, and every
 lever that turned out not to help, are described below; the best current way to
 run each method is collected at the end of this file.
 
+The 4x256 is shorthand for four generations of 256 boards. You can also write
+the counts out, one per generation, to let them differ -- 256,512,1024 runs
+three generations at those counts. Because every board is fixed by its position
+in the run, the larger generations reuse the boards the smaller ones already
+built: 256,512,1024 does the board work of a single 1024-board run, not the sum
+of the three. So a cheap early generation can settle the table before a costly
+last one pins it down, at no extra board cost.
+
 
 GENERATING A TABLE BY SELF-PLAY
 
