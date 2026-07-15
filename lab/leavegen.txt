@@ -175,7 +175,23 @@ million pairs the unsmoothed side leads with only about 57 percent confidence
 smoothing neither clearly helps nor clearly hurts self-play strength; it mainly
 keeps the rare leaves from swinging on a few lucky games. Smoothing is the
 default genleaves.sh uses; it turns off only when a per-generation min-samples
-count is asked for.
+count is asked for. Those figures were measured when smoothing still leaned on
+the old cube-root rule described below, so they describe a table smoothed far
+more heavily than one built today.
+
+A leave is smoothed only when it is genuinely thin. The generator counts the
+sampled racks behind a leave -- its support -- and borrows from the neighbors
+only when that count falls short of WOLGES_GENERATE_SMOOTH_MIN, 50 by default.
+Support counts samples actually taken, not how often the leave can be drawn, so
+a leave the games covered well keeps its own average however common it is. The
+earlier rule compared the leave's draw-weighted count against the cube root of
+the table's total, which mixed up the two: it smoothed roughly four leaves in
+five even when every one was well covered, pulling them toward their neighbors
+for no reason. The generate step prints how many leaves it smoothed and what
+share of the table that was, so a run that smooths nearly everything is now
+visible rather than silent.
+
+New knobs: WOLGES_GENERATE_SMOOTH_MIN.
 
 
 FORCING HARD-TO-DRAW RACKS
@@ -1851,6 +1867,13 @@ Decompose (english-generate):
       1  weight each distinct rack once, by its draw-ways (per-rack)
       0  also multiply by the rack's sampled count (per-occurrence), which
          double-counts draw frequency
+  WOLGES_GENERATE_SMOOTH_MIN (a whole number of samples; default 50) -- how
+    much support a leave needs before its own average is trusted. A leave with
+    fewer sampled racks behind it than this is smoothed: its value is borrowed
+    from its one-tile-swap neighbors. Support counts samples taken, not how
+    often the leave can be drawn, so a well-covered leave is never smoothed
+    however common it is. Raise it to smooth more of the thin tail; the
+    no-smooth variant of english-generate ignores it.
 
 Shared across builders:
   WOLGES_APPORTION (full-rack or entering; default full-rack) -- how a board's
