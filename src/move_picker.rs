@@ -22,6 +22,7 @@ const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
 // is reproducible and depends only on (decision seed, iteration index) -- never
 // on how the block's iterations were partitioned across threads. That is what
 // makes the parallel result independent of the thread count.
+#[cfg(not(target_family = "wasm"))]
 #[inline(always)]
 fn mix(decision_seed: u64, sim_iter: u64) -> u64 {
     let mut z = decision_seed.wrapping_add(sim_iter.wrapping_mul(0x9E37_79B9_7F4A_7C15));
