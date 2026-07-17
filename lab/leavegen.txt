@@ -190,15 +190,42 @@ pulled toward what similar, better-sampled racks say, steadying the leaves that
 self-play rarely deals. english-generate-no-smooth skips that and uses the
 observed averages as they stand.
 
-In head-to-head play the two are a tie. A smoothed table against an unsmoothed
-one, both built from the same self-play at two million games, lands at about
-49.99 for the smoothed side over a few hundred thousand pairs, and at two
-million pairs the unsmoothed side leads with only about 57 percent confidence
--- well short of the roughly 98 percent that would mark a real difference. So
-smoothing neither clearly helps nor clearly hurts self-play strength; it mainly
-keeps the rare leaves from swinging on a few lucky games. Smoothing is the
-default genleaves.sh uses; it turns off only when a per-generation min-samples
-count is asked for.
+Which of the two you want depends entirely on how many games you played, and
+the honest answer is that smoothing either wins outright or does nothing at
+all. It is never the thing that costs you. At fifty thousand games, where four
+leaves in five are too thin to trust, the smoothed table beats the unsmoothed
+one about 51.6 to 48.4 over a million game pairs -- a crushing margin we are
+certain of, not a coin flip. At two hundred thousand games its lead narrows to
+50.3 against 49.7, still certain. At twenty million games nothing is thin any
+more, nothing gets smoothed, and the two commands write a byte-for-byte
+identical table. The advantage fades exactly as the thin leaves do: 89 percent
+of leaves smoothed at fifty thousand games, 76 percent at two hundred
+thousand, none at twenty million.
+
+So the choice only bites on small runs, and there it is not really a choice.
+Below a certain volume the unsmoothed table is not merely noisier -- for the
+leaves nothing was ever dealt for, it has no value to report at all, and
+something has to be invented regardless. Smoothing is the default genleaves.sh
+uses; it turns off only when a per-generation min-samples count is asked for.
+
+(An older reading of this section had the two as a tie, at about 49.99 and 57
+percent confidence. That was measured when smoothing still leaned on the
+cube-root rule described below, which smoothed most of the table whether or not
+it needed it; it describes a rule nothing builds with today.)
+
+A leave is smoothed only when it is genuinely thin. The generator counts the
+sampled racks behind a leave -- its support -- and borrows from the neighbors
+only when that count falls short of WOLGES_GENERATE_SMOOTH_MIN, 50 by default.
+Support counts samples actually taken, not how often the leave can be drawn, so
+a leave the games covered well keeps its own average however common it is. The
+earlier rule compared the leave's draw-weighted count against the cube root of
+the table's total, which mixed up the two: it smoothed roughly four leaves in
+five even when every one was well covered, pulling them toward their neighbors
+for no reason. The generate step prints how many leaves it smoothed and what
+share of the table that was, so a run that smooths nearly everything is now
+visible rather than silent.
+
+New knobs: WOLGES_GENERATE_SMOOTH_MIN.
 
 
 FORCING HARD-TO-DRAW RACKS
@@ -1906,6 +1933,13 @@ Decompose (english-generate):
       1  weight each distinct rack once, by its draw-ways (per-rack)
       0  also multiply by the rack's sampled count (per-occurrence), which
          double-counts draw frequency
+  WOLGES_GENERATE_SMOOTH_MIN (a whole number of samples; default 50) -- how
+    much support a leave needs before its own average is trusted. A leave with
+    fewer sampled racks behind it than this is smoothed: its value is borrowed
+    from its one-tile-swap neighbors. Support counts samples taken, not how
+    often the leave can be drawn, so a well-covered leave is never smoothed
+    however common it is. Raise it to smooth more of the thin tail; the
+    no-smooth variant of english-generate ignores it.
 
 Shared across builders:
   WOLGES_APPORTION (full-rack or entering; default full-rack) -- how a board's

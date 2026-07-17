@@ -7151,6 +7151,10 @@ fn generate_leaves<
 
     // subrack_map[subrack] = sum(full_rack_map[subrack + completion]).
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    // raw sample support per subrack: the total sampled count of the full racks that feed
+    // it (NOT the draw-ways-weighted count carried in subrack_map). Filled only when
+    // smoothing; the gate below smooths a subrack whose support is below the floor.
+    let mut subrack_support = fash::MyHashMap::<bites::Bites, u64>::default();
     {
         let word_prob = prob::WordProbability::new(game_config.alphabet());
         let mut full_rack_tally = vec![0u8; rack_tally.len()];
@@ -7181,6 +7185,11 @@ fn generate_leaves<
                             equity: add_equity,
                             count: add_count,
                         });
+                    if DO_SMOOTHING {
+                        // raw support: this rack adds its own sampled count to every
+                        // subrack it covers, independent of the draw-ways weight above.
+                        *subrack_support.entry(subrack_bytes.into()).or_insert(0u64) += fv.count;
+                    }
                 },
                 rack_tally: &mut rack_tally,
                 min_len: 0,
@@ -7223,12 +7232,21 @@ fn generate_leaves<
             let count = u64::from_str(&record[2])?;
             parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
             pool_rare_one(&mut subrack_map, &rack_bytes, equity, count);
+            if DO_SMOOTHING {
+                *subrack_support.entry(rack_bytes[..].into()).or_insert(0u64) += count;
+            }
         }
     }
 
-    let threshold_count = if DO_SMOOTHING {
-        let total_count = subrack_map.values().fold(0, |a, x| a + x.count);
-        (total_count as f64).cbrt().ceil() as u64 // inaccurate after 2^53
+    // A subrack is smoothed (its value borrowed from its one-tile-swap neighbors) only
+    // when its raw sample support -- the count of actual samples behind the mean, not the
+    // draw-ways-weighted count in subrack_map -- is below this floor. Keying on samples
+    // means a well-sampled leave is never smoothed no matter how common; the old
+    // cube-root-of-the-total rule smoothed most leaves even at full coverage. Default 50;
+    // raise to smooth more of the thin tail, lower (or --no-smooth) to trust the sampled
+    // means as they are.
+    let smooth_min = if DO_SMOOTHING {
+        env_usize("WOLGES_GENERATE_SMOOTH_MIN", 50) as u64
     } else {
         0
     };
@@ -7245,7 +7263,9 @@ fn generate_leaves<
     generate_exchanges(&mut ExchangeEnv {
         found_exchange_move: |rack_bytes: &[u8]| {
             let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
-                if !DO_SMOOTHING || v.count >= threshold_count {
+                if !DO_SMOOTHING
+                    || subrack_support.get(rack_bytes).copied().unwrap_or(0) >= smooth_min
+                {
                     v.equity / v.count as f64
                 } else {
                     // perform smoothing if there are too few samples.
@@ -7302,10 +7322,16 @@ fn generate_leaves<
     drop(neighbor_buffer);
     writeln!(
         stdout_or_stderr,
-        "After {} seconds, have processed {} subracks and smoothed {}",
+        "After {} seconds, have processed {} subracks and smoothed {} ({:.1}% below support floor {})",
         t0.elapsed().as_secs(),
         ev_map.len(),
         num_smoothed,
+        if ev_map.is_empty() {
+            0.0
+        } else {
+            100.0 * num_smoothed as f64 / ev_map.len() as f64
+        },
+        smooth_min,
     )?;
     {
         // make expected values relative to value of empty rack.
