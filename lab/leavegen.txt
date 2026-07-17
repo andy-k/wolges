@@ -225,7 +225,22 @@ for no reason. The generate step prints how many leaves it smoothed and what
 share of the table that was, so a run that smooths nearly everything is now
 visible rather than silent.
 
-New knobs: WOLGES_GENERATE_SMOOTH_MIN.
+A sample count is only a stand-in for the question that matters, which is
+whether the leave's average is pinned down at all. Fifty samples that agree
+closely pin a value; fifty that disagree do not, and no count can tell the two
+apart. WOLGES_GENERATE_SMOOTH_CI asks the real question: it measures how far a
+leave's own samples spread, works out how wide an interval its average sits in,
+and smooths the leave when that interval is wider than the width you name. It
+tightens the floor rather than replacing it -- a leave must now clear both --
+because two samples that happen to agree spread by zero and would look
+perfectly pinned when they say almost nothing. Working out that spread needs
+more than the summary holds, so an autoplay pass now writes a sum-of-squares
+sidecar beside it (summary-sq-<stamp>), which you hand to
+WOLGES_GENERATE_SMOOTH_SQ. Both are off by default, so the floor alone decides
+unless you ask for more.
+
+New knobs: WOLGES_GENERATE_SMOOTH_CI, WOLGES_GENERATE_SMOOTH_CONF,
+WOLGES_GENERATE_SMOOTH_MIN, WOLGES_GENERATE_SMOOTH_SQ.
 
 
 FORCING HARD-TO-DRAW RACKS
@@ -1933,6 +1948,27 @@ Decompose (english-generate):
       1  weight each distinct rack once, by its draw-ways (per-rack)
       0  also multiply by the rack's sampled count (per-occurrence), which
          double-counts draw frequency
+  WOLGES_GENERATE_SMOOTH_CI (a width in points; default 0.0, off) -- smooth a
+    leave whose average is not pinned down, however many samples it has. With a
+    width set, a leave is trusted only if its average sits inside an interval
+    no wider than this, measured from how far its own samples spread. This asks
+    the question the sample floor below only stands in for: fifty samples that
+    agree closely pin a value down, fifty that disagree do not. It tightens the
+    floor rather than replacing it -- both tests must pass -- because two
+    samples that agree by luck spread by zero and would otherwise look
+    perfectly pinned. Needs the sum-of-squares column; a summary written before
+    that column existed falls back to the floor alone.
+  WOLGES_GENERATE_SMOOTH_CONF (a decimal 0-1; default 0.99) -- how sure the
+    interval above has to be. Read only when WOLGES_GENERATE_SMOOTH_CI is set.
+  WOLGES_GENERATE_SMOOTH_SQ (a file path; default unset, off) -- the
+    sum-of-squares sidecar an autoplay pass writes beside its summary, named
+    summary-sq-<stamp>. It is what tells WOLGES_GENERATE_SMOOTH_CI how far each
+    rack's samples spread; without it no interval can be worked out and every
+    leave falls back to the sample floor. It has the same shape as a summary,
+    totals line and all, so english-resummarize pools a pile of sidecars just
+    as it pools the summaries they came from. Its count column repeats the
+    summary's, and a rack whose counts disagree is skipped -- a sidecar that
+    does not belong to the summary describes different samples.
   WOLGES_GENERATE_SMOOTH_MIN (a whole number of samples; default 50) -- how
     much support a leave needs before its own average is trusted. A leave with
     fewer sampled racks behind it than this is smoothed: its value is borrowed
