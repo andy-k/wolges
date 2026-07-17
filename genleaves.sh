@@ -5,8 +5,6 @@ set -euo pipefail
 full_mode=""
 klv1_mode=""
 logs_mode=""
-smooth_mode=""
-no_smooth_mode=""
 gilles_mode=""
 no_forcing_mode=""
 while :; do
@@ -26,16 +24,6 @@ while :; do
   fi
   if [ "${1:-}" = "--logs" ]; then
     logs_mode=1
-    shift
-    continue
-  fi
-  if [ "${1:-}" = "--smooth" ]; then
-    smooth_mode=1
-    shift
-    continue
-  fi
-  if [ "${1:-}" = "--no-smooth" ]; then
-    no_smooth_mode=1
     shift
     continue
   fi
@@ -99,8 +87,6 @@ options:
   --full        generate full-rack leaves
   --klv1        use klv1 instead of klv2 (not recommended)
   --logs        log complete games (not recommended if not needed)
-  --smooth      enable smoothing (default without :min_samples_per_rack or with :0)
-  --no-smooth   disable smoothing (default with :min_samples_per_rack)
   --no-forcing  disable full-rack forcing (on by default for autoplay). by
                 default the autoplay path forces each undersampled full rack to
                 the per-gen :min (defaulting :min to 1 = cover each
@@ -112,8 +98,7 @@ options:
                 mandatory games, remediation games direct their samples at racks
                 still seen fewer than that many times until every rack reaches it
                 (or no further progress is possible). :0 (or omitted) is pure
-                board sampling. like autoplay, a nonzero :min_samples_per_rack
-                defaults to no smoothing; use --smooth to override
+                board sampling.
 EOF
   exit 2
 fi
@@ -183,10 +168,7 @@ last_leave="-"
 
 # continue from previous run if found
 while :; do
-  if [ -e "leaves-smooth$[num_processed + 1].${klv_ext}" ]; then
-    last_leave="leaves-smooth$[num_processed + 1].${klv_ext}"
-    let num_processed=num_processed+1
-  elif [ -e "leaves$[num_processed + 1].${klv_ext}" ]; then
+  if [ -e "leaves$[num_processed + 1].${klv_ext}" ]; then
     last_leave="leaves$[num_processed + 1].${klv_ext}"
     let num_processed=num_processed+1
   else
@@ -210,24 +192,11 @@ while [ "${!i:-}" != "" ]; do
     fi
   fi
 
-  should_smooth=0
-  if [ "$after_colon" = "0" ]; then
-    should_smooth=1
-  fi
-  if [ "$smooth_mode" ]; then
-    should_smooth=1
-  fi
-  if [ "$no_smooth_mode" ]; then
-    should_smooth=0
-  fi
-
+  # every generation smooths: a leave too thinly sampled to trust borrows from its
+  # neighbors, and a well-sampled one keeps its own average untouched, so there is
+  # nothing left to turn off. leaves<N> needs no qualifier now that there is one kind.
   effective_generate_subcommand="${generate_subcommand}"
-  leave_name="leaves-smooth"
-  if [ "$should_smooth" = "0" ]; then
-    # this must come after full_mode
-    effective_generate_subcommand="${generate_subcommand}-no-smooth"
-    leave_name="leaves"
-  fi
+  leave_name="leaves"
 
   # rare-subrack coverage summary (only produced by autoplay when :min_samples > 0).
   # left empty when forcing is off, so the gilles path and the no-forcing
