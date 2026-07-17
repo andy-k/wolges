@@ -22,17 +22,32 @@ TL;DR -- IF YOU JUST WANT A GOOD TABLE
 Run this. The census works out every leave's value exactly, one board at a
 time, and needs no environment variables:
 
-  cargo run --release --bin leave -- english-census CSW24.kwg - - 4x256
+  cargo run --release --bin leave -- english-census CSW24.kwg - - 3x256,2048
 
-That builds a competitive table with no tuning: 4 generations of 256 boards,
-which is enough for the leaves to settle, iterated from the null starting
-tables (the two "-"). Every default is already the one to ship. The 256-board
-count is measured on this English word list; for a different tile set, let the
-adaptive stop described below size the run to the leaves themselves. The census
-builds faster than plain self-play or board sampling and plays at least as
-well, which is why it is the one to reach for. Those alternatives, and every
-lever that turned out not to help, are described below; the best current way to
-run each method is collected at the end of this file.
+That builds a competitive table with no tuning: three cheap generations of 256
+boards to settle the leaves, then one generation of 2048 boards to pin them
+down (3x256 is shorthand for three of them), iterated from the null starting
+tables (the two "-"). Every default is already the one to ship. Those counts
+are measured on this English word list, not universal constants; a different
+tile set wants its own sweep, and the adaptive stop described below is not the
+shortcut around it that it looks like. The census builds faster than plain
+self-play or board sampling and plays at least as well, which is why it is the
+one to reach for. Those alternatives, and every lever that turned out not to
+help, are described below; the best current way to run each method is collected
+at the end of this file.
+
+The last generation's board count is the number that matters, and it is the
+only reason this costs more than the older recommendation of 4x256 (four
+generations of 256). Both are worth knowing. 4x256 finishes in about 44 seconds
+to this one's 142, because every board is fixed by its position in the run, so
+4x256 builds 256 boards and reuses them while 3x256,2048 must build all 2048
+for its last generation. What the extra wait buys is about a hundredth of a
+percentage point: 4096 boards beat 256 by roughly 50.02 to 49.98 over five
+million game pairs, and 3x256,2048 edges 4x256 by a similar hair on every seed
+tried. Small -- but it has landed the same way every time it has been measured,
+so 4x256 is not the best table, just a very close and much faster one. Reach
+for 4x256 while iterating, and for 3x256,2048 when the table is one you mean to
+keep. Fewer than 2048 boards in the final generation gives the edge back.
 
 The 4x256 is shorthand for four generations of 256 boards. You can also write
 the counts out, one per generation, to let them differ -- 256,512,1024 runs
@@ -1777,14 +1792,46 @@ good table, use the census.
 Census -- exact, and the one to use. It values every leave on a board exactly,
 then averages over many boards.
 
+    cargo run --release --bin leave -- english-census CSW24.kwg - - 3x256,2048
+
+Three cheap generations of 256 boards settle the leaves, then one generation of
+2048 pins them down. There is a cheaper recipe worth knowing, and which you
+want depends on what the table is for:
+
     cargo run --release --bin leave -- english-census CSW24.kwg - - 4x256
 
-4 generations of 256 boards settles the leaves: adding more boards or
-generations no longer moves the table. That 256 is measured on this English
-word list, not a universal constant; for a different tile set, let the run
-size itself with the adaptive stop (WOLGES_CENSUS_CI_STOP_FRAC, in the
-confidence-interval section earlier in this file), which ends a run once the
-leaves have settled to a target width instead of at a preset count.
+4x256 takes about 44 seconds against roughly 142 for 3x256,2048, because every
+board is fixed by its position in the run: 4x256 builds 256 boards and reuses
+them for its later generations, while 3x256,2048 must build all 2048 for its
+last one. Three times the wait buys about a hundredth of a percentage point --
+4096 boards beat 256 by about 50.02 to 49.98 over five million game pairs, and
+3x256,2048 edges 4x256 by a similar hair on every seed tried. That is a small
+edge, but it has fallen the same way every time it has been measured, so 4x256
+is not quite the best table, only a very close and much faster one. Take 4x256
+while iterating; take 3x256,2048 for a table you intend to keep.
+
+Below 2048 boards in the final generation the edge goes away, and more
+generations do not pay -- a fifth measured no better than the third. Those
+counts are measured on this English word list, not universal constants, so a
+different tile set wants its own sweep rather than these numbers taken on
+faith.
+
+The adaptive stop (WOLGES_CENSUS_CI_STOP_FRAC, in the confidence-interval
+section earlier in this file) looks like the way to avoid that sweep: it ends a
+run once the leaves have settled to a target width rather than at a preset
+count. Do not reach for it expecting a free lunch. Asked to stop once nine
+leaves in ten had settled, it stopped after 576 boards and produced a table
+that lost to 3x256,2048 by about 0.14 of a percentage point -- a real loss, not
+noise. Settling by that measure is evidently not the same as playing as well,
+so a stop wants a far stricter fraction than nine in ten, and wants checking
+against a fixed-count table before being trusted. Note also that the stop
+requires WOLGES_CENSUS_RACK_SUMMARY=1, which makes the census write a rack
+summary to decompose rather than a table directly, and that it runs as a single
+generation -- so it reads from an already-settled table rather than the null
+one, since one generation never iterates the leaves. That measurement changed
+two things at once (the stop and the rack summary), so which of them cost the
+0.14 is not yet pinned down.
+
 WOLGES_POOL_* shift the board window; for dynamic leaves add WOLGES_FULL=1 to
 keep the full-length values.
 
