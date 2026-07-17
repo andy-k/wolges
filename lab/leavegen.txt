@@ -93,11 +93,10 @@ The third step turns that tally into a leave table, valuing each leave from the
 racks that hold it. Each leave's value is the average of the best-play values
 of the fuller racks that contain it, where a rack counts more the more often it
 came up and the more ways its extra tiles could have been drawn from the bag.
-The whole table is then shifted so the empty leave is worth zero. There are two
-variants -- smoothed and not (the difference is discussed below):
+The whole table is then shifted so the empty leave is worth zero. Leaves too
+thinly sampled to trust borrow their value from their neighbors on the way out
+(discussed below):
 
-  cargo run --release --bin leave -- \
-    english-generate-no-smooth summary.csv leaves.csv
   cargo run --release --bin leave -- \
     english-generate summary.csv leaves.csv
 
@@ -182,31 +181,53 @@ against a self-play table (confidence 100), and null against null is 50.00 by
 symmetry.
 
 
-SMOOTHING, OR NOT
+SMOOTHING
 
-The generate step comes in two variants. The plain english-generate smooths the
-table: a rack seen only a handful of times has a noisy average, so its value is
-pulled toward what similar, better-sampled racks say, steadying the leaves that
-self-play rarely deals. english-generate-no-smooth skips that and uses the
-observed averages as they stand.
+The generate step steadies the leaves it could not measure well. A rack seen
+only a handful of times has a noisy average, so its value is pulled toward what
+similar, better-sampled racks say; a rack no game ever dealt has no average at
+all, and its value is filled in from those neighbors outright. A rack the games
+covered properly keeps exactly the average they measured, untouched.
 
-Which of the two you want depends entirely on how many games you played, and
-the honest answer is that smoothing either wins outright or does nothing at
-all. It is never the thing that costs you. At fifty thousand games, where four
-leaves in five are too thin to trust, the smoothed table beats the unsmoothed
-one about 51.6 to 48.4 over a million game pairs -- a crushing margin we are
-certain of, not a coin flip. At two hundred thousand games its lead narrows to
-50.3 against 49.7, still certain. At twenty million games nothing is thin any
-more, nothing gets smoothed, and the two commands write a byte-for-byte
-identical table. The advantage fades exactly as the thin leaves do: 89 percent
-of leaves smoothed at fifty thousand games, 76 percent at two hundred
-thousand, none at twenty million.
+There used to be a second variant, english-generate-no-smooth, that skipped all
+of that and used the observed averages as they stood. It is gone, because
+measuring it left nothing for it to be good at. Smoothing either wins outright
+or does nothing whatsoever, and it never costs anything. Sweeping the number of
+self-play games, each table played its unsmoothed twin over a million game
+pairs:
 
-So the choice only bites on small runs, and there it is not really a choice.
-Below a certain volume the unsmoothed table is not merely noisier -- for the
-leaves nothing was ever dealt for, it has no value to report at all, and
-something has to be invented regardless. Smoothing is the default genleaves.sh
-uses; it turns off only when a per-generation min-samples count is asked for.
+    games        leaves smoothed   smoothed side won
+    50,000            89%               51.61   certain
+    200,000           76%               50.32   certain
+    1,000,000         52%               50.03   not resolved
+    5,000,000         26%               50.00   dead level
+    20,000,000         0%               identical file
+
+Every row landed on the same side of 50 and not one below it. The lead fades
+exactly as the thin leaves do, and the last two rows are the telling ones: at
+five million games a quarter of the table still gets smoothed and it plays
+dead level, so smoothing the thin tail is not merely harmless once it stops
+firing -- it is free even while it fires. At twenty million nothing is thin, so
+nothing is smoothed and the two commands write a byte-for-byte identical file.
+
+So there was never a run on which you wanted the unsmoothed table. On a large
+one it gave you the same file; on a small one it gave you a worse one, and for
+the leaves nothing was ever dealt for it had nothing to report at all --
+something had to be invented regardless, so "no smoothing" was never quite
+truthful. A knob whose every setting is either identical or worse is not a
+choice, it is a way to make a mistake, so the variant and genleaves.sh's
+--smooth / --no-smooth flags are retired.
+
+What is left is which leaves count as too thin, and that is worth tuning: see
+WOLGES_GENERATE_SMOOTH_MIN and WOLGES_GENERATE_SMOOTH_CI below. Setting the
+floor to 0 keeps every average that was actually measured, however few samples
+stand behind it, and leaves only the racks nothing was ever dealt for to borrow
+a value. That is close to what the retired variant did, but it is not the same
+thing: that one sent every unmeasured leave to the fallback instead, which
+averages the subracks one tile shorter rather than the neighbors one tile
+swapped, so the two disagree on the roughly two leaves in five a small run
+never deals at all. Neither is "no invented values" -- there is no such option,
+because a leave no game dealt has nothing to report.
 
 (An older reading of this section had the two as a tie, at about 49.99 and 57
 percent confidence. That was measured when smoothing still leaned on the
@@ -338,8 +359,7 @@ mostly from one-of-a-kind tiles -- a rack that wants the Q, say -- is hard to
 draw, so across a whole run it turns up only a handful of times, or never. Its
 leaves then rest on very few samples or none, and english-generate has to guess
 their value from the fuller racks it did see rather than measure it directly.
-(The plain english-generate does exactly that filling-in, called smoothing; the
-english-generate-no-smooth variant leaves an unmeasured leave alone instead.)
+(english-generate does exactly that filling-in, called smoothing.)
 The question this raises: if we spent the effort to sample those rare racks
 enough to measure them, would the resulting table play any better?
 
@@ -1974,8 +1994,9 @@ Decompose (english-generate):
     fewer sampled racks behind it than this is smoothed: its value is borrowed
     from its one-tile-swap neighbors. Support counts samples taken, not how
     often the leave can be drawn, so a well-covered leave is never smoothed
-    however common it is. Raise it to smooth more of the thin tail; the
-    no-smooth variant of english-generate ignores it.
+    however common it is. Raise it to smooth more of the thin tail; set it to 0
+    to keep every measured average and leave only the racks nothing was dealt
+    for to borrow one.
 
 Shared across builders:
   WOLGES_APPORTION (full-rack or entering; default full-rack) -- how a board's

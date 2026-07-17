@@ -745,30 +745,8 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 )?;
                 Ok(true)
             }
-            "-generate-no-smooth" => {
-                generate_leaves::<_, _, false, false>(
-                    make_game_config(),
-                    csv::ReaderBuilder::new()
-                        .has_headers(false)
-                        .from_reader(make_reader(&args[2])?),
-                    csv::Writer::from_writer(make_writer(&args[3])?),
-                    args.get(4).map(|x| x.as_str()),
-                )?;
-                Ok(true)
-            }
             "-generate" => {
-                generate_leaves::<_, _, true, false>(
-                    make_game_config(),
-                    csv::ReaderBuilder::new()
-                        .has_headers(false)
-                        .from_reader(make_reader(&args[2])?),
-                    csv::Writer::from_writer(make_writer(&args[3])?),
-                    args.get(4).map(|x| x.as_str()),
-                )?;
-                Ok(true)
-            }
-            "-generate-full-no-smooth" => {
-                generate_leaves::<_, _, false, true>(
+                generate_leaves::<_, _, false>(
                     make_game_config(),
                     csv::ReaderBuilder::new()
                         .has_headers(false)
@@ -779,7 +757,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 Ok(true)
             }
             "-generate-full" => {
-                generate_leaves::<_, _, true, true>(
+                generate_leaves::<_, _, true>(
                     make_game_config(),
                     csv::ReaderBuilder::new()
                         .has_headers(false)
@@ -851,14 +829,13 @@ fn main() -> error::Returns<()> {
     summarize logfile into summary.csv
   english-resummarize concatenated_summaries.csv summary.csv
     combine multiple summaries into one summary.csv and recompute totals
-  english-generate-no-smooth summary.csv leaves.csv [rare.csv]
-    generate leaves (no smoothing) up to rack_size - 1
   english-generate summary.csv leaves.csv [rare.csv]
-    generate leaves (with smoothing) up to rack_size - 1
-  english-generate-full-no-smooth summary.csv leaves.csv [rare.csv]
-    generate leaves (no smoothing) up to rack_size
+    generate leaves up to rack_size - 1
   english-generate-full summary.csv leaves.csv [rare.csv]
-    generate leaves (with smoothing) up to rack_size
+    generate leaves up to rack_size
+    a leave too thinly sampled to trust borrows its value from its
+    one-tile-swap neighbors; tune which those are via
+    WOLGES_GENERATE_SMOOTH_MIN / _CI
     [rare.csv] on any -generate adds direct coverage for undersampled subracks
   english-playability CSW24.kwg leave.klv 1000000 [seed]
     autoplay (not saved) and record prorated found best words (at the end)
@@ -7130,12 +7107,7 @@ fn decompose_contribution(fv: &Cumulate, w: u64, per_rack: bool) -> (f64, u64) {
     }
 }
 
-fn generate_leaves<
-    Readable: std::io::Read,
-    W: std::io::Write,
-    const DO_SMOOTHING: bool,
-    const IS_FULL_RACK: bool,
->(
+fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RACK: bool>(
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
@@ -7276,18 +7248,16 @@ fn generate_leaves<
                             // spread is tracked in subrack_raw below instead.
                             sumsq: 0.0,
                         });
-                    if DO_SMOOTHING {
-                        // raw support: this rack adds its own sampled count to every
-                        // subrack it covers, independent of the draw-ways weight above.
-                        *subrack_support.entry(subrack_bytes.into()).or_insert(0u64) += fv.count;
-                        // and its raw sum and squares, so the gate can weigh how tightly
-                        // the samples agree rather than only how many there are.
-                        let e = subrack_raw
-                            .entry(subrack_bytes.into())
-                            .or_insert((0.0f64, 0.0f64));
-                        e.0 += fv.equity;
-                        e.1 += fv.sumsq;
-                    }
+                    // raw support: this rack adds its own sampled count to every
+                    // subrack it covers, independent of the draw-ways weight above.
+                    *subrack_support.entry(subrack_bytes.into()).or_insert(0u64) += fv.count;
+                    // and its raw sum and squares, so the gate can weigh how tightly
+                    // the samples agree rather than only how many there are.
+                    let e = subrack_raw
+                        .entry(subrack_bytes.into())
+                        .or_insert((0.0f64, 0.0f64));
+                    e.0 += fv.equity;
+                    e.1 += fv.sumsq;
                 },
                 rack_tally: &mut rack_tally,
                 min_len: 0,
@@ -7334,14 +7304,12 @@ fn generate_leaves<
             let sumsq = f64::NAN;
             parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
             pool_rare_one(&mut subrack_map, &rack_bytes, equity, count, sumsq);
-            if DO_SMOOTHING {
-                *subrack_support.entry(rack_bytes[..].into()).or_insert(0u64) += count;
-                let e = subrack_raw
-                    .entry(rack_bytes[..].into())
-                    .or_insert((0.0f64, 0.0f64));
-                e.0 += equity;
-                e.1 += sumsq;
-            }
+            *subrack_support.entry(rack_bytes[..].into()).or_insert(0u64) += count;
+            let e = subrack_raw
+                .entry(rack_bytes[..].into())
+                .or_insert((0.0f64, 0.0f64));
+            e.0 += equity;
+            e.1 += sumsq;
         }
     }
 
@@ -7350,13 +7318,14 @@ fn generate_leaves<
     // draw-ways-weighted count in subrack_map -- is below this floor. Keying on samples
     // means a well-sampled leave is never smoothed no matter how common; the old
     // cube-root-of-the-total rule smoothed most leaves even at full coverage. Default 50;
-    // raise to smooth more of the thin tail, lower (or --no-smooth) to trust the sampled
-    // means as they are.
-    let smooth_min = if DO_SMOOTHING {
-        env_usize("WOLGES_GENERATE_SMOOTH_MIN", 50) as u64
-    } else {
-        0
-    };
+    // raise to smooth more of the thin tail, lower to trust more of the sampled means as
+    // they stand. Set it to 0 and every average that was actually measured is kept,
+    // however few samples stand behind it; only a rack nothing was ever dealt for still
+    // borrows, because it has nothing of its own to report. That is NOT the retired
+    // no-smoothing variant: that one sent every unmeasured leave to the length-shorter
+    // fallback below instead of the one-tile-swap borrow, so the two part company over
+    // the leaves a small run never deals -- about two in five of them.
+    let smooth_min = env_usize("WOLGES_GENERATE_SMOOTH_MIN", 50) as u64;
     // WOLGES_GENERATE_SMOOTH_CI (a width in points; default 0.0, off) -- the principled
     // form of the same question. A sample floor answers "enough samples?" with a bare
     // count, which is a stand-in for what actually matters: is this leave's mean pinned
@@ -7366,11 +7335,7 @@ fn generate_leaves<
     // .99), the same precision test the census applies to its own leaves. Needs the
     // squares column: summaries written before it existed carry no spread (NAN), and
     // those leaves fall back to the sample floor rather than guess.
-    let smooth_ci = if DO_SMOOTHING {
-        env_parse::<f64>("WOLGES_GENERATE_SMOOTH_CI", 0.0)
-    } else {
-        0.0
-    };
+    let smooth_ci = env_parse::<f64>("WOLGES_GENERATE_SMOOTH_CI", 0.0);
     let smooth_ci_conf = env_parse::<f64>("WOLGES_GENERATE_SMOOTH_CONF", 0.99);
     let smooth_ci_conf = if smooth_ci_conf > 0.0 && smooth_ci_conf < 1.0 {
         smooth_ci_conf
@@ -7421,21 +7386,15 @@ fn generate_leaves<
     let mut alphabet_freqs = (0..game_config.alphabet().len())
         .map(|tile| game_config.alphabet().freq(tile))
         .collect::<Box<_>>();
-    let mut neighbor_buffer = if DO_SMOOTHING {
-        Vec::with_capacity(game_config.rack_size() as usize)
-    } else {
-        Vec::new()
-    };
+    let mut neighbor_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let mut num_smoothed = 0u64;
     generate_exchanges(&mut ExchangeEnv {
         found_exchange_move: |rack_bytes: &[u8]| {
             let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
-                if !DO_SMOOTHING
-                    || well_sampled(
-                        rack_bytes,
-                        subrack_support.get(rack_bytes).copied().unwrap_or(0),
-                    )
-                {
+                if well_sampled(
+                    rack_bytes,
+                    subrack_support.get(rack_bytes).copied().unwrap_or(0),
+                ) {
                     v.equity / v.count as f64
                 } else {
                     // perform smoothing if there are too few samples.
@@ -7444,7 +7403,7 @@ fn generate_leaves<
             } else {
                 f64::NAN
             };
-            if DO_SMOOTHING && new_v.is_nan() {
+            if new_v.is_nan() {
                 rack_tally.iter_mut().for_each(|m| *m = 0);
                 rack_bytes
                     .iter()
