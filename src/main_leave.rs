@@ -5250,9 +5250,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // each gen would make the cache stale).
     let sheet_reuse = multigen && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
     // A sheet is a lat_len-sized array (tens of megabytes), so a gen caches one only when
-    // a later gen will read it back: only the slots below live_after[gen_idx]. The last
-    // gen's live_after is 0, so it caches nothing at all. See census_sheet_reuse_plan for
-    // both quantities.
+    // a later gen will read it back -- only the slots below live_after[gen_idx] -- and
+    // frees the ones at or above it once the gen ends. The last gen's live_after is 0, so
+    // it caches nothing at all and frees the rest. See census_sheet_reuse_plan.
     let (live_after, sheet_cache_len) = census_sheet_reuse_plan(&board_counts);
     // nothing is cached at all when sheet-reuse is off, so the cache stays empty.
     let sheet_cache_len = if sheet_reuse { sheet_cache_len } else { 0 };
@@ -5627,11 +5627,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // per-board (sheet, unseen) cache for sheet-reuse: a slot is filled by the first gen
     // that reaches it AND that a later gen will read back (live_after), then read by every
     // later gen (a uniform spec fills every slot in gen 0; a growing one fills the new
-    // slots as its board count climbs; the last gen fills nothing). The multi-gen barrier
-    // orders a gen's writes before any later gen's reads, and each slot is written once, by
-    // whichever thread pulls it. Sized to sheet_cache_len -- the highest slot any gen
-    // actually caches, which a spec whose last gen is its largest keeps far below that
-    // gen's board count. Empty unless sheet_reuse.
+    // slots as its board count climbs; the last gen fills nothing), then freed at the gen
+    // boundary past which no gen reads it. The multi-gen barrier orders a gen's writes
+    // before any later gen's reads, and each slot is written once, by whichever thread
+    // pulls it. Sized to sheet_cache_len -- the highest slot any gen actually caches, which
+    // a spec whose last gen is its largest keeps far below that gen's board count. Empty
+    // unless sheet_reuse.
     let sheet_cache: Vec<SheetCacheSlot> = (0..sheet_cache_len)
         .map(|_| std::sync::Mutex::new(None))
         .collect();
@@ -6745,6 +6746,22 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                             "census: gen {} klv2 persist failed: {e}",
                                             gen_idx + 1
                                         ),
+                                    }
+                                }
+                                // sheet-reuse: this gen was the last reader of every slot
+                                // at or above live_after[gen_idx] -- no later gen has that
+                                // many boards -- so drop those sheets now rather than hold
+                                // tens of megabytes each to the end of the run. A spec that
+                                // narrows (200,1000,400,300) sheds its tail as it goes: the
+                                // 400-board gen is the last to want slots 300..400, so they
+                                // go before the 300-board gen starts. The final gen frees
+                                // the lot, ahead of the CI report and the klv2 write. Safe
+                                // here: every worker has passed the barrier above, so this
+                                // gen's reads are done, and they are parked on the barrier
+                                // below until the leader finishes.
+                                if sheet_reuse {
+                                    for slot in sheet_cache.iter().skip(live_after[gen_idx]) {
+                                        *slot.lock().unwrap() = None;
                                     }
                                 }
                             }
