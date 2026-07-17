@@ -2084,30 +2084,12 @@ fn generate_autoplay_logs<
                                     // decomposes it without the per-occurrence
                                     // pollution that subrack targeting was invented to
                                     // avoid.
-                                    thread_full_rack_map
-                                        .entry(sample_rack_buf[..].into())
-                                        .and_modify(|e| {
-                                            e.equity += rounded_equity;
-                                            e.count += 1;
-                                        })
-                                        .or_insert(Cumulate {
-                                            equity: rounded_equity,
-                                            count: 1,
-                                        });
+                                    pool_one(&mut thread_full_rack_map, &sample_rack_buf[..], rounded_equity);
                                 } else {
                                     // attribute to the target subrack S only, count exactly 1
                                     // (no positional multiplicity): S is the subrack, not a
                                     // positional subset of the built rack.
-                                    thread_rare_subrack_map
-                                        .entry(s_subrack[..].into())
-                                        .and_modify(|e| {
-                                            e.equity += rounded_equity;
-                                            e.count += 1;
-                                        })
-                                        .or_insert(Cumulate {
-                                            equity: rounded_equity,
-                                            count: 1,
-                                        });
+                                    pool_one(&mut thread_rare_subrack_map, &s_subrack[..], rounded_equity);
                                 }
                                 undersampled_thread_racks
                                     .swap_remove(chosen_undersampled_thread_rack_index);
@@ -2267,16 +2249,7 @@ fn generate_autoplay_logs<
                                 if let Some(l) = &last_kept[old_turn as usize]
                                     && !l.is_empty()
                                 {
-                                    thread_full_rack_map
-                                        .entry(l[..].into())
-                                        .and_modify(|e| {
-                                            e.equity += rounded_equity;
-                                            e.count += 1;
-                                        })
-                                        .or_insert(Cumulate {
-                                            equity: rounded_equity,
-                                            count: 1,
-                                        });
+                                    pool_one(&mut thread_full_rack_map, &l[..], rounded_equity);
                                 }
                                 // update this player's entering leave for next turn:
                                 // the drawn rack minus the tiles this play used.
@@ -2311,16 +2284,7 @@ fn generate_autoplay_logs<
                                     slot => *slot = Some(aft_rack_entering.clone()),
                                 }
                             } else {
-                                thread_full_rack_map
-                                    .entry(cur_rack_as_vec[..].into())
-                                    .and_modify(|e| {
-                                        e.equity += rounded_equity;
-                                        e.count += 1;
-                                    })
-                                    .or_insert(Cumulate {
-                                        equity: rounded_equity,
-                                        count: 1,
-                                    });
+                                pool_one(&mut thread_full_rack_map, &cur_rack_as_vec[..], rounded_equity);
                             }
                         }
 
@@ -2516,9 +2480,13 @@ fn generate_autoplay_logs<
 
         let mut total_equity = 0.0;
         let mut row_count = 0;
+        // only the sum-of-squares sidecar carries this; the summary's own shape is
+        // unchanged.
+        let mut total_sumsq = 0.0;
         for x in full_rack_map.values() {
             total_equity += x.equity;
             row_count += x.count;
+            total_sumsq += x.sumsq;
         }
 
         eprintln!(
@@ -2540,6 +2508,34 @@ fn generate_autoplay_logs<
                 cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
             }
             csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+        }
+
+        // sum-of-squares sidecar: (rack, sum of squared equities, count) per rack, in its
+        // OWN file beside the summary and sharing its run stamp. With the summary's sum and
+        // count it recovers how far a rack's samples spread, which is what
+        // WOLGES_GENERATE_SMOOTH_SQ feeds to the interval smoothing gate.
+        //
+        // It rides beside the summary rather than as a fourth column of it because the
+        // summary's shape is not ours to change: other things read that file, and pooling
+        // an old summary with a widened one would break on the mismatched width.
+        //
+        // It deliberately takes the SAME shape as a summary -- totals line included, even
+        // though nothing reads the grand total of squares -- so english-resummarize pools
+        // a pile of sidecars exactly as it pools the summaries they came from, with no
+        // second tool and no special case. The count repeats the summary's so a reader can
+        // tell a sidecar that belongs to its summary from one that has drifted.
+        {
+            let mut sq_out = csv::Writer::from_path(claim_output_path(&format!(
+                "summary-sq-{run_identifier}"
+            ))?)?;
+            sq_out.serialize(("", total_sumsq, row_count))?;
+            for (k, fv) in kv.iter() {
+                cur_rack_ser.clear();
+                for &tile in k.iter() {
+                    cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
+                }
+                sq_out.serialize((&cur_rack_ser, fv.sumsq, fv.count))?;
+            }
         }
 
         // rare (direct) samples, keyed by target subrack S. each row
@@ -2592,6 +2588,12 @@ fn generate_autoplay_logs<
 
 fn env_usize(name: &str, default: usize) -> usize {
     env_parse(name, default)
+}
+
+// an optional file path from the environment: unset or empty means the feature is off,
+// so a knob can be turned off by clearing it as well as by never setting it.
+fn env_path(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|x| !x.is_empty())
 }
 
 // how WOLGES_GILLES_REAL_RACK samples the real drawn rack alongside the
@@ -3460,13 +3462,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                             );
                                             let equity =
                                                 knob.apply(move_generator.plays[0].equity, rack_bytes);
-                                            thread_map
-                                                .entry(rack_bytes.into())
-                                                .and_modify(|e| {
-                                                    e.equity += equity;
-                                                    e.count += 1;
-                                                })
-                                                .or_insert(Cumulate { equity, count: 1 });
+                                            pool_one(thread_map, rack_bytes, equity);
                                             completed_samples
                                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                         },
@@ -3601,13 +3597,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                             );
                                             let equity =
                                                 knob.apply(move_generator.plays[0].equity, &exchange_buffer);
-                                            thread_map
-                                                .entry(exchange_buffer[..].into())
-                                                .and_modify(|e| {
-                                                    e.equity += equity;
-                                                    e.count += 1;
-                                                })
-                                                .or_insert(Cumulate { equity, count: 1 });
+                                            pool_one(&mut thread_map, &exchange_buffer[..], equity);
                                             completed_samples
                                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                             movegens_done += 1;
@@ -3759,15 +3749,22 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             };
                             let eq = rr_knob.apply(move_generator.plays[0].equity, &real_rack_buf)
                                 * w as f64;
+                            // eq already carries the weight (value * w) and count carries w,
+                            // so this one play stands for w draws of value eq/w. Its squares
+                            // therefore add w * (eq/w)^2 = eq^2 / w, NOT eq^2 -- squaring the
+                            // weighted sum would inflate the spread by a factor of w.
+                            let sumsq_w = eq.powi(2) / w as f64;
                             thread_map
                                 .entry(real_rack_buf[..].into())
                                 .and_modify(|e| {
                                     e.equity += eq;
                                     e.count += w;
+                                    e.sumsq += sumsq_w;
                                 })
                                 .or_insert(Cumulate {
                                     equity: eq,
                                     count: w,
+                                    sumsq: sumsq_w,
                                 });
                             completed_samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -3876,7 +3873,41 @@ fn parse_rack(
 #[derive(Clone)]
 struct Cumulate {
     equity: f64,
+    // sum of each sample's equity SQUARED, which with equity and count is enough to
+    // recover the spread of the samples behind the mean:
+    //
+    //     var = sumsq/count - (equity/count)^2
+    //
+    // The mean alone cannot say how trustworthy it is -- fifty samples that agree closely
+    // pin a value down, fifty that disagree wildly do not -- so this rides alongside to
+    // let the decompose judge a leave by how tight its samples are rather than merely how
+    // many there were. A weighted sample (one value standing for w draws) contributes
+    // value^2 * w, matching its value*w in equity and w in count.
+    sumsq: f64,
     count: u64,
+}
+
+// Pool ONE sampled play into a rack map: its value, that value squared, and a count of
+// one. Every caller was spelling the same three-line add out by hand, and the squares
+// only made that longer -- and a rack's value, its square and its count have to move
+// together or the spread they describe stops matching the mean.
+#[inline]
+fn pool_one(map: &mut fash::MyHashMap<bites::Bites, Cumulate>, key: &[u8], equity: f64) {
+    let sumsq = equity.powi(2);
+    map.entry(key.into())
+        .and_modify(|v| {
+            v.equity += equity;
+            v.sumsq += sumsq;
+            v.count += 1;
+        })
+        // or_insert would build this Cumulate on every call, including the common one
+        // where the rack is already there and it is dropped unused; or_insert_with only
+        // builds it when the entry is actually vacant.
+        .or_insert_with(|| Cumulate {
+            equity,
+            sumsq,
+            count: 1,
+        });
 }
 
 // pool one row that already carries its own sample count into subrack_map
@@ -3887,14 +3918,20 @@ fn pool_rare_one(
     key: &[u8],
     equity: f64,
     count: u64,
+    sumsq: f64,
 ) {
     subrack_map
         .entry(key.into())
         .and_modify(|v| {
             v.equity += equity;
+            v.sumsq += sumsq;
             v.count += count;
         })
-        .or_insert(Cumulate { equity, count });
+        .or_insert(Cumulate {
+            equity,
+            sumsq,
+            count,
+        });
 }
 
 // shared state guarded by the gilles mutex during min_samples remediation.
@@ -3912,7 +3949,9 @@ struct GillesMutexed {
     oppdenial_leave_boards: u64,
 }
 
-// merge a thread-local rack map into the shared map, emptying the source.
+// merge a thread-local rack map into the shared map, emptying the source. All three
+// numbers add: a rack two threads both saw must end up with both their squares, or its
+// spread would describe fewer samples than its mean does.
 fn merge_rack_map(
     dst: &mut fash::MyHashMap<bites::Bites, Cumulate>,
     src: &mut fash::MyHashMap<bites::Bites, Cumulate>,
@@ -3922,6 +3961,7 @@ fn merge_rack_map(
             dst.entry(k)
                 .and_modify(|e| {
                     e.equity += v.equity;
+                    e.sumsq += v.sumsq;
                     e.count += v.count;
                 })
                 .or_insert(v);
@@ -4206,13 +4246,7 @@ fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
                 dynamic_leaves: None,
             });
             let equity = knob.apply(move_generator.plays[0].equity, rack_bytes);
-            thread_map
-                .entry(rack_bytes.into())
-                .and_modify(|e| {
-                    e.equity += equity;
-                    e.count += 1;
-                })
-                .or_insert(Cumulate { equity, count: 1 });
+            pool_one(thread_map, rack_bytes, equity);
             completed_samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             *movegens_done += 1;
             local_undersampled.remove(rack_bytes);
@@ -4263,13 +4297,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 parse_rack(&rack_reader, &record[3], &mut rack_bytes)?;
                 rack_bytes.sort_unstable();
                 row_count += 1;
-                full_rack_map
-                    .entry(rack_bytes[..].into())
-                    .and_modify(|v| {
-                        v.equity += equity;
-                        v.count += 1;
-                    })
-                    .or_insert(Cumulate { equity, count: 1 });
+                pool_one(&mut full_rack_map, &rack_bytes[..], equity);
                 let elapsed_time_secs = t0.elapsed().as_secs();
                 if tick_periods.update(elapsed_time_secs) {
                     writeln!(
@@ -4402,18 +4430,20 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
         let thing = Cumulate {
             equity: f64::from_str(&record[1])?,
             count: u64::from_str(&record[2])?,
+            sumsq: f64::NAN,
         };
         full_rack_map
             .entry(rack_bytes[..].into())
             .and_modify(|e| {
                 e.equity += thing.equity;
                 e.count += thing.count;
+                e.sumsq += thing.sumsq;
             })
             .or_insert(thing);
     }
     drop(csv_in);
 
-    // ("", total_equity, row_count) is ignored, it will be recomputed.
+    // the totals row is ignored, it will be recomputed.
     full_rack_map.remove([][..].into());
 
     let mut total_equity = 0.0;
@@ -7132,12 +7162,14 @@ fn generate_leaves<
         let thing = Cumulate {
             equity: f64::from_str(&record[1])?,
             count: u64::from_str(&record[2])?,
+            sumsq: f64::NAN,
         };
         full_rack_map
             .entry(rack_bytes[..].into())
             .and_modify(|e| {
                 e.equity += thing.equity;
                 e.count += thing.count;
+                e.sumsq += thing.sumsq;
             })
             .or_insert(thing);
     }
@@ -7147,6 +7179,55 @@ fn generate_leaves<
         .remove([][..].into())
         .ok_or("input file does not include totals line")?;
 
+    // WOLGES_GENERATE_SMOOTH_SQ (a file path; default unset, off) -- the sum-of-squares
+    // sidecar an autoplay pass writes beside its summary (summary-sq-<stamp>), one
+    // (rack, sum of squared equities) row per rack. It rides in its own file rather than
+    // as a fourth column of the summary because the summary's shape is not ours to
+    // change: other things read it, and pooling an old summary with a new one would break
+    // on the mismatched width. A rack the sidecar does not mention keeps a spread of NAN
+    // -- unknown, not zero -- and falls back to the sample floor.
+    if let Some(fp) = env_path("WOLGES_GENERATE_SMOOTH_SQ") {
+        let mut sq_reader = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_path(&fp)?;
+        let mut n_sq = 0u64;
+        let mut n_stale = 0u64;
+        for result in sq_reader.records() {
+            let record = result?;
+            // skip the totals line. It exists so a pile of sidecars resummarizes exactly
+            // like the summaries they came from; no grand total of squares is wanted here.
+            if record[0].is_empty() {
+                continue;
+            }
+            parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
+            if let Some(e) = full_rack_map.get_mut(&rack_bytes[..]) {
+                // the sidecar repeats its summary's count, so a disagreement means this
+                // sidecar was not built from this summary. Its squares would then describe
+                // a different set of samples, so leave the spread unknown and let the rack
+                // fall back to the floor rather than build an interval out of mismatched
+                // parts.
+                if u64::from_str(&record[2])? == e.count {
+                    let v = f64::from_str(&record[1])?;
+                    // a rack split across pooled summaries lands here once per file, so
+                    // add rather than overwrite -- as its equity and count pooled.
+                    e.sumsq = if e.sumsq.is_nan() { v } else { e.sumsq + v };
+                    n_sq += 1;
+                } else {
+                    n_stale += 1;
+                }
+            }
+        }
+        writeln!(
+            stdout_or_stderr,
+            "read {n_sq} sum-of-squares rows from {fp}{}",
+            if n_stale == 0 {
+                String::new()
+            } else {
+                format!(" ({n_stale} racks skipped: count disagrees with the summary)")
+            }
+        )?;
+    }
+
     let leave_size = game_config.rack_size() - 1 + IS_FULL_RACK as u8;
 
     // subrack_map[subrack] = sum(full_rack_map[subrack + completion]).
@@ -7155,6 +7236,12 @@ fn generate_leaves<
     // it (NOT the draw-ways-weighted count carried in subrack_map). Filled only when
     // smoothing; the gate below smooths a subrack whose support is below the floor.
     let mut subrack_support = fash::MyHashMap::<bites::Bites, u64>::default();
+    // raw (sum, sum-of-squares) per subrack, on the same plain sample scale as
+    // subrack_support: enough, with that count, to say how tightly the samples behind a
+    // leave agree, and so how wide an interval its mean sits in. Kept apart from
+    // subrack_map because that pool is draw-ways weighted and its spread would describe
+    // the weighting rather than the samples. Filled only when smoothing.
+    let mut subrack_raw = fash::MyHashMap::<bites::Bites, (f64, f64)>::default();
     {
         let word_prob = prob::WordProbability::new(game_config.alphabet());
         let mut full_rack_tally = vec![0u8; rack_tally.len()];
@@ -7184,11 +7271,22 @@ fn generate_leaves<
                         .or_insert_with(|| Cumulate {
                             equity: add_equity,
                             count: add_count,
+                            // this pool is draw-ways weighted, so a spread computed from
+                            // it would not describe the samples. The raw per-subrack
+                            // spread is tracked in subrack_raw below instead.
+                            sumsq: 0.0,
                         });
                     if DO_SMOOTHING {
                         // raw support: this rack adds its own sampled count to every
                         // subrack it covers, independent of the draw-ways weight above.
                         *subrack_support.entry(subrack_bytes.into()).or_insert(0u64) += fv.count;
+                        // and its raw sum and squares, so the gate can weigh how tightly
+                        // the samples agree rather than only how many there are.
+                        let e = subrack_raw
+                            .entry(subrack_bytes.into())
+                            .or_insert((0.0f64, 0.0f64));
+                        e.0 += fv.equity;
+                        e.1 += fv.sumsq;
                     }
                 },
                 rack_tally: &mut rack_tally,
@@ -7213,6 +7311,7 @@ fn generate_leaves<
     let Cumulate {
         equity: total_equity,
         count: row_count,
+        sumsq: _,
     } = subrack_map
         .remove([][..].into())
         .ok_or("empty-rack entry should not be missing")?;
@@ -7230,10 +7329,18 @@ fn generate_leaves<
             }
             let equity = f64::from_str(&record[1])?;
             let count = u64::from_str(&record[2])?;
+            // the rare file keeps its 3-column shape; its squares, when known, arrive
+            // through the sidecar like every other rack's.
+            let sumsq = f64::NAN;
             parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
-            pool_rare_one(&mut subrack_map, &rack_bytes, equity, count);
+            pool_rare_one(&mut subrack_map, &rack_bytes, equity, count, sumsq);
             if DO_SMOOTHING {
                 *subrack_support.entry(rack_bytes[..].into()).or_insert(0u64) += count;
+                let e = subrack_raw
+                    .entry(rack_bytes[..].into())
+                    .or_insert((0.0f64, 0.0f64));
+                e.0 += equity;
+                e.1 += sumsq;
             }
         }
     }
@@ -7250,6 +7357,66 @@ fn generate_leaves<
     } else {
         0
     };
+    // WOLGES_GENERATE_SMOOTH_CI (a width in points; default 0.0, off) -- the principled
+    // form of the same question. A sample floor answers "enough samples?" with a bare
+    // count, which is a stand-in for what actually matters: is this leave's mean pinned
+    // down? Fifty samples that agree closely pin it; fifty that disagree do not. Set a
+    // width and the gate instead smooths a leave whose mean sits in an interval WIDER
+    // than that -- half-width z * sqrt(var / n) at WOLGES_GENERATE_SMOOTH_CONF (default
+    // .99), the same precision test the census applies to its own leaves. Needs the
+    // squares column: summaries written before it existed carry no spread (NAN), and
+    // those leaves fall back to the sample floor rather than guess.
+    let smooth_ci = if DO_SMOOTHING {
+        env_parse::<f64>("WOLGES_GENERATE_SMOOTH_CI", 0.0)
+    } else {
+        0.0
+    };
+    let smooth_ci_conf = env_parse::<f64>("WOLGES_GENERATE_SMOOTH_CONF", 0.99);
+    let smooth_ci_conf = if smooth_ci_conf > 0.0 && smooth_ci_conf < 1.0 {
+        smooth_ci_conf
+    } else {
+        0.99
+    };
+    let smooth_ci_z = if smooth_ci > 0.0 {
+        stats::NormalDistribution::reverse_ci(smooth_ci_conf)
+    } else {
+        0.0
+    };
+    // Should this leave keep its own average, or borrow one from its neighbors?
+    // True = the average is worth trusting.
+    //
+    // Both tests must pass, and neither replaces the other. The floor asks "enough
+    // samples?", which is only a stand-in for the real question. The interval asks the
+    // real one -- is the mean actually pinned down -- and catches a leave whose samples
+    // are many but disagree wildly. But the interval CANNOT stand alone: two samples that
+    // happen to agree give a spread of zero and would look perfectly pinned, when two
+    // samples in truth say almost nothing. Agreement by luck is exactly the noise
+    // smoothing exists to absorb, so the floor stays a necessary condition and the
+    // interval only ever tightens the rule further.
+    let well_sampled = |rack: &[u8], support: u64| -> bool {
+        if support < smooth_min {
+            return false;
+        }
+        if smooth_ci <= 0.0 {
+            return true;
+        }
+        match subrack_raw.get(rack) {
+            // NAN sumsq = a summary written before the squares column existed. The spread
+            // is unknown, not zero, so fall back to what the floor already said rather
+            // than invent an interval.
+            Some(&(sum, sumsq)) if support > 1 && sumsq.is_finite() => {
+                let n = support as f64;
+                let mean = sum / n;
+                // sample variance over n-1, as stats::Stats::variance does: dividing by n
+                // would understate how far a handful of samples really spread. Guard the
+                // subtraction -- rounding can push a zero-spread set slightly negative,
+                // and a negative variance would poison the square root.
+                let var = ((sumsq - n * mean.powi(2)) / (n - 1.0)).max(0.0);
+                smooth_ci_z * (var / n).sqrt() <= smooth_ci
+            }
+            _ => true,
+        }
+    };
     let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
     let mut alphabet_freqs = (0..game_config.alphabet().len())
         .map(|tile| game_config.alphabet().freq(tile))
@@ -7264,7 +7431,10 @@ fn generate_leaves<
         found_exchange_move: |rack_bytes: &[u8]| {
             let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
                 if !DO_SMOOTHING
-                    || subrack_support.get(rack_bytes).copied().unwrap_or(0) >= smooth_min
+                    || well_sampled(
+                        rack_bytes,
+                        subrack_support.get(rack_bytes).copied().unwrap_or(0),
+                    )
                 {
                     v.equity / v.count as f64
                 } else {
@@ -7320,9 +7490,17 @@ fn generate_leaves<
         exchange_buffer: &mut exchange_buffer,
     });
     drop(neighbor_buffer);
+    // name the rule that actually decided, so a run that smooths nearly everything says
+    // WHY. Reporting the floor while an interval is doing the work would misdirect the
+    // next person to the wrong knob.
+    let smooth_rule = if smooth_ci > 0.0 {
+        format!("support floor {smooth_min} or interval wider than {smooth_ci}")
+    } else {
+        format!("support floor {smooth_min}")
+    };
     writeln!(
         stdout_or_stderr,
-        "After {} seconds, have processed {} subracks and smoothed {} ({:.1}% below support floor {})",
+        "After {} seconds, have processed {} subracks and smoothed {} ({:.1}%, rule: {})",
         t0.elapsed().as_secs(),
         ev_map.len(),
         num_smoothed,
@@ -7331,7 +7509,7 @@ fn generate_leaves<
         } else {
             100.0 * num_smoothed as f64 / ev_map.len() as f64
         },
-        smooth_min,
+        smooth_rule,
     )?;
     {
         // make expected values relative to value of empty rack.
@@ -7680,6 +7858,13 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                         })
                                         .or_insert(Cumulate {
                                             equity: occurrence,
+                                            // playability counts how often a word gets
+                                            // played; no smoothing gate ever asks how
+                                            // tightly those occurrences agree, so the
+                                            // spread is not tracked -- NAN says unknown
+                                            // rather than claiming a zero spread, and
+                                            // spares the scan a multiply per word.
+                                            sumsq: f64::NAN,
                                             count: 1,
                                         });
                                 }
@@ -9256,6 +9441,54 @@ mod tests {
         }
     }
 
+    // A rack's value, its square and its count have to travel together: every path that
+    // pools samples must move all three, or the spread ends up describing fewer samples
+    // than the mean does and the smoothing interval silently reads too tight. The
+    // compiler cannot catch a MISSING add, so pin the two pooling paths here.
+    #[test]
+    fn pooling_keeps_value_square_and_count_together() {
+        let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+        pool_one(&mut m, &b"\x01"[..], 3.0);
+        pool_one(&mut m, &b"\x01"[..], 4.0);
+        let a = m.get(&b"\x01"[..]).unwrap();
+        assert_eq!(a.count, 2);
+        assert!((a.equity - 7.0).abs() < 1e-9);
+        // 3^2 + 4^2, NOT (3+4)^2 and not just the last one
+        assert!((a.sumsq - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn merging_thread_maps_keeps_every_square() {
+        // the same rack seen by two threads: the merge must end up with BOTH squares.
+        let mut dst = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+        pool_one(&mut dst, &b"\x01"[..], 3.0);
+        let mut src = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+        pool_one(&mut src, &b"\x01"[..], 4.0);
+        pool_one(&mut src, &b"\x02"[..], 5.0);
+        merge_rack_map(&mut dst, &mut src);
+        let a = dst.get(&b"\x01"[..]).unwrap();
+        assert_eq!(a.count, 2);
+        assert!((a.equity - 7.0).abs() < 1e-9);
+        assert!((a.sumsq - 25.0).abs() < 1e-9, "the merge dropped a square");
+        // a rack only the source had arrives whole
+        let b = dst.get(&b"\x02"[..]).unwrap();
+        assert_eq!(b.count, 1);
+        assert!((b.sumsq - 25.0).abs() < 1e-9);
+        assert!(src.is_empty(), "merge_rack_map must drain the source");
+    }
+
+    // Cauchy-Schwarz: sum of squares is never below (sum)^2/n. A pooling path that loses
+    // squares breaks this, which is what a real run's sidecar is checked against.
+    #[test]
+    fn pooled_spread_cannot_undercut_its_mean() {
+        let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+        for v in [12.5f64, -3.0, 40.0, 0.0, 7.25] {
+            pool_one(&mut m, &b"\x01"[..], v);
+        }
+        let a = m.get(&b"\x01"[..]).unwrap();
+        assert!(a.sumsq >= a.equity.powi(2) / a.count as f64 - 1e-9);
+    }
+
     #[test]
     fn parse_board_counts_expands_repeats() {
         assert_eq!(parse_board_counts("256").unwrap(), vec![256]);
@@ -9288,6 +9521,7 @@ mod tests {
         let fv = Cumulate {
             equity: 10.0,
             count: 2,
+            sumsq: 0.0,
         };
         // per-occurrence: contribute equity_sum*w and count*w, so the
         // sampled count enters both, then -generate divides them back out ->
@@ -9311,11 +9545,14 @@ mod tests {
             Cumulate {
                 equity: 10.0,
                 count: 2,
+                sumsq: 50.0,
             },
         ); // full-rack A, sum10 n2
-        pool_rare_one(&mut m, &b"\x01"[..], 5.0, 3); // rare A, sum5 n3
+        pool_rare_one(&mut m, &b"\x01"[..], 5.0, 3, 9.0); // rare A, sum5 n3
         let a = m.get(&b"\x01"[..]).unwrap();
         assert_eq!(a.count, 5);
         assert!((a.equity - 15.0).abs() < 1e-9); // mean 15/5 = 3.0
+        // the squares pool the same way, so the spread survives the merge.
+        assert!((a.sumsq - 59.0).abs() < 1e-9);
     }
 }
