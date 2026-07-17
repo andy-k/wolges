@@ -4878,6 +4878,35 @@ fn wolges_census_scatter() -> error::Returns<Scatter> {
 // generations (Mutex so the first gen's writer publishes to later gens' readers).
 type SheetCacheSlot = std::sync::Mutex<Option<(Vec<i32>, Vec<u8>)>>;
 
+// Plan the sheet cache for a board-count spec: which slots each generation is worth
+// caching, and how many slots the cache needs at all. Returns (live_after, cache_len).
+//
+// live_after[g] = the largest board count of ALL the generations after g -- a suffix
+// maximum, NOT simply the next generation's count. A slot stays worth keeping while ANY
+// later generation still has a board for it, so the lookahead cannot stop at the next
+// one: in 400,100,300 the 300-board generation still reads slots 0..300, so the
+// 400-board generation must hold 300 of them ACROSS the 100-board dip. Comparing only
+// against the next count would keep 100 and rebuild 200 slots later.
+//
+// cache_len = the highest slot any generation actually caches. A generation caches a
+// slot only if it both has a board for it (board_counts[g]) and a later generation will
+// read it (live_after[g]), so the cache never needs more than the largest of those
+// minimums -- 200,1000,400,300 needs 400 slots rather than the largest generation's
+// 1000, and 256,256,256,2048 needs 256 rather than 2048, because the last generation's
+// sheets are never kept.
+fn census_sheet_reuse_plan(board_counts: &[u64]) -> (Vec<usize>, usize) {
+    let gens = board_counts.len();
+    let mut live_after = vec![0usize; gens];
+    for g in (0..gens.saturating_sub(1)).rev() {
+        live_after[g] = (board_counts[g + 1] as usize).max(live_after[g + 1]);
+    }
+    let cache_len = (0..gens)
+        .map(|g| (board_counts[g] as usize).min(live_after[g]))
+        .max()
+        .unwrap_or(0);
+    (live_after, cache_len)
+}
+
 // Serialize the valued leaves to a klv2 file -- the same DawgOnly/Wolges build as
 // `buildlex <lang>-klv2` runs on the csv, but in-process. The machine word is the
 // leave's sorted tile bytes; the value is (value_mp(idx) - baseline_mp) points as f32.
@@ -5064,8 +5093,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // valued in any gen. The worker tracks the current gen's board count as
     // gen_idx advances.
     let gens = board_counts.len();
-    // shared allocations (the thread cap, the per-board sheet cache) are sized
-    // to the largest gen so every gen of a non-uniform spec is covered.
+    // the thread cap is sized to the largest gen, so every gen of a non-uniform spec has
+    // as many workers as it has boards. (The sheet cache is sized separately, to the
+    // slots it actually keeps -- see sheet_cache_len.)
     let max_boards = board_counts.iter().copied().max().unwrap_or(1).max(1);
     let multigen = gens > 1;
     // online mini-batch SGD (single-generation only). WOLGES_CENSUS_BATCH = boards
@@ -5219,6 +5249,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     // recomputing; set to 0 to A/B. Disabled under the per-game sampler (different boards
     // each gen would make the cache stale).
     let sheet_reuse = multigen && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
+    // A sheet is a lat_len-sized array (tens of megabytes), so a gen caches one only when
+    // a later gen will read it back: only the slots below live_after[gen_idx]. The last
+    // gen's live_after is 0, so it caches nothing at all. See census_sheet_reuse_plan for
+    // both quantities.
+    let (live_after, sheet_cache_len) = census_sheet_reuse_plan(&board_counts);
+    // nothing is cached at all when sheet-reuse is off, so the cache stays empty.
+    let sheet_cache_len = if sheet_reuse { sheet_cache_len } else { 0 };
     // WOLGES_CENSUS_PERSIST_GENS (default on for multi-gen): write each completed gen's
     // leaves to census-gen-<stamp>-<NN>.klv2, so a crash loses no completed gens and
     // WOLGES_CENSUS_RESUME can continue. One in-process klv2 build per gen (cheap vs the
@@ -5588,17 +5625,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         Vec::new()
     };
     // per-board (sheet, unseen) cache for sheet-reuse: a slot is filled by the first gen
-    // that reaches it and read by every later gen (a uniform spec fills every slot in gen
-    // 0; a growing one fills the new slots as its board count climbs). The multi-gen
-    // barrier orders a gen's writes before any later gen's reads, and each slot is written
-    // once, by whichever thread pulls it. Empty unless sheet_reuse.
-    let sheet_cache: Vec<SheetCacheSlot> = if sheet_reuse {
-        (0..max_boards)
-            .map(|_| std::sync::Mutex::new(None))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // that reaches it AND that a later gen will read back (live_after), then read by every
+    // later gen (a uniform spec fills every slot in gen 0; a growing one fills the new
+    // slots as its board count climbs; the last gen fills nothing). The multi-gen barrier
+    // orders a gen's writes before any later gen's reads, and each slot is written once, by
+    // whichever thread pulls it. Sized to sheet_cache_len -- the highest slot any gen
+    // actually caches, which a spec whose last gen is its largest keeps far below that
+    // gen's board count. Empty unless sheet_reuse.
+    let sheet_cache: Vec<SheetCacheSlot> = (0..sheet_cache_len)
+        .map(|_| std::sync::Mutex::new(None))
+        .collect();
     eprintln!("census: {num_threads} threads over {board_counts:?} boards/gen");
 
     std::thread::scope(|s| {
@@ -6434,7 +6470,14 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             null_leave,
                             b == 0,
                             verify && b == 0 && !reuse_board,
-                            if sheet_reuse {
+                            // hand over this slot's cache entry to read from when reusing,
+                            // and to fill when building a slot a later gen will read back
+                            // (below live_after[gen_idx]). None on a build no gen will read
+                            // again -- value_board then skips the cache write and the sheet
+                            // never takes up room.
+                            if sheet_reuse
+                                && (reuse_board || (b as usize) < live_after[gen_idx])
+                            {
                                 Some(&sheet_cache[b as usize])
                             } else {
                                 None
@@ -9100,6 +9143,75 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Every spec below is (board_counts, expected live_after, expected cache_len).
+    const SHEET_PLANS: &[(&[u64], &[usize], usize)] = &[
+        // the lookahead is a suffix maximum, not the next gen's count: the 300-board gen
+        // still reads slots 0..300, so the 400-board gen keeps 300 of them ACROSS the
+        // 100-board dip. A next-gen-only rule would keep min(400,100)=100 and rebuild.
+        (&[400, 100, 300], &[300, 300, 0], 300),
+        // a dip that is genuinely the end: nothing after the 100 needs more than 100.
+        (&[400, 300, 100], &[300, 100, 0], 300),
+        // uniform: gen 0 builds every slot, the rest reuse; the last gen keeps none.
+        (&[256, 256, 256, 256], &[256, 256, 256, 0], 256),
+        // growing: each gen adds the new slots on top, the last gen keeps none.
+        (&[256, 512, 1024], &[1024, 1024, 0], 512),
+        // the ship recipe: three cheap gens share 256 slots, the 2048 gen keeps nothing.
+        (&[256, 256, 256, 2048], &[2048, 2048, 2048, 0], 256),
+        (&[200, 1000, 400, 300], &[1000, 400, 300, 0], 400),
+        // up, down, up again, down: the 700 must survive the 400 dip for the 700 gen.
+        (&[200, 1000, 400, 700, 350], &[1000, 700, 700, 350, 0], 700),
+        // single gen: nothing follows, so nothing is ever cached.
+        (&[256], &[0], 0),
+    ];
+
+    #[test]
+    fn census_sheet_reuse_plan_looks_past_the_next_generation() {
+        for &(counts, want_live, want_len) in SHEET_PLANS {
+            let (live_after, cache_len) = census_sheet_reuse_plan(counts);
+            assert_eq!(live_after, want_live, "live_after for {counts:?}");
+            assert_eq!(cache_len, want_len, "cache_len for {counts:?}");
+        }
+    }
+
+    // Walk each spec the way the run does -- reuse a slot below the prior gens' running
+    // max, cache one below live_after, free the rest at the boundary -- and check the two
+    // invariants the plan has to guarantee: a reused slot is always still cached (no
+    // silent rebuild, no missing sheet), and no cached slot ever sits at or past cache_len.
+    #[test]
+    fn census_sheet_reuse_plan_never_reads_an_uncached_slot() {
+        for &(counts, _, want_len) in SHEET_PLANS {
+            let (live_after, cache_len) = census_sheet_reuse_plan(counts);
+            let mut cached = std::collections::HashSet::<usize>::new();
+            let mut prior_max = 0usize;
+            let mut high_water = 0usize;
+            for (g, &n) in counts.iter().enumerate() {
+                for b in 0..n as usize {
+                    if b < prior_max {
+                        assert!(
+                            cached.contains(&b),
+                            "{counts:?} gen {g} reuses slot {b} but it was never cached"
+                        );
+                    } else if b < live_after[g] {
+                        cached.insert(b);
+                        high_water = high_water.max(b + 1);
+                    }
+                }
+                cached.retain(|&b| b < live_after[g]);
+                prior_max = prior_max.max(n as usize);
+            }
+            assert!(
+                high_water <= cache_len,
+                "{counts:?} cached slot {high_water} past cache_len {cache_len}"
+            );
+            // and the size is tight, not merely sufficient.
+            assert_eq!(high_water, want_len, "cache_len not tight for {counts:?}");
+            assert!(
+                cached.is_empty(),
+                "{counts:?} kept sheets after the last gen"
+            );
+        }
+    }
 
     #[test]
     fn parse_board_counts_expands_repeats() {
