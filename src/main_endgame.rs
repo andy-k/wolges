@@ -1546,6 +1546,43 @@ fn solve_position<N: kwg::Node>(
             }
         };
         let total_unseen: u32 = result.hypotheses.iter().map(|&(_, weight, _)| weight).sum();
+        // The committed model reports the single move the mover should commit to
+        // without seeing the bag tile; the hypotheses below are THAT move's
+        // per-tile outcomes. The clairvoyant fallback (exchange-legal configs)
+        // reports an optimistic bound with no single move.
+        match &result.best_move {
+            Some(endgame::PegMove::Pass) => {
+                println!("peg: model = committed; best move = pass");
+            }
+            Some(endgame::PegMove::Place(movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            })) => {
+                let coord = if *down {
+                    format!("{}{}", display::column(*lane), idx + 1)
+                } else {
+                    format!("{}{}", lane + 1, display::column(*idx))
+                };
+                let mut word_str = String::new();
+                for &t in word.iter() {
+                    if t == 0 {
+                        word_str.push('.');
+                    } else {
+                        word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
+                    }
+                }
+                println!("peg: model = committed; best move = {coord} {word_str} (scores {score})");
+            }
+            Some(endgame::PegMove::Place(_)) => unreachable!("Place holds a Play::Place"),
+            None => {
+                println!(
+                    "peg: model = clairvoyant bound (exchange-legal config; not the in-game value)"
+                );
+            }
+        }
         println!(
             "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles \
              (current score {score_diff:+})",
