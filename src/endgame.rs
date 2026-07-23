@@ -1478,6 +1478,20 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     PegMove::Pass => {
                         // mover passes (draws nothing); opponent faces the one-in-bag
                         // position. v1 values that clairvoyantly (see the doc above).
+                        //
+                        // PEG2-7 NOTE: one tile in the bag has no draw-order
+                        // choice (a play draws the single known tile; a pass draws
+                        // nothing). When this generalizes to two-or-more, draw
+                        // every tile from the SAME end -- pop (the back), the fast
+                        // end -- and store a scenario reversed to match: draw
+                        // sequence A,B,C is the bag [C,B,A], so pop yields A, then
+                        // B, then C in play order (the unit is a draw, not a move;
+                        // a pass consumes no tile). Do NOT reuse Bag::replenish for
+                        // the enumeration: it pops EVEN players from the back but
+                        // shifts ODD players from the front (bag.rs, a game-pair
+                        // variance device) -- fine under a shuffle, but on [C,B,A]
+                        // it makes p1 take the front (C, the leftover) instead of
+                        // the next popped tile (B). Keep both players on pop here.
                         let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
                         r2[mover as usize] = mover_rack.to_vec();
                         r2[opp as usize] = opp_rack;
