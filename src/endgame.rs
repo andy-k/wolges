@@ -1292,12 +1292,44 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         // the scoreless-turn rule can force the game to end. Decline honestly --
         // rather than silently ignore the exchange and report a no-exchange number
         // -- for any exchange-legal config whose scoreless turns never force an
-        // end. Every other config (English, and Spanish itself, which does force
-        // an end) is solved exactly below.
+        // end.
         let gc = self.game_config;
         if one_in_bag_exchange_legal(gc) && !one_in_bag_exchange_solvable(gc) {
             return Err(PegUnsupported::ExchangeWithoutForcedEnd);
         }
+        // In the real game the mover does NOT see the bag tile, so it must commit
+        // ONE first move that fares best AVERAGED over every possible bag tile
+        // (argmax_M E_T value(M,T)) -- the move that wins the most endgames. The
+        // exchange-aware search is not yet expressed under that committed model,
+        // so an exchange-legal config falls back to the clairvoyant E_T max_M
+        // aggregate (an optimistic bound); every other config is solved committed.
+        if one_in_bag_exchange_legal(gc) {
+            Ok(self.peg_clairvoyant_aggregate(mover, board, mover_rack, unseen_tally, score_diff))
+        } else {
+            let unseen: Vec<(u8, u32)> = unseen_tally
+                .iter()
+                .enumerate()
+                .filter(|&(_, &c)| c != 0)
+                .map(|(t, &c)| (t as u8, c as u32))
+                .collect();
+            Ok(self.peg_committed_no_exchange(mover, board, mover_rack, &unseen, score_diff))
+        }
+    }
+
+    // Clairvoyant aggregate: for each possible bag tile solve the now-fully-known
+    // position, letting the mover pick the best move FOR THAT tile, then average
+    // (E_T max_M). This lets the mover peek at the hidden tile, so it is an
+    // optimistic bound on the mover's win rate, not the in-game value. Retained
+    // for the exchange-legal path (whose committed handling is not built yet) and
+    // as the reference bound in tests. Reports no single committed move.
+    fn peg_clairvoyant_aggregate(
+        &mut self,
+        mover: u8,
+        board: &[u8],
+        mover_rack: &[u8],
+        unseen_tally: &[u8],
+        score_diff: f32,
+    ) -> PegResult {
         let mut hypotheses: Vec<(u8, u32, f32)> = Vec::new();
         // opp_rack is rebuilt in place for each hypothesis (one allocation).
         let mut opp_rack: Vec<u8> = Vec::new();
@@ -1313,8 +1345,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 let take = if u == t { c - 1 } else { c } as usize;
                 opp_rack.extend(std::iter::repeat_n(u as u8, take));
             }
-            // place mover_rack and opp_rack at their player indices, then solve
-            // this now-fully-known one-in-bag hypothesis.
             let mut racks: [&[u8]; 2] = [&[], &[]];
             racks[mover as usize] = mover_rack;
             racks[(mover ^ 1) as usize] = &opp_rack;
@@ -1324,21 +1354,214 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
         let weighted: Vec<(u32, f32)> = hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
         let (win_pct, expected_margin) = peg_aggregate(&weighted);
-        Ok(PegResult {
+        PegResult {
             win_pct,
             expected_margin,
             hypotheses,
-        })
+            best_move: None,
+            committed: false,
+        }
+    }
+
+    // Committed one-in-bag PEG for configs WITHOUT a legal one-tile-bag exchange
+    // (English and friends). The mover commits ONE first move without seeing the
+    // bag tile and is judged by how it fares averaged over every possible tile:
+    // committed = argmax_M E_T value(M,T), ranked by win rate then expected
+    // margin. Contrast peg_clairvoyant_aggregate (E_T max_M), which lets the move
+    // change per tile and so over-reports.
+    //
+    // The candidate first moves come from the PRE-DRAW rack, so they are the same
+    // for every bag tile; the value(M,T) matrix is therefore rectangular. For a
+    // DRAWING move (any Place plays >= 1 tile -> draws -> empties the bag) the
+    // continuation is an exact perfect-info endgame, value(M,T) = score(M) -
+    // endgame(post-M, drew T); those are the very values the clairvoyant path
+    // already computes, reduced here max-of-avg instead of avg-of-max, so the same
+    // sub-solver and its transposition table are reused across the whole matrix.
+    //
+    // A PASS keeps the tile in the bag and hands the opponent a one-in-bag
+    // position. v1 LIMITATION: that continuation is valued with the clairvoyant
+    // recursion (the opponent should also be committed there). It is conservative
+    // -- the clairvoyant value over-credits the on-turn opponent, so the mover's
+    // pass value is a lower bound and pass never spuriously wins the argmax -- and
+    // pass is dominated whenever the mover has a scoring play. Fully committed pass
+    // (and exchange, and 2+ tiles in the bag) are the retower follow-ups.
+    fn peg_committed_no_exchange(
+        &self,
+        mover: u8,
+        board: &[u8],
+        mover_rack: &[u8],
+        unseen: &[(u8, u32)],
+        score_diff: f32,
+    ) -> PegResult {
+        let gc = self.game_config;
+        let kwg = self.kwg;
+        let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let opp = mover ^ 1;
+        let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
+
+        // Candidate first moves are generated once from the pre-draw rack (bag-tile
+        // independent). Snapshot the place plays out of the shared generator so the
+        // pass branch can reuse the generator afterwards.
+        let mut mg = movegen::KurniaMoveGenerator::new(gc);
+        mg.gen_moves_raw_all_unsorted(
+            &movegen::BoardSnapshot {
+                board_tiles: board,
+                game_config: gc,
+                kwg,
+                klv: &klv,
+            },
+            mover_rack,
+            0,
+            true,
+        );
+        let mut candidates: Vec<PegMove> = Vec::with_capacity(mg.plays.len() + 1);
+        candidates.push(PegMove::Pass);
+        for vm in &mg.plays {
+            if matches!(vm.play, movegen::Play::Place { .. }) {
+                candidates.push(PegMove::Place(vm.play.clone()));
+            }
+        }
+
+        // One empty-bag sub-solver reused across every (move, bag tile) so the
+        // endgame transposition table is shared across the whole matrix.
+        let mut sub = EndgameSolver::<N, L>::new(gc, kwg);
+
+        let mut best_win = f32::NEG_INFINITY;
+        let mut best_marg = f32::NEG_INFINITY;
+        let mut best_move = PegMove::Pass;
+        let mut best_hyps: Vec<(u8, u32, f32)> = Vec::new();
+
+        for cand in &candidates {
+            let mut win = 0.0f32;
+            let mut marg = 0.0f32;
+            let mut hyps: Vec<(u8, u32, f32)> = Vec::with_capacity(unseen.len());
+            for &(t, w) in unseen {
+                // a drawn blank lands on the rack as an undesignated blank (0).
+                let drawn = t & !((t as i8) >> 7) as u8;
+                // opp rack = the unseen multiset minus one copy of this bag tile.
+                let mut opp_rack: Vec<u8> = Vec::new();
+                for &(u, c) in unseen {
+                    let take = if u == t { c - 1 } else { c };
+                    for _ in 0..take {
+                        opp_rack.push(u);
+                    }
+                }
+                let v = match cand {
+                    PegMove::Place(movegen::Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        score,
+                    }) => {
+                        // play the committed move, draw the bag tile, hand the now
+                        // empty-bag position (opponent to move) to the sub-solver.
+                        let mut nb = board.to_vec();
+                        let mut mr = mover_rack.to_vec();
+                        let strider = gc.board_layout().dim().lane(*down, *lane);
+                        for (i, &tile) in (*idx..).zip(word.iter()) {
+                            if tile != 0 {
+                                nb[strider.at(i)] = tile;
+                                let b = tile & !((tile as i8) >> 7) as u8;
+                                let p = mr.iter().rposition(|&x| x == b).unwrap();
+                                mr[p] = 0x80;
+                            }
+                        }
+                        mr.retain(|&x| x != 0x80);
+                        mr.push(drawn);
+                        let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+                        r2[mover as usize] = mr;
+                        r2[opp as usize] = opp_rack;
+                        sub.init(&nb, [&r2[0], &r2[1]]);
+                        *score as f32 - sub.solve(opp)
+                    }
+                    PegMove::Pass => {
+                        // mover passes (draws nothing); opponent faces the one-in-bag
+                        // position. v1 values that clairvoyantly (see the doc above).
+                        //
+                        // PEG2-7 NOTE: one tile in the bag has no draw-order
+                        // choice (a play draws the single known tile; a pass draws
+                        // nothing). When this generalizes to two-or-more, draw
+                        // every tile from the SAME end -- pop (the back), the fast
+                        // end -- and store a scenario reversed to match: draw
+                        // sequence A,B,C is the bag [C,B,A], so pop yields A, then
+                        // B, then C in play order (the unit is a draw, not a move;
+                        // a pass consumes no tile). Do NOT reuse Bag::replenish for
+                        // the enumeration: it pops EVEN players from the back but
+                        // shifts ODD players from the front (bag.rs, a game-pair
+                        // variance device) -- fine under a shuffle, but on [C,B,A]
+                        // it makes p1 take the front (C, the leftover) instead of
+                        // the next popped tile (B). Keep both players on pop here.
+                        let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+                        r2[mover as usize] = mover_rack.to_vec();
+                        r2[opp as usize] = opp_rack;
+                        -Self::one_in_bag_minimax(
+                            gc, kwg, &klv, &mut sub, &mut mg, board, &r2, opp, t, true,
+                        )
+                    }
+                    PegMove::Place(_) => {
+                        unreachable!("Place candidate always holds a Play::Place")
+                    }
+                };
+                let vv = v + score_diff;
+                marg += w as f32 * vv;
+                win += w as f32
+                    * if vv > 0.0 {
+                        1.0
+                    } else if vv == 0.0 {
+                        0.5
+                    } else {
+                        0.0
+                    };
+                hyps.push((t, w, vv));
+            }
+            win /= total;
+            marg /= total;
+            // rank by win rate, then expected margin (the macondo/MAGPIE order).
+            if win > best_win || (win == best_win && marg > best_marg) {
+                best_win = win;
+                best_marg = marg;
+                best_move = cand.clone();
+                best_hyps = hyps;
+            }
+        }
+
+        PegResult {
+            win_pct: best_win,
+            expected_margin: best_marg,
+            hypotheses: best_hyps,
+            best_move: Some(best_move),
+            committed: true,
+        }
     }
 }
 
-// The outcome of a one-in-bag PEG enumeration: the mover's win rate (0..1, a
-// draw counting half), the expected scaled point margin, and the per-hypothesis
-// (bag tile, weight, scaled point margin) tuples for display.
+// The first move the mover commits to in a one-in-bag pre-endgame, before it
+// draws (so before it can know the bag tile): either a pass, or a Place play.
+// Exchange first moves are not yet modeled under the committed model (v1); an
+// exchange-legal config falls back to the clairvoyant aggregate, which reports
+// no committed best move.
+#[derive(Clone)]
+pub enum PegMove {
+    Pass,
+    Place(movegen::Play),
+}
+
+// The outcome of a one-in-bag PEG enumeration. Under the committed model
+// (`committed == true`) this describes the single best move the mover can commit
+// to without seeing the bag tile: `best_move` is that move, `win_pct` /
+// `expected_margin` are its win rate (a draw counting half) and expected scaled
+// point margin averaged over every possible bag tile, and `hypotheses` is that
+// move's per-tile (bag tile, weight, scaled point margin) breakdown. Under the
+// clairvoyant fallback (`committed == false`, exchange-legal configs) there is no
+// single committed move: `best_move` is None and the fields describe the
+// optimistic E_T max_M bound as before.
 pub struct PegResult {
     pub win_pct: f32,
     pub expected_margin: f32,
     pub hypotheses: Vec<(u8, u32, f32)>,
+    pub best_move: Option<PegMove>,
+    pub committed: bool,
 }
 
 // Why a one-in-bag PEG position could not be solved exactly.
@@ -1439,7 +1662,7 @@ pub fn peg_aggregate(hypotheses: &[(u32, f32)]) -> (f32, f32) {
 // = 1000), so the reference and the solver share one consistent scale.
 #[cfg(test)]
 mod tests {
-    use super::EndgameSolver;
+    use super::{EndgameSolver, PegMove};
     use crate::{alphabet, bites, build, game_config, klv, kwg, movegen};
 
     // ---- tiny gaddawg over a short English word list --------------------------
@@ -2497,5 +2720,216 @@ mod tests {
             egs_bad.solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0),
             Err(super::PegUnsupported::ExchangeWithoutForcedEnd)
         ));
+    }
+
+    // Differential: the committed solver (`solve_peg_one_in_bag`, now
+    // `max_M E_T value(M,T)`) must equal an independent committed reference built
+    // on the trusted plain-negamax `reference` empty-bag solver, and must never
+    // exceed the clairvoyant `E_T max_M` bound (`peg_clairvoyant_aggregate`). The
+    // scan also confirms the toy corpus actually exercises the strict
+    // committed < clairvoyant case (else the test would prove nothing).
+    #[test]
+    fn differential_peg_committed() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+        let a = gc.alphabet();
+        let alen = a.len() as usize;
+
+        // committed reference: fix the mover's first move, average over bag
+        // tiles, keep the best move (ranked by win% then margin, macondo order).
+        // opp holds (unseen minus the drawn bag tile). Returns (win%, margin,
+        // best_is_place, label).
+        let committed = |board: &[u8],
+                         mover_rack: &[u8],
+                         unseen: &[(u8, u32)],
+                         mg: &mut movegen::KurniaMoveGenerator|
+         -> (f32, f32, bool, String) {
+            let total: u32 = unseen.iter().map(|&(_, w)| w).sum();
+            let mover = 0usize;
+            let opp = 1usize;
+            let snap = movegen::BoardSnapshot {
+                board_tiles: board,
+                game_config: &gc,
+                kwg: &kwg,
+                klv: &klv,
+            };
+            mg.gen_moves_raw_all_unsorted(&snap, mover_rack, 0, true);
+            let mut cands: Vec<Option<movegen::Play>> = vec![None]; // None = pass
+            for vm in &mg.plays {
+                if let movegen::Play::Place { .. } = &vm.play {
+                    cands.push(Some(vm.play.clone()));
+                }
+            }
+            let mut best = (f32::NEG_INFINITY, f32::NEG_INFINITY, false, String::new());
+            for cand in &cands {
+                let mut win = 0.0f32;
+                let mut marg = 0.0f32;
+                for &(t, w) in unseen {
+                    let mut opp_rack = Vec::new();
+                    for &(u, c) in unseen {
+                        let take = if u == t { c - 1 } else { c };
+                        for _ in 0..take {
+                            opp_rack.push(u);
+                        }
+                    }
+                    let drawn = t & !((t as i8) >> 7) as u8;
+                    let v = match cand {
+                        Some(movegen::Play::Place {
+                            down,
+                            lane,
+                            idx,
+                            word,
+                            score,
+                        }) => {
+                            let mut nb = board.to_vec();
+                            let mut nr = [mover_rack.to_vec(), Vec::new()];
+                            apply_place(&gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
+                            nr[mover].push(drawn);
+                            nr[opp] = opp_rack;
+                            *score as f32 - reference(&gc, &kwg, &klv, mg, &nb, &nr, opp, false)
+                        }
+                        _ => {
+                            // pass: mover drew nothing; opponent faces the
+                            // one-in-bag with a pass already on the clock
+                            // (just_passed = true), matching the solver's pass arm.
+                            let nr = [mover_rack.to_vec(), opp_rack];
+                            -reference_one_in_bag(&gc, &kwg, &klv, mg, board, &nr, opp, t, true)
+                        }
+                    };
+                    marg += (w as f32) * v;
+                    win += (w as f32)
+                        * if v > 0.0 {
+                            1.0
+                        } else if v == 0.0 {
+                            0.5
+                        } else {
+                            0.0
+                        };
+                }
+                marg /= total as f32;
+                win /= total as f32;
+                if win > best.0 || (win == best.0 && marg > best.1) {
+                    let label = if cand.is_some() { "place" } else { "PASS" };
+                    best = (win, marg, cand.is_some(), label.to_string());
+                }
+            }
+            best
+        };
+
+        let tiles = [1u8, 2, 8, 20]; // A B H T
+        let mut boards: Vec<(String, Vec<u8>)> = Vec::new();
+        boards.push(("empty".into(), empty_board()));
+        {
+            let mut b = empty_board();
+            put_word(&mut b, 7, 6, &[1, 20]);
+            boards.push(("AT".into(), b));
+        }
+        {
+            let mut b = empty_board();
+            put_word(&mut b, 7, 6, &[1, 1, 8]);
+            boards.push(("AAH".into(), b));
+        }
+        {
+            let mut b = empty_board();
+            put_word(&mut b, 7, 6, &[1, 20]);
+            put_word(&mut b, 5, 7, &[8, 1, 20]);
+            boards.push(("AT+HAT".into(), b));
+        }
+
+        let mut worst_gap = 0.0f32;
+        let mut n_gap = 0;
+        let mut n_gap_place = 0;
+        let mut report = String::new();
+        for (bname, board) in &boards {
+            let mut racks: Vec<Vec<u8>> = Vec::new();
+            for &x in &tiles {
+                racks.push(vec![x]);
+                for &y in &tiles {
+                    racks.push(vec![x, y]);
+                }
+            }
+            for mrack in &racks {
+                for i in 0..tiles.len() {
+                    for j in i..tiles.len() {
+                        let (ti, tj) = (tiles[i], tiles[j]);
+                        let mut unseen_tally = vec![0u8; alen];
+                        let mut unseen: Vec<(u8, u32)> = Vec::new();
+                        if ti == tj {
+                            unseen_tally[ti as usize] = 2;
+                            unseen.push((ti, 2));
+                        } else {
+                            unseen_tally[ti as usize] = 1;
+                            unseen_tally[tj as usize] = 1;
+                            unseen.push((ti, 1));
+                            unseen.push((tj, 1));
+                        }
+                        // committed solver (the shipped path).
+                        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+                        let got = egs
+                            .solve_peg_one_in_bag(0, board, mrack, &unseen_tally, 0.0)
+                            .expect("english one-in-bag is always solvable");
+                        // independent committed reference.
+                        let (ref_win, ref_marg, _ref_place, _ref_label) =
+                            committed(board, mrack, &unseen, &mut mg);
+                        // clairvoyant bound (E_T max_M).
+                        let mut egs2 = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+                        let clair =
+                            egs2.peg_clairvoyant_aggregate(0, board, mrack, &unseen_tally, 0.0);
+
+                        assert!(got.committed, "english path must be committed");
+                        assert!(got.best_move.is_some(), "committed result must name a move");
+                        assert!(
+                            (got.win_pct - ref_win).abs() < 1e-6,
+                            "[{bname}] mover=[{}] unseen={unseen:?}: committed solver win% {} != reference {}",
+                            a.fmt_rack(mrack),
+                            got.win_pct,
+                            ref_win,
+                        );
+                        assert!(
+                            (got.expected_margin - ref_marg).abs() < 1e-1,
+                            "[{bname}] mover=[{}] unseen={unseen:?}: committed solver margin {} != reference {}",
+                            a.fmt_rack(mrack),
+                            got.expected_margin,
+                            ref_marg,
+                        );
+                        assert!(
+                            got.win_pct <= clair.win_pct + 1e-6,
+                            "[{bname}] mover=[{}] unseen={unseen:?}: committed win% {} exceeds clairvoyant bound {}",
+                            a.fmt_rack(mrack),
+                            got.win_pct,
+                            clair.win_pct,
+                        );
+                        let gap = clair.win_pct - got.win_pct;
+                        if gap > 1e-6 {
+                            n_gap += 1;
+                            if gap > worst_gap {
+                                worst_gap = gap;
+                            }
+                            if matches!(got.best_move, Some(PegMove::Place(_))) {
+                                n_gap_place += 1;
+                            }
+                            if report.lines().count() < 25 {
+                                report.push_str(&format!(
+                                    "gap win%={gap:.3} [{bname}] mover=[{}] unseen={unseen:?}: clairvoyant {:.3} vs committed {:.3}\n",
+                                    a.fmt_rack(mrack), clair.win_pct, got.win_pct,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!(
+            "committed differential: solver matched reference on all scanned positions; \
+             {n_gap} showed strict committed < clairvoyant ({n_gap_place} where committed best is a place move), worst gap = {worst_gap:.3}"
+        );
+        print!("{report}");
+        assert!(
+            n_gap >= 1,
+            "toy corpus never exercised committed < clairvoyant; the differential proves nothing"
+        );
     }
 }
