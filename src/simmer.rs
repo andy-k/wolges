@@ -266,7 +266,7 @@ impl Simmer {
                             .game_state
                             .current_player()
                             .num_exchanges,
-                        always_include_pass: false,
+                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
                         dynamic_leaves: None,
                     });
                 &self.move_generator.plays[0].play

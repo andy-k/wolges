@@ -469,7 +469,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     rack: &game_state.current_player().rack,
                     max_gen: 100,
                     num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                    always_include_pass: false,
+                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 });
                 let mut driver = move_picker::Simmer::new(&game_config, &kwg, &klv);
@@ -533,7 +533,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     rack: &game_state.current_player().rack,
                     max_gen: 100,
                     num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                    always_include_pass: false,
+                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 });
                 let mut driver = move_picker::Simmer::new(&game_config, &kwg, &klv);
@@ -1793,7 +1793,7 @@ fn generate_autoplay_logs<
                                     num_exchanges_by_this_player: game_state
                                         .current_player()
                                         .num_exchanges,
-                                    always_include_pass: false,
+                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                     dynamic_leaves: None,
                                 });
                                 let play = &move_generator.plays[0];
@@ -1839,7 +1839,7 @@ fn generate_autoplay_logs<
                             rack: cur_rack,
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                            always_include_pass: false,
+                            pass_policy: movegen::PassPolicy::OnlyWhenForced,
                             dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
                         });
 
@@ -2938,7 +2938,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     rack: rack_bytes,
                                                     max_gen: 1,
                                                     num_exchanges_by_this_player: 0,
-                                                    always_include_pass: false,
+                                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                                     dynamic_leaves: None,
                                                 },
                                             );
@@ -3064,7 +3064,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                                     rack: &exchange_buffer,
                                                     max_gen: 1,
                                                     num_exchanges_by_this_player: 0,
-                                                    always_include_pass: false,
+                                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                                     dynamic_leaves: None,
                                                 },
                                             );
@@ -3184,7 +3184,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             rack: &game_state.current_player().rack,
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                            always_include_pass: false,
+                            pass_policy: movegen::PassPolicy::OnlyWhenForced,
                             dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
                         });
 
@@ -3609,7 +3609,7 @@ fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
                 rack: rack_bytes,
                 max_gen: 1,
                 num_exchanges_by_this_player: 0,
-                always_include_pass: false,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
             });
             let equity = knob.apply(move_generator.plays[0].equity, rack_bytes);
@@ -4103,7 +4103,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         rack: &movegen_rack[..],
         max_gen: 1,
         num_exchanges_by_this_player: i16::MAX,
-        always_include_pass: false,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
     };
     move_generator.set_spell_once(true);
@@ -4769,7 +4769,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         rack: &verify_rack,
                                         max_gen: 1,
                                         num_exchanges_by_this_player: 0,
-                                        always_include_pass: false,
+                                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                         dynamic_leaves: None,
                                     },
                                 );
@@ -5125,7 +5125,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 num_exchanges_by_this_player: game_state
                                     .current_player()
                                     .num_exchanges,
-                                always_include_pass: false,
+                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
                             });
                             game_state
@@ -5218,7 +5218,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     num_exchanges_by_this_player: game_state
                                         .current_player()
                                         .num_exchanges,
-                                    always_include_pass: false,
+                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                     dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
                                 });
                                 if opening_samples
@@ -6338,7 +6338,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     num_exchanges_by_this_player: game_state
                                         .current_player()
                                         .num_exchanges,
-                                    always_include_pass: false,
+                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                     dynamic_leaves: None,
                                 },
                                 |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
@@ -6940,7 +6940,7 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             rack: &game_state.current_player().rack,
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                            always_include_pass: false,
+                            pass_policy: movegen::PassPolicy::OnlyWhenForced,
                             dynamic_leaves: None,
                         });
 
@@ -7143,7 +7143,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             rack: &game_state.current_player().rack,
             max_gen: 1,
             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-            always_include_pass: false,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
         });
         let play = &move_generator.plays[0].play;
@@ -7433,7 +7433,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 num_exchanges_by_this_player: game_state
                                     .current_player()
                                     .num_exchanges,
-                                always_include_pass: false,
+                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: if is_klv0_side { dyn_ref } else { None },
                             });
                             let play = &move_generator.plays[0].play;

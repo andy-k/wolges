@@ -169,7 +169,7 @@ fn do_it<N: kwg::Node + Sync>(
             rack: test_rack,
             max_gen: usize::MAX,
             num_exchanges_by_this_player: 0,
-            always_include_pass: false,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
         });
         let plays1 = move_generator.plays.clone();
@@ -182,7 +182,7 @@ fn do_it<N: kwg::Node + Sync>(
             rack: test_rack,
             max_gen: usize::MAX,
             num_exchanges_by_this_player: 0,
-            always_include_pass: false,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
         });
         let plays2 = move_generator.plays.clone();
@@ -192,7 +192,7 @@ fn do_it<N: kwg::Node + Sync>(
             rack: test_rack,
             max_gen: usize::MAX,
             num_exchanges_by_this_player: 0,
-            always_include_pass: false,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
         });
         let plays3 = move_generator.plays.clone();
@@ -275,7 +275,7 @@ fn do_it<N: kwg::Node + Sync>(
                     rack: &game_state.current_player().rack,
                     max_gen: usize::MAX,
                     num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                    always_include_pass: false,
+                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 });
 
@@ -309,7 +309,7 @@ fn do_it<N: kwg::Node + Sync>(
                         rack: &game_state.current_player().rack,
                         max_gen: usize::MAX,
                         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                        always_include_pass: false,
+                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
                         dynamic_leaves: None,
                     });
                     plays2 = move_generator.plays.clone();
@@ -319,7 +319,7 @@ fn do_it<N: kwg::Node + Sync>(
                         rack: &game_state.current_player().rack,
                         max_gen: usize::MAX,
                         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                        always_include_pass: false,
+                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
                         dynamic_leaves: None,
                     });
                     if plays1 != move_generator.plays {
@@ -354,7 +354,7 @@ fn do_it<N: kwg::Node + Sync>(
                         rack: &game_state.current_player().rack,
                         max_gen: usize::MAX,
                         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                        always_include_pass: true,
+                        pass_policy: movegen::PassPolicy::AsACandidate,
                         dynamic_leaves: None,
                     },
                     |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
