@@ -7487,7 +7487,8 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let seed = seed.unwrap_or_else(rand::random);
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = wolges_threads();
-    let completed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let claimed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let finished_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
@@ -7541,7 +7542,8 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let kwg = std::sync::Arc::clone(&kwg);
             let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
             let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
-            let completed_pairs = std::sync::Arc::clone(&completed_pairs);
+            let claimed_pairs = std::sync::Arc::clone(&claimed_pairs);
+            let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
             thread_handles.push(s.spawn(move || {
                 let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
@@ -7553,8 +7555,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 let mut first_game_moves: Vec<movegen::Play> = Vec::new();
 
                 loop {
-                    let pair_idx =
-                        completed_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let pair_idx = claimed_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if pair_idx >= num_game_pairs {
                         break;
                     }
@@ -7641,14 +7642,14 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         );
                     }
 
+                    finished_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let secs = t0.elapsed().as_secs();
                     let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
                     if secs > prev {
                         writeln!(
                             boxed_stdout_or_stderr(),
-                            "After {}s: {} pairs",
-                            secs,
-                            pair_idx + 1
+                            "After {secs}s: {} pairs",
+                            finished_pairs.load(std::sync::atomic::Ordering::Relaxed),
                         )
                         .ok();
                     }
@@ -7751,7 +7752,8 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let seed = seed.unwrap_or_else(rand::random);
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = wolges_threads();
-    let completed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let claimed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let finished_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
@@ -7799,7 +7801,8 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let game_config = std::sync::Arc::clone(&game_config);
             let kwg = std::sync::Arc::clone(&kwg);
             let arc_klv = std::sync::Arc::clone(&arc_klv);
-            let completed_pairs = std::sync::Arc::clone(&completed_pairs);
+            let claimed_pairs = std::sync::Arc::clone(&claimed_pairs);
+            let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
             thread_handles.push(s.spawn(move || {
                 let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
@@ -7843,8 +7846,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 let mut first_game_moves: Vec<movegen::Play> = Vec::new();
 
                 loop {
-                    let pair_idx =
-                        completed_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let pair_idx = claimed_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if pair_idx >= num_game_pairs {
                         break;
                     }
@@ -7937,14 +7939,14 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         stats.add_game(p0_score, p1_score, num_turns, end_reason, pair_diverged);
                     }
 
+                    finished_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let secs = t0.elapsed().as_secs();
                     let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
                     if secs > prev {
                         writeln!(
                             boxed_stdout_or_stderr(),
-                            "After {}s: {} pairs",
-                            secs,
-                            pair_idx + 1
+                            "After {secs}s: {} pairs",
+                            finished_pairs.load(std::sync::atomic::Ordering::Relaxed),
                         )
                         .ok();
                     }
