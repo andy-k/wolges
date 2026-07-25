@@ -370,6 +370,10 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync, const OBSERVE: bool> Simmer<'
         budget: u64,
         count: u64,
     ) {
+        if self.candidates.len() < 2 {
+            return;
+        }
+
         #[cfg(not(target_family = "wasm"))]
         if self.sim_threads > 1 {
             self.run_iterations_parallel(move_generator, budget, count);

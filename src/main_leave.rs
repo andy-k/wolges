@@ -279,6 +279,20 @@ struct SimStudyCheck {
 }
 
 #[derive(clap::Args)]
+struct SimChunkCheck {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(default_value_t = 128)]
+    iters: u64,
+    #[arg(default_value_t = 1)]
+    seed: u64,
+    #[arg(default_value_t = 8)]
+    trials: u32,
+}
+
+#[derive(clap::Args)]
 struct SimMutateCheck {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -372,6 +386,10 @@ enum Task {
     SimCompare(SimCompare),
     #[command(about = "check that a resumed decision matches the same decision run in one call")]
     SimStudyCheck(SimStudyCheck),
+    #[command(
+        about = "check that cutting one decision into randomly sized chunks of resume calls gives the same leaderboard as running it in one call"
+    )]
+    SimChunkCheck(SimChunkCheck),
     #[command(about = "check that readmitting a retired candidate keeps its statistics")]
     SimMutateCheck(SimMutateCheck),
     #[command(
@@ -605,6 +623,11 @@ fn run<N: kwg::Node + Sync + Send>(
                     "resume mismatch: split decision differs from one-shot".to_string()
                 )
             }
+        }
+        Task::SimChunkCheck(a) => {
+            let klv = read_klv(&game_config, &a.klv)?;
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            sim_chunk_check(game_config, kwg, klv, a.iters, a.seed, a.trials)
         }
         Task::SimMutateCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
@@ -4350,6 +4373,92 @@ fn count_nonplacing_plays(plays: &[movegen::ValuedMove]) -> usize {
         .iter()
         .filter(|valued_move| matches!(valued_move.play, movegen::Play::Exchange { .. }))
         .count()
+}
+
+#[inline]
+fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    iters: u64,
+    seed: u64,
+    trials: u32,
+) -> error::Returns<()> {
+    if iters < 2 {
+        return Err("sim-chunk-check needs at least two iterations".into());
+    }
+    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+    let mut game_state = game_state::GameState::new(&game_config);
+    game_state.reset_and_draw_tiles(&game_config, &mut rng);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+        board_snapshot: &movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            klv: &klv,
+        },
+        rack: &game_state.current_player().rack,
+        max_gen: 100,
+        num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        dynamic_leaves: None,
+    });
+    let mut driver = move_picker::Simmer::<_, _, true>::new(
+        &game_config,
+        &kwg,
+        &klv,
+        move_picker::SimmerParams {
+            num_sim_iters: iters,
+            sim_threads: 1,
+            win_pct_table: None,
+        },
+    );
+    driver.reseed(seed);
+    driver.begin_decision(&move_generator, &game_state, iters);
+    let whole = driver.leaderboard(usize::MAX);
+    println!("one call of {iters}: {} candidates", whole.len());
+
+    let mut mismatches = 0u32;
+    for trial in 0..trials {
+        let mut chunks = Vec::new();
+        let mut left = iters;
+        while left > 0 {
+            let take = rng.random_range(1..=left);
+            chunks.push(take);
+            left -= take;
+        }
+        driver.reseed(seed);
+        driver.begin_decision(&move_generator, &game_state, chunks[0]);
+        for &chunk in &chunks[1..] {
+            driver.resume(&move_generator, chunk);
+        }
+        let split = driver.leaderboard(usize::MAX);
+        if split == whole {
+            println!("trial {trial}: {} chunks {chunks:?} match", chunks.len());
+        } else {
+            mismatches += 1;
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "FAIL trial {trial}: {} chunks {chunks:?} disagree with the one-call run",
+                chunks.len(),
+            )?;
+            for (i, (a, b)) in whole.iter().zip(split.iter()).enumerate() {
+                if a != b {
+                    writeln!(
+                        boxed_stdout_or_stderr(),
+                        "  row {i}: one call {a:?} vs chunked {b:?}"
+                    )?;
+                }
+            }
+        }
+    }
+    if mismatches == 0 {
+        println!("SIM_CHUNK_OK");
+        Ok(())
+    } else {
+        wolges::return_error!(format!("{mismatches} of {trials} chunkings disagreed"))
+    }
 }
 
 #[inline]
