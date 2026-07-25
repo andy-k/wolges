@@ -12,6 +12,97 @@ struct Candidate {
 
 pub const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
 
+#[derive(Clone)]
+pub struct FieldShape {
+    pub max_gen: usize,
+    pub nonplacing_quota: usize,
+}
+
+pub const SIMMER_FIELD: FieldShape = FieldShape {
+    max_gen: 100,
+    nonplacing_quota: 5,
+};
+
+#[inline(always)]
+fn places_no_tiles(play: &movegen::Play) -> bool {
+    match play {
+        movegen::Play::Exchange { .. } => true,
+        movegen::Play::Place { .. } => false,
+    }
+}
+
+#[inline]
+pub fn gen_simmer_candidates<N: kwg::Node, L: kwg::Node>(
+    filtered_movegen: &mut move_filter::GenMoves<'_>,
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    rack: &[u8],
+    num_exchanges_by_this_player: i16,
+    field: FieldShape,
+    scratch: &mut Vec<movegen::ValuedMove>,
+) {
+    let max_gen = field.max_gen;
+    filtered_movegen.gen_moves(
+        move_generator,
+        board_snapshot,
+        rack,
+        num_exchanges_by_this_player,
+        max_gen,
+    );
+    let quota = field.nonplacing_quota.min(max_gen);
+    let mut held = move_generator
+        .plays
+        .iter()
+        .filter(|valued_move| places_no_tiles(&valued_move.play))
+        .count();
+    if held >= quota {
+        return;
+    }
+    let pass_policy =
+        if move_generator.num_tiles_in_bag() < board_snapshot.game_config.exchange_tile_limit() {
+            movegen::PassPolicy::AsACandidate
+        } else {
+            movegen::PassPolicy::OnlyWhenForced
+        };
+    std::mem::swap(&mut move_generator.plays, scratch);
+    filtered_movegen.gen_nonplacing_moves(
+        move_generator,
+        board_snapshot,
+        rack,
+        num_exchanges_by_this_player,
+        quota,
+        pass_policy,
+    );
+    let mut held_any = false;
+    for candidate in move_generator.plays.drain(..) {
+        if held >= quota {
+            break;
+        }
+        if scratch
+            .iter()
+            .any(|valued_move| valued_move.play == candidate.play)
+        {
+            continue;
+        }
+        if scratch.len() < max_gen {
+            scratch.push(candidate);
+        } else if let Some(idx) = scratch
+            .iter()
+            .rposition(|valued_move| !places_no_tiles(&valued_move.play))
+        {
+            scratch[idx] = candidate;
+        } else {
+            break;
+        }
+        held += 1;
+        held_any = true;
+    }
+    if held_any {
+        scratch.sort_unstable();
+    }
+    std::mem::swap(&mut move_generator.plays, scratch);
+}
+
 // an iteration's draw depends only on (decision seed, iteration index), which is
 // what makes the parallel result independent of the thread count.
 #[inline(always)]
@@ -99,6 +190,7 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool = false> {
     #[cfg(not(target_family = "wasm"))]
     sim_threads: usize,
     decision_seed: u64,
+    candidate_scratch: Vec<movegen::ValuedMove>,
     prepared_pristine: game_state::GameState,
 }
 
@@ -129,6 +221,7 @@ impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSER
             #[cfg(not(target_family = "wasm"))]
             sim_threads: params.sim_threads,
             decision_seed: rand::random(),
+            candidate_scratch: Vec::new(),
             prepared_pristine: game_state::GameState::new(game_config),
         }
     }
@@ -517,13 +610,17 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 );
             }
             MovePicker::Simmer(simmer) => {
-                filtered_movegen.gen_moves(
+                let mut scratch = std::mem::take(&mut simmer.candidate_scratch);
+                gen_simmer_candidates(
+                    filtered_movegen,
                     move_generator,
                     board_snapshot,
                     rack,
                     game_state.current_player().num_exchanges,
-                    100,
+                    SIMMER_FIELD,
+                    &mut scratch,
                 );
+                simmer.candidate_scratch = scratch;
                 let budget = simmer.num_sim_iters;
                 simmer.begin_decision(move_generator, game_state, budget);
                 let winner_play_index = top_candidate_play_index_by_mean(&simmer.candidates);
@@ -537,6 +634,231 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build;
+
+    #[inline]
+    fn tiny_lexicon() -> Vec<u8> {
+        const LETTERS: [u8; 3] = [1, 5, 20]; // A, E, T
+        let mut words = Vec::new();
+        for &a in &LETTERS {
+            for &b in &LETTERS {
+                words.push([a, b][..].into());
+                for &c in &LETTERS {
+                    words.push([a, b, c][..].into());
+                }
+            }
+        }
+        words.sort_unstable();
+        build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            &words,
+        )
+        .unwrap()
+        .to_vec()
+    }
+
+    #[inline]
+    fn count_nonplacing(plays: &[movegen::ValuedMove]) -> usize {
+        plays
+            .iter()
+            .filter(|valued_move| places_no_tiles(&valued_move.play))
+            .count()
+    }
+
+    #[inline]
+    fn field_for(
+        game_config: &game_config::GameConfig,
+        kwg_bytes: &[u8],
+        klv_bytes: &[u8],
+        board_tiles: &[u8],
+        rack: &[u8],
+        field: FieldShape,
+    ) -> Vec<movegen::ValuedMove> {
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg_bytes);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv_bytes);
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles,
+            game_config,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+        let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
+        let mut scratch = Vec::new();
+        gen_simmer_candidates(
+            &mut filtered_movegen,
+            &mut move_generator,
+            &board_snapshot,
+            rack,
+            0,
+            field,
+            &mut scratch,
+        );
+        move_generator.plays
+    }
+
+    #[inline]
+    fn board_with(
+        game_config: &game_config::GameConfig,
+        island_row: usize,
+        num_dead: usize,
+    ) -> Vec<u8> {
+        let dim = game_config.board_layout().dim();
+        let cols = dim.cols as usize;
+        let mut board_tiles = vec![0u8; dim.rows as usize * cols];
+        for slot in board_tiles.iter_mut().take(num_dead) {
+            *slot = 26; // Z
+        }
+        board_tiles[island_row * cols + 5] = 1; // A
+        board_tiles[island_row * cols + 6] = 20; // T
+        board_tiles
+    }
+
+    #[test]
+    #[inline]
+    fn the_field_keeps_room_for_moves_that_place_no_tiles() {
+        let game_config = game_config::make_english_game_config();
+        let kwg_bytes = tiny_lexicon();
+        let klv_bytes = klv::make_klv2(&[(&[1, 5], 0.5)]);
+        let board_tiles = board_with(&game_config, 7, 0);
+        let rack = [1u8, 1, 5, 5, 20, 20, 20]; // AAEETTT
+
+        let unheld = field_for(
+            &game_config,
+            &kwg_bytes,
+            &klv_bytes,
+            &board_tiles,
+            &rack,
+            FieldShape {
+                max_gen: 8,
+                nonplacing_quota: 0,
+            },
+        );
+        assert_eq!(unheld.len(), 8);
+        assert_eq!(
+            count_nonplacing(&unheld),
+            0,
+            "the tile plays should crowd the class out; without that this test proves nothing",
+        );
+
+        let held = field_for(
+            &game_config,
+            &kwg_bytes,
+            &klv_bytes,
+            &board_tiles,
+            &rack,
+            FieldShape {
+                max_gen: 8,
+                nonplacing_quota: 3,
+            },
+        );
+        assert_eq!(held.len(), 8, "the quota displaces, it does not extend");
+        assert_eq!(count_nonplacing(&held), 3);
+        let best_nonplacing = held
+            .iter()
+            .find(|valued_move| places_no_tiles(&valued_move.play))
+            .expect("the class is represented");
+        match &best_nonplacing.play {
+            movegen::Play::Exchange { tiles } => {
+                let mut kept = rack.to_vec();
+                for &tile in &tiles[..] {
+                    kept.remove(kept.iter().position(|&t| t == tile).unwrap());
+                }
+                assert_eq!(kept, [1, 5], "should keep AE");
+            }
+            movegen::Play::Place { .. } => panic!("that is a tile play"),
+        }
+        let worst_place_kept = held
+            .iter()
+            .filter(|valued_move| !places_no_tiles(&valued_move.play))
+            .map(|valued_move| valued_move.equity)
+            .min()
+            .unwrap();
+        let dropped = unheld
+            .iter()
+            .filter(|valued_move| !held.iter().any(|kept| kept.play == valued_move.play))
+            .map(|valued_move| valued_move.equity)
+            .max()
+            .unwrap();
+        assert!(worst_place_kept >= dropped);
+    }
+
+    #[test]
+    #[inline]
+    fn the_field_holds_a_pass_once_the_bag_is_too_short_to_exchange() {
+        let game_config = game_config::make_english_game_config();
+        let kwg_bytes = tiny_lexicon();
+        let klv_bytes = klv::make_klv2(&[(&[1, 5], 0.5)]);
+        let board_tiles = board_with(&game_config, 12, 80);
+        let rack = [1u8, 1, 5, 5, 20, 20, 20];
+        let field = field_for(
+            &game_config,
+            &kwg_bytes,
+            &klv_bytes,
+            &board_tiles,
+            &rack,
+            FieldShape {
+                max_gen: 8,
+                nonplacing_quota: 3,
+            },
+        );
+        assert_eq!(field.len(), 8, "the board should still offer tile plays");
+        let passes = field
+            .iter()
+            .filter(|valued_move| match &valued_move.play {
+                movegen::Play::Exchange { tiles } => tiles.is_empty(),
+                movegen::Play::Place { .. } => false,
+            })
+            .count();
+        assert_eq!(passes, 1, "exactly one pass, held by the quota");
+        assert_eq!(
+            count_nonplacing(&field),
+            1,
+            "and nothing else, since no exchange is legal",
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn a_field_that_already_has_the_class_is_left_alone() {
+        let game_config = game_config::make_english_game_config();
+        let kwg_bytes = tiny_lexicon();
+        let klv_bytes = klv::make_klv2(&[(&[1, 5], 0.5)]);
+        let board_tiles = board_with(&game_config, 7, 0);
+        let rack = [1u8, 1, 5, 5, 20, 20, 20];
+        let wide = field_for(
+            &game_config,
+            &kwg_bytes,
+            &klv_bytes,
+            &board_tiles,
+            &rack,
+            FieldShape {
+                max_gen: 1_000,
+                nonplacing_quota: 0,
+            },
+        );
+        assert!(count_nonplacing(&wide) >= 3);
+        let with_quota = field_for(
+            &game_config,
+            &kwg_bytes,
+            &klv_bytes,
+            &board_tiles,
+            &rack,
+            FieldShape {
+                max_gen: 1_000,
+                nonplacing_quota: 3,
+            },
+        );
+        assert_eq!(
+            wide.len(),
+            with_quota.len(),
+            "nothing to hold, so nothing changes",
+        );
+        for (a, b) in wide.iter().zip(with_quota.iter()) {
+            assert!(a.play == b.play);
+        }
+    }
 
     #[inline]
     fn stats_from(values: &[f64]) -> stats::Stats {
