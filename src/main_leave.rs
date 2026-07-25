@@ -254,6 +254,20 @@ struct SimCompare {
     sim_threads: std::num::NonZeroUsize,
     #[arg(
         long,
+        value_enum,
+        default_value_t = SeatPicker::Simmer,
+        help = "how seat p0 picks its moves"
+    )]
+    p0_picker: SeatPicker,
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SeatPicker::Simmer,
+        help = "how seat p1 picks its moves"
+    )]
+    p1_picker: SeatPicker,
+    #[arg(
+        long,
         value_name = "TABLE",
         help = "seat p0 reads unfinished games' win chances from this win% table"
     )]
@@ -575,6 +589,8 @@ fn run<N: kwg::Node + Sync + Send>(
                     threads,
                     num_sim_iters: a.iters,
                     sim_threads: a.sim_threads.get(),
+                    p0_picker: a.p0_picker,
+                    p1_picker: a.p1_picker,
                     p0_win_pct: a.p0_win_pct,
                     p1_win_pct: a.p1_win_pct,
                 },
@@ -4234,8 +4250,24 @@ struct SimCompareParams {
     threads: usize,
     num_sim_iters: u64,
     sim_threads: usize,
+    p0_picker: SeatPicker,
+    p1_picker: SeatPicker,
     p0_win_pct: Option<String>,
     p1_win_pct: Option<String>,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SeatPicker {
+    Hasty,
+    Simmer,
+}
+
+#[inline]
+fn picker_name(picker: SeatPicker) -> &'static str {
+    match picker {
+        SeatPicker::Hasty => "hasty",
+        SeatPicker::Simmer => "simmer",
+    }
 }
 
 const SIM_FIELD_PROBE_RACKS: &[&str] = &["ADEINRT", "AEGIOTU", "CDIOUVW", "AAIIOUU"];
@@ -4663,6 +4695,8 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         threads,
         num_sim_iters,
         sim_threads,
+        p0_picker,
+        p1_picker,
         p0_win_pct,
         p1_win_pct,
     }: SimCompareParams,
@@ -4689,8 +4723,10 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let winpct_p1 = winpct_p1.as_ref();
     writeln!(
         boxed_stdout_or_stderr(),
-        "sim-compare: {num_sim_iters} rollouts a move; p0 win%={}; p1 win%={}",
+        "sim-compare: {num_sim_iters} rollouts a move; p0 {} win%={}; p1 {} win%={}",
+        picker_name(p0_picker),
         p0_win_pct.as_deref().unwrap_or("sigmoid"),
+        picker_name(p1_picker),
         p1_win_pct.as_deref().unwrap_or("sigmoid"),
     )?;
 
@@ -4708,26 +4744,36 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
 
-                let mut driver_p0 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
-                    &game_config,
-                    &kwg,
-                    &arc_klv,
-                    move_picker::SimmerParams {
-                        num_sim_iters,
-                        sim_threads,
-                        win_pct_table: winpct_p0,
-                    },
-                ));
-                let mut driver_p1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
-                    &game_config,
-                    &kwg,
-                    &arc_klv,
-                    move_picker::SimmerParams {
-                        num_sim_iters,
-                        sim_threads,
-                        win_pct_table: winpct_p1,
-                    },
-                ));
+                let mut driver_p0 = match p0_picker {
+                    SeatPicker::Hasty => move_picker::MovePicker::Hasty,
+                    SeatPicker::Simmer => {
+                        move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+                            &game_config,
+                            &kwg,
+                            &arc_klv,
+                            move_picker::SimmerParams {
+                                num_sim_iters,
+                                sim_threads,
+                                win_pct_table: winpct_p0,
+                            },
+                        ))
+                    }
+                };
+                let mut driver_p1 = match p1_picker {
+                    SeatPicker::Hasty => move_picker::MovePicker::Hasty,
+                    SeatPicker::Simmer => {
+                        move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+                            &game_config,
+                            &kwg,
+                            &arc_klv,
+                            move_picker::SimmerParams {
+                                num_sim_iters,
+                                sim_threads,
+                                win_pct_table: winpct_p1,
+                            },
+                        ))
+                    }
+                };
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut saved_game_state = game_state.clone();
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
