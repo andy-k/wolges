@@ -121,24 +121,10 @@ fn build_leaves_scaled_i16<Readable: std::io::Read>(
 }
 
 #[inline]
-fn build_leaves_f32<Readable: std::io::Read>(
-    f: Readable,
-    alph: alphabet::Alphabet,
+fn write_leaves_f32(
+    leaves_map: fash::MyHashMap<bites::Bites, f32>,
     build_layout: build::BuildLayout,
 ) -> error::Returns<Vec<u8>> {
-    let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
-    let mut leaves_map = fash::MyHashMap::<bites::Bites, _>::default();
-    let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
-    let mut v = Vec::new();
-    for result in csv_reader.records() {
-        let record = result?;
-        alphabet_reader.set_word(&record[0], &mut v)?;
-        v.sort_unstable();
-        let float_leave = f32::from_str(&record[1])?;
-        if leaves_map.insert(v[..].into(), float_leave).is_some() {
-            wolges::return_error!(format!("duplicate record {}", &record[0]));
-        }
-    }
     let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
     sorted_machine_words.sort_unstable();
     let leaves_kwg = build::build(
@@ -279,9 +265,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     Ok(true)
                 }
                 "-klv2" => {
-                    make_writer(&args[3])?.write_all(&build_leaves_f32(
-                        &mut make_reader(&args[2])?,
-                        make_alphabet(),
+                    let alphabet = make_alphabet();
+                    make_writer(&args[3])?.write_all(&write_leaves_f32(
+                        read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?,
                         build_layout,
                     )?)?;
                     Ok(true)
@@ -548,9 +534,11 @@ input/output files can be \"-\" (not advisable for binary files)"
 fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/CSW24.klv2",
-        build_leaves_f32(
-            Box::new(std::fs::File::open("lexsrc/CSW24.csv")?),
-            alphabet::make_english_alphabet(),
+        write_leaves_f32(
+            read_leaves_f32(
+                Box::new(std::fs::File::open("lexsrc/CSW24.csv")?),
+                &alphabet::make_english_alphabet(),
+            )?,
             build::BuildLayout::Wolges,
         )?,
     )?;
