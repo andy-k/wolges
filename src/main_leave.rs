@@ -291,6 +291,18 @@ struct SimMutateCheck {
 }
 
 #[derive(clap::Args)]
+struct SimFieldCheck {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(default_value_t = 1)]
+    seed: u64,
+    #[arg(default_value_t = 12)]
+    turns: u32,
+}
+
+#[derive(clap::Args)]
 struct Winpct {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -362,6 +374,10 @@ enum Task {
     SimStudyCheck(SimStudyCheck),
     #[command(about = "check that readmitting a retired candidate keeps its statistics")]
     SimMutateCheck(SimMutateCheck),
+    #[command(
+        about = "check that the simmer's field still holds a move that places no tiles once the board has filled and static equity has buried the exchanges"
+    )]
+    SimFieldCheck(SimFieldCheck),
     #[command(about = "record an empirical win% table from Hasty self-play")]
     Winpct(Winpct),
     #[command(about = "score a win% table and the simmer's sigmoid by Brier (lower is better)")]
@@ -642,6 +658,11 @@ fn run<N: kwg::Node + Sync + Send>(
                     }
                 }
             }
+        }
+        Task::SimFieldCheck(a) => {
+            let klv = read_klv(&game_config, &a.klv)?;
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            sim_field_check(game_config, kwg, klv, a.seed, a.turns)
         }
         Task::Winpct(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -4151,6 +4172,184 @@ struct SimCompareParams {
     sim_threads: usize,
     p0_win_pct: Option<String>,
     p1_win_pct: Option<String>,
+}
+
+const SIM_FIELD_PROBE_RACKS: &[&str] = &["ADEINRT", "AEGIOTU", "CDIOUVW", "AAIIOUU"];
+
+#[inline]
+fn sim_field_check<N: kwg::Node, L: kwg::Node>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    seed: u64,
+    turns: u32,
+) -> error::Returns<()> {
+    let alphabet = game_config.alphabet();
+    let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
+    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+    let mut game_state = game_state::GameState::new(&game_config);
+    game_state.reset_and_draw_tiles(&game_config, &mut rng);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
+    let mut scratch = Vec::new();
+    let play_one_greedy_turn = |game_state: &mut game_state::GameState,
+                                rng: &mut rand::rngs::ChaCha20Rng,
+                                move_generator: &mut movegen::KurniaMoveGenerator|
+     -> error::Returns<bool> {
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot: &movegen::BoardSnapshot {
+                board_tiles: &game_state.board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                klv: &klv,
+            },
+            rack: &game_state.current_player().rack,
+            max_gen: 1,
+            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let play = move_generator.plays[0].play.clone();
+        game_state.play(&game_config, rng, &play)?;
+        let mut final_scores = vec![0i32; game_config.num_players() as usize];
+        match game_state.check_game_ended(&game_config, &mut final_scores) {
+            game_state::CheckGameEnded::NotEnded => {
+                game_state.next_turn();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    };
+    for _ in 0..turns {
+        if !play_one_greedy_turn(&mut game_state, &mut rng, &mut move_generator)? {
+            return Err("the game ended before the board filled; lower the turn count".into());
+        }
+    }
+
+    let mut failures = 0usize;
+    let mut probe = |game_state: &game_state::GameState,
+                     move_generator: &mut movegen::KurniaMoveGenerator,
+                     scratch: &mut Vec<movegen::ValuedMove>,
+                     label: &str|
+     -> usize {
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let rack = &game_state.current_player().rack;
+        let num_exchanges = game_state.current_player().num_exchanges;
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack,
+            max_gen: 10_000,
+            num_exchanges_by_this_player: num_exchanges,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let rank = move_generator
+            .plays
+            .iter()
+            .position(|valued_move| matches!(valued_move.play, movegen::Play::Exchange { .. }));
+        let num_moves = move_generator.plays.len();
+        move_picker::gen_simmer_candidates(
+            &mut filtered_movegen,
+            move_generator,
+            &board_snapshot,
+            rack,
+            num_exchanges,
+            move_picker::FieldShape {
+                max_gen: move_picker::SIMMER_FIELD.max_gen,
+                nonplacing_quota: 0,
+            },
+            scratch,
+        );
+        let without = count_nonplacing_plays(&move_generator.plays);
+        move_picker::gen_simmer_candidates(
+            &mut filtered_movegen,
+            move_generator,
+            &board_snapshot,
+            rack,
+            num_exchanges,
+            move_picker::SIMMER_FIELD,
+            scratch,
+        );
+        let with = count_nonplacing_plays(&move_generator.plays);
+        println!(
+            "{label}: {}; field of {} holds {without} without the quota, {with} with it",
+            match rank {
+                Some(rank) => format!(
+                    "best places-nothing move ranks {} of {num_moves} by static equity",
+                    rank + 1
+                ),
+                None => "only tile plays are generated".to_string(),
+            },
+            move_picker::SIMMER_FIELD.max_gen,
+        );
+        with
+    };
+
+    for rack_str in SIM_FIELD_PROBE_RACKS {
+        let mut rack = Vec::new();
+        rack_reader.set_word(rack_str, &mut rack)?;
+        game_state.players[game_state.turn as usize].rack = rack;
+        let with = probe(
+            &game_state,
+            &mut move_generator,
+            &mut scratch,
+            &format!("rack {rack_str}"),
+        );
+        if with == 0 {
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "FAIL: rack {rack_str} field holds no move that places nothing"
+            )?;
+            failures += 1;
+        }
+    }
+
+    let exchange_tile_limit = game_config.exchange_tile_limit();
+    let mut extra_turns = 0u32;
+    while move_generator.num_tiles_in_bag() >= exchange_tile_limit {
+        if !play_one_greedy_turn(&mut game_state, &mut rng, &mut move_generator)? {
+            return Err("the game ended before the bag ran down".into());
+        }
+        extra_turns += 1;
+    }
+    println!(
+        "after {} more turns the bag holds {}, under the {exchange_tile_limit} an exchange needs",
+        extra_turns,
+        move_generator.num_tiles_in_bag(),
+    );
+    let with = probe(
+        &game_state,
+        &mut move_generator,
+        &mut scratch,
+        "bag too short to exchange",
+    );
+    if with == 0 {
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "FAIL: field holds no pass once exchanging is illegal"
+        )?;
+        failures += 1;
+    }
+
+    if failures == 0 {
+        println!("SIM_FIELD_OK");
+        Ok(())
+    } else {
+        wolges::return_error!(format!("{failures} field checks failed"))
+    }
+}
+
+#[inline]
+fn count_nonplacing_plays(plays: &[movegen::ValuedMove]) -> usize {
+    plays
+        .iter()
+        .filter(|valued_move| matches!(valued_move.play, movegen::Play::Exchange { .. }))
+        .count()
 }
 
 #[inline]
