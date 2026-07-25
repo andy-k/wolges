@@ -293,6 +293,25 @@ struct SimStudyCheck {
 }
 
 #[derive(clap::Args)]
+struct HarvestBoards {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves (- for none)")]
+    leave: String,
+    #[arg(help = "the fen file to write")]
+    out: String,
+    #[arg(default_value_t = 100)]
+    games: u64,
+    #[arg(default_value_t = 1)]
+    seed: u64,
+    #[arg(
+        default_value_t = 0,
+        help = "also write every kth ply's board (0: each finished board only)"
+    )]
+    stride: u32,
+}
+
+#[derive(clap::Args)]
 struct CensusBoard {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -428,6 +447,8 @@ enum Task {
     SimCompare(SimCompare),
     #[command(about = "check that a resumed decision matches the same decision run in one call")]
     SimStudyCheck(SimStudyCheck),
+    #[command(about = "play games and write their boards as fen, one per line")]
+    HarvestBoards(HarvestBoards),
     #[command(
         about = "census one board given as fen: the best equity each listed rack could get on it; no sampling, no coverage, no mover's rack"
     )]
@@ -681,6 +702,11 @@ fn run<N: kwg::Node + Sync + Send>(
                     "resume mismatch: split decision differs from one-shot".to_string()
                 )
             }
+        }
+        Task::HarvestBoards(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = read_klv(&game_config, &a.leave)?;
+            harvest_boards(game_config, kwg, klv, &a.out, a.games, a.seed, a.stride)
         }
         Task::CensusBoard(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -4832,6 +4858,65 @@ fn inspect_dynamic_leaves<L: kwg::Node>(
                 (dynamic - static_value) as f64 / scale,
             );
         }
+    }
+    Ok(())
+}
+
+#[inline]
+fn harvest_boards<N: kwg::Node, L: kwg::Node>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    out_path: &str,
+    num_games: u64,
+    seed: u64,
+    stride: u32,
+) -> error::Returns<()> {
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let mut game_state = game_state::GameState::new(&game_config);
+    let mut final_scores = vec![0i32; game_config.num_players() as usize];
+    let mut out = std::io::BufWriter::new(make_writer(out_path)?);
+    for game in 0..num_games {
+        let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
+            seed.wrapping_add(census_mix64(game)),
+        ));
+        game_state.reset_and_draw_tiles(&game_config, &mut rng);
+        let mut ply = 0u32;
+        loop {
+            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    klv: &klv,
+                },
+                rack: &game_state.current_player().rack,
+                max_gen: 1,
+                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            game_state.play(&game_config, &mut rng, &move_generator.plays[0].play)?;
+            ply += 1;
+            if stride > 0 && ply.is_multiple_of(stride) {
+                writeln!(
+                    out,
+                    "{}",
+                    display::BoardFenner::new(alphabet, board_layout, &game_state.board_tiles),
+                )?;
+            }
+            match game_state.check_game_ended(&game_config, &mut final_scores) {
+                game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
+                _ => break,
+            }
+        }
+        writeln!(
+            out,
+            "{}",
+            display::BoardFenner::new(alphabet, board_layout, &game_state.board_tiles),
+        )?;
     }
     Ok(())
 }
