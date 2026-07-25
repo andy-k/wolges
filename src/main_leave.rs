@@ -293,6 +293,18 @@ struct SimStudyCheck {
 }
 
 #[derive(clap::Args)]
+struct CensusBoard {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(help = "the board, as a fen")]
+    board: String,
+    #[arg(required = true, help = "the racks, such as AEINRST")]
+    racks: Vec<String>,
+}
+
+#[derive(clap::Args)]
 struct Dynaleaves {
     #[arg(help = "a --full leave table")]
     klv: String,
@@ -416,6 +428,10 @@ enum Task {
     SimCompare(SimCompare),
     #[command(about = "check that a resumed decision matches the same decision run in one call")]
     SimStudyCheck(SimStudyCheck),
+    #[command(
+        about = "census one board given as fen: the best equity each listed rack could get on it; no sampling, no coverage, no mover's rack"
+    )]
+    CensusBoard(CensusBoard),
     #[command(
         about = "what the pool reweight does to one rack on one board: the static and dynamic value of every kept subrack"
     )]
@@ -665,6 +681,11 @@ fn run<N: kwg::Node + Sync + Send>(
                     "resume mismatch: split decision differs from one-shot".to_string()
                 )
             }
+        }
+        Task::CensusBoard(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = read_klv(&game_config, &a.klv)?;
+            census_one_board(game_config, kwg, klv, &a.board, &a.racks)
         }
         Task::Dynaleaves(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
@@ -4550,6 +4571,161 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     } else {
         wolges::return_error!(format!("{mismatches} of {trials} chunkings disagreed"))
     }
+}
+
+#[inline]
+fn bag_size(board_tiles: &[u8], game_config: &game_config::GameConfig) -> i64 {
+    let on_board = board_tiles.iter().filter(|&&t| t != 0).count() as i64;
+    game_config.alphabet().num_tiles() as i64
+        - (on_board + game_config.num_players() as i64 * game_config.rack_size() as i64)
+}
+
+#[inline]
+fn census_one_board<N: kwg::Node, L: kwg::Node>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    board_fen: &str,
+    rack_strs: &[String],
+) -> error::Returns<()> {
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    let num_letters = alphabet.len() as usize;
+    let rack_size = game_config.rack_size() as usize;
+    let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
+    let board_tiles = fen_parser.parse(board_fen)?.to_vec();
+    let tiles_on_board = board_tiles.iter().filter(|&&t| t != 0).count();
+    let mut unseen_tally = (0..alphabet.len())
+        .map(|t| alphabet.freq(t))
+        .collect::<Vec<u8>>();
+    for &t in &board_tiles {
+        if t != 0 {
+            let base = t & !((t as i8) >> 7) as u8;
+            unseen_tally[base as usize] = unseen_tally[base as usize].saturating_sub(1);
+        }
+    }
+    let unseen: usize = unseen_tally.iter().map(|&c| c as usize).sum();
+    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let can_exchange =
+        bag_size(&board_tiles, &game_config) >= game_config.exchange_tile_limit() as i64;
+    let sheet_floor = if can_exchange { 0 } else { i32::MIN / 4 };
+    let mut sheet = vec![sheet_floor; lat.len()];
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let mut movegen_rack = Vec::new();
+    let mut blank_deltas = Vec::new();
+    let num_blanks_eff = (unseen_tally[0] as usize).min(rack_size);
+    let t0 = std::time::Instant::now();
+    let num_candidates = build_sheet_spell_once(
+        &mut move_generator,
+        &board_tiles,
+        SpellTables {
+            game_config: &game_config,
+            kwg: &kwg,
+            klv: &klv,
+            lat: &lat,
+        },
+        SpellPool {
+            unseen_tally: &unseen_tally,
+            num_blanks_eff,
+            rack_size,
+        },
+        &mut movegen_rack,
+        &mut blank_deltas,
+        &mut sheet,
+    );
+    let sheet_elapsed = t0.elapsed();
+    if !can_exchange {
+        let empty = vec![0u8; num_letters];
+        let idx = lat.rank(&empty);
+        if idx != !0 {
+            sheet[idx as usize] = 0;
+        }
+    }
+    let mut leave = vec![0i32; lat.len()];
+    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    println!(
+        "{tiles_on_board} tiles on the board, {unseen} unseen, {num_candidates} candidate plays \
+         in {sheet_elapsed:?}",
+    );
+    let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
+    let mut rack = Vec::new();
+    let mut tally = vec![0u8; num_letters];
+    for rack_str in rack_strs {
+        rack_reader.set_word(rack_str, &mut rack)?;
+        if rack.len() > rack_size {
+            return Err(format!(
+                "{rack_str} has {} tiles; a rack holds {rack_size}",
+                rack.len(),
+            )
+            .into());
+        }
+        tally.iter_mut().for_each(|c| *c = 0);
+        for &t in &rack {
+            tally[t as usize] += 1;
+        }
+        let mut played = vec![0u8; num_letters];
+        let mut kept = tally.clone();
+        let mut best = i32::MIN;
+        best_split(
+            &RackSplit {
+                lat: &lat,
+                sheet: &sheet,
+                leave: &leave,
+                rack: &rack,
+            },
+            0,
+            &mut played,
+            &mut kept,
+            &mut best,
+        );
+        let drawable = rack
+            .iter()
+            .all(|&t| tally[t as usize] <= unseen_tally[t as usize]);
+        println!(
+            "  {rack_str:<10} best equity {:>8.3}{}",
+            equity::Equity::new(best).as_f64(),
+            if drawable {
+                ""
+            } else {
+                "   (not drawable from this board's unseen pool)"
+            },
+        );
+    }
+    Ok(())
+}
+
+struct RackSplit<'a> {
+    lat: &'a census::MultisetLattice,
+    sheet: &'a [i32],
+    leave: &'a [i32],
+    rack: &'a [u8],
+}
+
+fn best_split(
+    split: &RackSplit<'_>,
+    at: usize,
+    played: &mut [u8],
+    kept: &mut [u8],
+    best: &mut i32,
+) {
+    if at == split.rack.len() {
+        let played_idx = split.lat.rank(played);
+        let kept_idx = split.lat.rank(kept);
+        if played_idx != !0 && kept_idx != !0 {
+            let value = split.sheet[played_idx as usize] + split.leave[kept_idx as usize];
+            if value > *best {
+                *best = value;
+            }
+        }
+        return;
+    }
+    let tile = split.rack[at] as usize;
+    best_split(split, at + 1, played, kept, best);
+    kept[tile] -= 1;
+    played[tile] += 1;
+    best_split(split, at + 1, played, kept, best);
+    played[tile] -= 1;
+    kept[tile] += 1;
 }
 
 #[inline]
