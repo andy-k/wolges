@@ -14,7 +14,6 @@ pub const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
 
 // an iteration's draw depends only on (decision seed, iteration index), which is
 // what makes the parallel result independent of the thread count.
-#[cfg(not(target_family = "wasm"))]
 #[inline(always)]
 fn mix(decision_seed: u64, sim_iter: u64) -> u64 {
     let mut z = decision_seed.wrapping_add(sim_iter.wrapping_mul(0x9E37_79B9_7F4A_7C15));
@@ -150,6 +149,7 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     #[cfg(not(target_family = "wasm"))]
     sim_threads: usize,
     decision_seed: u64,
+    prepared_pristine: game_state::GameState,
 }
 
 pub struct SimmerParams<'a> {
@@ -190,7 +190,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             win_pct_table: params.win_pct_table,
             #[cfg(not(target_family = "wasm"))]
             sim_threads: params.sim_threads,
-            decision_seed: 0,
+            decision_seed: rand::random(),
+            prepared_pristine: game_state::GameState::new(game_config),
         }
     }
 
@@ -354,6 +355,8 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         let start = self.iters_done;
         for sim_iter in (start + 1)..=(start + count) {
             self.iters_done = sim_iter;
+            self.simmer.restore_prepared(&self.prepared_pristine);
+            self.simmer.reseed(mix(self.decision_seed, sim_iter));
             self.simmer.prepare_iteration();
             // until the first prune every candidate must gather samples, or the prune sees
             // count-zero arms whose interval is NaN and empties the field.
@@ -477,6 +480,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                 }
             }
         }
+        self.simmer.restore_prepared(&self.prepared_pristine);
         self.candidates = candidates;
         self.retired = retired;
     }
@@ -630,6 +634,8 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
     ) {
         self.simmer
             .prepare(self.game_config, game_state, 2, self.observe);
+        self.prepared_pristine
+            .clone_from(self.simmer.prepared_state());
         self.candidates = self.take_candidates(move_generator.plays.len());
         self.next_stream_id = self.candidates.len() as u64;
         self.retired.clear();
