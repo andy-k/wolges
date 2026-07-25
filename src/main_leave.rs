@@ -5,8 +5,8 @@ use std::fmt::Write;
 use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
-    alphabet, bites, build, census, display, equity, error, fash, game_config, game_state, klv,
-    kwg, move_filter, move_picker, movegen, play_scorer, prob, stats, win_pct,
+    alphabet, bites, board_layout, build, census, display, equity, error, fash, game_config,
+    game_state, klv, kwg, move_filter, move_picker, movegen, play_scorer, prob, stats, win_pct,
 };
 
 mod game_args;
@@ -279,6 +279,12 @@ struct SimStudyCheck {
 }
 
 #[derive(clap::Args)]
+struct BoardStats {
+    #[arg(help = "the fen file (- for stdin)")]
+    boards: String,
+}
+
+#[derive(clap::Args)]
 struct SimChunkCheck {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -386,6 +392,10 @@ enum Task {
     SimCompare(SimCompare),
     #[command(about = "check that a resumed decision matches the same decision run in one call")]
     SimStudyCheck(SimStudyCheck),
+    #[command(
+        about = "shape of the boards in a fen file: tiles, words, mean word length, perimeter per tile, radius of gyration, holes"
+    )]
+    BoardStats(BoardStats),
     #[command(
         about = "check that cutting one decision into randomly sized chunks of resume calls gives the same leaderboard as running it in one call"
     )]
@@ -626,6 +636,7 @@ fn run<N: kwg::Node + Sync + Send>(
                 )
             }
         }
+        Task::BoardStats(a) => board_stats(game_config, &mut make_reader(&a.boards)?),
         Task::SimChunkCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -4489,6 +4500,156 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     } else {
         wolges::return_error!(format!("{mismatches} of {trials} chunkings disagreed"))
     }
+}
+
+struct BoardShape {
+    area: usize,
+    num_words: usize,
+    total_word_length: usize,
+    perimeter: usize,
+    radius_of_gyration: f64,
+    holes: usize,
+}
+
+#[inline]
+fn board_shape(board_layout: &board_layout::BoardLayout, board_tiles: &[u8]) -> BoardShape {
+    let dim = board_layout.dim();
+    let rows = dim.rows as isize;
+    let cols = dim.cols as isize;
+    let at = |r: isize, c: isize| -> u8 {
+        if r < 0 || c < 0 || r >= rows || c >= cols {
+            0
+        } else {
+            board_tiles[(r * cols + c) as usize]
+        }
+    };
+    let filled = |r: isize, c: isize| -> bool { at(r, c) != 0 };
+    let filled_or_off =
+        |r: isize, c: isize| -> bool { r < 0 || c < 0 || r >= rows || c >= cols || filled(r, c) };
+    let mut area = 0usize;
+    let mut perimeter = 0usize;
+    let mut holes = 0usize;
+    let mut sum_r = 0f64;
+    let mut sum_c = 0f64;
+    for r in 0..rows {
+        for c in 0..cols {
+            if filled(r, c) {
+                area += 1;
+                sum_r += r as f64;
+                sum_c += c as f64;
+                for (dr, dc) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    if !filled(r + dr, c + dc) {
+                        perimeter += 1;
+                    }
+                }
+            } else if [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                .iter()
+                .all(|&(dr, dc)| filled_or_off(r + dr, c + dc))
+            {
+                holes += 1;
+            }
+        }
+    }
+    let mut num_words = 0usize;
+    let mut total_word_length = 0usize;
+    for down in [false, true] {
+        let (outer, inner) = if down { (cols, rows) } else { (rows, cols) };
+        for a in 0..outer {
+            let mut run = 0usize;
+            for b in 0..=inner {
+                let occupied = b < inner && if down { filled(b, a) } else { filled(a, b) };
+                if occupied {
+                    run += 1;
+                } else {
+                    if run >= 2 {
+                        num_words += 1;
+                        total_word_length += run;
+                    }
+                    run = 0;
+                }
+            }
+        }
+    }
+    let radius_of_gyration = if area == 0 {
+        0.0
+    } else {
+        let mean_r = sum_r / area as f64;
+        let mean_c = sum_c / area as f64;
+        let mut sum_sq = 0f64;
+        for r in 0..rows {
+            for c in 0..cols {
+                if filled(r, c) {
+                    let dr = r as f64 - mean_r;
+                    let dc = c as f64 - mean_c;
+                    sum_sq += dr * dr + dc * dc;
+                }
+            }
+        }
+        (sum_sq / area as f64).sqrt()
+    };
+    BoardShape {
+        area,
+        num_words,
+        total_word_length,
+        perimeter,
+        radius_of_gyration,
+        holes,
+    }
+}
+
+#[inline]
+fn board_stats(
+    game_config: game_config::GameConfig,
+    reader: &mut Box<dyn std::io::Read>,
+) -> error::Returns<()> {
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
+    let mut boards = 0u64;
+    let mut area = stats::Stats::new();
+    let mut words = stats::Stats::new();
+    let mut word_length = stats::Stats::new();
+    let mut perimeter_per_area = stats::Stats::new();
+    let mut radius = stats::Stats::new();
+    let mut holes = stats::Stats::new();
+    let mut text = String::new();
+    reader.read_to_string(&mut text)?;
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let shape = board_shape(board_layout, fen_parser.parse(line)?);
+        boards += 1;
+        area.update(shape.area as f64);
+        words.update(shape.num_words as f64);
+        if shape.num_words > 0 {
+            word_length.update(shape.total_word_length as f64 / shape.num_words as f64);
+        }
+        if shape.area > 0 {
+            perimeter_per_area.update(shape.perimeter as f64 / shape.area as f64);
+        }
+        radius.update(shape.radius_of_gyration);
+        holes.update(shape.holes as f64);
+    }
+    if boards == 0 {
+        return Err("no boards to measure".into());
+    }
+    println!("boards: {boards}");
+    for (label, stat) in [
+        ("tiles on board", &area),
+        ("words", &words),
+        ("mean word length", &word_length),
+        ("perimeter per tile", &perimeter_per_area),
+        ("radius of gyration", &radius),
+        ("holes", &holes),
+    ] {
+        println!(
+            "  {label}: {:.3} (sd={:.3})",
+            stat.mean(),
+            stat.standard_deviation(),
+        );
+    }
+    Ok(())
 }
 
 #[inline]
