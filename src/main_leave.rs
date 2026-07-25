@@ -390,7 +390,9 @@ enum Task {
         about = "check that cutting one decision into randomly sized chunks of resume calls gives the same leaderboard as running it in one call"
     )]
     SimChunkCheck(SimChunkCheck),
-    #[command(about = "check that readmitting a retired candidate keeps its statistics")]
+    #[command(
+        about = "check that a candidate retired by hand or by the pruner keeps its statistics through a readmit"
+    )]
     SimMutateCheck(SimMutateCheck),
     #[command(
         about = "check that the simmer's field still holds a move that places no tiles once the board has filled and static equity has buried the exchanges"
@@ -661,9 +663,37 @@ fn run<N: kwg::Node + Sync + Send>(
                 },
             );
             driver.reseed(seed);
-            driver.begin_decision(&move_generator, &game_state, iters);
-            let retired_id = driver.retired_stream_ids().next();
-            match retired_id {
+            let opening = (iters / 4).max(1);
+            driver.begin_decision(&move_generator, &game_state, opening);
+            {
+                let by_hand = driver
+                    .active_stream_ids()
+                    .next()
+                    .ok_or("no active candidates to retire")?;
+                let at_retire = driver.stream_count(by_hand).unwrap();
+                let retired_by_hand = driver.retire_stream(by_hand);
+                let now_retired = driver.retired_stream_ids().any(|id| id == by_hand);
+                let still_active = driver.active_stream_ids().any(|id| id == by_hand);
+                let kept = driver.stream_count(by_hand).unwrap();
+                println!(
+                    "retire stream {by_hand}: count {at_retire} -> {kept}, retired={now_retired} active={still_active}",
+                );
+                if !retired_by_hand || !now_retired || still_active || kept != at_retire {
+                    wolges::return_error!(
+                        "hand retire did not move the candidate intact".to_string()
+                    );
+                }
+                if !driver.readmit_with_history(by_hand)
+                    || driver.stream_count(by_hand).unwrap() != at_retire
+                {
+                    wolges::return_error!(
+                        "readmit after a hand retire lost the statistics".to_string()
+                    );
+                }
+            }
+            driver.resume(&move_generator, iters.saturating_sub(opening));
+            let pruned_id = driver.retired_stream_ids().next();
+            match pruned_id {
                 None => wolges::return_error!(
                     "no candidates were pruned; raise the iteration budget".to_string()
                 ),
