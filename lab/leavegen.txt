@@ -35,6 +35,18 @@ for. Those alternatives, and every lever that turned out not to help, are
 described below; the best current way to run each method is collected at the
 end of this file.
 
+There is one table that measures stronger than that, and it costs hours instead
+of minutes: the census table mixed half and half with a self-play table. One
+script builds it start to finish, and its defaults are the recipe that was
+measured:
+
+  ./genblend.sh english english
+
+Reach for it when the table is one you mean to keep and you can spare an
+overnight run; reach for the census above when you want a good table now. Why
+the mixture wins, and what it costs, is under MIXING TWO TABLES BEATS EITHER
+ONE below.
+
 The last generation's board count is the number that matters, and it is the
 only reason this costs more than the older recommendation of 4x256 (four
 generations of 256). Both are worth knowing. 4x256 finishes much sooner,
@@ -912,15 +924,75 @@ which leave looks best as the pool empties. It is the one place a static table,
 read a little less statically, plays measurably better.
 
 
+MIXING TWO TABLES BEATS EITHER ONE
+
+The census and self-play disagree about what a leave is worth, and averaging
+their answers plays better than either. buildlex mixes two tables leave by
+leave, the weight saying how much of the second table to take:
+
+    cargo run --release --bin buildlex -- \
+      english-blend census.klv2 selfplay.klv2 0.5 blend.klv2
+
+A leave only one of the two lists keeps that table's own value, since blending
+it against a zero the other table never claimed would be inventing a number.
+
+At the midpoint the mixture beats both of its parents, which is the result
+worth keeping. Over five million game pairs against the census parent it takes
+50.1162 and 50.0950 on two seeds, and against the self-play parent 50.1017, all
+at confidence 100 -- about a tenth of a percentage point either way, small in
+absolute terms and about as certain as this harness gets. Weights either side
+of the midpoint (0.375 and 0.625) also beat both parents but by less, so 0.5 is
+where to sit rather than a knob to sweep again.
+
+Why it should work at all: the two methods are wrong in different directions.
+The census values every leave exactly, but only on the few hundred boards it
+sampled for itself. Self-play visits boards the way games actually reach them,
+but learns each leave from a noisy average of the racks that happened to hold
+it. Averaging keeps what they agree on and splits the difference where the
+errors are independent.
+
+The expensive half is self-play, and two generations are enough. A blend built
+from generation 2 measured level with one built from generation 4 -- 50.0063,
+49.9956 and 50.0033 on three seeds, a mean of 50.0017 -- while costing a third
+as much. Fifteen further hours of self-play bought nothing measurable, which
+matches what the generations themselves show: by generation 2 the tiles that
+settle slowly have mostly settled. So the recipe is the census (minutes), two
+self-play generations of a hundred million games each seeded from it (about
+seven and a half hours), and the mix (under a second).
+
+genblend.sh runs exactly that, and keeps both ingredients so the mixture can be
+remade at another weight without replaying a game:
+
+    mkdir t && cd t && cp -ip ../.../CSW24.kwg .
+    ../genblend.sh english english
+
+Its decompose smooths the thin tail with the same fixed floor as genleaves.sh.
+At a hundred million games there is almost nothing left unmeasured to fill in:
+the floor changes 12,913 of 914,624 leaves, all of them six-tile keeps of
+doubled rare consonants such as JWWXYY, and over a million game pairs a table
+built with it and one built without it played identically -- the comparison
+reads 50.0000 at confidence 0.
+
+
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
 get the most competitive leaves out of each method. Each recipe is one command
-(indented) followed by a note on how to push it further. If you only want a
-good table, use the census.
+(indented) followed by a note on how to push it further. If you want a good
+table in minutes, use the census; if you want the strongest table measured and
+can spare hours, mix the census with self-play.
 
-Census -- exact, and the one to use. It values every leave on a board exactly,
-then averages over many boards.
+Census and self-play mixed -- the strongest measured table, and hours rather
+than minutes. One script builds all of it: the census, two self-play
+generations seeded from it, and the half-and-half mix.
+
+    ./genblend.sh english english
+
+Its defaults are the measured recipe; MIXING TWO TABLES BEATS EITHER ONE above
+has the numbers, and RUNNING GENBLEND.SH below has the options.
+
+Census -- exact, and the one to use when minutes matter. It values every leave
+on a board exactly, then averages over many boards.
 
     cargo run --release --bin leave -- census CSW24.kwg - - 3x256,2048
 
@@ -985,6 +1057,28 @@ Options, each written before the configs:
   --no-forcing  turn off autoplay's full-rack forcing, reverting to plain
                 natural sampling (ignored under --gilles)
   --full        also write the full-length leaves (what dynamic leaves read)
+
+RUNNING GENBLEND.SH
+
+genblend.sh builds the mixed table of MIXING TWO TABLES BEATS EITHER ONE, all
+three stages in one command:
+
+    ./genblend.sh [options] <play-config> <leave-config> [count-per-gen]...
+
+The configs mean what they mean for genleaves.sh. Trailing counts, if given,
+spell out the self-play generations as games:samples-of-every-rack, defaulting
+to 100000000:500 100000000:1000 -- two generations, the recipe that was
+measured. Each stage is skipped if its result is already on disk, so an
+interrupted run carries on rather than replaying finished generations, and each
+generation's per-game log is deleted once its summary is renamed, because at
+these game counts that log runs to gigabytes and nothing downstream reads it.
+
+Options, each written before the configs:
+  --recipe LIST     board counts for the census stage (default 3x256,2048)
+  --weight W        how much of the self-play table the mix takes, 0 being the
+                    census alone and 1 self-play alone (default 0.5)
+  --census-seed S   fix the census stage's seed so that stage is reproducible
+  --threads N       worker threads for every leave run (default every core)
 
 
 OUTPUT FILE NAMES
