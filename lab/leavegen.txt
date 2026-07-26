@@ -461,6 +461,47 @@ is scored with its own penalty rather than from the leave table, so dropping
 those rows gives a smaller, play-identical file; --full keeps them.
 
 
+HOW MANY GENERATIONS, AND WHY SOME TILES NEED MORE
+
+Each generation values every rack against the leaves the generation before it
+produced, so each one reaches a turn further. The first pass knows what a tile
+is worth when you play it. The second knows what it is worth to keep it for a
+turn and play it after that. The third reaches a turn further again. A tile you
+play at once is therefore priced almost immediately, and a tile whose whole
+worth is that you hold on to it takes as many passes as you tend to hold it.
+
+That makes a real difference between tiles, and a run's own per-generation
+snapshots show it. Take the value a tile adds when it joins a five-tile leave.
+An E is settled by the third generation: the fourth moves it by five
+thousandths of a point. At that same generation -- where the recipe at the top
+of this file stops -- a blank is still moving by nine tenths of a point, and an
+S by a quarter. They are the two tiles you hold rather than play, and they are
+the last to arrive.
+
+Three more generations move a blank another 0.38 and an S another 0.11, and
+leave an E alone. Both English word lists tried agree to within about a
+twentieth of a point at every generation, so this is a property of the method
+and not of a word list.
+
+The cheap way to get those tiles is more warm-up generations rather than more
+boards. Six warm-ups then one big generation (6x256,2048) lands further along
+than three warm-ups then three big ones (3x256,3x2048), even though the second
+takes more than twice as long -- board count buys precision and generation
+count buys reach, and only the last generation needs the boards. Doubling the
+warm-ups again (12x256,2048) adds another 0.02, so six is about where it stops
+paying.
+
+What it is worth at the board is small. Played head to head against the table
+it replaces, over a million game pairs on each of two seeds, the six-warm-up
+table scored 50.002 percent -- which is to say the difference is below what a
+million pairs can see, even though the tile values plainly moved. A blank is in
+about one rack in seven, so a correction confined to blanks and S's is a small
+slice of all the decisions in a game. Reach for the extra warm-ups when the
+census table is the one being kept; they cost about a third more than the
+recipe at the top of this file and they are the only way those two tiles
+arrive.
+
+
 EXCHANGING, AND WHY GOOD LEAVES FAN OUT
 
 Weighing only "play a word" against "pass and keep the whole rack" would
