@@ -4823,12 +4823,69 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             &mut kept,
             &mut best,
         );
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot: &movegen::BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                klv: &klv,
+            },
+            rack: &rack,
+            max_gen: 1,
+            num_exchanges_by_this_player: 0,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let (movegen_best, movegen_play) = move_generator.plays.first().map_or_else(
+            || (f64::NAN, "nothing".to_string()),
+            |m| {
+                let mut shown = String::new();
+                match &m.play {
+                    movegen::Play::Exchange { tiles } if tiles.is_empty() => {
+                        shown.push_str("pass");
+                    }
+                    movegen::Play::Exchange { tiles } => {
+                        shown.push_str("exch ");
+                        for &tile in tiles.iter() {
+                            shown.push_str(alphabet.of_rack(tile).unwrap());
+                        }
+                    }
+                    movegen::Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        ..
+                    } => {
+                        if *down {
+                            write!(shown, "{}{} ", display::column(*lane), idx + 1).unwrap();
+                        } else {
+                            write!(shown, "{}{} ", lane + 1, display::column(*idx)).unwrap();
+                        }
+                        for &tile in word.iter() {
+                            if tile == 0 {
+                                shown.push('.');
+                            } else {
+                                shown.push_str(alphabet.of_board(tile).unwrap());
+                            }
+                        }
+                    }
+                }
+                (m.equity.as_f64(), shown)
+            },
+        );
         let drawable = rack
             .iter()
             .all(|&t| tally[t as usize] <= unseen_tally[t as usize]);
+        let sheet_best = equity::Equity::new(best).as_f64();
         println!(
-            "  {rack_str:<10} best equity {:>8.3}{}",
-            equity::Equity::new(best).as_f64(),
+            "  {rack_str:<10} best equity {sheet_best:>8.3}  (the move generator says \
+             {movegen_best:>8.3} for {movegen_play}{}){}",
+            if (sheet_best - movegen_best).abs() < 0.0005 {
+                ", agreed"
+            } else {
+                ", disagreed"
+            },
             if drawable {
                 ""
             } else {
