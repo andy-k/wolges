@@ -4431,6 +4431,7 @@ struct SimCompareParams {
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum SeatPicker {
     Hasty,
+    Dynamic,
     Simmer,
 }
 
@@ -4438,6 +4439,7 @@ enum SeatPicker {
 fn picker_name(picker: SeatPicker) -> &'static str {
     match picker {
         SeatPicker::Hasty => "hasty",
+        SeatPicker::Dynamic => "dynamic",
         SeatPicker::Simmer => "simmer",
     }
 }
@@ -4962,6 +4964,13 @@ fn best_split(
 }
 
 #[inline]
+fn full_rack_values<L: kwg::Node>(lat: &census::MultisetLattice, klv: &klv::Klv<L>) -> Vec<i32> {
+    let mut full_v = vec![0i32; lat.len()];
+    census::fill_lattice_leaves(lat, &mut full_v, |tally| klv.leave_value_from_tally(tally));
+    full_v
+}
+
+#[inline]
 fn inspect_dynamic_leaves<L: kwg::Node>(
     game_config: game_config::GameConfig,
     klv: klv::Klv<L>,
@@ -5003,8 +5012,7 @@ fn inspect_dynamic_leaves<L: kwg::Node>(
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let add = census::AddTable::new_with_threads(&lat, threads);
-    let mut full_v = vec![0i32; lat.len()];
-    census::fill_lattice_leaves(&lat, &mut full_v, |tally| klv.leave_value_from_tally(tally));
+    let full_v = full_rack_values(&lat, &klv);
     println!("rack {rack_str}, {pool_size} tiles unseen");
     println!("  keep                 static    dynamic     delta");
     let mut distinct: Vec<(u8, u8)> = Vec::new();
@@ -5316,6 +5324,25 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     };
     let winpct_p0 = winpct_p0.as_ref();
     let winpct_p1 = winpct_p1.as_ref();
+    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> =
+        if matches!(p0_picker, SeatPicker::Dynamic) || matches!(p1_picker, SeatPicker::Dynamic) {
+            let num_letters = game_config.alphabet().len() as usize;
+            let rack_size = game_config.rack_size() as usize;
+            let lat = census::MultisetLattice::new(num_letters, rack_size);
+            let full_v = full_rack_values(&lat, &arc_klv);
+            let add = census::AddTable::new_with_threads(&lat, num_threads);
+            Some((lat, add, full_v))
+        } else {
+            None
+        };
+    let dyn_ref = dyn_ctx
+        .as_ref()
+        .map(|(lat, add, full_v)| klv::DynamicLeavesRef {
+            lat,
+            add,
+            full_v: full_v.as_slice(),
+            min_keep: 0,
+        });
     writeln!(
         boxed_stdout_or_stderr(),
         "sim-compare: {num_sim_iters} rollouts a move; p0 {} win%={}; p1 {} win%={}",
@@ -5341,6 +5368,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
                 let mut driver_p0 = match p0_picker {
                     SeatPicker::Hasty => move_picker::MovePicker::Hasty,
+                    SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dyn_ref.unwrap()),
                     SeatPicker::Simmer => {
                         move_picker::MovePicker::Simmer(move_picker::Simmer::new(
                             &game_config,
@@ -5356,6 +5384,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 };
                 let mut driver_p1 = match p1_picker {
                     SeatPicker::Hasty => move_picker::MovePicker::Hasty,
+                    SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dyn_ref.unwrap()),
                     SeatPicker::Simmer => {
                         move_picker::MovePicker::Simmer(move_picker::Simmer::new(
                             &game_config,

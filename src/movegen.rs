@@ -2,7 +2,37 @@
 
 use super::{alphabet, alphagram, anagrams, bites, display, equity, game_config, klv, kwg, matrix};
 
-const MAX_ALPHABET_LEN: usize = 64;
+pub const MAX_ALPHABET_LEN: usize = 64;
+
+#[inline(always)]
+pub fn bag_count_from_board(game_config: &game_config::GameConfig, num_tiles_on_board: u16) -> i16 {
+    game_config.alphabet().num_tiles() as i16
+        - (num_tiles_on_board as i16
+            + game_config.num_players() as i16 * game_config.rack_size() as i16)
+}
+
+#[inline(always)]
+pub fn live_pool_into(
+    out: &mut [u8],
+    alphabet: &alphabet::Alphabet,
+    board_tiles: &[u8],
+    rack_tally: &[u8],
+) {
+    for (t, slot) in out.iter_mut().enumerate() {
+        *slot = alphabet.freq(t as u8);
+    }
+    for &tile in board_tiles.iter() {
+        if tile != 0 {
+            let base = (tile & !((tile as i8) >> 7) as u8) as usize;
+            if base < out.len() {
+                out[base] = out[base].saturating_sub(1);
+            }
+        }
+    }
+    for (slot, &cnt) in out.iter_mut().zip(rack_tally.iter()) {
+        *slot = slot.saturating_sub(cnt);
+    }
+}
 
 #[derive(Clone)]
 struct CrossSet {
@@ -461,10 +491,8 @@ impl WorkingBuffer {
             self.prev_board_tiles
                 [dim.at_row_col(board_layout.star_row(), board_layout.star_col())] = 0xff;
         }
-        self.num_tiles_in_bag = alphabet.num_tiles() as i16
-            - (self.num_tiles_on_board as i16
-                + board_snapshot.game_config.num_players() as i16
-                    * board_snapshot.game_config.rack_size() as i16);
+        self.num_tiles_in_bag =
+            bag_count_from_board(board_snapshot.game_config, self.num_tiles_on_board);
         let play_out_bonus = if self.num_tiles_in_bag <= 0 {
             2 * ((0u8..)
                 .zip(self.rack_tally.iter())
@@ -528,21 +556,15 @@ impl WorkingBuffer {
                 if let Some(dyn_ref) = dynamic_leaves {
                     let n = dyn_ref.lat.num_letters();
                     let mut live_pool = [0u8; MAX_ALPHABET_LEN];
-                    for (t, slot) in live_pool[..n].iter_mut().enumerate() {
-                        *slot = alphabet.freq(t as u8);
-                    }
-                    for &tile in board_snapshot.board_tiles.iter() {
-                        if tile != 0 {
-                            let base = (tile & !((tile as i8) >> 7) as u8) as usize;
-                            live_pool[base] = live_pool[base].saturating_sub(1);
-                        }
-                    }
-                    for (t, &cnt) in self.rack_tally.iter().enumerate().take(n) {
-                        live_pool[t] = live_pool[t].saturating_sub(cnt);
-                    }
+                    live_pool_into(
+                        &mut live_pool[..n],
+                        alphabet,
+                        board_snapshot.board_tiles,
+                        &self.rack_tally,
+                    );
                     self.multi_leaves.apply_dynamic_leaves(
                         &dyn_ref,
-                        &live_pool,
+                        &live_pool[..n],
                         self.num_tiles_in_bag.max(0) as usize,
                     );
                 }
@@ -5517,6 +5539,43 @@ mod tests {
             a == expect,
             "the tie-break did not order the plays as documented"
         );
+    }
+
+    #[test]
+    #[inline]
+    fn live_pool_subtracts_board_and_rack_and_returns_blanks() {
+        let gc = game_config::make_english_game_config();
+        let alphabet = gc.alphabet();
+        let n = alphabet.len() as usize;
+        let natural_a = 1u8;
+        let blank_a = natural_a | 0x80;
+
+        let board_tiles = [natural_a, blank_a, 0u8, 0u8];
+        let mut rack_tally = vec![0u8; n];
+        rack_tally[natural_a as usize] = 2;
+
+        let mut pool = [0u8; MAX_ALPHABET_LEN];
+        live_pool_into(&mut pool[..n], alphabet, &board_tiles, &rack_tally);
+
+        assert_eq!(
+            pool[natural_a as usize],
+            alphabet.freq(natural_a) - 3,
+            "one A on the board and two on the rack come out of the A pool"
+        );
+        assert_eq!(
+            pool[0], // the blank's own index
+            alphabet.freq(0) - 1,
+            "a blank played as A comes out of the blank pool, not the A pool"
+        );
+
+        for (tile, &count) in pool.iter().enumerate().take(n).skip(2) {
+            assert_eq!(count, alphabet.freq(tile as u8), "tile {tile}");
+        }
+
+        let mut greedy_rack = vec![0u8; n];
+        greedy_rack[natural_a as usize] = alphabet.freq(natural_a) + 5;
+        live_pool_into(&mut pool[..n], alphabet, &[], &greedy_rack);
+        assert_eq!(pool[natural_a as usize], 0);
     }
 
     #[test]
