@@ -541,11 +541,9 @@ impl WorkingBuffer {
                         live_pool[t] = live_pool[t].saturating_sub(cnt);
                     }
                     self.multi_leaves.apply_dynamic_leaves(
-                        dyn_ref.lat,
-                        dyn_ref.add,
-                        dyn_ref.full_v,
+                        &dyn_ref,
                         &live_pool,
-                        dyn_ref.min_keep,
+                        self.num_tiles_in_bag.max(0) as usize,
                     );
                 }
                 self.multi_leaves

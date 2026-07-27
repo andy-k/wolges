@@ -12,6 +12,15 @@ pub struct DynamicLeavesRef<'a> {
     pub min_keep: usize,
 }
 
+impl DynamicLeavesRef<'_> {
+    #[inline(always)]
+    pub fn draw_count(&self, keep_size: usize, pool_size: usize, bag_size: usize) -> usize {
+        (self.lat.rack_size() - keep_size)
+            .min(pool_size)
+            .min(bag_size)
+    }
+}
+
 pub struct Klv<L: kwg::Node> {
     kwg: kwg::Kwg<L>,
     counts: Box<[u32]>,
@@ -466,17 +475,16 @@ impl MultiLeaves {
     #[inline(always)]
     pub fn apply_dynamic_leaves(
         &mut self,
-        lat: &census::MultisetLattice,
-        add: &census::AddTable,
-        full_v: &[i32],
+        dyn_ref: &DynamicLeavesRef<'_>,
         live_pool: &[u8],
-        min_keep: usize,
+        bag_size: usize,
     ) {
         if self.leave_values.is_empty() {
             return;
         }
+        let (lat, add, full_v, min_keep) =
+            (dyn_ref.lat, dyn_ref.add, dyn_ref.full_v, dyn_ref.min_keep);
         let num_letters = lat.num_letters();
-        let rack_size = lat.rack_size();
         let pool_size: usize = live_pool[..num_letters].iter().map(|&c| c as usize).sum();
 
         let mut s_tally = [0u8; MAX_LETTERS];
@@ -495,7 +503,7 @@ impl MultiLeaves {
             if s_ridx == !0 {
                 continue;
             }
-            let draw = (rack_size - s_size).min(pool_size);
+            let draw = dyn_ref.draw_count(s_size, pool_size, bag_size);
             let dynamic =
                 census::dynamic_leave_value(lat, add, full_v, live_pool, s_ridx as usize, draw);
             if dynamic != census::UNPLAYABLE {
@@ -770,7 +778,14 @@ mod tests {
 
         let live_pool = [2u8, 2u8, 1u8]; // A, B, C still drawable
         let min_keep = 1usize;
-        ml.apply_dynamic_leaves(&lat, &add, &full_v, &live_pool, min_keep);
+        let replacing = DynamicLeavesRef {
+            lat: &lat,
+            add: &add,
+            full_v: &full_v,
+            min_keep,
+        };
+        let bag_size = 5usize;
+        ml.apply_dynamic_leaves(&replacing, &live_pool, bag_size);
 
         for (idx, &static_v) in statics.iter().enumerate() {
             let kept_a = (idx as u32 % 3) as u8;
@@ -817,6 +832,30 @@ mod tests {
         assert_eq!(
             census::dynamic_leave_value(&lat, &add, &full_v, &[0u8, 0, 0], empty_ridx, 3),
             census::UNPLAYABLE,
+        );
+
+        let mut short_bag = MultiLeaves {
+            unique_tiles: ml.unique_tiles.clone(),
+            digits: ml.digits.clone(),
+            leave_values: statics.clone(),
+            num_playeds: ml.num_playeds.clone(),
+        };
+        short_bag.apply_dynamic_leaves(&replacing, &live_pool, 1);
+        let keep_one_a = 1usize; // idx = keptA + 3 * keptB
+        let (mut num, mut den) = (0f64, 0f64);
+        for (t, &avail) in live_pool.iter().enumerate() {
+            if avail == 0 {
+                continue;
+            }
+            let mut r = [1u8, 0, 0];
+            r[t] += 1;
+            num += avail as f64 * full_v[lat.rank(&r) as usize] as f64;
+            den += avail as f64;
+        }
+        assert_eq!(
+            short_bag.leave_values[keep_one_a],
+            (num / den) as i32,
+            "one tile in the bag draws one tile, not two"
         );
     }
 
