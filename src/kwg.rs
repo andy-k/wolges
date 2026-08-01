@@ -92,6 +92,8 @@ pub struct LetterBits {
 // kwg::Node22
 pub static EMPTY_KWG_BYTES: &[u8] = b"\x00\x00\x40\x00\x00\x00\x40\x00";
 
+pub static EMPTY_KBWG_BYTES: &[u8] = b"\x40\x00\x00\x00\x40\x00\x00\x00";
+
 impl<N: Node> std::ops::Index<i32> for Kwg<N> {
     type Output = N;
 

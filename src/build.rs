@@ -868,4 +868,17 @@ mod tests {
     fn round_trip_single() {
         round_trip_dawg(BuildLayout::Wolges, &["HELLO"]);
     }
+
+    #[test]
+    #[inline]
+    fn empty_graph_constants_are_what_the_builder_writes() {
+        assert_eq!(
+            &build(BuildContent::Gaddawg, BuildLayout::Wolges, &[]).unwrap()[..],
+            kwg::EMPTY_KWG_BYTES,
+        );
+        assert_eq!(
+            &build_big(BuildContent::Gaddawg, BuildLayout::Wolges, &[]).unwrap()[..],
+            kwg::EMPTY_KBWG_BYTES,
+        );
+    }
 }
