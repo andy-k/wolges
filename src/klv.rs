@@ -665,6 +665,7 @@ pub(crate) fn make_klv2(leaves: &[(&[u8], f32)]) -> Vec<u8> {
     let leaves_kwg = build::build(
         build::BuildContent::DawgOnly,
         build::BuildLayout::Wolges,
+        build::BuildOrder::Sorted,
         &words,
     )
     .unwrap();

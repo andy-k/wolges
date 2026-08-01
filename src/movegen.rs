@@ -4840,6 +4840,7 @@ mod tests {
             &build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &words,
             )
             .unwrap(),
@@ -4868,6 +4869,7 @@ mod tests {
             &build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &words,
             )
             .unwrap(),
@@ -5078,6 +5080,7 @@ mod tests {
             &build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &words,
             )
             .unwrap(),
@@ -5181,6 +5184,92 @@ mod tests {
 
     #[test]
     #[inline]
+    fn reordered_kwg_generates_the_same_plays() {
+        static WORDS: &[&str] = &[
+            "AE", "AH", "AI", "AL", "AN", "AR", "AS", "AT", "EAR", "EAT", "ERA", "ETA", "HAE",
+            "HAT", "HEAR", "HEART", "HEAT", "HEATER", "HER", "HERS", "LEA", "LEAN", "LEARN",
+            "LEARNS", "LEAST", "NEAR", "NEAT", "RAT", "RATE", "REAL", "SEAT", "SHEAR", "STEAL",
+            "TEA", "TEAL", "TEAR", "TEARS", "THE", "THEN", "THERE", "TREAT",
+        ];
+        let gc = game_config::make_english_game_config();
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut word_buf = Vec::new();
+        let words = WORDS
+            .iter()
+            .map(|w| {
+                reader.set_word(w, &mut word_buf).unwrap();
+                word_buf[..].into()
+            })
+            .collect::<Vec<bites::Bites>>();
+
+        let mut plays_from = |build_order| {
+            let kwg_bytes = build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build_order,
+                &words,
+            )
+            .unwrap();
+            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+            let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+            let mut board_tiles = vec![0u8; gc.board_layout().dim().rows as usize * 15];
+            reader.set_word("HEAT", &mut word_buf).unwrap();
+            for (i, &tile) in word_buf.iter().enumerate() {
+                board_tiles[7 * 15 + 5 + i] = tile;
+            }
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                klv: &klv,
+            };
+            let mut move_generator = KurniaMoveGenerator::new(&gc);
+            reader.set_word("AERSTLN", &mut word_buf).unwrap();
+            let mut rack = word_buf.clone();
+            rack.sort_unstable();
+            move_generator.gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            move_generator
+                .plays
+                .iter()
+                .map(|vm| (vm.equity, vm.play.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        let sort_key = |(equity, play): &(equity::Equity, Play)| match play {
+            Play::Exchange { tiles } => (*equity, 0u8, 0i8, 0i8, tiles.to_vec(), 0i32),
+            Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => (*equity, 1 + *down as u8, *lane, *idx, word.to_vec(), *score),
+        };
+        let mut sorted = plays_from(build::BuildOrder::Sorted);
+        let mut reordered = plays_from(build::BuildOrder::Reordered);
+        assert!(sorted.len() > 100, "the test needs plays to compare");
+        assert_eq!(sorted.len(), reordered.len());
+        sorted.sort_by_key(sort_key);
+        reordered.sort_by_key(sort_key);
+        assert!(
+            sorted
+                .iter()
+                .zip(reordered.iter())
+                .all(|(a, b)| a.0 == b.0 && a.1 == b.1),
+            "a reordered kwg generated different plays"
+        );
+    }
+
+    #[test]
+    #[inline]
     fn cross_set_score_cache_distinguishes_blank_from_natural_tile() {
         let gc = game_config::make_english_game_config();
         let alphabet = gc.alphabet();
@@ -5191,6 +5280,7 @@ mod tests {
         let kwg_bytes = build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             &words,
         )
         .unwrap();

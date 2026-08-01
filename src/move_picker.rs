@@ -679,6 +679,7 @@ mod tests {
         build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             &words,
         )
         .unwrap()

@@ -1335,11 +1335,13 @@ fn build_pruned_kwg(
         game_config::GameRules::Classic => build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             words,
         ),
         game_config::GameRules::Jumbled => build::build(
             build::BuildContent::DawgOnly,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             &build::make_alphagrams(words),
         ),
     }

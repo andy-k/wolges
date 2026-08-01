@@ -96,6 +96,7 @@ fn build_leaves_scaled_i16<Readable: std::io::Read>(
     let leaves_kwg = build::build(
         build::BuildContent::DawgOnly,
         build_layout,
+        build::BuildOrder::Sorted,
         &sorted_machine_words,
     )?;
     let leave_values = sorted_machine_words
@@ -130,6 +131,7 @@ fn write_leaves_f32(
     let leaves_kwg = build::build(
         build::BuildContent::DawgOnly,
         build_layout,
+        build::BuildOrder::Sorted,
         &sorted_machine_words,
     )?;
     let leave_values = sorted_machine_words
@@ -254,6 +256,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
 ) -> error::Returns<bool> {
     match args[1].strip_prefix(language_name) {
         Some(mut args1_suffix) => {
+            let build_order;
+            if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-reordered") {
+                build_order = build::BuildOrder::Reordered;
+                args1_suffix = args1_suffix_suffix;
+            } else {
+                build_order = build::BuildOrder::Sorted;
+            }
             let build_layout;
             if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-magpiemerged") {
                 build_layout = build::BuildLayout::MagpieMerged;
@@ -269,6 +278,13 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 args1_suffix = args1_suffix_suffix;
             } else {
                 build_layout = build::BuildLayout::Wolges;
+            }
+            if let build::BuildOrder::Reordered = build_order {
+                match args1_suffix {
+                    "-kwg" | "-kbwg" | "-kwg-dawg" | "-kbwg-dawg" | "-kwg-score"
+                    | "-kbwg-score" | "-kwg-score-dawg" | "-kbwg-score-dawg" => {}
+                    _ => wolges::return_error!(format!("{} cannot be reordered", args[1])),
+                }
             }
             match args1_suffix {
                 "-klv" => {
@@ -375,9 +391,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                             build::BuildContent::Gaddawg
                         };
                     let built = if big {
-                        build::build_big(build_content, build_layout, &words)?
+                        build::build_big(build_content, build_layout, build_order, &words)?
                     } else {
-                        build::build(build_content, build_layout, &words)?
+                        build::build(build_content, build_layout, build_order, &words)?
                     };
                     make_writer(&args[3])?.write_all(&built)?;
                     Ok(true)
@@ -539,6 +555,10 @@ fn main() -> error::Returns<()> {
     english-experimental-... for experimental,
     english-legacy-... for legacy (which is the former default),
     this is applicable for kwg, kwg-anything, klv/klv2)
+  (english-reordered-... makes a smaller kwg by putting each node's children in
+    whatever order shares the most nodes, instead of in tile order. only for kwg,
+    kbwg, kwg-dawg, kwg-score and kwg-score-dawg: an alpha dawg and a klv are
+    both walked in tile order. can be combined, as english-reordered-magpie-kwg)
   (english can also be catalan, dutch, french, german, norwegian, polish,
     slovene, spanish, swedish, decimal, hex, super-english, super-catalan,
     hong-kong-english)
@@ -619,6 +639,7 @@ fn old_main() -> error::Returns<()> {
             build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                     &std::fs::read_to_string("lexsrc/CSW24.txt")?,
@@ -634,6 +655,7 @@ fn old_main() -> error::Returns<()> {
             build::build(
                 build::BuildContent::DawgOnly,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &build::make_alphagrams(&read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                     &std::fs::read_to_string("lexsrc/CSW24.txt")?,
@@ -650,6 +672,7 @@ fn old_main() -> error::Returns<()> {
         build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 &std::fs::read_to_string("lexsrc/NWL23.txt")?,
@@ -661,6 +684,7 @@ fn old_main() -> error::Returns<()> {
         build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 &std::fs::read_to_string("lexsrc/ECWL.txt")?,
@@ -674,6 +698,7 @@ fn old_main() -> error::Returns<()> {
             build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &read_machine_words(
                     &alphabet::AlphabetReader::new_for_words(&alphabet::make_polish_alphabet()),
                     &std::fs::read_to_string("lexsrc/OSPS49.txt")?,
@@ -836,7 +861,12 @@ fn old_main() -> error::Returns<()> {
         }
         std::fs::write(
             "lexbin/allgdw.kwg",
-            build::build(build::BuildContent::Gaddawg, build::BuildLayout::Wolges, &v)?,
+            build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &v,
+            )?,
         )?;
         std::fs::write("lexbin/all-CSW24.kwi", v_csw24_bits)?;
         std::fs::write("lexbin/all-NWL23.kwi", v_nwl23_bits)?;
@@ -949,6 +979,7 @@ fn old_main() -> error::Returns<()> {
         build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 "VOLOST\nVOLOSTS",
@@ -960,6 +991,7 @@ fn old_main() -> error::Returns<()> {
         build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             &read_machine_words(
                 &alphabet::AlphabetReader::new_for_words(&alphabet::make_english_alphabet()),
                 "",
