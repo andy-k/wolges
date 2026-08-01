@@ -3599,7 +3599,78 @@ fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::N
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{alphabet, bites, build, game_config, klv, kwg};
+    use crate::{alphabet, bites, build, display, game_config, klv, kwg};
+
+    static TEST_WORDS: &[&str] = &[
+        "AS", "AT", "EAST", "EAT", "EATS", "ETA", "ETAS", "SAT", "SEA", "SEAT", "SEATS", "SET",
+        "TA", "TAE", "TAS", "TEA", "TEAS",
+    ];
+
+    #[inline]
+    fn test_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut word_buf = Vec::new();
+        let mut words = Vec::<bites::Bites>::with_capacity(TEST_WORDS.len());
+        for w in TEST_WORDS {
+            reader.set_word(w, &mut word_buf).unwrap();
+            words.push(word_buf[..].into());
+        }
+        words.sort_unstable();
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                &words,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[inline]
+    fn parse_test_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
+        let reader = alphabet::AlphabetReader::new_for_racks(alphabet);
+        let sb = rack_str.as_bytes();
+        let mut rack = Vec::new();
+        let mut ix = 0;
+        while ix < sb.len() {
+            let (tile, next_ix) = reader.next_tile(sb, ix).unwrap();
+            rack.push(tile);
+            ix = next_ix;
+        }
+        rack
+    }
+
+    #[inline]
+    fn placements(fen: &str, rack: &str) -> Vec<String> {
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack: &parse_test_rack(gc.alphabet(), rack),
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let mut out = move_generator
+            .plays
+            .iter()
+            .filter(|p| matches!(p.play, Play::Place { .. }))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .collect::<Vec<_>>();
+        out.sort_unstable();
+        out
+    }
 
     #[test]
     fn cross_set_score_cache_distinguishes_blank_from_natural_tile() {
@@ -3677,5 +3748,61 @@ mod tests {
         );
         assert_eq!(cross_sets[1].score, 0);
         assert_eq!(cross_sets[3].score, 0);
+    }
+    #[inline]
+    fn word_of(formatted: &str) -> String {
+        formatted
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .replace(['(', ')'], "")
+            .to_uppercase()
+    }
+
+    #[test]
+    #[inline]
+    fn movegen_opens_through_the_star_with_dictionary_words_only() {
+        let plays = placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "AEST");
+        for p in &plays {
+            let w = word_of(p);
+            assert!(TEST_WORDS.contains(&&w[..]), "{p} spells {w}, not a word");
+            let coord = p.split_whitespace().next().unwrap();
+            assert!(coord.starts_with('8'), "{p} is not on the star row");
+            let col = coord.as_bytes()[1];
+            assert!(col <= b'H', "{p} starts past the star");
+            assert!(
+                col as usize + w.len() > b'H' as usize,
+                "{p} stops before the star"
+            );
+        }
+        assert!(plays.contains(&"8E SEAT 8".to_string()));
+        assert_eq!(plays.len(), 50);
+    }
+
+    #[test]
+    #[inline]
+    fn movegen_hooks_onto_a_word_on_the_board() {
+        assert_eq!(
+            placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "S"),
+            ["8G (SEAT)S 5", "I8 (A)S 3"]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn movegen_scores_a_blank_as_zero() {
+        let plays = placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "?");
+        assert_eq!(
+            plays,
+            [
+                "8G (SEAT)s 4",
+                "G7 a(S) 1",
+                "I7 t(A) 1",
+                "I8 (A)s 1",
+                "I8 (A)t 1",
+                "J7 a(T) 1",
+                "J8 (T)a 1",
+            ]
+        );
     }
 }
