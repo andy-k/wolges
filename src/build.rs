@@ -881,4 +881,18 @@ mod tests {
             kwg::EMPTY_KBWG_BYTES,
         );
     }
+
+    #[test]
+    #[inline]
+    fn empty_leaves_constant_is_what_the_format_says() {
+        let dawg = build(BuildContent::DawgOnly, BuildLayout::Wolges, &[]).unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&((dawg.len() / 4) as u32).to_le_bytes());
+        expected.extend_from_slice(&dawg);
+        expected.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(expected, crate::klv::EMPTY_KLV_BYTES);
+
+        let klv = crate::klv::Klv::<kwg::Node22>::from_bytes_alloc(crate::klv::EMPTY_KLV_BYTES);
+        assert_eq!(klv.leave_value_from_tally(&[0, 1]), 0);
+    }
 }
