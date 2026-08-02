@@ -2414,7 +2414,7 @@ impl Clone for ValuedMove {
 impl PartialEq for ValuedMove {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self.equity == other.equity
+        self.equity == other.equity && self.play == other.play
     }
 }
 
@@ -2427,10 +2427,45 @@ impl PartialOrd for ValuedMove {
     }
 }
 
+#[inline(always)]
+fn cmp_play(a: &Play, b: &Play) -> std::cmp::Ordering {
+    match (a, b) {
+        (
+            Play::Place {
+                down: a_down,
+                lane: a_lane,
+                idx: a_idx,
+                word: a_word,
+                score: a_score,
+            },
+            Play::Place {
+                down: b_down,
+                lane: b_lane,
+                idx: b_idx,
+                word: b_word,
+                score: b_score,
+            },
+        ) => a_down
+            .cmp(b_down)
+            .then_with(|| a_lane.cmp(b_lane))
+            .then_with(|| a_idx.cmp(b_idx))
+            .then_with(|| a_word.cmp(b_word))
+            .then_with(|| a_score.cmp(b_score)),
+        (Play::Exchange { tiles: a_tiles }, Play::Exchange { tiles: b_tiles }) => {
+            a_tiles.cmp(b_tiles)
+        }
+        (Play::Place { .. }, Play::Exchange { .. }) => std::cmp::Ordering::Less,
+        (Play::Exchange { .. }, Play::Place { .. }) => std::cmp::Ordering::Greater,
+    }
+}
+
 impl Ord for ValuedMove {
     #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.equity.cmp(&self.equity)
+        other
+            .equity
+            .cmp(&self.equity)
+            .then_with(|| cmp_play(&self.play, &other.play))
     }
 }
 
@@ -3803,6 +3838,122 @@ mod tests {
                 "J7 a(T) 1",
                 "J8 (T)a 1",
             ]
+        );
+    }
+
+    #[inline]
+    fn sample_plays() -> Vec<Play> {
+        let word: bites::Bites = [1u8, 2, 3][..].into();
+        let other_word: bites::Bites = [1u8, 2, 4][..].into();
+        let place = |down, lane, idx, w: &bites::Bites, score| Play::Place {
+            down,
+            lane,
+            idx,
+            word: w.clone(),
+            score,
+        };
+        vec![
+            place(false, 7, 7, &word, 24),
+            place(false, 7, 7, &word, 26),
+            place(false, 7, 7, &other_word, 24),
+            place(false, 7, 8, &word, 24),
+            place(false, 8, 7, &word, 24),
+            place(true, 7, 7, &word, 24),
+            Play::Exchange {
+                tiles: [][..].into(),
+            },
+            Play::Exchange {
+                tiles: [1u8, 1][..].into(),
+            },
+            Play::Exchange {
+                tiles: [1u8, 2][..].into(),
+            },
+        ]
+    }
+
+    #[test]
+    #[inline]
+    fn valued_move_order_is_total() {
+        let plays = sample_plays();
+        let moves: Vec<ValuedMove> = plays
+            .iter()
+            .flat_map(|p| {
+                [10, 20].into_iter().map(move |e| ValuedMove {
+                    equity: equity::Equity::new(e),
+                    play: p.clone(),
+                })
+            })
+            .collect();
+
+        for a in moves.iter() {
+            assert_eq!(a.cmp(a), std::cmp::Ordering::Equal, "not reflexive");
+            for b in moves.iter() {
+                assert_eq!(
+                    a.cmp(b),
+                    b.cmp(a).reverse(),
+                    "not antisymmetric: {:?} {:?}",
+                    a.equity.raw(),
+                    b.equity.raw()
+                );
+                assert_eq!(
+                    a.cmp(b) == std::cmp::Ordering::Equal,
+                    a.equity == b.equity && a.play == b.play,
+                    "Equal disagrees with equality"
+                );
+                assert_eq!(a == b, a.cmp(b) == std::cmp::Ordering::Equal);
+                for c in moves.iter() {
+                    if a.cmp(b) != std::cmp::Ordering::Greater
+                        && b.cmp(c) != std::cmp::Ordering::Greater
+                    {
+                        assert_ne!(a.cmp(c), std::cmp::Ordering::Greater, "not transitive");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn heap_drains_ties_the_same_whatever_order_they_arrive() {
+        let plays = sample_plays();
+        let build = |order: &[usize]| -> Vec<Play> {
+            let mut heap = std::collections::BinaryHeap::new();
+            for &i in order {
+                heap.push(ValuedMove {
+                    equity: equity::Equity::new(1234),
+                    play: plays[i].clone(),
+                });
+            }
+            heap.into_sorted_vec().into_iter().map(|m| m.play).collect()
+        };
+
+        let forward: Vec<usize> = (0..plays.len()).collect();
+        let backward: Vec<usize> = (0..plays.len()).rev().collect();
+        let mut shuffled = forward.clone();
+        shuffled.swap(0, 4);
+        shuffled.swap(1, 7);
+        shuffled.swap(2, 5);
+
+        let a = build(&forward);
+        let b = build(&backward);
+        let c = build(&shuffled);
+        assert_eq!(a.len(), plays.len());
+        assert!(a == b && b == c, "arrival order changed the drained order");
+
+        let expect = [
+            plays[0].clone(),
+            plays[1].clone(),
+            plays[2].clone(),
+            plays[3].clone(),
+            plays[4].clone(),
+            plays[5].clone(),
+            plays[6].clone(),
+            plays[7].clone(),
+            plays[8].clone(),
+        ];
+        assert!(
+            a == expect,
+            "the tie-break did not order the plays as documented"
         );
     }
 }
