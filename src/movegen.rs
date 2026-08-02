@@ -2720,13 +2720,18 @@ impl KurniaMoveGenerator {
             equity: equity::Equity,
             mut construct_play: F,
         ) {
-            if found_moves.len() >= max_gen && threshold.get() >= equity {
+            if found_moves.len() >= max_gen && threshold.get() > equity {
                 return;
             }
             let play = construct_play();
             if equity_pred(equity, &play) {
                 if found_moves.len() >= max_gen {
-                    *found_moves.peek_mut().unwrap() = ValuedMove { equity, play };
+                    let candidate = ValuedMove { equity, play };
+                    let mut worst = found_moves.peek_mut().unwrap();
+                    if candidate >= *worst {
+                        return;
+                    }
+                    *worst = candidate;
                 } else {
                     found_moves.push(ValuedMove { equity, play });
                 }
@@ -2870,13 +2875,18 @@ impl KurniaMoveGenerator {
             equity: equity::Equity,
             mut construct_play: F,
         ) {
-            if found_moves.len() >= max_gen && threshold.get() >= equity {
+            if found_moves.len() >= max_gen && threshold.get() > equity {
                 return;
             }
             let play = construct_play();
             if equity_pred(equity, &play) {
                 if found_moves.len() >= max_gen {
-                    *found_moves.peek_mut().unwrap() = ValuedMove { equity, play };
+                    let candidate = ValuedMove { equity, play };
+                    let mut worst = found_moves.peek_mut().unwrap();
+                    if candidate >= *worst {
+                        return;
+                    }
+                    *worst = candidate;
                 } else {
                     found_moves.push(ValuedMove { equity, play });
                 }
@@ -3705,6 +3715,53 @@ mod tests {
             .collect::<Vec<_>>();
         out.sort_unstable();
         out
+    }
+
+    #[inline]
+    fn valued_plays(fen: &str, rack: &str, max_gen: usize) -> Vec<String> {
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack: &parse_test_rack(gc.alphabet(), rack),
+            max_gen,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        move_generator
+            .plays
+            .iter()
+            .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    #[inline]
+    fn a_capped_generation_keeps_the_best_of_a_tie() {
+        let empty = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
+        let all = valued_plays(empty, "AEST", usize::MAX);
+        assert!(all.len() > 6);
+        let top_equity = all[0].split(' ').next().unwrap();
+        assert_eq!(
+            all[3].split(' ').next().unwrap(),
+            top_equity,
+            "no tie to cut"
+        );
+        assert_ne!(all[4].split(' ').next().unwrap(), top_equity);
+        for k in 1..=6 {
+            assert_eq!(valued_plays(empty, "AEST", k), all[..k], "cap of {k}");
+        }
     }
 
     #[test]
