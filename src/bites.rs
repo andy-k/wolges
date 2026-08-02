@@ -42,15 +42,17 @@ impl std::ops::Deref for Bites {
 }
 
 impl Drop for Bites {
-    // Do not inline, this code is big but the Heap case is rare.
-    #[inline(never)]
+    #[inline(always)]
     fn drop(&mut self) {
         if self.0[self.0.len() - 1] & 0x80 == 0 {
             // Inline: nothing to do.
         } else {
             // Heap: free the pointer.
             drop(unsafe {
-                Box::from_raw(u64::from_le_bytes(self.0[0..8].try_into().unwrap()) as *mut u8)
+                Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                    u64::from_le_bytes(self.0[0..8].try_into().unwrap()) as *mut u8,
+                    (u64::from_le_bytes(self.0[8..16].try_into().unwrap()) & (!0 >> 1)) as usize,
+                ))
             });
         }
     }
