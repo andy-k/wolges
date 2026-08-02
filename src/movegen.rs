@@ -2792,7 +2792,9 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: i32| threshold.get() < equity::Equity::new(best_possible_equity),
+            |best_possible_equity: i32| {
+                threshold.get() <= equity::Equity::new(best_possible_equity)
+            },
         ) {
             breathe().await;
         }
@@ -2947,7 +2949,9 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: i32| threshold.get() < equity::Equity::new(best_possible_equity),
+            |best_possible_equity: i32| {
+                threshold.get() <= equity::Equity::new(best_possible_equity)
+            },
         ) {}
         kurnia_gen_exchange_moves(
             params.board_snapshot,
