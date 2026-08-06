@@ -6811,6 +6811,300 @@ mod tests {
     }
 
     #[inline]
+    fn jumbled_plays(
+        words: &[&str],
+        tiles: &[(usize, usize, &str)],
+        rack: &str,
+        is_census: bool,
+    ) -> Vec<String> {
+        let gc = game_config::make_jumbled_english_game_config();
+        let alphabet = gc.alphabet();
+        let word_reader = alphabet::AlphabetReader::new_for_words(alphabet);
+        let play_reader = alphabet::AlphabetReader::new_for_plays(alphabet);
+        let mut buf = Vec::new();
+        let mut machine_words = Vec::<bites::Bites>::new();
+        for word in words {
+            word_reader.set_word(word, &mut buf).unwrap();
+            machine_words.push(buf[..].into());
+        }
+        machine_words.sort_unstable();
+        machine_words.dedup();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &build::make_alphagrams(&machine_words),
+            )
+            .unwrap(),
+        );
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let dim = gc.board_layout().dim();
+        let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        for &(row, col, tile) in tiles {
+            play_reader.set_word(tile, &mut buf).unwrap();
+            assert_eq!(buf.len(), 1, "one board square takes one tile");
+            board_tiles[row * dim.cols as usize + col] = buf[0];
+        }
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        move_generator.working_buffer.is_census = is_census;
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack: &parse_test_rack(alphabet, rack),
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        move_generator
+            .plays
+            .iter()
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .collect()
+    }
+
+    #[inline]
+    #[test]
+    fn jumbled_movegen_lists_every_play_from_the_star() {
+        assert_eq!(
+            jumbled_plays(&["AB", "ABC", "AC"], &[], "AB", false),
+            [
+                "8G BA 8", "8H AB 8", "8G AB 8", "8H BA 8", "Exch. A", "Exch. AB", "Exch. B",
+            ]
+        );
+    }
+
+    #[inline]
+    #[test]
+    fn jumbled_movegen_lists_hooks_and_one_tile_plays() {
+        assert_eq!(
+            jumbled_plays(&["AB", "ABC", "AC", "BC"], &[(7, 7, "A")], "BC", false),
+            [
+                "7G BC 13",
+                "7G CB 13",
+                "7H BC 13",
+                "7H CB 13",
+                "9G BC 13",
+                "9G CB 13",
+                "9H BC 13",
+                "9H CB 13",
+                "G7 BC 13",
+                "G7 CB 13",
+                "G8 BC 13",
+                "G8 CB 13",
+                "I7 BC 13",
+                "I7 CB 13",
+                "I8 BC 13",
+                "I8 CB 13",
+                "8F BC(A) 7",
+                "8F CB(A) 7",
+                "8G B(A)C 7",
+                "8G C(A)B 7",
+                "8H (A)BC 7",
+                "8H (A)CB 7",
+                "H6 BC(A) 7",
+                "H6 CB(A) 7",
+                "H7 B(A)C 7",
+                "H7 C(A)B 7",
+                "H8 (A)BC 7",
+                "H8 (A)CB 7",
+                "8G B(A) 4",
+                "8G C(A) 4",
+                "8H (A)B 4",
+                "8H (A)C 4",
+                "H7 B(A) 4",
+                "H7 C(A) 4",
+                "H8 (A)B 4",
+                "H8 (A)C 4",
+                "Exch. B",
+                "Exch. BC",
+                "Exch. C",
+            ]
+        );
+    }
+
+    #[inline]
+    #[test]
+    fn jumbled_movegen_spans_two_islands() {
+        assert_eq!(
+            jumbled_plays(
+                &["ABC", "ABCD", "ABCDE"],
+                &[(7, 6, "A"), (7, 8, "C")],
+                "BD",
+                false
+            ),
+            [
+                "8F B(A)D(C) 18",
+                "8F D(A)B(C) 18",
+                "8G (A)B(C)D 18",
+                "8G (A)D(C)B 18",
+                "8G (A)B(C) 14",
+                "Exch. B",
+                "Exch. BD",
+                "Exch. D",
+            ]
+        );
+    }
+
+    #[inline]
+    #[test]
+    fn jumbled_movegen_lets_a_blank_stand_for_any_letter() {
+        assert_eq!(
+            jumbled_plays(&["AB", "ABC"], &[(7, 7, "A")], "B?", false),
+            [
+                "7G aB 7",
+                "7H Ba 7",
+                "9G aB 7",
+                "9H Ba 7",
+                "G7 aB 7",
+                "G8 Ba 7",
+                "I7 aB 7",
+                "I8 Ba 7",
+                "8F Bc(A) 4",
+                "8F cB(A) 4",
+                "8G B(A) 4",
+                "8G B(A)c 4",
+                "8G c(A)B 4",
+                "8H (A)B 4",
+                "8H (A)Bc 4",
+                "8H (A)cB 4",
+                "H6 Bc(A) 4",
+                "H6 cB(A) 4",
+                "H7 B(A) 4",
+                "H7 B(A)c 4",
+                "H7 c(A)B 4",
+                "H8 (A)B 4",
+                "H8 (A)Bc 4",
+                "H8 (A)cB 4",
+                "8G b(A) 1",
+                "8H (A)b 1",
+                "H7 b(A) 1",
+                "H8 (A)b 1",
+                "Exch. ?",
+                "Exch. ?B",
+                "Exch. B",
+            ]
+        );
+    }
+
+    #[inline]
+    #[test]
+    fn jumbled_movegen_census_drops_the_blank_a_real_tile_can_replace() {
+        assert_eq!(
+            jumbled_plays(&["AB", "ABC"], &[(7, 7, "A")], "B?", true),
+            [
+                "7G aB 7",
+                "7H Ba 7",
+                "9G aB 7",
+                "9H Ba 7",
+                "G7 aB 7",
+                "G8 Ba 7",
+                "I7 aB 7",
+                "I8 Ba 7",
+                "8F Bc(A) 4",
+                "8F cB(A) 4",
+                "8G B(A) 4",
+                "8G B(A)c 4",
+                "8G c(A)B 4",
+                "8H (A)B 4",
+                "8H (A)Bc 4",
+                "8H (A)cB 4",
+                "H6 Bc(A) 4",
+                "H6 cB(A) 4",
+                "H7 B(A) 4",
+                "H7 B(A)c 4",
+                "H7 c(A)B 4",
+                "H8 (A)B 4",
+                "H8 (A)Bc 4",
+                "H8 (A)cB 4",
+                "Exch. ?",
+                "Exch. ?B",
+                "Exch. B",
+            ]
+        );
+    }
+
+    #[inline]
+    #[test]
+    fn jumbled_movegen_stops_a_span_at_a_dead_square() {
+        assert_eq!(
+            jumbled_plays(
+                &["AB", "ABC", "ABCD"],
+                &[(7, 7, "A"), (6, 5, "X")],
+                "BCD",
+                false
+            ),
+            [
+                "8G B(A)CD 9",
+                "8G B(A)DC 9",
+                "8G C(A)BD 9",
+                "8G C(A)DB 9",
+                "8G D(A)BC 9",
+                "8G D(A)CB 9",
+                "8H (A)BCD 9",
+                "8H (A)BDC 9",
+                "8H (A)CBD 9",
+                "8H (A)CDB 9",
+                "8H (A)DBC 9",
+                "8H (A)DCB 9",
+                "H5 BCD(A) 9",
+                "H5 BDC(A) 9",
+                "H5 CBD(A) 9",
+                "H5 CDB(A) 9",
+                "H5 DBC(A) 9",
+                "H5 DCB(A) 9",
+                "H6 BC(A)D 9",
+                "H6 BD(A)C 9",
+                "H6 CB(A)D 9",
+                "H6 CD(A)B 9",
+                "H6 DB(A)C 9",
+                "H6 DC(A)B 9",
+                "H7 B(A)CD 9",
+                "H7 B(A)DC 9",
+                "H7 C(A)BD 9",
+                "H7 C(A)DB 9",
+                "H7 D(A)BC 9",
+                "H7 D(A)CB 9",
+                "H8 (A)BCD 9",
+                "H8 (A)BDC 9",
+                "H8 (A)CBD 9",
+                "H8 (A)CDB 9",
+                "H8 (A)DBC 9",
+                "H8 (A)DCB 9",
+                "8G B(A)C 7",
+                "8G C(A)B 7",
+                "8H (A)BC 7",
+                "8H (A)CB 7",
+                "H6 BC(A) 7",
+                "H6 CB(A) 7",
+                "H7 B(A)C 7",
+                "H7 C(A)B 7",
+                "H8 (A)BC 7",
+                "H8 (A)CB 7",
+                "8G B(A) 4",
+                "8H (A)B 4",
+                "H7 B(A) 4",
+                "H8 (A)B 4",
+                "Exch. B",
+                "Exch. BC",
+                "Exch. BCD",
+                "Exch. BD",
+                "Exch. C",
+                "Exch. CD",
+                "Exch. D",
+            ]
+        );
+    }
+
+    #[inline]
     #[test]
     fn a_generation_after_remaining_words_matches_a_fresh_one() {
         let gc = game_config::make_english_game_config();
