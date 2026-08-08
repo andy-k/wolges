@@ -625,7 +625,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::Compare(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
-            compare_leaves(game_config, kwg, klv0, klv1, a.pairs, a.seed, threads)
+            compare_leaves::<_, _>(game_config, kwg, klv0, klv1, a.pairs, a.seed, threads)
         }
         Task::SimCompare(a) => {
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
@@ -4385,7 +4385,8 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
         let mut combined = GamePairStats::new();
         for handle in thread_handles {
-            combined.merge(&handle.join().unwrap());
+            let stats = handle.join().unwrap();
+            combined.merge(&stats);
         }
 
         println!();
