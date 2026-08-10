@@ -3676,6 +3676,123 @@ mod tests {
         "TA", "TAE", "TAS", "TEA", "TEAS",
     ];
 
+    static SWEEP_WORDS: &[&str] = &[
+        "AN", "AND", "ANT", "ANTS", "ARE", "ART", "ARTS", "AS", "AT", "ATE", "CAN", "CANE",
+        "CANES", "CANS", "CAR", "CARE", "CARES", "CARS", "CART", "CARTS", "CASE", "CASES", "CAST",
+        "CASTE", "CAT", "CATS", "CENT", "CENTS", "CRATE", "CRATES", "EAR", "EARN", "EARNS", "EARS",
+        "EAST", "EAT", "EATS", "ERA", "ERAS", "NEAR", "NEARS", "NEAT", "NEST", "NET", "NETS",
+        "RACE", "RACES", "RAN", "RANT", "RANTS", "RAT", "RATE", "RATES", "RATS", "REACT", "REACTS",
+        "SAT", "SCAN", "SCANT", "SCAR", "SCARE", "SEA", "SEAT", "SEATS", "SENT", "SET", "STAR",
+        "STARE", "START", "STERN", "TA", "TAN", "TANS", "TAR", "TARE", "TARS", "TART", "TARTS",
+        "TEA", "TEAR", "TEARS", "TEAS", "TEN", "TENS", "TENT", "TENTS", "TRACE", "TRACES",
+        "TRANCE", "TRANCES", "TREAT", "TREATS",
+    ];
+
+    #[inline]
+    fn sweep_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut word_buf = Vec::new();
+        let mut words = Vec::<bites::Bites>::with_capacity(SWEEP_WORDS.len());
+        for w in SWEEP_WORDS {
+            reader.set_word(w, &mut word_buf).unwrap();
+            words.push(word_buf[..].into());
+        }
+        words.sort_unstable();
+        words.dedup();
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                &words,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[inline]
+    fn sweep_output() -> String {
+        let gc = game_config::make_english_game_config();
+        let kwg = sweep_kwg(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let empty = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
+        let cases: &[(&str, &str, usize)] = &[
+            (empty, "AEINRST", 15),
+            (empty, "?SATIRE", 10),
+            (empty, "CARTONS", 10),
+            (
+                "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
+                "STARTED",
+                15,
+            ),
+            (
+                "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15",
+                "?ANTS??",
+                8,
+            ),
+            (
+                "15/15/15/15/15/15/15/4TRANCE5/15/15/15/15/15/15/15",
+                "SEATERS",
+                12,
+            ),
+            (
+                "15/15/15/15/15/15/15/4TRANCE5/15/6NEST5/15/15/15/15/15",
+                "RATTANS",
+                12,
+            ),
+            (
+                "15/15/15/15/15/15/15/4TRANCE5/15/6NEST5/15/15/15/15/15",
+                "AAAAAAA",
+                6,
+            ),
+        ];
+        let mut out = String::new();
+        for (fen, rack, max_gen) in cases {
+            let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                klv: &klv,
+            };
+            let mut move_generator = KurniaMoveGenerator::new(&gc);
+            move_generator.gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &parse_test_rack(gc.alphabet(), rack),
+                max_gen: *max_gen,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            out.push_str(&format!("== {fen} {rack} {max_gen}\n"));
+            for p in &move_generator.plays {
+                out.push_str(&format!(
+                    "{} {}\n",
+                    p.equity.raw(),
+                    p.play.fmt(&board_snapshot)
+                ));
+            }
+        }
+        out
+    }
+
+    #[test]
+    #[inline]
+    fn the_generator_still_generates_what_it_generated() {
+        assert_eq!(
+            sweep_output(),
+            include_str!("movegen-sweep-baseline.txt"),
+            "generation moved; read the diff before refreshing the baseline"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    #[inline]
+    fn write_sweep_baseline() {
+        std::fs::write("src/movegen-sweep-baseline.txt", sweep_output()).unwrap();
+    }
+
     #[inline]
     fn test_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
