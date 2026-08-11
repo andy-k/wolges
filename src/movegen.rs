@@ -1122,16 +1122,24 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         }
     }
 
-    #[inline(always)]
-    fn shadow_play_right(
-        env: &mut Env<'_>,
-        mut acc: Accumulator,
-        mut idx: i8,
-        mut is_unique: bool,
+    #[derive(Clone, Copy)]
+    struct ShadowRightWalk {
+        idx: i8,
+        is_unique: bool,
         idx_left: i8,
-        mut num_played: u8,
-        mut rack_bits: u64,
-    ) {
+        num_played: u8,
+        rack_bits: u64,
+    }
+
+    #[inline(always)]
+    fn shadow_play_right(env: &mut Env<'_>, mut acc: Accumulator, walk: ShadowRightWalk) {
+        let ShadowRightWalk {
+            mut idx,
+            mut is_unique,
+            idx_left,
+            mut num_played,
+            mut rack_bits,
+        } = walk;
         env.params
             .used_tile_scores_shadowr
             .clone_from(env.params.used_tile_scores_shadowl);
@@ -1252,11 +1260,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 shadow_play_right(
                     env,
                     Accumulator { ..acc },
-                    env.anchor + 1,
-                    is_unique,
-                    idx + 1,
-                    num_played,
-                    rack_bits,
+                    ShadowRightWalk {
+                        idx: env.anchor + 1,
+                        is_unique,
+                        idx_left: idx + 1,
+                        num_played,
+                        rack_bits,
+                    },
                 );
             }
 
