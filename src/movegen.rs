@@ -366,7 +366,7 @@ impl WorkingBuffer {
         let layout = board_snapshot.anagrams.map(anagrams::Anagrams::layout);
         !want_raw
             && !self.is_census
-            && self.rack_tally[0] == 0
+            && self.rack_tally[0] <= 1
             && !self.subracks.is_empty()
             && layout
                 .is_some_and(|layout| layout.covers(board_snapshot.game_config.alphabet(), extent))
@@ -1981,6 +1981,7 @@ struct Subrack {
     leave_idx: u32,
     leave_value: i32,
     num_played: u8,
+    blanks: u8,
 }
 
 #[inline]
@@ -1994,9 +1995,17 @@ fn build_subracks(
 ) {
     struct Tiles<'a> {
         layout: &'a alphagram::KeyLayout,
-        of: &'a [(u8, u32, u128)],
+        of: &'a [(u8, u8, u32, u128)],
     }
-    fn rec(tiles: &Tiles<'_>, i: usize, idx: u32, key: u128, played: u8, out: &mut Vec<Subrack>) {
+    fn rec(
+        tiles: &Tiles<'_>,
+        i: usize,
+        idx: u32,
+        key: u128,
+        played: u8,
+        blanks: u8,
+        out: &mut Vec<Subrack>,
+    ) {
         if i == tiles.of.len() {
             debug_assert!(tiles.layout.holds(key));
             out.push(Subrack {
@@ -2004,10 +2013,11 @@ fn build_subracks(
                 leave_idx: idx,
                 leave_value: 0,
                 num_played: played,
+                blanks,
             });
             return;
         }
-        let (count, place_value, key_place_value) = tiles.of[i];
+        let (tile, count, place_value, key_place_value) = tiles.of[i];
         for kept in 0..=count {
             let taken = count - kept;
             rec(
@@ -2016,19 +2026,25 @@ fn build_subracks(
                 idx + kept as u32 * place_value,
                 key + taken as u128 * key_place_value,
                 played + taken,
+                blanks + if tile == 0 { taken } else { 0 },
                 out,
             );
         }
     }
     subracks.clear();
-    let mut tiles = [(0u8, 0u32, 0u128); MAX_ALPHABET_LEN];
+    let mut tiles = [(0u8, 0u8, 0u32, 0u128); MAX_ALPHABET_LEN];
     let mut n = 0;
     for (tile, &count) in rack_tally.iter().enumerate() {
         if count != 0 {
             tiles[n] = (
+                tile as u8,
                 count,
                 multi_leaves.place_value(tile as u8),
-                layout.place_value(tile as u8),
+                if tile == 0 {
+                    0
+                } else {
+                    layout.place_value(tile as u8)
+                },
             );
             n += 1;
         }
@@ -2038,6 +2054,7 @@ fn build_subracks(
             layout,
             of: &tiles[..n],
         },
+        0,
         0,
         0,
         0,
@@ -2089,10 +2106,16 @@ fn gen_classic_place_moves<
     }
 
     #[inline]
-    fn check_words<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn check_words<
+        const BLANKED: bool,
+        CallbackType: FnMut(i8, &[u8], i32, i32),
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, CallbackType, N, L>,
         key: alphagram::Key,
         leave_idx: u32,
+        blank_letter: u8,
     ) {
         let source = env.source;
         let len = (env.right - env.left) as u8;
@@ -2168,13 +2191,37 @@ fn gen_classic_place_moves<
             macro_rules! covered {
                 ($score:expr) => {};
             }
-            covered!(score);
-            (env.params.callback)(
-                env.left,
-                &env.params.word_strip_buffer[env.left as usize..env.right as usize],
-                score,
-                leave_value,
-            );
+            if !BLANKED {
+                covered!(score);
+                (env.params.callback)(
+                    env.left,
+                    &env.params.word_strip_buffer[env.left as usize..env.right as usize],
+                    score,
+                    leave_value,
+                );
+                continue 'word;
+            }
+            let blank_value = env.alphabet.scaled_score(0);
+            let real_value = env.alphabet.score(blank_letter) as i32 * equity::SCALE;
+            for (i, &c) in word.iter().enumerate() {
+                let pos = left + i;
+                if c != blank_letter || board_strip[pos] != 0 {
+                    continue;
+                }
+                let delta = (blank_value - real_value) * tile_multipliers[pos] as i32;
+                let blanked_score = score
+                    + delta * env.word_multiplier
+                    + delta * perpendicular_word_multipliers[pos] as i32;
+                covered!(blanked_score);
+                env.params.word_strip_buffer[pos] = c | 0x80;
+                (env.params.callback)(
+                    env.left,
+                    &env.params.word_strip_buffer[env.left as usize..env.right as usize],
+                    blanked_score,
+                    leave_value,
+                );
+                env.params.word_strip_buffer[pos] = c;
+            }
         }
     }
 
@@ -2187,6 +2234,7 @@ fn gen_classic_place_moves<
         num_played: u8,
         free_squares: u8,
         dead_squares: u8,
+        blank_ok: u64,
     }
 
     #[inline(always)]
@@ -2210,8 +2258,11 @@ fn gen_classic_place_moves<
             let bits = params.cross_set_strip[idx].bits;
             if bits == 0 {
                 e.free_squares += 1;
+                e.blank_ok = !1;
             } else if bits == 1 {
                 e.dead_squares += 1;
+            } else {
+                e.blank_ok |= bits & !1;
             }
             e.num_played += 1;
             e.word_multiplier *= params.remaining_word_multipliers_strip[idx] as i32;
@@ -2247,6 +2298,7 @@ fn gen_classic_place_moves<
         num_played: 0,
         free_squares: 0,
         dead_squares: 0,
+        blank_ok: 0,
     };
     for left in (leftmost..=anchor).rev() {
         add_square(&mut left_extent, left as usize, env.layout, env.params);
@@ -2301,7 +2353,25 @@ fn gen_classic_place_moves<
                     }
                 }
                 let key = e.playthrough_key + subrack.key;
-                check_words(&mut env, alphagram::Fitted(key), subrack.leave_idx);
+                if subrack.blanks == 0 {
+                    check_words::<false, _, _, _>(
+                        &mut env,
+                        alphagram::Fitted(key),
+                        subrack.leave_idx,
+                        0,
+                    );
+                    continue;
+                }
+                let len = (env.right - env.left) as u8;
+                let mut letters = env
+                    .source
+                    .blank_letters(alphagram::Fitted(key), len, e.blank_ok);
+                while letters != 0 {
+                    let tile = letters.trailing_zeros() as u8;
+                    letters &= letters - 1;
+                    let full = alphagram::Fitted(key + env.layout.place_value(tile));
+                    check_words::<true, _, _, _>(&mut env, full, subrack.leave_idx, tile);
+                }
             }
         }
     }
@@ -4801,8 +4871,9 @@ mod tests {
         let dead = "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15";
         let boards = [empty, one, two, three, dead];
         let racks = [
-            "AEINRST", "CARTONS", "STARTED", "SEATERS", "RATTANS", "AAAAAAA", "AE", "ST",
-            "?ANTS??", "CAT", "NNNNTTT", "ERASECS",
+            "AEINRST", "CARTONS", "STARTED", "SEATERS", "RATTANS", "AAAAAAA", "AE", "ST", "CAT",
+            "NNNNTTT", "ERASECS", "?EINRST", "?AT", "C?T", "?ANTES", "?", "?A", "??TANS",
+            "?ANTS??",
         ];
         for max_gen in [1usize, 5, 100_000] {
             for fen in boards {
