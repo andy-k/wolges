@@ -33,6 +33,7 @@ struct PossiblePlacement {
     leftmost: i8,
     rightmost: i8,
     best_possible_equity: i32,
+    scores_at: u32,
 }
 
 #[derive(Clone)]
@@ -83,6 +84,8 @@ struct WorkingBuffer {
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
     multi_jumps_buffer: Box<[MultiJump]>, // max(r, c)
     best_leave_values: Vec<i32>,          // rack.len() + 1
+    placement_scores: Vec<i32>,
+    shadow_scores: Vec<i32>,
     subracks: Vec<Subrack>,
     subracks_by_played: Vec<u32>,
     found_placements: Vec<PossiblePlacement>,
@@ -148,6 +151,8 @@ impl Clone for WorkingBuffer {
                 .clone(),
             multi_jumps_buffer: self.multi_jumps_buffer.clone(),
             best_leave_values: self.best_leave_values.clone(),
+            placement_scores: self.placement_scores.clone(),
+            shadow_scores: self.shadow_scores.clone(),
             subracks: self.subracks.clone(),
             subracks_by_played: self.subracks_by_played.clone(),
             found_placements: self.found_placements.clone(),
@@ -220,6 +225,8 @@ impl Clone for WorkingBuffer {
         self.multi_jumps_buffer
             .clone_from(&source.multi_jumps_buffer);
         self.best_leave_values.clone_from(&source.best_leave_values);
+        self.placement_scores.clone_from(&source.placement_scores);
+        self.shadow_scores.clone_from(&source.shadow_scores);
         self.subracks.clone_from(&source.subracks);
         self.subracks_by_played
             .clone_from(&source.subracks_by_played);
@@ -328,6 +335,8 @@ impl WorkingBuffer {
             ]
             .into_boxed_slice(),
             best_leave_values: Vec::new(),
+            placement_scores: Vec::new(),
+            shadow_scores: Vec::new(),
             subracks: Vec::new(),
             subracks_by_played: Vec::new(),
             found_placements: Vec::new(),
@@ -974,13 +983,14 @@ struct GenPlacePlacementsParams<'a> {
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
     multi_jumps_buffer: &'a mut [MultiJump],
     best_leave_values: &'a [i32],
+    shadow_scores: &'a mut Vec<i32>,
     num_max_played: u8,
     rack_tally_shadowl: &'a mut [u8],
     rack_tally_shadowr: &'a mut [u8],
 }
 
 #[inline]
-fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32)>(
+fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32])>(
     params: &'a mut GenPlacePlacementsParams<'a>,
     single_tile_plays: bool,
     want_raw: bool,
@@ -1101,6 +1111,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         rightmost: 0,
         best_possible_equity: i32::MIN,
     };
+    env.params
+        .shadow_scores
+        .resize(env.params.num_max_played as usize + 1, i32::MIN);
 
     // during shadow-playing, main_score and perpendicular_cumulative_score
     // assume all tiles placed from rack this turn are worth zero,
@@ -1168,6 +1181,12 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             + env.params.best_leave_values[num_played as usize];
         if equity > env.best_possible_equity {
             env.best_possible_equity = equity;
+        }
+        let score = equity - env.params.best_leave_values[num_played as usize];
+        if let Some(slot) = env.params.shadow_scores.get_mut(num_played as usize)
+            && score > *slot
+        {
+            *slot = score;
         }
     }
 
@@ -1386,16 +1405,23 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     #[inline(always)]
-    fn gen_places_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32)>(
+    fn gen_places_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32])>(
         env: &mut Env<'_>,
         single_tile_plays: bool,
         want_raw: bool,
         mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
     ) {
         if want_raw {
-            possible_strip_placement_callback(env.anchor, env.leftmost, env.rightmost, i32::MAX);
+            possible_strip_placement_callback(
+                env.anchor,
+                env.leftmost,
+                env.rightmost,
+                i32::MAX,
+                &[],
+            );
         } else {
             env.best_possible_equity = i32::MIN;
+            env.params.shadow_scores.fill(i32::MIN);
             shadow_play_left(
                 env,
                 Accumulator {
@@ -1412,6 +1438,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     env.leftmost,
                     env.rightmost,
                     env.best_possible_equity,
+                    env.params.shadow_scores,
                 );
             }
         }
@@ -1496,6 +1523,8 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg:
     play_out_bonus: i32,
     used_letters_tally: &'a mut [u8], // jumbled mode only
     is_census: bool, // real-before-blank descent for the census's spell-once sheet build
+    scores: &'a [i32],
+    threshold: i32,
     subracks: &'a [Subrack],
     subracks_by_played: &'a [u32],
 }
@@ -1950,6 +1979,7 @@ fn gen_classic_place_moves_lean<
 struct Subrack {
     key: u128,
     leave_idx: u32,
+    leave_value: i32,
     num_played: u8,
 }
 
@@ -1972,6 +2002,7 @@ fn build_subracks(
             out.push(Subrack {
                 key,
                 leave_idx: idx,
+                leave_value: 0,
                 num_played: played,
             });
             return;
@@ -2013,7 +2044,14 @@ fn build_subracks(
         0,
         subracks,
     );
-    subracks.sort_unstable_by_key(|s| s.num_played);
+    for s in subracks.iter_mut() {
+        s.leave_value = multi_leaves.leave_value(s.leave_idx);
+    }
+    subracks.sort_unstable_by(|a, b| {
+        a.num_played
+            .cmp(&b.num_played)
+            .then(b.leave_value.cmp(&a.leave_value))
+    });
     by_played.clear();
     by_played.resize(num_tiles_on_rack as usize + 2, subracks.len() as u32);
     for (i, s) in subracks.iter().enumerate().rev() {
@@ -2046,6 +2084,8 @@ fn gen_classic_place_moves<
         base_main: i32,
         base_perp: i32,
         word_multiplier: i32,
+        score_bound: Option<i32>,
+        bound: i32,
     }
 
     #[inline]
@@ -2110,6 +2150,25 @@ fn gen_classic_place_moves<
                 env.params.play_out_bonus,
                 env.alphabet,
             );
+            #[cfg(debug_assertions)]
+            macro_rules! covered {
+                ($score:expr) => {
+                    if env.score_bound.is_some() {
+                        debug_assert!(
+                            $score + leave_value <= env.bound,
+                            "found {} when the bound for {} tiles was {}",
+                            $score + leave_value,
+                            env.num_played,
+                            env.bound,
+                        );
+                    }
+                };
+            }
+            #[cfg(not(debug_assertions))]
+            macro_rules! covered {
+                ($score:expr) => {};
+            }
+            covered!(score);
             (env.params.callback)(
                 env.left,
                 &env.params.word_strip_buffer[env.left as usize..env.right as usize],
@@ -2177,6 +2236,8 @@ fn gen_classic_place_moves<
         base_main: 0,
         base_perp: 0,
         word_multiplier: 1,
+        score_bound: None,
+        bound: 0,
     };
     let mut left_extent = Extent {
         playthrough_key: 0,
@@ -2213,10 +2274,32 @@ fn gen_classic_place_moves<
             env.base_main = e.base_main;
             env.base_perp = e.base_perp;
             env.word_multiplier = e.word_multiplier;
+            env.score_bound = if env.params.threshold == i32::MIN {
+                None
+            } else {
+                match env.params.scores.get(e.num_played as usize) {
+                    Some(&score) if score != i32::MIN => Some(
+                        score.saturating_add(
+                            env.params
+                                .board_snapshot
+                                .game_config
+                                .num_played_bonus(e.num_played) as i32
+                                * equity::SCALE,
+                        ),
+                    ),
+                    _ => None,
+                }
+            };
             let from = env.params.subracks_by_played[e.num_played as usize] as usize;
             let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
             for si in from..upto {
                 let subrack = env.params.subracks[si];
+                if let Some(score_bound) = env.score_bound {
+                    env.bound = score_bound.saturating_add(subrack.leave_value);
+                    if env.bound < env.params.threshold {
+                        break;
+                    }
+                }
                 let key = e.playthrough_key + subrack.key;
                 check_words(&mut env, alphagram::Fitted(key), subrack.leave_idx);
             }
@@ -2580,6 +2663,7 @@ struct GenPlaceMovesAtParams<
     multi_leaves: &'a klv::MultiLeaves,
     placement: &'a PossiblePlacement,
     num_max_played: u8,
+    threshold: i32,
     found_place_move: FoundPlaceMove,
 }
 
@@ -2598,6 +2682,7 @@ fn gen_place_moves_at_lean<
         multi_leaves,
         placement,
         num_max_played,
+        threshold,
         mut found_place_move,
     } = p;
     let dim = board_snapshot.game_config.board_layout().dim();
@@ -2688,6 +2773,14 @@ fn gen_place_moves_at_lean<
             play_out_bonus: working_buffer.play_out_bonus,
             used_letters_tally: &mut working_buffer.used_letters_tally,
             is_census: working_buffer.is_census,
+            scores: working_buffer
+                .placement_scores
+                .get(
+                    placement.scores_at as usize
+                        ..placement.scores_at as usize + num_max_played as usize + 1,
+                )
+                .unwrap_or(&[]),
+            threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
         },
@@ -2710,6 +2803,7 @@ fn gen_place_moves_at<
         multi_leaves,
         placement,
         num_max_played,
+        threshold,
         mut found_place_move,
     } = p;
     let dim = board_snapshot.game_config.board_layout().dim();
@@ -2800,6 +2894,14 @@ fn gen_place_moves_at<
             play_out_bonus: working_buffer.play_out_bonus,
             used_letters_tally: &mut working_buffer.used_letters_tally,
             is_census: working_buffer.is_census,
+            scores: working_buffer
+                .placement_scores
+                .get(
+                    placement.scores_at as usize
+                        ..placement.scores_at as usize + num_max_played as usize + 1,
+                )
+                .unwrap_or(&[]),
+            threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
         },
@@ -3158,6 +3260,7 @@ impl KurniaMoveGenerator {
                 multi_leaves: &multi_leaves,
                 found_place_move,
                 can_accept: |_best_possible_equity: i32| true,
+                current_threshold: || i32::MIN,
             }) {}
         } else {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
@@ -3167,6 +3270,7 @@ impl KurniaMoveGenerator {
                 multi_leaves: &multi_leaves,
                 found_place_move,
                 can_accept: |_best_possible_equity: i32| true,
+                current_threshold: || i32::MIN,
             }) {}
         }
         kurnia_gen_exchange_moves(
@@ -3314,6 +3418,7 @@ impl KurniaMoveGenerator {
                 can_accept: |best_possible_equity: i32| {
                     threshold.get() <= equity::Equity::new(best_possible_equity)
                 },
+                current_threshold: || threshold.get().raw(),
             }) {
                 breathe().await;
             }
@@ -3327,6 +3432,7 @@ impl KurniaMoveGenerator {
                 can_accept: |best_possible_equity: i32| {
                     threshold.get() <= equity::Equity::new(best_possible_equity)
                 },
+                current_threshold: || threshold.get().raw(),
             }) {
                 breathe().await;
             }
@@ -3516,6 +3622,7 @@ impl KurniaMoveGenerator {
                 can_accept: |best_possible_equity: i32| {
                     threshold.get() <= equity::Equity::new(best_possible_equity)
                 },
+                current_threshold: || threshold.get().raw(),
             }) {}
         } else {
             for _ in kurnia_gen_place_moves_iter_lean(KurniaIterParams {
@@ -3527,6 +3634,7 @@ impl KurniaMoveGenerator {
                 can_accept: |best_possible_equity: i32| {
                     threshold.get() <= equity::Equity::new(best_possible_equity)
                 },
+                current_threshold: || threshold.get().raw(),
             }) {}
         }
         kurnia_gen_exchange_moves(
@@ -3638,6 +3746,7 @@ struct KurniaIterParams<
     'a,
     FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
     CanAccept: 'a + Fn(i32) -> bool,
+    CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
     L: kwg::Node,
 > {
@@ -3647,6 +3756,7 @@ struct KurniaIterParams<
     multi_leaves: &'a klv::MultiLeaves,
     found_place_move: FoundPlaceMove,
     can_accept: CanAccept,
+    current_threshold: CurrentThreshold,
 }
 
 #[inline]
@@ -3654,10 +3764,11 @@ fn kurnia_gen_place_moves_iter_lean<
     'a,
     FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
     CanAccept: 'a + Fn(i32) -> bool,
+    CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: KurniaIterParams<'a, FoundPlaceMove, CanAccept, N, L>,
+    p: KurniaIterParams<'a, FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
         want_raw,
@@ -3666,6 +3777,7 @@ fn kurnia_gen_place_moves_iter_lean<
         multi_leaves,
         mut found_place_move,
         can_accept,
+        current_threshold,
     } = p;
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
@@ -3753,6 +3865,8 @@ fn kurnia_gen_place_moves_iter_lean<
     );
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
+    let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
+    placement_scores.clear();
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
@@ -3790,10 +3904,17 @@ fn kurnia_gen_place_moves_iter_lean<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
+                shadow_scores: &mut working_buffer.shadow_scores,
             },
             true,
             want_raw,
-            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32| {
+            |anchor: i8,
+             leftmost: i8,
+             rightmost: i8,
+             best_possible_equity: i32,
+             best_possible_score: &[i32]| {
+                let scores_at = placement_scores.len() as u32;
+                placement_scores.extend_from_slice(best_possible_score);
                 found_placements.push(PossiblePlacement {
                     down: false,
                     lane: row,
@@ -3801,6 +3922,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     leftmost,
                     rightmost,
                     best_possible_equity,
+                    scores_at,
                 });
             },
         );
@@ -3841,10 +3963,17 @@ fn kurnia_gen_place_moves_iter_lean<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
+                shadow_scores: &mut working_buffer.shadow_scores,
             },
             false,
             want_raw,
-            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32| {
+            |anchor: i8,
+             leftmost: i8,
+             rightmost: i8,
+             best_possible_equity: i32,
+             best_possible_score: &[i32]| {
+                let scores_at = placement_scores.len() as u32;
+                placement_scores.extend_from_slice(best_possible_score);
                 found_placements.push(PossiblePlacement {
                     down: true,
                     lane: col,
@@ -3852,6 +3981,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     leftmost,
                     rightmost,
                     best_possible_equity,
+                    scores_at,
                 });
             },
         );
@@ -3861,6 +3991,7 @@ fn kurnia_gen_place_moves_iter_lean<
         found_placements.sort_unstable_by_key(|a| a.best_possible_equity);
     }
     working_buffer.found_placements = found_placements;
+    working_buffer.placement_scores = placement_scores;
     std::iter::from_fn(move || match working_buffer.found_placements.pop() {
         Some(placement) => {
             if can_accept(placement.best_possible_equity) {
@@ -3870,6 +4001,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     multi_leaves,
                     placement: &placement,
                     num_max_played,
+                    threshold: current_threshold(),
                     found_place_move:
                         &mut |down: bool,
                               lane: i8,
@@ -3909,10 +4041,11 @@ fn kurnia_gen_place_moves_iter<
     'a,
     FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
     CanAccept: 'a + Fn(i32) -> bool,
+    CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
-    p: KurniaIterParams<'a, FoundPlaceMove, CanAccept, N, L>,
+    p: KurniaIterParams<'a, FoundPlaceMove, CanAccept, CurrentThreshold, N, L>,
 ) -> impl 'a + Iterator {
     let KurniaIterParams {
         want_raw,
@@ -3921,6 +4054,7 @@ fn kurnia_gen_place_moves_iter<
         multi_leaves,
         mut found_place_move,
         can_accept,
+        current_threshold,
     } = p;
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
@@ -4008,6 +4142,8 @@ fn kurnia_gen_place_moves_iter<
     );
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
+    let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
+    placement_scores.clear();
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
@@ -4045,10 +4181,17 @@ fn kurnia_gen_place_moves_iter<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
+                shadow_scores: &mut working_buffer.shadow_scores,
             },
             true,
             want_raw,
-            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32| {
+            |anchor: i8,
+             leftmost: i8,
+             rightmost: i8,
+             best_possible_equity: i32,
+             best_possible_score: &[i32]| {
+                let scores_at = placement_scores.len() as u32;
+                placement_scores.extend_from_slice(best_possible_score);
                 found_placements.push(PossiblePlacement {
                     down: false,
                     lane: row,
@@ -4056,6 +4199,7 @@ fn kurnia_gen_place_moves_iter<
                     leftmost,
                     rightmost,
                     best_possible_equity,
+                    scores_at,
                 });
             },
         );
@@ -4096,10 +4240,17 @@ fn kurnia_gen_place_moves_iter<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
+                shadow_scores: &mut working_buffer.shadow_scores,
             },
             false,
             want_raw,
-            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32| {
+            |anchor: i8,
+             leftmost: i8,
+             rightmost: i8,
+             best_possible_equity: i32,
+             best_possible_score: &[i32]| {
+                let scores_at = placement_scores.len() as u32;
+                placement_scores.extend_from_slice(best_possible_score);
                 found_placements.push(PossiblePlacement {
                     down: true,
                     lane: col,
@@ -4107,6 +4258,7 @@ fn kurnia_gen_place_moves_iter<
                     leftmost,
                     rightmost,
                     best_possible_equity,
+                    scores_at,
                 });
             },
         );
@@ -4116,6 +4268,7 @@ fn kurnia_gen_place_moves_iter<
         found_placements.sort_unstable_by_key(|a| a.best_possible_equity);
     }
     working_buffer.found_placements = found_placements;
+    working_buffer.placement_scores = placement_scores;
     std::iter::from_fn(move || match working_buffer.found_placements.pop() {
         Some(placement) => {
             if can_accept(placement.best_possible_equity) {
@@ -4125,6 +4278,7 @@ fn kurnia_gen_place_moves_iter<
                     multi_leaves,
                     placement: &placement,
                     num_max_played,
+                    threshold: current_threshold(),
                     found_place_move:
                         &mut |down: bool,
                               lane: i8,
@@ -4650,39 +4804,41 @@ mod tests {
             "AEINRST", "CARTONS", "STARTED", "SEATERS", "RATTANS", "AAAAAAA", "AE", "ST",
             "?ANTS??", "CAT", "NNNNTTT", "ERASECS",
         ];
-        for fen in boards {
-            let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
-            for rack in racks {
-                let rack = parse_test_rack(gc.alphabet(), rack);
-                let mut walked = String::new();
-                let mut fetched = String::new();
-                for (anagrams, out) in [(None, &mut walked), (Some(&held), &mut fetched)] {
-                    let board_snapshot = BoardSnapshot {
-                        board_tiles: &board_tiles,
-                        game_config: &gc,
-                        kwg: &kwg,
-                        anagrams,
-                        klv: &klv,
-                    };
-                    let mut move_generator = KurniaMoveGenerator::new(&gc);
-                    move_generator.gen_moves_unfiltered(&GenMovesParams {
-                        board_snapshot: &board_snapshot,
-                        rack: &rack,
-                        max_gen: 100_000,
-                        num_exchanges_by_this_player: 0,
-                        pass_policy: PassPolicy::OnlyWhenForced,
-                        dynamic_leaves: None,
-                    });
-                    for p in &move_generator.plays {
-                        out.push_str(&format!(
-                            "{} {}\n",
-                            p.equity.raw(),
-                            p.play.fmt(&board_snapshot)
-                        ));
+        for max_gen in [1usize, 5, 100_000] {
+            for fen in boards {
+                let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+                for rack in racks {
+                    let rack = parse_test_rack(gc.alphabet(), rack);
+                    let mut walked = String::new();
+                    let mut fetched = String::new();
+                    for (anagrams, out) in [(None, &mut walked), (Some(&held), &mut fetched)] {
+                        let board_snapshot = BoardSnapshot {
+                            board_tiles: &board_tiles,
+                            game_config: &gc,
+                            kwg: &kwg,
+                            anagrams,
+                            klv: &klv,
+                        };
+                        let mut move_generator = KurniaMoveGenerator::new(&gc);
+                        move_generator.gen_moves_unfiltered(&GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &rack,
+                            max_gen,
+                            num_exchanges_by_this_player: 0,
+                            pass_policy: PassPolicy::OnlyWhenForced,
+                            dynamic_leaves: None,
+                        });
+                        for p in &move_generator.plays {
+                            out.push_str(&format!(
+                                "{} {}\n",
+                                p.equity.raw(),
+                                p.play.fmt(&board_snapshot)
+                            ));
+                        }
                     }
+                    assert_eq!(walked, fetched, "{fen} at a cap of {max_gen}");
+                    assert!(!walked.is_empty(), "{fen} generated nothing at all");
                 }
-                assert_eq!(walked, fetched, "{fen} with that rack");
-                assert!(!walked.is_empty(), "{fen} generated nothing at all");
             }
         }
     }
