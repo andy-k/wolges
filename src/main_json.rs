@@ -237,6 +237,7 @@ fn main() -> error::Returns<()> {
         board_tiles: &kibitzer.board_tiles,
         game_config: &game_config,
         kwg: &kwg,
+        anagrams: None,
         klv: &klv,
     };
 

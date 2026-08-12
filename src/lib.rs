@@ -5,6 +5,7 @@ pub mod error;
 
 pub mod alphabet;
 pub mod alphagram;
+pub mod anagrams;
 pub mod bag;
 pub mod bites;
 pub mod bites_str;

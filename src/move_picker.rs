@@ -708,6 +708,7 @@ mod tests {
             board_tiles,
             game_config,
             kwg: &kwg,
+            anagrams: None,
             klv: &klv,
         };
         let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);

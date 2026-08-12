@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, bites, display, equity, game_config, klv, kwg, matrix};
+use super::{alphabet, anagrams, bites, display, equity, game_config, klv, kwg, matrix};
 
 const MAX_ALPHABET_LEN: usize = 64;
 
@@ -589,6 +589,7 @@ pub struct BoardSnapshot<'a, N: kwg::Node, L: kwg::Node> {
     pub board_tiles: &'a [u8],
     pub game_config: &'a game_config::GameConfig,
     pub kwg: &'a kwg::Kwg<N>,
+    pub anagrams: Option<&'a anagrams::Anagrams>,
     pub klv: &'a klv::Klv<L>,
 }
 
@@ -3825,6 +3826,7 @@ mod tests {
                 board_tiles: &board_tiles,
                 game_config: &gc,
                 kwg: &kwg,
+                anagrams: None,
                 klv: &klv,
             };
             let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -3910,6 +3912,7 @@ mod tests {
             board_tiles: &board_tiles,
             game_config: &gc,
             kwg: &kwg,
+            anagrams: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -3942,6 +3945,7 @@ mod tests {
             board_tiles: &board_tiles,
             game_config: &gc,
             kwg: &kwg,
+            anagrams: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -3999,6 +4003,7 @@ mod tests {
             board_tiles: &[],
             game_config: &gc,
             kwg: &kwg,
+            anagrams: None,
             klv: &klv,
         };
 
@@ -4249,12 +4254,14 @@ mod tests {
             board_tiles: &seat,
             game_config: &gc,
             kwg: &kwg,
+            anagrams: None,
             klv: &klv,
         };
         let empty_snapshot = BoardSnapshot {
             board_tiles: &empty,
             game_config: &gc,
             kwg: &kwg,
+            anagrams: None,
             klv: &klv,
         };
         let plays = |move_generator: &mut KurniaMoveGenerator| {
@@ -4300,6 +4307,7 @@ mod tests {
                 board_tiles,
                 game_config: &gc,
                 kwg: &kwg,
+                anagrams: None,
                 klv: &klv,
             };
             move_generator.gen_moves_unfiltered(&GenMovesParams {
@@ -4438,12 +4446,14 @@ mod tests {
                 board_tiles: &board_tiles,
                 game_config: &gc,
                 kwg: &kwg,
+                anagrams: None,
                 klv: &klv,
             };
             let transposed_board_snapshot = BoardSnapshot {
                 board_tiles: &transposed_board_tiles,
                 game_config: &transposed_gc,
                 kwg: &kwg,
+                anagrams: None,
                 klv: &klv,
             };
             let fresh = place_plays(
@@ -4539,6 +4549,7 @@ mod tests {
             board_tiles: &board_tiles,
             game_config: &gc,
             kwg: &kwg,
+            anagrams: None,
             klv: &klv,
         };
         let plays = place_plays(

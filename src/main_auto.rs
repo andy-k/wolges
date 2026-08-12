@@ -181,6 +181,7 @@ fn do_it<N: kwg::Node + Sync>(
             board_tiles: &game_state.board_tiles,
             game_config,
             kwg,
+            anagrams: None,
             klv,
         };
         let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
@@ -215,6 +216,7 @@ fn do_it<N: kwg::Node + Sync>(
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
                 kwg: &smaller_kwg,
+                anagrams: None,
                 ..*board_snapshot
             },
             rack: test_rack,
@@ -304,6 +306,7 @@ fn do_it<N: kwg::Node + Sync>(
                 board_tiles: &game_state.board_tiles,
                 game_config,
                 kwg,
+                anagrams: None,
                 klv,
             };
 
@@ -342,6 +345,7 @@ fn do_it<N: kwg::Node + Sync>(
                     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                         board_snapshot: &movegen::BoardSnapshot {
                             kwg: &smaller_kwg,
+                            anagrams: None,
                             ..*board_snapshot
                         },
                         rack: &game_state.current_player().rack,

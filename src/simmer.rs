@@ -213,6 +213,7 @@ impl Simmer {
                             board_tiles: &self.game_state.board_tiles,
                             game_config,
                             kwg,
+                            anagrams: None,
                             klv,
                         },
                         rack: &self.game_state.current_player().rack,
