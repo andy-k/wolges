@@ -2127,7 +2127,7 @@ fn gen_classic_place_moves<
         let tile_multipliers = env.params.remaining_tile_multipliers_strip;
         let perpendicular_word_multipliers = env.params.perpendicular_word_multipliers_strip;
         let left = env.left as usize;
-        debug_assert_eq!(found.len as usize, (env.right - env.left) as usize);
+        debug_assert_eq!(found.len, len);
         'word: for word in found.iter() {
             let mut main_score = env.base_main;
             let mut perpendicular_cumulative_score = env.base_perp;
@@ -2241,6 +2241,7 @@ fn gen_classic_place_moves<
     fn add_square(
         e: &mut Extent,
         idx: usize,
+        letters: u64,
         layout: &alphagram::KeyLayout,
         params: &GenPlaceMovesParams<
             '_,
@@ -2258,11 +2259,11 @@ fn gen_classic_place_moves<
             let bits = params.cross_set_strip[idx].bits;
             if bits == 0 {
                 e.free_squares += 1;
-                e.blank_ok = !1;
+                e.blank_ok = letters;
             } else if bits == 1 {
                 e.dead_squares += 1;
             } else {
-                e.blank_ok |= bits & !1;
+                e.blank_ok |= bits & letters;
             }
             e.num_played += 1;
             e.word_multiplier *= params.remaining_word_multipliers_strip[idx] as i32;
@@ -2272,6 +2273,7 @@ fn gen_classic_place_moves<
 
     let alphabet = params.board_snapshot.game_config.alphabet();
     let layout = source.layout();
+    let letters = (u64::MAX >> (64 - alphabet.len() as u32)) & !1;
     let anchor = params.anchor;
     let leftmost = params.leftmost;
     let rightmost = params.rightmost;
@@ -2301,14 +2303,20 @@ fn gen_classic_place_moves<
         blank_ok: 0,
     };
     for left in (leftmost..=anchor).rev() {
-        add_square(&mut left_extent, left as usize, env.layout, env.params);
+        add_square(
+            &mut left_extent,
+            left as usize,
+            letters,
+            env.layout,
+            env.params,
+        );
         if left > 0 && env.params.board_strip[left as usize - 1] != 0 {
             continue;
         }
         let mut e = left_extent;
         for right in anchor + 1..=rightmost {
             if right > anchor + 1 {
-                add_square(&mut e, right as usize - 1, env.layout, env.params);
+                add_square(&mut e, right as usize - 1, letters, env.layout, env.params);
             }
             if e.dead_squares != 0 || e.num_played > num_max_played {
                 break;
@@ -2362,13 +2370,14 @@ fn gen_classic_place_moves<
                     );
                     continue;
                 }
-                let len = (env.right - env.left) as u8;
-                let mut letters = env
-                    .source
-                    .blank_letters(alphagram::Fitted(key), len, e.blank_ok);
-                while letters != 0 {
-                    let tile = letters.trailing_zeros() as u8;
-                    letters &= letters - 1;
+                let mut could_be = env.source.blank_letters(
+                    alphagram::Fitted(key),
+                    (right - left) as u8,
+                    e.blank_ok,
+                );
+                while could_be != 0 {
+                    let tile = could_be.trailing_zeros() as u8;
+                    could_be &= could_be - 1;
                     let full = alphagram::Fitted(key + env.layout.place_value(tile));
                     check_words::<true, _, _, _>(&mut env, full, subrack.leave_idx, tile);
                 }
