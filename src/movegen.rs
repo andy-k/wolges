@@ -4980,6 +4980,35 @@ mod tests {
         both_arms_agree(&gc, &[empty, one, two], SWEEP_RACKS);
     }
 
+    static LONG_RACKS: &[&str] = &[
+        "AEINRSTCS",
+        "CARTONSEA",
+        "STARTEDNE",
+        "RATTANSEC",
+        "AAAAAAANN",
+        "NNNNTTTSS",
+        "?EINRSTCA",
+        "?ANTESCAR",
+        "??TANSCAR",
+        "AE",
+        "CAT",
+        "?A",
+    ];
+
+    #[test]
+    #[inline]
+    fn a_longer_rack_is_read_the_same_way() {
+        let gc = game_config::make_hong_kong_english_game_config();
+        assert!(
+            gc.rack_size() > 7,
+            "this config does not deal a longer rack than the others",
+        );
+        let empty = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
+        let one = "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15";
+        let two = "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15";
+        both_arms_agree(&gc, &[empty, one, two], LONG_RACKS);
+    }
+
     #[inline]
     fn test_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
