@@ -137,6 +137,29 @@ impl<N: Node> Kwg<N> {
         -1 // intentionally return 0 as -1
     }
 
+    #[inline(always)]
+    pub fn prefetch(&self, p: i32) {
+        if p > 0 {
+            let ptr = self.0.as_ptr().wrapping_add(p as usize);
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(
+                    ptr as *const i8,
+                );
+            }
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                std::arch::asm!(
+                    "prfm pldl1keep, [{ptr}]",
+                    ptr = in(reg) ptr,
+                    options(nostack, preserves_flags, readonly),
+                );
+            }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            let _ = ptr;
+        }
+    }
+
     fn count_words_at(&self, word_counts: &mut [u32], p: i32) -> u32 {
         if p as usize >= word_counts.len() {
             return 0;

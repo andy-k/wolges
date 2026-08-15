@@ -1616,6 +1616,11 @@ fn gen_classic_place_moves<
                 let node = env.params.board_snapshot.kwg[p];
                 let tile = node.tile();
                 if this_cross_bits & (1 << tile) != 0 {
+                    let will_descend =
+                        env.params.rack_tally[tile as usize] > 0 || opt_blank_acc.is_some();
+                    if will_descend {
+                        env.params.board_snapshot.kwg.prefetch(node.arc_index());
+                    }
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile;
@@ -1787,6 +1792,11 @@ fn gen_classic_place_moves<
                 let node = env.params.board_snapshot.kwg[p];
                 let tile = node.tile();
                 if this_cross_bits & (1 << tile) != 0 {
+                    let will_descend =
+                        env.params.rack_tally[tile as usize] > 0 || opt_blank_acc.is_some();
+                    if will_descend {
+                        env.params.board_snapshot.kwg.prefetch(node.arc_index());
+                    }
                     if env.params.rack_tally[tile as usize] > 0 {
                         env.params.rack_tally[tile as usize] -= 1;
                         env.params.word_strip_buffer[idx as usize] = tile;
