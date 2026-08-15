@@ -94,6 +94,7 @@ struct WorkingBuffer {
     used_tile_scores_shadowr: Vec<i32>, // rack.len() (for shadow_play_right, premultiplied by SCALE)
     rack_tally_shadowl: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_left)
     rack_tally_shadowr: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_right)
+    word_source_fits_config: bool,
     is_census: bool,
 }
 
@@ -162,6 +163,7 @@ impl Clone for WorkingBuffer {
             rack_tally_shadowl: self.rack_tally_shadowl.clone(),
             rack_tally_shadowr: self.rack_tally_shadowr.clone(),
             is_census: self.is_census,
+            word_source_fits_config: self.word_source_fits_config,
         }
     }
 
@@ -242,6 +244,7 @@ impl Clone for WorkingBuffer {
         self.rack_tally_shadowr
             .clone_from(&source.rack_tally_shadowr);
         self.is_census = source.is_census;
+        self.word_source_fits_config = source.word_source_fits_config;
     }
 }
 
@@ -346,6 +349,7 @@ impl WorkingBuffer {
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             rack_tally_shadowr: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             is_census: false,
+            word_source_fits_config: false,
         }
     }
 
@@ -366,6 +370,7 @@ impl WorkingBuffer {
         let layout = board_snapshot.anagrams.map(anagrams::Anagrams::layout);
         !want_raw
             && !self.is_census
+            && self.word_source_fits_config
             && self.rack_tally[0] <= 1
             && !self.subracks.is_empty()
             && layout
@@ -380,6 +385,14 @@ impl WorkingBuffer {
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
+        self.word_source_fits_config = match board_snapshot.anagrams.map(anagrams::Anagrams::layout)
+        {
+            Some(layout) => {
+                let dim = board_snapshot.game_config.board_layout().dim();
+                layout.matches(alphabet, dim.rows.max(dim.cols) as u8)
+            }
+            None => false,
+        };
         self.num_tiles_on_rack = rack.len().try_into().unwrap();
         self.exchange_buffer.clear();
         self.exchange_buffer
