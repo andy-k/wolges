@@ -2158,8 +2158,6 @@ fn gen_classic_place_moves<
         let left = env.left as usize;
         debug_assert_eq!(found.len, len);
         'word: for word in found.iter() {
-            let mut main_score = env.base_main;
-            let mut perpendicular_cumulative_score = env.base_perp;
             for (i, &c) in word.iter().enumerate() {
                 let pos = left + i;
                 let b = board_strip[pos];
@@ -2172,6 +2170,14 @@ fn gen_classic_place_moves<
                 let bits = cross_set_strip[pos].bits;
                 if bits != 0 && bits & (1u64 << c) == 0 {
                     continue 'word;
+                }
+            }
+            let mut main_score = env.base_main;
+            let mut perpendicular_cumulative_score = env.base_perp;
+            for (i, &c) in word.iter().enumerate() {
+                let pos = left + i;
+                if board_strip[pos] != 0 {
+                    continue;
                 }
                 let tile_value =
                     env.alphabet.score(c) as i32 * equity::SCALE * tile_multipliers[pos] as i32;
