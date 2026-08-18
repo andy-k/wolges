@@ -2488,6 +2488,28 @@ fn gen_jumbled_place_moves<
         leave_idx: u32,
     }
 
+    #[inline]
+    fn alpha_accepts<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+    ) -> bool {
+        let kwg = env.params.board_snapshot.kwg;
+        let tally = &env.params.used_letters_tally;
+        let mut p = 0i32;
+        let mut accepted = false;
+        'walk: {
+            for letter in 1..tally.len() as u8 {
+                for _ in 0..tally[letter as usize] {
+                    p = kwg.seek(p, letter);
+                    if p <= 0 {
+                        break 'walk;
+                    }
+                }
+            }
+            accepted = kwg[p].accepts();
+        }
+        accepted
+    }
+
     #[inline(always)]
     fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
@@ -2495,11 +2517,7 @@ fn gen_jumbled_place_moves<
         idx_left: i8,
         idx_right: i8,
     ) {
-        let accepted = env
-            .params
-            .board_snapshot
-            .kwg
-            .accepts_alpha(&*env.params.used_letters_tally);
+        let accepted = alpha_accepts(env);
         if accepted {
             let score = acc.main_score * acc.word_multiplier
                 + acc.perpendicular_cumulative_score
