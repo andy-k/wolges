@@ -2483,6 +2483,9 @@ fn gen_jumbled_place_moves<
         alpha_path: [i32; MAX_ALPHABET_LEN + 1],
         alpha_known: u8,
         alpha_dead: bool,
+        alpha_bits: u64,
+        alpha_walked: u64,
+        alpha_stop: u8,
         rack_bits: u64,
         letter_bits: u64,
     }
@@ -2510,6 +2513,7 @@ fn gen_jumbled_place_moves<
         letter: u8,
     ) {
         env.params.used_letters_tally[letter as usize] += 1;
+        env.alpha_bits |= 1 << letter;
         tally_moved(env, letter);
     }
 
@@ -2519,6 +2523,9 @@ fn gen_jumbled_place_moves<
         letter: u8,
     ) {
         env.params.used_letters_tally[letter as usize] -= 1;
+        if env.params.used_letters_tally[letter as usize] == 0 {
+            env.alpha_bits &= !(1 << letter);
+        }
         tally_moved(env, letter);
     }
 
@@ -2551,23 +2558,38 @@ fn gen_jumbled_place_moves<
         }
         let kwg = env.params.board_snapshot.kwg;
         let num_letters = env.params.used_letters_tally.len() as u8;
-        let mut letter = env.alpha_known;
-        let mut p = env.alpha_path[letter as usize];
+        let below = !0u64 >> (64 - env.alpha_known as u32);
+        let above = env.alpha_walked & !below;
+        let resume = if above != 0 {
+            above.trailing_zeros() as u8
+        } else {
+            env.alpha_stop
+        };
+        let mut p = env.alpha_path[resume as usize];
+        let mut walked = env.alpha_walked & below;
+        let mut rest = env.alpha_bits & !below;
+        let mut stop = num_letters;
         let accepted = 'walk: {
-            while letter < num_letters {
+            while rest != 0 {
+                let letter = rest.trailing_zeros() as u8;
+                rest &= rest - 1;
+                env.alpha_path[letter as usize] = p;
+                walked |= 1 << letter;
                 for _ in 0..env.params.used_letters_tally[letter as usize] {
                     p = kwg.seek(p, letter);
                     if p <= 0 {
+                        stop = letter;
                         break 'walk false;
                     }
                 }
-                letter += 1;
-                env.alpha_path[letter as usize] = p;
             }
+            env.alpha_path[num_letters as usize] = p;
             kwg[p].accepts()
         };
-        env.alpha_known = letter;
-        env.alpha_dead = letter < num_letters;
+        env.alpha_known = stop;
+        env.alpha_stop = stop;
+        env.alpha_walked = walked;
+        env.alpha_dead = stop < num_letters;
         accepted
     }
 
@@ -2845,6 +2867,9 @@ fn gen_jumbled_place_moves<
     let rack_bits = (0..alphabet.len()).fold(0u64, |bits, tile| {
         bits | ((params.rack_tally[tile as usize] > 0) as u64) << tile
     });
+    let alpha_bits = (1..alphabet.len()).fold(0u64, |bits, tile| {
+        bits | ((params.used_letters_tally[tile as usize] > 0) as u64) << tile
+    });
     let mut env = Env {
         params,
         alphabet,
@@ -2853,6 +2878,9 @@ fn gen_jumbled_place_moves<
         alpha_path: [0i32; MAX_ALPHABET_LEN + 1],
         alpha_known: 1,
         alpha_dead: false,
+        alpha_bits,
+        alpha_walked: 0,
+        alpha_stop: 1,
         rack_bits,
         letter_bits,
     };
