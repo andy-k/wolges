@@ -5225,6 +5225,29 @@ mod tests {
     }
 
     #[inline]
+    fn test_kad(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut word_buf = Vec::new();
+        let mut words = Vec::<bites::Bites>::with_capacity(TEST_WORDS.len());
+        for w in TEST_WORDS {
+            reader.set_word(w, &mut word_buf).unwrap();
+            word_buf.sort_unstable();
+            words.push(word_buf[..].into());
+        }
+        words.sort_unstable();
+        words.dedup();
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[inline]
     fn parse_test_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
         let reader = alphabet::AlphabetReader::new_for_racks(alphabet);
         let sb = rack_str.as_bytes();
@@ -5693,6 +5716,118 @@ mod tests {
         greedy_rack[natural_a as usize] = alphabet.freq(natural_a) + 5;
         live_pool_into(&mut pool[..n], alphabet, &[], &greedy_rack);
         assert_eq!(pool[natural_a as usize], 0);
+    }
+    #[inline]
+    fn jumbled_placements_once(fen: &str, rack: &str, is_census: bool) -> Vec<String> {
+        let gc = game_config::make_jumbled_english_game_config();
+        let kwg = test_kad(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            anagrams: None,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        move_generator.working_buffer.is_census = is_census;
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack: &parse_test_rack(gc.alphabet(), rack),
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let mut out = move_generator
+            .plays
+            .iter()
+            .filter(|p| matches!(p.play, Play::Place { .. }))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .collect::<Vec<_>>();
+        out.sort_unstable();
+        out
+    }
+
+    #[inline(always)]
+    fn jumbled_placements(fen: &str, rack: &str) -> Vec<String> {
+        jumbled_placements_once(fen, rack, false)
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_opens_with_either_arrangement() {
+        assert_eq!(
+            jumbled_placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "AT"),
+            ["8G AT 4", "8G TA 4", "8H AT 4", "8H TA 4"]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_opens_with_a_blank() {
+        assert_eq!(
+            jumbled_placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "?A"),
+            [
+                "8G As 2", "8G At 2", "8G sA 2", "8G tA 2", "8H As 2", "8H At 2", "8H sA 2",
+                "8H tA 2",
+            ]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_takes_any_arrangement_of_a_word() {
+        assert_eq!(
+            jumbled_placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "S"),
+            ["8F S(SEAT) 5", "8G (SEAT)S 5", "I7 S(A) 3", "I8 (A)S 3"]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_scores_a_blank_as_zero() {
+        assert_eq!(
+            jumbled_placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "?"),
+            [
+                "8F s(SEAT) 4",
+                "8G (SEAT)s 4",
+                "G7 a(S) 1",
+                "G8 (S)a 1",
+                "I7 s(A) 1",
+                "I7 t(A) 1",
+                "I8 (A)s 1",
+                "I8 (A)t 1",
+                "J7 a(T) 1",
+                "J8 (T)a 1",
+            ]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_spell_once_keeps_the_real_tile() {
+        let fen = "15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15";
+        let every_way = jumbled_placements_once(fen, "?S", false);
+        let once = jumbled_placements_once(fen, "?S", true);
+        assert!(
+            every_way.iter().any(|p| p.contains('s')),
+            "nothing spelled an S with the blank, so the test proves nothing"
+        );
+        assert!(
+            !once.iter().any(|p| p.contains('s')),
+            "is_census still spent the blank on an S: {once:?}"
+        );
+        assert!(once.iter().all(|p| every_way.contains(p)));
+        let dropped = every_way
+            .iter()
+            .filter(|p| !once.contains(p))
+            .collect::<Vec<_>>();
+        assert!(!dropped.is_empty());
+        assert!(dropped.iter().all(|p| p.contains('s')), "{dropped:?}");
+        assert!(once.iter().any(|p| p.contains('t')));
     }
 
     #[test]
