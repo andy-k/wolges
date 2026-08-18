@@ -2482,6 +2482,7 @@ fn gen_jumbled_place_moves<
         idx_left: i8,
         alpha_path: [i32; MAX_ALPHABET_LEN + 1],
         alpha_known: u8,
+        alpha_dead: bool,
         rack_bits: u64,
         letter_bits: u64,
     }
@@ -2493,12 +2494,23 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
+    fn tally_moved<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        letter: u8,
+    ) {
+        if letter <= env.alpha_known {
+            env.alpha_known = letter;
+            env.alpha_dead = false;
+        }
+    }
+
+    #[inline(always)]
     fn tally_add<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         letter: u8,
     ) {
         env.params.used_letters_tally[letter as usize] += 1;
-        env.alpha_known = env.alpha_known.min(letter);
+        tally_moved(env, letter);
     }
 
     #[inline(always)]
@@ -2507,7 +2519,7 @@ fn gen_jumbled_place_moves<
         letter: u8,
     ) {
         env.params.used_letters_tally[letter as usize] -= 1;
-        env.alpha_known = env.alpha_known.min(letter);
+        tally_moved(env, letter);
     }
 
     #[inline(always)]
@@ -2534,6 +2546,9 @@ fn gen_jumbled_place_moves<
     fn alpha_accepts<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
     ) -> bool {
+        if env.alpha_dead {
+            return false;
+        }
         let kwg = env.params.board_snapshot.kwg;
         let num_letters = env.params.used_letters_tally.len() as u8;
         let mut letter = env.alpha_known;
@@ -2552,6 +2567,7 @@ fn gen_jumbled_place_moves<
             kwg[p].accepts()
         };
         env.alpha_known = letter;
+        env.alpha_dead = letter < num_letters;
         accepted
     }
 
@@ -2836,6 +2852,7 @@ fn gen_jumbled_place_moves<
         idx_left: 0,
         alpha_path: [0i32; MAX_ALPHABET_LEN + 1],
         alpha_known: 1,
+        alpha_dead: false,
         rack_bits,
         letter_bits,
     };
