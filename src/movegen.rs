@@ -2480,6 +2480,8 @@ fn gen_jumbled_place_moves<
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
         idx_left: i8,
+        alpha_path: [i32; MAX_ALPHABET_LEN + 1],
+        alpha_known: u8,
     }
     struct Accumulator {
         main_score: i32,
@@ -2488,25 +2490,46 @@ fn gen_jumbled_place_moves<
         leave_idx: u32,
     }
 
+    #[inline(always)]
+    fn tally_add<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        letter: u8,
+    ) {
+        env.params.used_letters_tally[letter as usize] += 1;
+        env.alpha_known = env.alpha_known.min(letter);
+    }
+
+    #[inline(always)]
+    fn tally_sub<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        letter: u8,
+    ) {
+        env.params.used_letters_tally[letter as usize] -= 1;
+        env.alpha_known = env.alpha_known.min(letter);
+    }
+
     #[inline]
     fn alpha_accepts<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
     ) -> bool {
         let kwg = env.params.board_snapshot.kwg;
-        let tally = &env.params.used_letters_tally;
-        let mut p = 0i32;
-        let mut accepted = false;
-        'walk: {
-            for letter in 1..tally.len() as u8 {
-                for _ in 0..tally[letter as usize] {
+        let num_letters = env.params.used_letters_tally.len() as u8;
+        let mut letter = env.alpha_known;
+        let mut p = env.alpha_path[letter as usize];
+        let accepted = 'walk: {
+            while letter < num_letters {
+                for _ in 0..env.params.used_letters_tally[letter as usize] {
                     p = kwg.seek(p, letter);
                     if p <= 0 {
-                        break 'walk;
+                        break 'walk false;
                     }
                 }
+                letter += 1;
+                env.alpha_path[letter as usize] = p;
             }
-            accepted = kwg[p].accepts();
-        }
+            kwg[p].accepts()
+        };
+        env.alpha_known = letter;
         accepted
     }
 
@@ -2572,7 +2595,7 @@ fn gen_jumbled_place_moves<
             if b == 0 {
                 break;
             }
-            env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
+            tally_add(env, b & 0x7f);
             acc.main_score += env.params.face_value_scores_strip[idx as usize];
             idx += 1;
         }
@@ -2618,7 +2641,7 @@ fn gen_jumbled_place_moves<
                     if this_cross_bits & (1 << tile) != 0 {
                         if env.params.rack_tally[tile as usize] > 0 {
                             env.params.rack_tally[tile as usize] -= 1;
-                            env.params.used_letters_tally[tile as usize] += 1;
+                            tally_add(env, tile);
                             let tile_value = env.alphabet.score(tile) as i32
                                 * equity::SCALE
                                 * tile_multiplier as i32;
@@ -2638,17 +2661,17 @@ fn gen_jumbled_place_moves<
                                 idx + 1,
                                 is_unique,
                             );
-                            env.params.used_letters_tally[tile as usize] -= 1;
+                            tally_sub(env, tile);
                             env.params.rack_tally[tile as usize] += 1;
                         }
                         if let Some(blank_acc) = &opt_blank_acc
                             && (!env.params.is_census || env.params.rack_tally[tile as usize] == 0)
                         {
                             env.params.rack_tally[0] -= 1;
-                            env.params.used_letters_tally[tile as usize] += 1;
+                            tally_add(env, tile);
                             env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                             play_right(env, &mut Accumulator { ..*blank_acc }, idx + 1, is_unique);
-                            env.params.used_letters_tally[tile as usize] -= 1;
+                            tally_sub(env, tile);
                             env.params.rack_tally[0] += 1;
                         }
                     }
@@ -2658,7 +2681,7 @@ fn gen_jumbled_place_moves<
         }
         for idx in orig_idx..idx {
             let b = env.params.board_strip[idx as usize];
-            env.params.used_letters_tally[(b & 0x7f) as usize] -= 1;
+            tally_sub(env, b & 0x7f);
         }
     }
 
@@ -2675,7 +2698,7 @@ fn gen_jumbled_place_moves<
             if b == 0 {
                 break;
             }
-            env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
+            tally_add(env, b & 0x7f);
             acc.main_score += env.params.face_value_scores_strip[idx as usize];
             idx -= 1;
         }
@@ -2724,7 +2747,7 @@ fn gen_jumbled_place_moves<
                         if this_cross_bits & (1 << tile) != 0 {
                             if env.params.rack_tally[tile as usize] > 0 {
                                 env.params.rack_tally[tile as usize] -= 1;
-                                env.params.used_letters_tally[tile as usize] += 1;
+                                tally_add(env, tile);
                                 let tile_value = env.alphabet.score(tile) as i32
                                     * equity::SCALE
                                     * tile_multiplier as i32;
@@ -2744,7 +2767,7 @@ fn gen_jumbled_place_moves<
                                     idx - 1,
                                     is_unique,
                                 );
-                                env.params.used_letters_tally[tile as usize] -= 1;
+                                tally_sub(env, tile);
                                 env.params.rack_tally[tile as usize] += 1;
                             }
                             if let Some(blank_acc) = &opt_blank_acc
@@ -2752,7 +2775,7 @@ fn gen_jumbled_place_moves<
                                     || env.params.rack_tally[tile as usize] == 0)
                             {
                                 env.params.rack_tally[0] -= 1;
-                                env.params.used_letters_tally[tile as usize] += 1;
+                                tally_add(env, tile);
                                 env.params.word_strip_buffer[idx as usize] = tile | 0x80;
                                 play_left(
                                     env,
@@ -2760,7 +2783,7 @@ fn gen_jumbled_place_moves<
                                     idx - 1,
                                     is_unique,
                                 );
-                                env.params.used_letters_tally[tile as usize] -= 1;
+                                tally_sub(env, tile);
                                 env.params.rack_tally[0] += 1;
                             }
                         }
@@ -2772,7 +2795,7 @@ fn gen_jumbled_place_moves<
 
         for idx in idx + 1..orig_idx + 1 {
             let b = env.params.board_strip[idx as usize];
-            env.params.used_letters_tally[(b & 0x7f) as usize] -= 1;
+            tally_sub(env, b & 0x7f);
         }
     }
 
@@ -2784,6 +2807,8 @@ fn gen_jumbled_place_moves<
         alphabet,
         num_played: 0,
         idx_left: 0,
+        alpha_path: [0i32; MAX_ALPHABET_LEN + 1],
+        alpha_known: 1,
     };
     play_left(
         &mut env,
