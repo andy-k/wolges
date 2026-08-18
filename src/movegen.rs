@@ -5342,6 +5342,51 @@ mod tests {
         }
     }
 
+    #[inline]
+    fn jumbled_hex_placements(words: &[&[u8]], rack: &[u8]) -> Vec<String> {
+        let gc = game_config::make_jumbled_hex_game_config();
+        let words = words
+            .iter()
+            .map(|w| (*w).into())
+            .collect::<Vec<bites::Bites>>();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &build::make_alphagrams(&words),
+            )
+            .unwrap(),
+        );
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let dim = gc.board_layout().dim();
+        let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            anagrams: None,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack,
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let mut out = move_generator
+            .plays
+            .iter()
+            .filter(|p| matches!(p.play, Play::Place { .. }))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .collect::<Vec<_>>();
+        out.sort_unstable();
+        out
+    }
+
     #[test]
     #[inline]
     fn reordered_kwg_generates_the_same_plays() {
@@ -5804,6 +5849,19 @@ mod tests {
                 "J8 (T)a 1",
             ]
         );
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_handles_the_widest_alphabet() {
+        let words: &[&[u8]] = &[&[1, 63], &[1, 2, 63]];
+        assert_eq!(
+            jumbled_hex_placements(words, &[1, 63]),
+            ["8G 013f 0", "8G 3f01 0", "8H 013f 0", "8H 3f01 0"]
+        );
+        let plays = jumbled_hex_placements(words, &[1, 2, 63]);
+        assert_eq!(plays.len(), 3 * 6 + 2 * 2);
+        assert!(plays.iter().all(|p| p.contains("3f")), "{plays:?}");
     }
 
     #[test]
