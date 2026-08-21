@@ -1003,7 +1003,6 @@ struct GenPlacePlacementsParams<'a> {
     rack_tally: &'a mut [u8],
     used_tile_scores_shadowl: &'a mut Vec<i32>,
     used_tile_scores_shadowr: &'a mut Vec<i32>,
-    shadow_strip_buffer: &'a mut [u8], // not really storing letters here
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
@@ -1159,13 +1158,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     #[inline(always)]
-    fn shadow_record(
-        env: &mut Env<'_>,
-        acc: &Accumulator,
-        idx_left: i8,
-        idx_right: i8,
-        num_played: u8,
-    ) {
+    fn shadow_record(env: &mut Env<'_>, acc: &Accumulator, num_played: u8, deferred: u128) {
         let used_tile_scores = if env.params.used_tile_scores_shadowr.is_empty() {
             &env.params.used_tile_scores_shadowl
         } else {
@@ -1195,10 +1188,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             for &idx in
                 &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end]
             {
-                if idx_left <= idx
-                    && idx < idx_right
-                    && env.params.shadow_strip_buffer[idx as usize] == 0
-                {
+                if deferred & (1u128 << (idx as u32)) != 0 {
                     best_scoring += *desc_scores_iter.next().unwrap()
                         * precomputed_square_multiplier_slice[idx as usize];
                     to_assign -= 1;
@@ -1230,6 +1220,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         idx_left: i8,
         num_played: u8,
         rack_bits: u64,
+        deferred: u128,
     }
 
     #[inline(always)]
@@ -1240,6 +1231,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             idx_left,
             mut num_played,
             mut rack_bits,
+            mut deferred,
         } = walk;
         env.params
             .used_tile_scores_shadowr
@@ -1258,7 +1250,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // here idx <= env.rightmost.
             // check if [idx_left, idx) is a thing
             if idx > env.anchor + 1 && num_played > !is_unique as u8 && idx - idx_left >= 2 {
-                shadow_record(env, &acc, idx_left, idx, num_played);
+                shadow_record(env, &acc, num_played, deferred);
             }
             if num_played >= env.params.num_max_played {
                 break;
@@ -1273,6 +1265,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here.
                 is_unique = true;
+                deferred |= 1u128 << (idx as u32);
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
@@ -1298,7 +1291,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // case 2: multiple tiles fit, but they all have the same score.
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
-                    env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
                     let tile_score = env.params.alphabet.scaled_score(tile);
                     env.params.used_tile_scores_shadowr.insert(
                         env.params
@@ -1317,7 +1309,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
                     // defer to greedy algorithm.
-                    env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
+                    deferred |= 1u128 << (idx as u32);
                     acc.perpendicular_cumulative_score +=
                         env.params.perpendicular_scores_strip[idx as usize];
                 }
@@ -1333,6 +1325,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
 
     #[inline(always)]
     fn shadow_play_left(env: &mut Env<'_>, mut acc: Accumulator, mut idx: i8, mut is_unique: bool) {
+        let mut deferred = 0u128;
         let mut num_played = 0;
         env.params.used_tile_scores_shadowl.clear();
         let mut rack_bits = env.params.rack_bits;
@@ -1350,7 +1343,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // here idx >= env.leftmost - 1.
             // check if [idx + 1, env.anchor + 1) is a thing
             if num_played > !is_unique as u8 && env.anchor - idx >= 2 {
-                shadow_record(env, &acc, idx + 1, env.anchor + 1, num_played);
+                shadow_record(env, &acc, num_played, deferred);
             }
             if num_played >= env.params.num_max_played {
                 break;
@@ -1367,6 +1360,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                         idx_left: idx + 1,
                         num_played,
                         rack_bits,
+                        deferred,
                     },
                 );
             }
@@ -1380,6 +1374,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here.
                 is_unique = true;
+                deferred |= 1u128 << (idx as u32);
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
@@ -1405,7 +1400,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // case 2: multiple tiles fit, but they all have the same score.
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
-                    env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
                     let tile_score = env.params.alphabet.scaled_score(tile);
                     env.params.used_tile_scores_shadowl.insert(
                         env.params
@@ -1424,7 +1418,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
                     // defer to greedy algorithm.
-                    env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
+                    deferred |= 1u128 << (idx as u32);
                     acc.perpendicular_cumulative_score +=
                         env.params.perpendicular_scores_strip[idx as usize];
                 }
@@ -4152,8 +4146,6 @@ fn kurnia_gen_place_moves_iter_lean<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                shadow_strip_buffer: &mut working_buffer.word_buffer_for_across_plays
-                    [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
@@ -4213,8 +4205,6 @@ fn kurnia_gen_place_moves_iter_lean<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                shadow_strip_buffer: &mut working_buffer.word_buffer_for_down_plays
-                    [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
@@ -4429,8 +4419,6 @@ fn kurnia_gen_place_moves_iter<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                shadow_strip_buffer: &mut working_buffer.word_buffer_for_across_plays
-                    [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
@@ -4490,8 +4478,6 @@ fn kurnia_gen_place_moves_iter<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                shadow_strip_buffer: &mut working_buffer.word_buffer_for_down_plays
-                    [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
