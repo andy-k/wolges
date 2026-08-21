@@ -112,6 +112,7 @@ struct WorkingBuffer {
     aggregated_word_multipliers: Vec<i32>, // sorted, unique, O(n) insertion but n is tiny.
     precomputed_square_multiplier_buffer: Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
+    square_ranks_buffer: Vec<u8>,
     multi_jumps_buffer: Box<[MultiJump]>, // max(r, c)
     best_leave_values: Vec<i32>,          // rack.len() + 1
     placement_scores: Vec<i32>,
@@ -180,6 +181,7 @@ impl Clone for WorkingBuffer {
             indexes_to_descending_square_multiplier_buffer: self
                 .indexes_to_descending_square_multiplier_buffer
                 .clone(),
+            square_ranks_buffer: self.square_ranks_buffer.clone(),
             multi_jumps_buffer: self.multi_jumps_buffer.clone(),
             best_leave_values: self.best_leave_values.clone(),
             placement_scores: self.placement_scores.clone(),
@@ -254,6 +256,8 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.precomputed_square_multiplier_buffer);
         self.indexes_to_descending_square_multiplier_buffer
             .clone_from(&source.indexes_to_descending_square_multiplier_buffer);
+        self.square_ranks_buffer
+            .clone_from(&source.square_ranks_buffer);
         self.multi_jumps_buffer
             .clone_from(&source.multi_jumps_buffer);
         self.best_leave_values.clone_from(&source.best_leave_values);
@@ -357,6 +361,7 @@ impl WorkingBuffer {
             aggregated_word_multipliers: Vec::new(),
             precomputed_square_multiplier_buffer: Vec::new(),
             indexes_to_descending_square_multiplier_buffer: Vec::new(),
+            square_ranks_buffer: Vec::new(),
             multi_jumps_buffer: vec![
                 MultiJump {
                     left_score: 0,
@@ -1013,6 +1018,7 @@ struct GenPlacePlacementsParams<'a> {
     aggregated_word_multipliers: &'a mut Vec<i32>,
     precomputed_square_multiplier_buffer: &'a mut Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
+    square_ranks_buffer: &'a mut Vec<u8>,
     multi_jumps_buffer: &'a mut [MultiJump],
     best_leave_values: &'a [i32],
     shadow_scores: &'a mut Vec<i32>,
@@ -1066,6 +1072,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         params
             .indexes_to_descending_square_multiplier_buffer
             .resize(vec_size, 0);
+        params.square_ranks_buffer.resize(vec_size, 0);
         for (k, low_end) in params
             .aggregated_word_multipliers
             .iter()
@@ -1093,6 +1100,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 precomputed_square_multiplier_slice[b as usize]
                     .cmp(&precomputed_square_multiplier_slice[a as usize])
             });
+            let square_ranks_slice = &mut params.square_ranks_buffer[low_end..high_end];
+            for (rank, &j) in indexes_to_descending_square_multiplier_slice[..left]
+                .iter()
+                .enumerate()
+            {
+                square_ranks_slice[j as usize] = rank as u8;
+            }
         }
 
         // precompute the multi jumps. (code is similar to cross set computation.)
@@ -1158,12 +1172,26 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     #[inline(always)]
+    fn ranked_from(env: &Env<'_>, deferred: u128, low_end: usize) -> u128 {
+        let square_ranks_slice =
+            &env.params.square_ranks_buffer[low_end..low_end + env.strider_len];
+        let mut remaining = deferred;
+        let mut ranked = 0u128;
+        while remaining != 0 {
+            let square = remaining.trailing_zeros() as usize;
+            remaining &= remaining - 1;
+            ranked |= 1u128 << square_ranks_slice[square];
+        }
+        ranked
+    }
+
+    #[inline(always)]
     fn shadow_record(
         env: &mut Env<'_>,
         acc: &Accumulator,
         num_played: u8,
-        deferred: u128,
         low_end: usize,
+        ranked: u128,
     ) {
         let used_tile_scores = if env.params.used_tile_scores_shadowr.is_empty() {
             &env.params.used_tile_scores_shadowl
@@ -1185,17 +1213,16 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 .descending_scores
                 .iter()
                 .filter(|&score| used_tile_scores_iter.next_if_eq(&score).is_none());
-            for &idx in
-                &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end]
-            {
-                if deferred & (1u128 << (idx as u32)) != 0 {
-                    best_scoring += *desc_scores_iter.next().unwrap()
-                        * precomputed_square_multiplier_slice[idx as usize];
-                    to_assign -= 1;
-                    if to_assign == 0 {
-                        break;
-                    }
-                }
+            let indexes_to_descending_square_multiplier_slice =
+                &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
+            let mut remaining = ranked;
+            while to_assign != 0 && remaining != 0 {
+                let idx = indexes_to_descending_square_multiplier_slice
+                    [remaining.trailing_zeros() as usize];
+                remaining &= remaining - 1;
+                best_scoring += *desc_scores_iter.next().unwrap()
+                    * precomputed_square_multiplier_slice[idx as usize];
+                to_assign -= 1;
             }
         }
         let equity = acc.main_score * acc.word_multiplier
@@ -1222,6 +1249,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         rack_bits: u64,
         deferred: u128,
         low_end: usize,
+        ranked: u128,
     }
 
     #[inline(always)]
@@ -1234,6 +1262,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             mut rack_bits,
             mut deferred,
             mut low_end,
+            mut ranked,
         } = walk;
         env.params
             .used_tile_scores_shadowr
@@ -1252,7 +1281,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // here idx <= env.rightmost.
             // check if [idx_left, idx) is a thing
             if idx > env.anchor + 1 && num_played > !is_unique as u8 && idx - idx_left >= 2 {
-                shadow_record(env, &acc, num_played, deferred, low_end);
+                shadow_record(env, &acc, num_played, low_end, ranked);
             }
             if num_played >= env.params.num_max_played {
                 break;
@@ -1268,6 +1297,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 // nothing hooks here.
                 is_unique = true;
                 deferred |= 1u128 << (idx as u32);
+                ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
@@ -1312,6 +1342,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // rack_bits remains unchanged because assignment is tentative.
                     // defer to greedy algorithm.
                     deferred |= 1u128 << (idx as u32);
+                    ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
                     acc.perpendicular_cumulative_score +=
                         env.params.perpendicular_scores_strip[idx as usize];
                 }
@@ -1328,6 +1359,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     .binary_search(&acc.word_multiplier)
                     .unwrap()
                     * env.strider_len;
+                ranked = ranked_from(env, deferred, low_end);
             }
             idx += 1;
         }
@@ -1337,6 +1369,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     #[inline(always)]
     fn shadow_play_left(env: &mut Env<'_>, mut acc: Accumulator, mut idx: i8, mut is_unique: bool) {
         let mut deferred = 0u128;
+        let mut ranked = 0u128;
         let mut low_end = env
             .params
             .aggregated_word_multipliers
@@ -1360,7 +1393,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // here idx >= env.leftmost - 1.
             // check if [idx + 1, env.anchor + 1) is a thing
             if num_played > !is_unique as u8 && env.anchor - idx >= 2 {
-                shadow_record(env, &acc, num_played, deferred, low_end);
+                shadow_record(env, &acc, num_played, low_end, ranked);
             }
             if num_played >= env.params.num_max_played {
                 break;
@@ -1379,6 +1412,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                         rack_bits,
                         deferred,
                         low_end,
+                        ranked,
                     },
                 );
             }
@@ -1393,6 +1427,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 // nothing hooks here.
                 is_unique = true;
                 deferred |= 1u128 << (idx as u32);
+                ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
@@ -1437,6 +1472,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // rack_bits remains unchanged because assignment is tentative.
                     // defer to greedy algorithm.
                     deferred |= 1u128 << (idx as u32);
+                    ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
                     acc.perpendicular_cumulative_score +=
                         env.params.perpendicular_scores_strip[idx as usize];
                 }
@@ -1453,6 +1489,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     .binary_search(&acc.word_multiplier)
                     .unwrap()
                     * env.strider_len;
+                ranked = ranked_from(env, deferred, low_end);
             }
             idx -= 1;
         }
@@ -4193,6 +4230,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
+                square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
@@ -4250,6 +4288,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
+                square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
@@ -4466,6 +4505,7 @@ fn kurnia_gen_place_moves_iter<
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
+                square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
@@ -4523,6 +4563,7 @@ fn kurnia_gen_place_moves_iter<
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
+                square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
