@@ -1158,7 +1158,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     #[inline(always)]
-    fn shadow_record(env: &mut Env<'_>, acc: &Accumulator, num_played: u8, deferred: u128) {
+    fn shadow_record(
+        env: &mut Env<'_>,
+        acc: &Accumulator,
+        num_played: u8,
+        deferred: u128,
+        low_end: usize,
+    ) {
         let used_tile_scores = if env.params.used_tile_scores_shadowr.is_empty() {
             &env.params.used_tile_scores_shadowl
         } else {
@@ -1170,12 +1176,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // if a square requiring [B] is encountered while holding a B, the B
             // must go there. if a square requiring [A,B] is encountered earlier,
             // that square must be A, but this is not currently implemented.
-            let low_end = env
-                .params
-                .aggregated_word_multipliers
-                .binary_search(&acc.word_multiplier)
-                .unwrap()
-                * env.strider_len;
             let high_end = low_end + env.strider_len;
             let precomputed_square_multiplier_slice =
                 &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
@@ -1221,6 +1221,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         num_played: u8,
         rack_bits: u64,
         deferred: u128,
+        low_end: usize,
     }
 
     #[inline(always)]
@@ -1232,6 +1233,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             mut num_played,
             mut rack_bits,
             mut deferred,
+            mut low_end,
         } = walk;
         env.params
             .used_tile_scores_shadowr
@@ -1250,7 +1252,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // here idx <= env.rightmost.
             // check if [idx_left, idx) is a thing
             if idx > env.anchor + 1 && num_played > !is_unique as u8 && idx - idx_left >= 2 {
-                shadow_record(env, &acc, num_played, deferred);
+                shadow_record(env, &acc, num_played, deferred, low_end);
             }
             if num_played >= env.params.num_max_played {
                 break;
@@ -1317,7 +1319,16 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 break;
             }
             num_played += 1;
-            acc.word_multiplier *= env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            if word_multiplier != 1 {
+                acc.word_multiplier *= word_multiplier;
+                low_end = env
+                    .params
+                    .aggregated_word_multipliers
+                    .binary_search(&acc.word_multiplier)
+                    .unwrap()
+                    * env.strider_len;
+            }
             idx += 1;
         }
         env.params.used_tile_scores_shadowr.clear(); // use shadowl in shadow_record
@@ -1326,6 +1337,12 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     #[inline(always)]
     fn shadow_play_left(env: &mut Env<'_>, mut acc: Accumulator, mut idx: i8, mut is_unique: bool) {
         let mut deferred = 0u128;
+        let mut low_end = env
+            .params
+            .aggregated_word_multipliers
+            .binary_search(&acc.word_multiplier)
+            .unwrap()
+            * env.strider_len;
         let mut num_played = 0;
         env.params.used_tile_scores_shadowl.clear();
         let mut rack_bits = env.params.rack_bits;
@@ -1343,7 +1360,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // here idx >= env.leftmost - 1.
             // check if [idx + 1, env.anchor + 1) is a thing
             if num_played > !is_unique as u8 && env.anchor - idx >= 2 {
-                shadow_record(env, &acc, num_played, deferred);
+                shadow_record(env, &acc, num_played, deferred, low_end);
             }
             if num_played >= env.params.num_max_played {
                 break;
@@ -1361,6 +1378,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                         num_played,
                         rack_bits,
                         deferred,
+                        low_end,
                     },
                 );
             }
@@ -1426,7 +1444,16 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 break;
             }
             num_played += 1;
-            acc.word_multiplier *= env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            if word_multiplier != 1 {
+                acc.word_multiplier *= word_multiplier;
+                low_end = env
+                    .params
+                    .aggregated_word_multipliers
+                    .binary_search(&acc.word_multiplier)
+                    .unwrap()
+                    * env.strider_len;
+            }
             idx -= 1;
         }
     }
