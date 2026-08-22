@@ -11,7 +11,6 @@ struct TestCase {
 }
 
 static TEST_CASES: &[TestCase] = &[
-    // Empty board, common rack
     TestCase {
         fen: "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
         rack: "AEINRST",
@@ -19,7 +18,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Empty board, rack with blank
     TestCase {
         fen: "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
         rack: "?SATIRE",
@@ -27,7 +25,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // After one move through center
     TestCase {
         fen: "15/15/15/15/15/15/15/4QUIRKY5/15/15/15/15/15/15/15",
         rack: "AEIOULD",
@@ -35,7 +32,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // One word through center, always_include_pass=true (compare with case 10)
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
         rack: "MOOORRT",
@@ -43,7 +39,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Hooks and blanks
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
         rack: "?STLING",
@@ -51,7 +46,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Cross words
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/4I10/4N10/4E10/15/15/15/15",
         rack: "ABCDEFG",
@@ -59,7 +53,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Bingo rack, few tiles on board
     TestCase {
         fen: "15/15/15/15/15/15/7F7/7ALOW4/7N7/15/15/15/15/15/15",
         rack: "RETINAS",
@@ -67,7 +60,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Terrible rack, exchanges should appear
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
         rack: "UUVVIIQ",
@@ -75,7 +67,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Only 2 tiles, limited plays, with always_include_pass=true
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/4I10/4N10/4E10/15/15/15/15",
         rack: "CS",
@@ -83,7 +74,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: true,
         num_exchanges_by_this_player: 0,
     },
-    // Double blank
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
         rack: "??",
@@ -91,7 +81,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Same as case 3 but always_include_pass=false, pass should not appear
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
         rack: "MOOORRT",
@@ -99,7 +88,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Late game (ZONULE position, 73 tiles)
     TestCase {
         fen: "ZONULE1B2APAID/1KY2RHANJA4/GAM4R2HUI2/7G6D/6FECIT3O/6AE1TOWIES/6I7E/1EnGUARD6D/NAOI2W8/6AT7/5PYE7/5L1L7/2COVE1L7/5X1E7/7N7",
         rack: "ST",
@@ -107,7 +95,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Same position, rack with few useful plays, pass not included
     TestCase {
         fen: "ZONULE1B2APAID/1KY2RHANJA4/GAM4R2HUI2/7G6D/6FECIT3O/6AE1TOWIES/6I7E/1EnGUARD6D/NAOI2W8/6AT7/5PYE7/5L1L7/2COVE1L7/5X1E7/7N7",
         rack: "OO",
@@ -115,7 +102,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Same as above but always_include_pass=true, pass should appear
     TestCase {
         fen: "ZONULE1B2APAID/1KY2RHANJA4/GAM4R2HUI2/7G6D/6FECIT3O/6AE1TOWIES/6I7E/1EnGUARD6D/NAOI2W8/6AT7/5PYE7/5L1L7/2COVE1L7/5X1E7/7N7",
         rack: "OO",
@@ -123,7 +109,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: true,
         num_exchanges_by_this_player: 0,
     },
-    // Bag empty (80 tiles on board, bag=6 < 7), no exchanges possible
     TestCase {
         fen: "5MOZ6S/2FIREPOTS4p/2Y2UTA1HWAN1E/DAK8L2C/OWE1BIB4E2I/CADGE6U1PA/I4DOGY2R1aT/L2GLORIA1LOVIE/E1XI1TAED2N1N1/RAI8S1T1/13I1/13E1/13R1/15/15",
         rack: "VUAENRU",
@@ -131,7 +116,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Same position, single tile, no valid plays, pass generated as fallback
     TestCase {
         fen: "5MOZ6S/2FIREPOTS4p/2Y2UTA1HWAN1E/DAK8L2C/OWE1BIB4E2I/CADGE6U1PA/I4DOGY2R1aT/L2GLORIA1LOVIE/E1XI1TAED2N1N1/RAI8S1T1/13I1/13E1/13R1/15/15",
         rack: "V",
@@ -139,7 +123,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: 0,
     },
-    // Multi-group through-play: TENSIONAL spans two separate board tile groups
     TestCase {
         fen: "13V1/13I1/10YEGGS/7PHLOX2U/6GROAN3A/J3OWIE6B/ENNUI2B2A3L/T6UT1N1M1E/E6YO1O1A2/8R1DUI2/7SI1i1D1L/7HI1Z1h1E/1PLECTRA2E1O1A/7WARRIORS/7N4D1E",
         rack: "AEINOST",
@@ -147,7 +130,6 @@ static TEST_CASES: &[TestCase] = &[
         always_include_pass: false,
         num_exchanges_by_this_player: i16::MAX, // skip exchanges (bag likely too small)
     },
-    // Large rack (threat analysis: all unseen tiles), MultiLeaves overflow
     TestCase {
         fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
         rack: "??AAAAAAAAABBCDDDDEEEEEEEEEEEEFFGGGHHIIIIIIIIIJKLLLLMMNNNNNNOOOOOOOOPPQRRRRRRSSSSTTTTTTUVVWWXYYZ",
