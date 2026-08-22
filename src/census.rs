@@ -1,26 +1,13 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-// Reset-board census core: a bounded-multiset lattice with closed-form O(L)
-// ranking (no hashmap, no per-lookup allocation), a play-value sheet, the
-// (max,+) best-equity convolution over that lattice, and no-replacement
-// draw-averaging. All pure; movegen results are fed in as (multiset, score).
-
 pub const UNPLAYABLE: i32 = i32::MIN / 2;
 
-// Stack scratch width for tallies in the hot paths. Alphabets are far smaller.
 const MAX_LETTERS: usize = 64;
 
-/// Every multiset of `num_letters` letters with total size `0..=rack_size`,
-/// indexed to a dense rank and back by a closed-form combinatorial number
-/// system (size-grouped, then lexicographic by ascending per-letter count).
-/// O(L) rank/unrank, no allocation, no stored table of multisets.
 pub struct MultisetLattice {
     num_letters: usize,
     rack_size: usize,
-    // flat Pascal triangle (reused from prob), for the closed-form rank binomials
-    // (a binomial coefficient C(n,k) counts the ways to choose k of n).
     pascal: crate::prob::Pascal,
-    // size_offset[s] = number of multisets of size < s = C(s+L-1, L); len rack_size+2.
     size_offset: Vec<u64>,
 }
 
@@ -28,9 +15,9 @@ impl MultisetLattice {
     pub fn new(num_letters: usize, rack_size: usize) -> Self {
         assert!((1..=MAX_LETTERS).contains(&num_letters));
         let n_max = rack_size + num_letters;
-        // need rows 0..=n_max, i.e. n_max + 1 rows.
+
         let pascal = crate::prob::Pascal::with_rows(n_max + 1);
-        // size_offset[s] = C(s+L-1, L), the count of multisets of size < s.
+
         let mut size_offset = vec![0u64; rack_size + 2];
         for (s, slot) in size_offset.iter_mut().enumerate() {
             *slot = pascal.binom(s + num_letters - 1, num_letters);
@@ -64,16 +51,12 @@ impl MultisetLattice {
     pub fn rack_size(&self) -> usize {
         self.rack_size
     }
-    /// First lattice index of the full (size == rack_size) racks. The full-rack
-    /// block is [full_rack_start(), len()); those are the only entries Step 3's
-    /// draw-average reads, so best_equity_table only fills that block.
+
     #[inline(always)]
     pub fn full_rack_start(&self) -> usize {
         self.size_offset[self.rack_size] as usize
     }
 
-    /// Rank of a multiset given as a per-letter tally (len num_letters). Returns
-    /// !0 if the total size exceeds rack_size (outside the lattice).
     #[inline(always)]
     pub fn rank(&self, tally: &[u8]) -> u32 {
         let l = self.num_letters;
@@ -87,7 +70,6 @@ impl MultisetLattice {
             let ct = ct_raw as usize;
             let parts = l - 1 - t; // letters after position t
             for j in 0..ct {
-                // compositions of (rem - j) into `parts` letters
                 within += self.c((rem - j) + parts - 1, parts - 1);
             }
             rem -= ct;
@@ -95,22 +77,11 @@ impl MultisetLattice {
         (self.size_offset[s] + within) as u32
     }
 
-    /// Like [`rank`], but over only the NON-ZERO letters: `items` is `(letter,
-    /// count)` ascending by letter, every count > 0, and `s` is their total. The
-    /// zero-count letters [`rank`] iterates contribute nothing to `within` and
-    /// leave `rem` unchanged, so skipping them is identical -- but O(items) instead
-    /// of O(num_letters). The blank-spelling recorder ranks one variant per call with
-    /// only about 1 + (distinct played letters) non-zero entries, so this avoids
-    /// re-scanning the whole (mostly empty) alphabet tally every variant.
     #[inline]
     pub fn rank_sparse(&self, s: usize, items: &[(u8, u8)]) -> u32 {
         self.rank_sparse_iter(s, items.iter().copied())
     }
 
-    /// Iterator form of [`rank_sparse`]: ranks the ascending non-zero
-    /// `(letter, count)` entries without requiring them materialized in a slice,
-    /// so the blank-spelling recorder can rank a variant straight from its blank +
-    /// kept-run iterators with no per-leave stack array.
     #[inline]
     pub fn rank_sparse_iter(&self, s: usize, items: impl Iterator<Item = (u8, u8)>) -> u32 {
         if s > self.rack_size {
@@ -121,8 +92,7 @@ impl MultisetLattice {
         let mut rem = s;
         for (letter, ct_raw) in items {
             let t = letter as usize;
-            // the last letter (index l-1) has parts == 0 and contributes nothing;
-            // items are ascending, so it can only be the final entry.
+
             if t >= l - 1 {
                 break;
             }
@@ -136,7 +106,6 @@ impl MultisetLattice {
         (self.size_offset[s] + within) as u32
     }
 
-    /// Rank of a multiset given as sorted tile bytes (e.g. a played word's tiles).
     pub fn rank_bytes(&self, sorted_tiles: &[u8]) -> u32 {
         let mut tally = [0u8; MAX_LETTERS];
         for &t in sorted_tiles {
@@ -149,7 +118,6 @@ impl MultisetLattice {
         self.rank(&tally[..self.num_letters])
     }
 
-    /// Decode `idx` into a per-letter tally written to `out` (len num_letters).
     #[inline(always)]
     pub fn unrank_into(&self, idx: usize, out: &mut [u8]) {
         let l = self.num_letters;
@@ -176,7 +144,6 @@ impl MultisetLattice {
         out[l - 1] = rem as u8;
     }
 
-    /// Owned tally for `idx` (convenience for tests / cold paths).
     pub fn tally(&self, idx: usize) -> Vec<u8> {
         let mut out = vec![0u8; self.num_letters];
         self.unrank_into(idx, &mut out);
@@ -184,9 +151,6 @@ impl MultisetLattice {
     }
 }
 
-/// Naive best_equity(R)=max over P<=R of sheet[P]+leave[R-P]; returns
-/// (equity_millipoints, kept_tiles_sorted) where kept=R-P* (entering target).
-/// Reference implementation that best_equity_table is validated against.
 pub fn naive_best_equity(
     lat: &MultisetLattice,
     sheet: &[i32],
@@ -197,9 +161,7 @@ pub fn naive_best_equity(
     let mut played = vec![0u8; n];
     let mut best = UNPLAYABLE;
     let mut best_kept = vec![0u8; n];
-    // Constant context for the played-tile recursion, so rec carries only the changing
-    // position -- no clippy::too_many_arguments. played/best/best_kept accumulate the
-    // argmax across the whole descent, so they are borrowed for the driver call.
+
     struct Ctx<'a> {
         n: usize,
         lat: &'a MultisetLattice,
@@ -217,8 +179,7 @@ pub fn naive_best_equity(
                 if pr == !0 {
                     return;
                 }
-                // the sheet has the exchange floor baked in (entries are >= 0; an
-                // unreached or negative-scoring P is 0). See best_equity_table.
+
                 let sv = self.sheet[pr as usize];
                 let mut kept = vec![0u8; self.n];
                 for (k, (&rc, &pc)) in kept
@@ -265,29 +226,11 @@ pub fn naive_best_equity(
     (best, kept_tiles)
 }
 
-/// best_equity(R)=max over P<=R of sheet[P]+leave[R-P], for every FULL rack R
-/// (size == rack_size; the only entries Step 3 reads). Fills the full-rack block
-/// of `out` (a lattice-length, lattice-indexed buffer); entries outside that block
-/// are left untouched (never read). The buffer is caller-owned so it is allocated
-/// ONCE and reused across boards, not per call. Alloc-free per rack (stack scratch
-/// and closed-form rank), recursing only over R's nonzero letters. Validated to
-/// match naive_best_equity on the full-rack block. The kept-side split is not
-/// materialized: the entering attribution comes from the draw-average in
-/// leave_value_by_draw, not from a per-rack argmax.
 pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], out: &mut [i32]) {
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
-    // Rank BOTH sides of each split incrementally instead of an O(L) lat.rank per
-    // split. The lattice rank of a multiset is size_offset[size] + within, where
-    // within = sum over letters t (except the implicit last one, t == n-1) of a
-    // binomial run whose argument is the SUFFIX size from t (= size - prefix). So
-    // if R's nonzero letters are added HIGH-to-LOW, each letter's contribution is
-    // known the moment it is added (its suffix size is fixed), and within/size are
-    // carried by value down the recursion -- the base case is O(1) and p[]/k[] need
-    // not be materialized. Constant context, so rec carries only the changing letter
-    // index and carried ranks -- no clippy::too_many_arguments. The kept-side split
-    // is not stored: the entering attribution comes from the draw-average in
-    // leave_value_by_draw.
+    // the nonzero letters are added high-to-low, so each letter's suffix size is
+    // fixed the moment it is added and its rank contribution is known then.
     struct Ctx<'a> {
         nz: &'a [(usize, u8)],
         n: usize,
@@ -316,14 +259,12 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
                 }
                 return;
             }
-            // process R's nonzero letters from highest index (nz is ascending) down.
+
             let (t, cnt) = self.nz[i - 1];
             let parts = self.n - 1 - t;
             for cp in 0..=cnt {
                 let ck = cnt - cp;
-                // within contribution of this letter to each side. rem_t (the rank's
-                // suffix size from t) = (size from higher letters) + (this count). The
-                // last letter (t == n-1) is the rank's implicit remainder: no within.
+
                 let (mut dwp, mut dwk) = (0u64, 0u64);
                 if t + 1 < self.n {
                     let mut a = s_p + cp as usize;
@@ -373,17 +314,6 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
     }
 }
 
-/// Full-rack attribution: credit each full rack R's best_equity(R), weighted
-/// by the probability w(R) of drawing R from the unseen pool, to EVERY subrack
-/// S <= R. Accumulates num[S] += w(R)*best[R] and den[S] += w(R) over the
-/// full-rack block; the caller forms leave(S) = num[S]/den[S]. This is the
-/// standard leave-gen (gilles-style) attribution -- a rack's equity is
-/// apportioned onto all its subracks, including the usually-PLAYED ones --
-/// done exhaustively over every rack the board can draw. Contrast
-/// leave_value_by_draw, which is the entering attribution (credit only the
-/// held-entering leave). num/den are caller-owned and zeroed per board.
-/// Subracks are enumerated with the same high-to-low incremental rank as
-/// best_equity_table (base case is O(1)).
 pub fn apportion_table(
     lat: &MultisetLattice,
     best: &[i32],
@@ -393,9 +323,7 @@ pub fn apportion_table(
 ) {
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
-    // Constant + per-rack context, so rec carries only the changing letter index and
-    // carried subrack rank -- no clippy::too_many_arguments. w/we are the rack's draw
-    // weight and weighted equity; num/den accumulate.
+
     struct Ctx<'a> {
         nz: &'a [(usize, u8)],
         n: usize,
@@ -436,8 +364,7 @@ pub fn apportion_table(
     let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
     for ridx in lo..lat.len() {
         lat.unrank_into(ridx, &mut r[..n]);
-        // weight w(R) = prod_t C(unseen[t], R[t]); 0 if R is not drawable from the
-        // unseen pool (then it contributes nothing, as in the draw-average).
+
         let mut w = 1.0f64;
         let mut m = 0;
         let mut drawable = true;
@@ -470,16 +397,7 @@ pub fn apportion_table(
     }
 }
 
-/// Parent (add-one-tile) index table over the sub-full-rack multisets. For every
-/// lattice index `idx` of size < rack_size and every letter `t`, `add(idx, t)` is
-/// the rank of `multiset(idx)` with one more `t`. [`apportion_fused`] walks each
-/// subrack up from the empty multiset one tile at a time by table lookup, instead
-/// of recomputing the binomial rank-skip (`lat.c(...)`) per rack -- step 3 is about 95%
-/// of a census board, so this is the bigger-pie win. Built once per process and
-/// shared read-only across the board threads. Only sub-full-rack rows are stored
-/// (a subrack never grows past rack_size, so `add` is never called on a full rack):
-/// full_rack_start() * num_letters u32s (about 120 MB english, about 420 MB for a 33-letter
-/// lattice).
+// add(idx, t) is the rank of multiset(idx) with one more t.
 pub struct AddTable {
     num_letters: usize,
     add: Vec<u32>,
@@ -490,19 +408,11 @@ impl AddTable {
         Self::new_with_threads(lat, num_cpus::get())
     }
 
-    /// Same as `new` but caps the parallel build at `num_threads` workers (clamped to
-    /// at least one and at most the row count). `new` uses all cores; main_leave passes
-    /// the WOLGES_THREADS override so a memory- or core-constrained run can dial the
-    /// add-table build down. The result is byte-identical to the serial build
-    /// regardless of the thread count.
     pub fn new_with_threads(lat: &MultisetLattice, num_threads: usize) -> Self {
         let n = lat.num_letters();
         let rows = lat.full_rack_start();
         let mut add = vec![0u32; rows * n];
-        // Each row idx is computed from idx alone (unrank idx + n ranks of idx plus one
-        // tile), so the rows are independent: build them in parallel over disjoint row
-        // ranges. Byte-identical to the serial build; matters most for the big lattices
-        // (the 33-letter add-table is hundreds of MB). Built once per run.
+
         let num_threads = num_threads.max(1).min(rows.max(1));
         let chunk_rows = rows.div_ceil(num_threads);
         std::thread::scope(|s| {
@@ -528,8 +438,6 @@ impl AddTable {
         }
     }
 
-    /// Rank of `multiset(idx)` with one more tile of letter `t`. Caller guarantees
-    /// `idx < full_rack_start()` (size < rack_size) and `t < num_letters`.
     #[inline(always)]
     pub fn add(&self, idx: usize, t: usize) -> usize {
         // SAFETY: add holds full_rack_start()*num_letters u32s; the caller's contract is
@@ -539,15 +447,6 @@ impl AddTable {
     }
 }
 
-/// Subset-max (downward zeta): dst[X] = max over all subracks P <= X of src[P], for
-/// every lattice index X. `src` and `dst` are lattice-length. One pass per letter, idx
-/// low->high so each +1-tile superset add(idx, t) -- a strictly higher index (larger
-/// size) -- reads an idx that has already folded in its own lower-count predecessors;
-/// max is idempotent, so composing the n passes yields the full multiset subset-max.
-/// Source indices are the sub-full-rack block (the only ones `add` accepts); writes
-/// may land on full racks. The mirror of the superset-sum fold in apportion_fused.
-/// Collapses a null-leave best_equity to the sheet subset-max, and precomputes
-/// maxleave(R) = max_{K<=R} leave[K] for the word-scatter path.
 pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], dst: &mut [i32]) {
     let n = lat.num_letters();
     let lo = lat.full_rack_start();
@@ -569,16 +468,6 @@ pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], 
     }
 }
 
-/// Word-scatter step 2 for the full-rack path (gens > 1): materialize best_equity(R)
-/// for every drawable full rack R into `best`, exactly, by exploiting the exchange
-/// floor (every non-word played multiset is worth 0). best(R) = max(maxleave(R), max
-/// over WORD splits P (sheet[P] > 0) of sheet[P] + leave[R - P]). The caller seeds
-/// `best` with maxleave (subset_max_transform of leave); this folds in each word: for
-/// every P with sheet[P] > 0, scatter sheet[P] + leave[K] into best[P + K] for every
-/// drawable complement K (P + K <= unseen, |P| + |K| == rack_size). Visits only word
-/// splits (about half the subracks of a rack are words), trading the per-rack 2^distinct
-/// rec_max descent for word-keyed scattered writes. `best` is lattice-indexed; only
-/// the full-rack block is meaningful afterwards.
 fn scatter_words(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -589,16 +478,7 @@ fn scatter_words(
 ) {
     let n = lat.num_letters();
     let rack_size = lat.rack_size();
-    // Enumerate the drawable complement K of a fixed word P: each letter t taken
-    // 0..=min(unseen[t]-P[t], remaining) times, total == rack_size - |P|. Carry K's
-    // lattice index (from 0) for leave[K] and R = P+K's index (from P) for best[R];
-    // both advance one tile at a time by the add table (source size < rack_size). At a
-    // complete K, scatter sheet[P]+leave[K] (max) into best[R]. avail[] = unseen-P, and
-    // suffix_cap prunes branches that cannot still fill `remaining`.
-    // Constant context for one word P's complement walk, so rec_k carries only the
-    // changing draw position and the two lattice indices -- no
-    // clippy::too_many_arguments. avail/suffix_cap/sp_val are fixed for this word; best
-    // is the shared scatter target, reborrowed per word.
+
     struct Ctx<'a> {
         sp_val: i32,
         n: usize,
@@ -626,9 +506,9 @@ fn scatter_words(
             if t == self.n || (self.suffix_cap[t] as usize) < remaining {
                 return;
             }
-            // c = 0: skip letter t.
+
             self.rec_k(t + 1, remaining, k_idx, r_idx);
-            // c >= 1: take c of letter t into both K and R.
+
             let cap = (self.avail[t] as usize).min(remaining);
             let mut kk = k_idx;
             let mut rr = r_idx;
@@ -642,7 +522,7 @@ fn scatter_words(
     let mut p_tally = [0u8; MAX_LETTERS];
     let mut avail = [0u8; MAX_LETTERS];
     let mut suffix_cap = [0u32; MAX_LETTERS + 1];
-    // Words live only at sizes 1..=rack_size (sheet[empty] is the 0 exchange floor).
+
     for pj in 1..lat.len() {
         // SAFETY: pj is the loop index over 1..lat.len(), so pj < lat.len() = sheet.len().
         let sp_val = unsafe { *sheet.get_unchecked(pj) };
@@ -652,7 +532,7 @@ fn scatter_words(
         lat.unrank_into(pj, &mut p_tally[..n]);
         let psize: usize = p_tally[..n].iter().map(|&c| c as usize).sum();
         let krem = rack_size - psize;
-        // drawable complement budget per letter, and its suffix sums for pruning.
+
         for t in 0..n {
             avail[t] = unseen[t].saturating_sub(p_tally[t]);
         }
@@ -673,9 +553,6 @@ fn scatter_words(
     }
 }
 
-/// The read-only per-board arrays [`apportion_fused`] consumes: the play-value sheet,
-/// the current leave table, and the unseen draw pool. Grouped into one struct so the
-/// function stays under the argument-count lint without an allow.
 #[derive(Clone, Copy)]
 pub struct ApportionBoard<'a> {
     pub sheet: &'a [i32],
@@ -683,17 +560,11 @@ pub struct ApportionBoard<'a> {
     pub unseen: &'a [u8],
 }
 
-/// Output accumulators for [`apportion_fused`]: the per-board num/den arrays the
-/// weighted rack values are summed into, bundled so the signature stays under the
-/// argument-count lint. Both are lat.len()-sized and caller-owned.
 pub struct ApportionOut<'a> {
     pub num: &'a mut [f64],
     pub den: &'a mut [f64],
 }
 
-/// Which best_equity / apportion strategy [`apportion_fused`] takes (see its doc): `zeta`
-/// folds with the superset-sum transform instead of the per-rack push; `null_leave`
-/// takes the gen-1 subset-max; `scatter` the gens > 1 word-scatter.
 #[derive(Clone, Copy)]
 pub struct ApportionMode {
     pub zeta: bool,
@@ -701,10 +572,6 @@ pub struct ApportionMode {
     pub scatter: bool,
 }
 
-/// The opponent-denial strengths (WOLGES_OPPDENIAL_RACK, _EXACT) and their
-/// precomputed per-rack terms (see the `apportion_fused` doc). Both strengths
-/// 0 with empty term slices is the plain w*best seed, byte-identical to no
-/// opponent term.
 #[derive(Clone, Copy)]
 pub struct OppDenialParams<'a> {
     pub oppdenial_rack: f64,
@@ -713,69 +580,6 @@ pub struct OppDenialParams<'a> {
     pub oppdenial_exact_term: &'a [f64],
 }
 
-/// Fused step 2 + step 3 for the full-rack path: for each full rack R, compute
-/// best_equity(R) inline (max over splits) and account its weighted
-/// contribution w(R)*best(R) to every subrack S <= R -- ONE lattice pass, no
-/// materialized best[] array. Equivalent to best_equity_table followed by
-/// apportion_table (proven by apportion_fused_matches_split). The entering
-/// path can NOT fuse this way: its draw-average pulls best[S+d] at random
-/// across racks, so it needs best[] fully materialized. num/den caller-owned,
-/// zeroed per board.
-///
-/// Two ways to apportion each rack's contribution to its subracks, selected by
-/// `zeta`:
-///   * `zeta == false` -- PUSH: each drawable rack walks its own subrack
-///     lattice and adds (w, w*best) to each. Cost scales with the number of
-///     drawable racks times subracks-per-rack, so it is cheap when few racks
-///     are drawable (small pool).
-///   * `zeta == true` -- ZETA (superset-sum) transform: seed num[R]=w*best,
-///     den[R]=w on the full-rack block, then fold each rack into all its
-///     subracks with one pass per letter (a single +1-tile suffix-sum via the
-///     add table, indices high->low so each +1-tile superset is finalized
-///     first; composing over letters yields num[S]=sum_{full R>=S} w*best,
-///     den[S]=sum w). Cost is the FIXED O(full_rack_start * num_letters)
-///     regardless of pool -- a big win on full pools (about 10x fewer subrack
-///     touches than the push) but wasteful on tiny pools (where the push
-///     visits only a handful of racks). The caller picks `zeta` by pool size.
-///
-/// `null_leave` flags the gen-1 bootstrap where every leave is 0 (a null klv).
-/// Then best_equity(R) = max over splits of sheet[P] + leave[R-P] collapses to
-/// the pure SUBSET-MAX max_{P <= R} sheet[P], which one downward (subset-max)
-/// scan over `maxsheet` computes for every rack in a single shared
-/// O(full_rack_start * num_letters) pass -- replacing the per-rack `rec_max`
-/// descent (the dominant big-pool cost) with an array read at each drawable
-/// rack. `maxsheet` is a caller-owned lattice-length scratch, written only on
-/// this path. The scan is the same fixed cost as the apportionment zeta, so it
-/// pays off on the same big pools; it is taken only when `null_leave && zeta`
-/// (small pools keep the cheaper per-rack rec_max).
-///
-/// `scatter` requests the gens > 1 (leave != 0) analog: best_equity uses the
-/// same precomputed-into-`maxsheet` read, but `maxsheet` is built by
-/// `scatter_words` (the leave subset-max seed plus a word-keyed scatter)
-/// instead of the per-rack rec_max. Also `zeta`-gated, and exact; an opt-in
-/// alternative to rec_max for big pools.
-///
-/// `oppdenial_rack` (strength, 0 = off) adds the opponent-denial term: the
-/// opponent draws their rack from U - R (the holder's FULL rack R), so holding
-/// R denies them R's tiles. Linearized in R through `marginal` (the per-letter
-/// opponent-denial marginals from opp_denial_marginals, len num_letters), the
-/// opponent's expected best play drops by sum_t R[t]*marginal[t]; folding
-/// -opp_value(U-R) into R's seed (the uniform opp_value(U) constant drops out
-/// under centering) and apportioning it to subracks gives
-/// leave(S) += oppdenial_rack * sum_t marginal[t] * E_{R>=S}[R[t]] -- denial
-/// weighted by the EXPECTED full-rack count (played tiles included), the sound
-/// joint placement rather than a linear-in-S term. When oppdenial_rack == 0
-/// the seed is exactly w*best (unchanged when off), so the num/den are
-/// byte-identical (and `marginal` is not read -- pass &[]).
-///
-/// `oppdenial_exact` is the exact-model strength (a different, joint model):
-/// the seed gets an extra -oppdenial_exact * oppdenial_exact_term[R], where
-/// oppdenial_exact_term[R] = opp_value(U-R) - my_next_value(K*, U-R) is
-/// precomputed per full rack R by opp_me2_per_rack (the full-rack opponent
-/// value minus my own next-turn value on the same depleted pool, no per-tile
-/// term). When oppdenial_exact == 0 the seed is unchanged and
-/// `oppdenial_exact_term` is not read (pass &[]). oppdenial_rack and
-/// oppdenial_exact are independent models; set one at a time.
 pub fn apportion_fused(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -802,14 +606,7 @@ pub fn apportion_fused(
         oppdenial_exact_term,
     } = *opp_denial;
     let n = lat.num_letters();
-    // best_equity(R) is precomputed into `maxsheet` for every rack on two paths, both
-    // replacing the per-rack rec_max descent with an array read at each drawable rack;
-    // each rides the big-pool `zeta` gate (the per-rack rec_max is cheaper on small
-    // pools, where few racks are drawable):
-    //   * subset_max -- gen-1 null leave: best(R) = max_{P<=R} sheet[P], a single
-    //     subset-max of the sheet.
-    //   * scatter -- gens > 1: best(R) = max(maxleave(R), over word splits), seeded by
-    //     the subset-max of the leave and folded by scatter_words.
+
     let subset_max = null_leave && zeta;
     let scatter_active = scatter && !null_leave && zeta;
     if subset_max {
@@ -819,12 +616,9 @@ pub fn apportion_fused(
         scatter_words(lat, add, sheet, leave, unseen, maxsheet);
     }
     let best_from_maxsheet = subset_max || scatter_active;
-    // Constant context for the per-rack recursions and the drawable-rack enumeration;
-    // best/w vary per rack and are passed as arguments -- no clippy::too_many_arguments.
-    // nz is the incrementally-built rack buffer; num/den accumulate across racks.
+
     let rack_size = lat.rack_size();
-    // suffix_cap[t] = total unseen tiles (capped at rack_size) from letter t onward;
-    // prunes enum_drawable branches that can no longer fill a full rack.
+
     let mut suffix_cap = [0u32; MAX_LETTERS + 1];
     for t in (0..n).rev() {
         suffix_cap[t] = suffix_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
@@ -848,9 +642,6 @@ pub fn apportion_fused(
         nz: &'a mut [(usize, u8)],
     }
     impl Ctx<'_> {
-        // max over splits -> best_equity(R): build the played P and kept K subracks up
-        // from the empty multiset by add-table lookup (one lookup per tile) instead of
-        // the binomial rank-skip.
         fn rec_max(&self, i: usize, p_idx: usize, k_idx: usize, best: &mut i32) {
             if i == 0 {
                 // SAFETY: p_idx and k_idx are the ranks of the played P and kept K subracks
@@ -864,7 +655,7 @@ pub fn apportion_fused(
                 return;
             }
             let (t, cnt) = self.nz[i - 1];
-            // split cnt tiles of letter t into cp played (-> P) and cnt - cp kept (-> K).
+
             let mut pk = p_idx;
             for cp in 0..=cnt {
                 let mut kk = k_idx;
@@ -877,8 +668,7 @@ pub fn apportion_fused(
                 }
             }
         }
-        // apportion (w, we) to every subrack: build S up from the empty multiset by
-        // add-table lookup.
+
         fn apportion_rec(&mut self, i: usize, s_idx: usize, w: f64, we: f64) {
             if i == 0 {
                 // SAFETY: s_idx is the rank of a subrack S of a full rack, built up from 0 via
@@ -898,22 +688,9 @@ pub fn apportion_fused(
                 }
             }
         }
-        // Enumerate ONLY the full racks drawable from `unseen` (each letter t taken
-        // 0..=min(unseen[t], remaining) times, total == rack_size), building the nz list
-        // and draw-ways weight w(R) = prod_t C(unseen[t], R[t]) incrementally with f64
-        // binomials -- no per-rack n_choose_k and no multiplying out a weight only to
-        // find a later factor is zero. Impossible racks are never visited: a big win on
-        // small-pool boards (most of lat.len() is undrawable there), and elsewhere it
-        // trades the unrank for an incremental build. suffix_cap prunes branches that
-        // cannot still reach a full rack. `idx` is the lattice rank of the partial rack
-        // chosen so far, advanced one tile at a time by the add table; at a complete
-        // rack it is the full-rack index, so the zeta path seeds num/den there directly
-        // (no subrack walk) while the push path apportions from the empty multiset.
+
         fn enum_drawable(&mut self, t: usize, remaining: usize, w: f64, idx: usize, m: usize) {
             if remaining == 0 {
-                // best_equity(R): precomputed at R's full-rack index in `maxsheet` on the
-                // subset-max (gen-1) and word-scatter (gens > 1) paths, else the per-rack
-                // max-over-splits descent.
                 let best = if self.best_from_maxsheet {
                     // SAFETY: idx is the full-rack lattice index built up from 0 via the add
                     // table, so < lat.len(); maxsheet is lat.len()-sized (filled above).
@@ -923,11 +700,7 @@ pub fn apportion_fused(
                     self.rec_max(m, 0, 0, &mut b);
                     b
                 };
-                // opponent-denial: fold +oppdenial_rack*sum_t R[t]*marginal[t]
-                // (the opponent-denial of holding the FULL rack R) into the
-                // seed before apportioning. R's nonzero letters are nz[..m].
-                // Skipped (and `marginal` untouched) when oppdenial_rack == 0,
-                // keeping the seed exactly w*best.
+
                 let mut best_f = best as f64;
                 if self.oppdenial_rack != 0.0 {
                     let mut opp = 0.0f64;
@@ -941,11 +714,7 @@ pub fn apportion_fused(
                     }
                     best_f += self.oppdenial_rack * opp;
                 }
-                // exact model: subtract oppdenial_exact * (opp_value(U-R) -
-                // my_next_value(K*, U-R)), the joint opponent-minus-me
-                // coming-turns term precomputed per full rack R (at this
-                // full-rack index `idx`) in `oppdenial_exact_term`. Untouched
-                // when oppdenial_exact == 0.
+
                 if self.oppdenial_exact != 0.0 {
                     // SAFETY: idx is the full-rack lattice index (<
                     // lat.len()); reached only when oppdenial_exact != 0.0,
@@ -971,10 +740,9 @@ pub fn apportion_fused(
             if t == self.n || (self.suffix_cap[t] as usize) < remaining {
                 return;
             }
-            // c = 0: skip letter t (idx unchanged).
+
             self.enum_drawable(t + 1, remaining, w, idx, m);
-            // c >= 1: take c of letter t; C(nt, c) built incrementally from C(nt, c-1)
-            // and idx advanced one t at a time (source size < rack_size, so add is valid).
+
             let nt = self.unseen[t] as usize;
             let cap = nt.min(remaining);
             let mut binom = 1.0f64;
@@ -986,14 +754,7 @@ pub fn apportion_fused(
                 self.enum_drawable(t + 1, remaining - c, w * binom, idx_c, m + 1);
             }
         }
-        // Superset-sum (zeta) transform: fold every full rack's seeded (num, den) into
-        // all of its subracks. One pass per letter t turns the arrays into the suffix-sum
-        // along t's count (a single +1-tile step via the add table); iterating idx
-        // high->low means the +1-tile superset add(idx, t) -- a strictly higher index
-        // (larger size) -- is already finalized for the letters done so far, so composing
-        // the n passes gives the full multiset superset-sum. Only sub-full-rack indices
-        // are written; the full-rack seeds are the maximal elements and stay as
-        // w*best / w (== best for a full-rack "leave").
+
         fn fold_zeta(&mut self, lo: usize) {
             for t in 0..self.n {
                 for idx in (0..lo).rev() {
@@ -1036,30 +797,6 @@ pub fn apportion_fused(
     }
 }
 
-/// Opponent tile-denial marginals -- the sub-1-ply opponent term. A marginal
-/// here is how much the opponent's expected best play drops when one copy of a
-/// tile leaves the unseen pool. The 1-ply leave fixed point already sums the
-/// holder's own future plies but ignores the opponent; holding a kept subrack
-/// S sequesters S's tiles from the opponent's draw pool, lowering the
-/// opponent's expected best play by approximately sum_t S[t]*marginal[t]. This
-/// is a pool externality on the SAME board (no second board, no reply to an
-/// actual play), so the caller folds it into the static leave table: leave(S)
-/// += strength * sum_t S[t]*marginal[t], for every subrack S (the leave-table
-/// index; a kept leave K = R - P is one such S).
-///
-/// opp_value(pool) = E_{full rack R drawn from pool}[best_equity(R)].
-/// best_equity is pool-INDEPENDENT (max over splits of sheet + leave), so
-/// removing one tile of letter t from pool U reweights each drawable rack R
-/// only by (U[t] - R[t]) / U[t]. Hence
-///   num_t := sum_R w(R) best(R) (U[t]-R[t])/U[t] = num_u - swb[t]/U[t],
-///   den_t := sum_R w(R) (U[t]-R[t])/U[t]         = den_u - tw[t]/U[t],
-/// with num_u = sum_R w*best, den_u = sum_R w, swb[t] = sum_R w*best*R[t],
-/// tw[t] = sum_R w*R[t]. One enumeration over the drawable full racks
-/// accumulates num_u, den_u and (touching only each rack's nonzero letters)
-/// swb[t], tw[t]; then marginal[t] = num_u/den_u - num_t/den_t =
-/// opp_value(U) - opp_value(U - one t) (>= 0, modulo rare negative best).
-/// `best` holds best_equity over the full-rack block (fill with
-/// best_equity_table first); `marginal` is caller-owned, len num_letters.
 pub fn opp_denial_marginals(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -1077,10 +814,7 @@ pub fn opp_denial_marginals(
     let mut den_u = 0f64;
     let mut swb = [0f64; MAX_LETTERS]; // swb[t] = sum_R w*best*R[t]
     let mut tw = [0f64; MAX_LETTERS]; // tw[t] = sum_R w*R[t]
-    // Constant context for the drawable-rack enumeration, so rec carries only the
-    // changing draw position, weight, index, and rack length -- no
-    // clippy::too_many_arguments. num_u/den_u/swb/tw accumulate over every rack; nz is
-    // the shared nonzero-letter scratch.
+
     struct Ctx<'a> {
         n: usize,
         unseen: &'a [u8],
@@ -1167,10 +901,6 @@ struct DrawCtx<'a> {
     best: &'a [i32],
 }
 impl DrawCtx<'_> {
-    // Starting from the partial rack `ridx` (size rack_size - remaining) with draw-weight
-    // `w`, draw `remaining` more tiles from the fixed pool and accumulate num/den over the
-    // resulting full racks. The constant context (pool, caps, tables) lives in self, so
-    // the walk carries only its changing state -- no clippy::too_many_arguments.
     fn aggregate(
         &self,
         t: usize,
@@ -1205,17 +935,6 @@ impl DrawCtx<'_> {
     }
 }
 
-/// Joint opponent value per depleting rack -- the exact-model opponent term.
-/// For every drawable full rack R (the holder's full drawn rack), out[rank(R)]
-/// = opp_value(U-R) = E_{R' drawn from U-R}[best_equity(R')] = the opponent's
-/// expected best play after R is removed from the pool. best holds best_equity
-/// (= sheet[p]+leave[k]) over the full-rack block. This is EXACT and JOINT:
-/// the opponent draws a full rack from the jointly-depleted pool, with no
-/// per-tile linearization (leaves are non-additive, so any sum_t
-/// marginal[t]*R[t] is only an approximation, not the exact joint value). Cost
-/// is about (drawable racks)^2 -- an inner draw-aggregate per outer R -- so
-/// the caller gates it to small pools. out is caller-owned, len lat.len(),
-/// written only on drawable full-rack indices.
 pub fn opp_value_per_rack(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -1225,11 +944,7 @@ pub fn opp_value_per_rack(
 ) {
     let n = lat.num_letters();
     let rack_size = lat.rack_size();
-    // The depleting outer walk and the inner aggregate (module-level DrawCtx::aggregate)
-    // share a constant context, so outer carries only its changing state -- no
-    // clippy::too_many_arguments. Enumerate the depleting rack R from `unseen`, carrying
-    // its index r_idx and a mutable pool = unseen - (R so far); at a complete R the pool
-    // is U-R, so run the inner aggregate and store opp_value(U-R) = num/den.
+
     struct Ctx<'a> {
         n: usize,
         unseen: &'a [u8],
@@ -1262,7 +977,7 @@ pub fn opp_value_per_rack(
             if t == self.n || (self.outer_cap[t] as usize) < remaining {
                 return;
             }
-            // c = 0: skip letter t.
+
             self.outer(t + 1, remaining, r_idx);
             let nt = self.unseen[t] as usize;
             let cap = nt.min(remaining);
@@ -1294,13 +1009,6 @@ pub fn opp_value_per_rack(
     .outer(0, rack_size, 0);
 }
 
-/// Like best_equity_table, but also records the argmax kept subrack K* = R - P* for
-/// every full rack R: out_kept_idx[rank(R)] = rank(K*), out_kept_size[rank(R)] = |K*|.
-/// Used by the exact model's recovery (me2) term, which refills K* from the depleted pool. Ties
-/// resolve to the first split reaching the max (same high-to-low enumeration order as
-/// best_equity_table, so out_best is identical to that function's output). The kept
-/// side's lattice index falls straight out of the incremental rank already tracked for
-/// the split (size_offset[s_k] + within_k); the kept size is s_k.
 pub fn best_equity_argmax_table(
     lat: &MultisetLattice,
     sheet: &[i32],
@@ -1311,9 +1019,7 @@ pub fn best_equity_argmax_table(
 ) {
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
-    // Constant context for the incremental-rank split walk, so rec carries only the
-    // changing per-side size/offset -- no clippy::too_many_arguments. best/best_kr/best_ks
-    // are this rack's argmax (value, kept index, kept size), borrowed for one descent.
+
     struct Ctx<'a> {
         nz: &'a [(usize, u8)],
         n: usize,
@@ -1399,33 +1105,12 @@ pub fn best_equity_argmax_table(
     }
 }
 
-/// The per-rack kept-subrack argmax from best_equity_argmax_table, paired so
-/// opp_me2_per_rack stays under clippy's argument-count limit: idx[rank(R)] = rank(K*),
-/// size[rank(R)] = |K*|.
 #[derive(Clone, Copy)]
 pub struct KeptArgmax<'a> {
     pub idx: &'a [u32],
     pub size: &'a [u8],
 }
 
-/// Exact model (opponent value minus my next-turn recovery) per depleting
-/// rack. For every drawable full rack R, with kept argmax K* = K*(R) from
-/// best_equity_argmax_table, writes
-///   out_diff[rank(R)] = opp_value(U-R) - my_next_value(K*, U-R)
-/// where opp_value(U-R) = E_{R' from U-R}[best_equity(R')] is the opponent's
-/// expected best play on a fresh rack drawn from the R-depleted pool, and
-/// my_next_value(K*, U-R) = E_{fill from U-R}[best_equity(K* + fill)] is my
-/// own next turn keeping K* and refilling from the SAME depleted pool. Both
-/// expectations are EXACT and JOINT (full-rack draws, no per-tile
-/// linearization -- the lesson behind dropping the per-tile denial/exact
-/// terms). The caller folds best_equity(R) - strength*out_diff[R] into R's
-/// apportion seed and iterates. opp_value(U-R) and my_next_value share the
-/// same U-R pool, so the suffix cap and the depleting outer walk are computed
-/// once per R and the two draw-aggregates run back to back. Cost is the
-/// depleting walk over R times two inner aggregates -- O(drawable^2)-ish -- so
-/// the caller gates it to small pools. `best` holds best_equity over the
-/// full-rack block; out_diff is caller-owned, len lat.len(), written only on
-/// drawable full-rack indices.
 pub fn opp_me2_per_rack(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -1435,16 +1120,13 @@ pub fn opp_me2_per_rack(
     me2_scale: f64,
     out_diff: &mut [f64],
 ) {
-    // Unpack the kept-argmax pair into the locals the body uses (signature-only change).
     let KeptArgmax {
         idx: kept_idx,
         size: kept_size,
     } = *kept;
     let n = lat.num_letters();
     let rack_size = lat.rack_size();
-    // The depleting outer walk and its two inner aggregates (module-level
-    // DrawCtx::aggregate) share a constant context, so outer carries only its changing
-    // state -- no clippy::too_many_arguments.
+
     struct Ctx<'a> {
         n: usize,
         unseen: &'a [u8],
@@ -1461,7 +1143,6 @@ pub fn opp_me2_per_rack(
     impl Ctx<'_> {
         fn outer(&mut self, t: usize, remaining: usize, r_idx: usize) {
             if remaining == 0 {
-                // pool is now U-R; both expectations draw from it.
                 let mut suffix = [0u32; MAX_LETTERS + 1];
                 for tt in (0..self.n).rev() {
                     suffix[tt] = suffix[tt + 1] + (self.pool[tt] as u32).min(self.rack_size as u32);
@@ -1473,11 +1154,11 @@ pub fn opp_me2_per_rack(
                     add: self.add,
                     best: self.best,
                 };
-                // opp1 = opp_value(U-R): opponent draws a fresh full rack.
+
                 let (mut on, mut od) = (0.0f64, 0.0f64);
                 draw.aggregate(0, self.rack_size, 1.0, 0, &mut on, &mut od);
                 let opp1 = if od > 0.0 { on / od } else { 0.0 };
-                // me2 = my_next_value(K*, U-R): keep K*, refill the rest from the same pool.
+
                 let ks = self.kept_size[r_idx] as usize;
                 let (mut mn, mut md) = (0.0f64, 0.0f64);
                 draw.aggregate(
@@ -1495,7 +1176,7 @@ pub fn opp_me2_per_rack(
             if t == self.n || (self.outer_cap[t] as usize) < remaining {
                 return;
             }
-            // c = 0: skip letter t.
+
             self.outer(t + 1, remaining, r_idx);
             let nt = self.unseen[t] as usize;
             let cap = nt.min(remaining);
@@ -1530,20 +1211,6 @@ pub fn opp_me2_per_rack(
     .outer(0, rack_size, 0);
 }
 
-/// Push form of `leave_value_by_draw` for the whole leave table at once. For
-/// every full rack R and every split R = S (kept) + P (played), credit best[R]
-/// to leave S weighted by the ways to draw the played part P from the unseen
-/// pool with S removed, w = prod_t C(unseen[t]-S[t], P[t]); then leave(S) =
-/// num[S]/den[S]. This is identical to `leave_value_by_draw(S)` for each S --
-/// both are exact i128 sums and i128 addition is order-free -- but computed by
-/// pushing from each R in one lattice walk instead of pulling a draw recursion
-/// per leave: the entering analog of `apportion_fused`, about 20x faster than
-/// the per-leave pull. The cost is memory: num/den are i128 (kept exact to
-/// match the pull), so the caller's two lat_len arrays are 16 bytes/leave
-/// each; reduce WOLGES_THREADS if the per-thread total is too large. A split
-/// whose kept part S needs more of a letter than the unseen pool holds is
-/// dropped per-split (its C is 0), matching the pull and the -generate
-/// decompose.
 pub fn entering_fused(
     lat: &MultisetLattice,
     best: &[i32],
@@ -1553,11 +1220,7 @@ pub fn entering_fused(
 ) {
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
-    // apportion best[R] to every subrack S, weighting by the draw-ways of the played part
-    // P = R - S (carried incrementally as prod_t C(unseen[t], P[t])). Same incremental
-    // subrack rank as apportion_fused's apportion_rec; only the weight differs. Constant
-    // + per-rack context, so rec carries only the changing state -- no
-    // clippy::too_many_arguments. nz and num/den are borrowed per rack.
+
     struct Ctx<'a> {
         n: usize,
         lat: &'a MultisetLattice,
@@ -1582,9 +1245,6 @@ pub fn entering_fused(
             let (t, cnt) = self.nz[i - 1];
             let parts = self.n - 1 - t;
             for cs in 0..=cnt {
-                // cs tiles of letter t are KEPT in S; the played cnt-cs are drawn from
-                // the pool with the kept tiles removed (unseen[t] - cs). cs > unseen[t]
-                // means S is not drawable here, so it contributes nothing.
                 if cs > self.unseen[t] {
                     continue;
                 }
@@ -1610,10 +1270,7 @@ pub fn entering_fused(
         // SAFETY: ridx ranges over lo..lat.len() (lo = full_rack_start()), so ridx <
         // lat.len(); best is the lat.len() best_equity buffer.
         let b = unsafe { *best.get_unchecked(ridx) };
-        // Skip racks left UNPLAYABLE. best_equity always has the exchange floor so
-        // it never produces UNPLAYABLE -- a no-op for the normal path -- but the
-        // global-apportion drawable-only mode marks never-sampled racks UNPLAYABLE
-        // to exclude them from the apportionment.
+
         if b == UNPLAYABLE {
             continue;
         }
@@ -1637,23 +1294,6 @@ pub fn entering_fused(
     }
 }
 
-/// Leave-level confidence-interval (CI) accumulation for the fixed-width,
-/// confidence-interval-driven sampling diagnostic. A CI here is a range that
-/// shows sampling precision, not bias.
-/// (WOLGES_CENSUS_CI_REPORT=leave). For every full rack R with per-rack across-board
-/// variance varr[R] = (standard deviation squared) / n(R) -- variance = how far
-/// the per-board values scatter from their average, standard deviation is its
-/// square root -- and every subrack S <= R, apportion with the
-/// EXACT draw-ways completion weight cw = prod_t C(unseen[t]-S[t], R[t]-S[t]) -- the
-/// SAME weight the `-generate` decompose uses to form leave(S) from the full racks
-/// (the kept tiles S are removed from the draw pool). Accumulate den[S] += cw and
-/// w2v[S] += cw^2 * varr[R]. The caller forms leave_var[S] = w2v[S]/den[S]^2 (the
-/// variance of the draw-ways-weighted leave mean, treating distinct racks as
-/// independent) and leave_CI = z*sqrt(leave_var), where z is the confidence
-/// multiplier (about 2 for a 95% band). f64, not i128: this is a
-/// diagnostic, no exact-sum requirement. The incremental subrack walk mirrors
-/// entering_fused; only the weight (pool excludes the kept tiles) and the squared
-/// accumulation differ.
 pub fn entering_leave_ci_fused(
     lat: &MultisetLattice,
     varr: &[f64],
@@ -1663,9 +1303,7 @@ pub fn entering_leave_ci_fused(
 ) {
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
-    // Constant context for the subrack CI walk (den/w2v span every rack) -- no
-    // clippy::too_many_arguments; only the changing subrack offset, weight, and the
-    // current rack's variance are threaded.
+
     struct Ctx<'a> {
         n: usize,
         lat: &'a MultisetLattice,
@@ -1696,10 +1334,6 @@ pub fn entering_leave_ci_fused(
             let (t, cnt) = nz[i - 1];
             let parts = self.n - 1 - t;
             for cs in 0..=cnt {
-                // cs tiles of letter t are KEPT in S; the played cnt-cs are drawn from the
-                // pool with the kept tiles removed (unseen[t] - cs) -- the draw-ways
-                // completion weight, identical to the -generate decompose. cs > unseen[t]
-                // means S is not drawable here, so it contributes nothing.
                 if cs > self.unseen[t] {
                     continue;
                 }
@@ -1732,7 +1366,7 @@ pub fn entering_leave_ci_fused(
         // SAFETY: ridx ranges over lo..lat.len() (lo = full_rack_start()), so ridx <
         // lat.len(); varr is the lat.len() per-rack variance buffer.
         let v = unsafe { *varr.get_unchecked(ridx) };
-        // negative varr is the caller's "never valued -- exclude" sentinel.
+
         if v < 0.0 {
             continue;
         }
@@ -1748,18 +1382,6 @@ pub fn entering_leave_ci_fused(
     }
 }
 
-/// In-process equivalent of the `-generate` draw-ways decompose, on the lattice.
-/// For every valued full rack R (best[R] != UNPLAYABLE) holding the per-rack value
-/// v(R) = best[R], and every subrack S <= R, weight by the draw-ways completion
-/// weight cw = prod_t C(unseen[t] - S[t], R[t] - S[t]) -- the SAME weight
-/// `completion_draw_ways` / generate_leaves use (the kept tiles S leave the draw
-/// pool) -- and accumulate num[S] += cw * v(R), den[S] += cw. The caller forms
-/// leave(S) = num[S]/den[S]: per-rack (each rack contributes its mean
-/// once), the WOLGES_GENERATE_PER_RACK=true default. f64 to mirror generate_leaves;
-/// the num/den ratio stays millipoint-accurate even though num grows large. The
-/// incremental subrack walk mirrors entering_leave_ci_fused; only the accumulation
-/// (value, not variance) differs. Pass unseen = the global bag (base_freqs) for the
-/// standard decompose, matching the external `-generate` on the rack-summary CSV.
 pub fn generate_fused(
     lat: &MultisetLattice,
     best: &[i32],
@@ -1767,9 +1389,6 @@ pub fn generate_fused(
     num: &mut [f64],
     den: &mut [f64],
 ) {
-    // Constant context for the recursive subrack walk, so rec carries only the
-    // changing state -- no clippy::too_many_arguments. num/den accumulate across
-    // every rack, so they are borrowed for the whole driver loop.
     struct Ctx<'a> {
         lat: &'a MultisetLattice,
         unseen: &'a [u8],
@@ -1802,10 +1421,6 @@ pub fn generate_fused(
             let (t, cnt) = nz[i - 1];
             let parts = self.n - 1 - t;
             for cs in 0..=cnt {
-                // cs tiles of letter t are KEPT in S; the played cnt-cs are drawn from
-                // the pool with the kept tiles removed (unseen[t] - cs) -- the draw-ways
-                // completion weight, identical to the -generate decompose. cs > unseen[t]
-                // means S is not drawable here, so it contributes nothing.
                 if cs > self.unseen[t] {
                     continue;
                 }
@@ -1836,13 +1451,8 @@ pub fn generate_fused(
     };
     let lo = lat.full_rack_start();
     let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
-    // iterate by reference (best.len() == lat.len()) so the per-rack read needs no
-    // bounds-check-eliding unsafe and no needless-range-loop allow; the only hot
-    // unsafe is the inner accumulation above.
+
     for (ridx, &b) in best.iter().enumerate().skip(lo) {
-        // skip racks left UNPLAYABLE (never valued -- e.g. impossible racks excluded
-        // when IMPOSSIBLE_OK is off); a valid leave value may be negative, so test
-        // the sentinel, not the sign.
         if b == UNPLAYABLE {
             continue;
         }
@@ -1858,12 +1468,6 @@ pub fn generate_fused(
     }
 }
 
-/// For the global-apportion drawable-only path: copy best[R] into out[R] for
-/// every full rack R drawable from `unseen` (each letter t taken
-/// 0..=min(unseen[t], remaining), total == rack_size), leaving non-drawable racks
-/// at their prior value (the caller pre-fills UNPLAYABLE). The rack's lattice index
-/// is carried incrementally by the add table -- the same enumeration as
-/// apportion_fused, without the weight or the apportionment.
 pub fn mark_drawable_best(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -1877,8 +1481,7 @@ pub fn mark_drawable_best(
     for t in (0..n).rev() {
         suffix_cap[t] = suffix_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
     }
-    // Constant context for the drawable-rack copy (called once) -- no
-    // clippy::too_many_arguments; rec carries only the changing draw position and index.
+
     struct Ctx<'a> {
         n: usize,
         unseen: &'a [u8],
@@ -1901,9 +1504,9 @@ pub fn mark_drawable_best(
             if t == self.n || (self.suffix_cap[t] as usize) < remaining {
                 return;
             }
-            // c = 0: skip letter t.
+
             self.rec(t + 1, remaining, idx);
-            // c >= 1: take c of letter t, advancing the lattice index one t at a time.
+
             let cap = (self.unseen[t] as usize).min(remaining);
             let mut idx_c = idx;
             for c in 1..=cap {
@@ -1923,11 +1526,6 @@ pub fn mark_drawable_best(
     .rec(0, rack_size, 0);
 }
 
-/// leave_new(S)=sum_d ways(d)*best[S+d]/sum_d ways(d), where the completion d is
-/// drawn from the unseen pool with the kept S removed, |d|=rack_size-|S| and
-/// ways(d)=prod_t C(unseen[t]-S[t], d[t]). UNPLAYABLE if S is itself undrawable
-/// (more of some letter than the unseen pool holds) or has no feasible completion.
-/// Returns millipoints. Alloc-free (stack scratch).
 pub fn leave_value_by_draw(
     lat: &MultisetLattice,
     best: &[i32],
@@ -1935,9 +1533,7 @@ pub fn leave_value_by_draw(
     s_tally: &[u8],
 ) -> i32 {
     let n = lat.num_letters();
-    // The kept S is itself drawn from the unseen pool, so the completion draws from
-    // unseen - S; if S holds more of any letter than the pool has, S is undrawable
-    // and the leave is UNPLAYABLE.
+
     for t in 0..n {
         if s_tally[t] > unseen[t] {
             return UNPLAYABLE;
@@ -1949,9 +1545,7 @@ pub fn leave_value_by_draw(
     let mut den: i128 = 0;
     let mut d = [0u8; MAX_LETTERS];
     let mut r = [0u8; MAX_LETTERS];
-    // Constant context for the draw enumeration (called once) -- no
-    // clippy::too_many_arguments; rec carries only the changing draw position and
-    // remaining count. d/r are the drawn-tile and full-rack scratch; num/den accumulate.
+
     struct Ctx<'a> {
         n: usize,
         lat: &'a MultisetLattice,
@@ -2016,25 +1610,6 @@ pub fn leave_value_by_draw(
     }
 }
 
-/// Inference-time dynamic value of the kept subrack whose lattice index is
-/// `s_ridx` (size |S|): the expected static full-rack value v(S + draw), where the
-/// `draw` completion tiles are drawn without replacement from `pool`. `full_v`
-/// holds the static leave value of every full multiset over the lattice (fill it
-/// via a full-length klv; see the fill loop in main_leave). Returns millipoints,
-/// or UNPLAYABLE when no completion is drawable (the pool is too small for `draw`,
-/// so den == 0). `add` is the lattice add-table.
-///
-/// This is the per-move pull used to reweight a rack's static leaves by the tiles
-/// that are actually still live: the more of the completion the current pool
-/// favors, the more its value flows into the kept subrack, so the same kept tiles
-/// score differently early (fat bag) than late (thin bag).
-///
-/// R3 (the subtlety): `pool` is the LIVE pool = bag + opponent, already EXCLUDING
-/// the mover's own rack, so the completion draws from it directly. DrawCtx draws
-/// pool-direct with no kept-tile subtraction -- which is exactly
-/// leave_value_by_draw(lat, full_v, pool + S, S), whose built-in
-/// C(unseen - S, d) = C(pool, d) subtraction cancels the S added back into unseen.
-/// Passing `pool` unadjusted to leave_value_by_draw, or pool + full_rack, is wrong.
 pub fn dynamic_leave_value(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -2065,12 +1640,6 @@ pub fn dynamic_leave_value(
     }
 }
 
-/// Fill `out[idx]` with `value_of(multiset(idx))` for every lattice index,
-/// decoding each index to its per-letter tally once with a single reused scratch
-/// buffer (no per-index allocation). This is the board-independent v-table build:
-/// the census opponent model and the dynamic-leave pull both need every multiset's
-/// static leave value keyed by lattice index, and `value_of` is the caller's klv
-/// lookup (kept as a closure so this stays independent of the klv type).
 pub fn fill_lattice_leaves(
     lat: &MultisetLattice,
     out: &mut [i32],
@@ -2098,22 +1667,6 @@ fn n_choose_k(n: u64, k: u64) -> u64 {
     (num / den) as u64
 }
 
-/// Blank-spelling sheet recorder: given ONE all-real GADDAG traversal (its recounted
-/// `real_score` and the per-placed-tile `(letter, drop)` list from
-/// `play_scorer::score_and_blank_deltas`, where `drop` is how much the score falls
-/// if that tile becomes a blank), enumerate every feasible blank designation of
-/// that traversal and raise the play-value `sheet` for each resulting played
-/// multiset. This reproduces, without the wildcard descent, exactly what the
-/// wildcard sheet build records: for each placed letter L appearing `placed_L`
-/// times, at least `forced_L = max(0, placed_L - real_avail_L)` of them must be
-/// blanks (too few real copies in the pool), and up to `num_blanks_eff` blanks
-/// total may be used (optionally "wasting" a real tile as a blank, which the
-/// wildcard path also produces). For a given blank count per letter, the best
-/// (max) score blanks that letter's lowest-`drop` positions, so the deltas are
-/// sorted ascending per letter and consumed cheapest-first. The played multiset
-/// for a designation keeps `placed_L - blank_L` real copies of L plus the total
-/// blanks at letter 0 -- matching the wildcard recorder, which keys a blank tile
-/// as 0. `placed` is sorted in place. Pure: only the lattice and arithmetic.
 pub fn record_blank_variants(
     lat: &MultisetLattice,
     sheet: &mut [i32],
@@ -2131,10 +1684,9 @@ pub fn record_blank_variants(
         return;
     }
     let num_letters = lat.num_letters();
-    // group by letter (ascending), and within a letter by ascending drop so the
-    // cheapest positions are blanked first.
+
     placed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    // runs[r] = (letter, start index in `placed`, count, forced blanks).
+
     let mut runs = [(0u8, 0u8, 0u8, 0u8); MAX_LETTERS];
     let mut num_runs = 0;
     let mut total_forced = 0usize;
@@ -2153,15 +1705,11 @@ pub fn record_blank_variants(
         num_runs += 1;
     }
     if total_forced > num_blanks_eff {
-        // not enough blanks to make this word at all.
         return;
     }
     let leftover = num_blanks_eff - total_forced;
     let mut tally = [0u8; MAX_LETTERS];
 
-    // Constant context for the blank-assignment recursion, so rec carries only the
-    // changing run index, leftover blanks, running blank total and dropped score -- no
-    // clippy::too_many_arguments. tally is the rank scratch; sheet is the output.
     struct Ctx<'a> {
         runs: &'a [(u8, u8, u8, u8)],
         num_runs: usize,
@@ -2174,11 +1722,6 @@ pub fn record_blank_variants(
     impl Ctx<'_> {
         fn rec(&mut self, ri: usize, leftover: usize, blanks_total: usize, drop_acc: i32) {
             if ri == self.num_runs {
-                // Rank the variant straight from its non-zero entries -- the blanks
-                // (letter 0, ascending-first) then each run's kept real count (runs
-                // ascending) -- with no materialized items array. Every placed tile
-                // is either blanked or kept real, so the multiset size is the whole
-                // played word, `placed.len()`.
                 let size = self.placed.len();
                 let items = (blanks_total > 0)
                     .then_some((0u8, blanks_total as u8))
@@ -2205,14 +1748,13 @@ pub fn record_blank_variants(
                 forced as usize,
             );
             let max_extra = (count - forced).min(leftover);
-            // drop for the mandatory `forced` cheapest blanks of this letter.
+
             let mut drop_run = 0i32;
             for e in &self.placed[start..start + forced] {
                 drop_run += e.1;
             }
             for extra in 0..=max_extra {
                 if extra > 0 {
-                    // include the next-cheapest position as an optional blank.
                     drop_run += self.placed[start + forced + extra - 1].1;
                 }
                 let b = forced + extra;
@@ -2245,9 +1787,8 @@ mod tests {
     use super::*;
     #[test]
     fn lattice_roundtrips_and_counts() {
-        // 3 letters (incl blank=0), rack_size 2: multisets of size 0..=2.
         let lat = MultisetLattice::new(3, 2);
-        // sizes: 1 (empty) + 3 (size1) + 6 (size2) = 10
+
         assert_eq!(lat.len(), 10);
         for idx in 0..lat.len() {
             let tally = lat.tally(idx);
@@ -2258,7 +1799,6 @@ mod tests {
 
     #[test]
     fn lattice_roundtrips_english_sized() {
-        // English-shaped: 27 letters, rack 7. Verify every rank round-trips.
         let lat = MultisetLattice::new(27, 7);
         assert_eq!(lat.len(), 5_379_616);
         let mut buf = vec![0u8; 27];
@@ -2270,7 +1810,6 @@ mod tests {
 
     #[test]
     fn rank_sparse_matches_rank() {
-        // rank_sparse over the non-zero letters must equal rank over the full tally.
         let lat = MultisetLattice::new(27, 7);
         let mut buf = vec![0u8; 27];
         for idx in (0..lat.len()).step_by(733) {
@@ -2285,22 +1824,21 @@ mod tests {
             }
             assert_eq!(lat.rank_sparse(s, &items), idx as u32, "sparse idx {idx}");
         }
-        // empty multiset: rank 0, no items.
+
         assert_eq!(lat.rank_sparse(0, &[]), lat.rank(&[0u8; 27]));
     }
 
     #[test]
     fn naive_best_equity_matches_hand_calc() {
         let lat = MultisetLattice::new(2, 2);
-        // sheet has the exchange floor baked in (init 0; entries non-negative).
+
         let mut sheet = vec![0i32; lat.len()];
         sheet[lat.rank(&[1, 0]) as usize] = 5_000;
         sheet[lat.rank(&[0, 1]) as usize] = 3_000;
         let mut leave = vec![0i32; lat.len()];
         leave[lat.rank(&[1, 0]) as usize] = 4_000;
         leave[lat.rank(&[0, 1]) as usize] = 1_000;
-        // rack [1,1]: play0 keep1 = 5+1 = 6 ; play1 keep0 = 3+4 = 7 ;
-        // play both keep nothing = 0 (exchange floor). best = 7.
+
         let (eq, kept) = naive_best_equity(&lat, &sheet, &leave, &[1, 1]);
         assert_eq!(eq, 7_000);
         assert_eq!(kept, vec![0u8]);
@@ -2309,8 +1847,7 @@ mod tests {
     #[test]
     fn fast_conv_matches_naive() {
         let lat = MultisetLattice::new(4, 4);
-        // sheet has the exchange floor baked in: init 0, entries non-negative
-        // (the empty/pass entry is 0 from the init).
+
         let mut sheet = vec![0i32; lat.len()];
         let mut leave = vec![0i32; lat.len()];
         for idx in 0..lat.len() {
@@ -2322,7 +1859,7 @@ mod tests {
         }
         let mut best = vec![UNPLAYABLE; lat.len()];
         best_equity_table(&lat, &sheet, &leave, &mut best);
-        // best_equity_table only fills the full-rack (size == rack_size) block.
+
         for (idx, &b) in best.iter().enumerate().skip(lat.full_rack_start()) {
             let tally = lat.tally(idx);
             assert_eq!(tally.iter().map(|&c| c as usize).sum::<usize>(), 4);
@@ -2341,18 +1878,16 @@ mod tests {
         best[lat.rank(&[0, 2]) as usize] = 2_000;
         best[lat.rank(&[1, 0]) as usize] = 100;
         best[lat.rank(&[0, 1]) as usize] = 200;
-        // S=empty: draw 2 from {0,1}; only [1,1] feasible (ways=1) -> 6_000.
+
         let e = leave_value_by_draw(&lat, &best, &unseen, &[0u8, 0u8]);
         assert_eq!(e, 6_000);
-        // S=[1,1] full: draw 0 -> best[[1,1]]=6_000.
+
         let f = leave_value_by_draw(&lat, &best, &unseen, &[1u8, 1u8]);
         assert_eq!(f, 6_000);
     }
 
     #[test]
     fn entering_fused_matches_draw() {
-        // the push form (entering_fused, whole table) must equal the pull form
-        // (leave_value_by_draw, per leave) for every leave -- both exact i128.
         let lat = MultisetLattice::new(3, 3);
         let unseen = [4u8, 3u8, 2u8];
         let mut best = vec![UNPLAYABLE; lat.len()];
@@ -2381,13 +1916,6 @@ mod tests {
 
     #[test]
     fn dynamic_leave_matches_draw_with_s_added() {
-        // R3: the live pool already excludes the mover's kept subrack S, so the
-        // completion draws pool-direct. dynamic_leave_value (DrawCtx, pool-direct)
-        // must therefore equal the census pull leave_value_by_draw fed
-        // unseen = pool + S, whose built-in C(unseen - S, d) = C(pool, d)
-        // subtraction cancels the S added back. Pin it over every subrack of a
-        // tiny lattice, giving both forms the same completion count draw =
-        // rack_size - |S| (leave_value_by_draw fixes that draw internally).
         let lat = MultisetLattice::new(3, 3);
         let add = AddTable::new(&lat);
         let pool = [3u8, 2u8, 2u8];
@@ -2412,10 +1940,6 @@ mod tests {
 
     #[test]
     fn entering_leave_ci_matches_brute() {
-        // entering_leave_ci_fused apportions each full rack R's variance varr[R] to every
-        // subrack S with the EXACT draw-ways completion weight cw = prod_t
-        // C(unseen[t]-S[t], R[t]-S[t]) (the -generate decompose weight): den[S] = sum_R cw,
-        // w2v[S] = sum_R cw^2 * varr[R]. Brute-force both over every (R, S<=R).
         let lat = MultisetLattice::new(3, 3);
         let unseen = [4u8, 3u8, 2u8];
         let n = lat.num_letters();
@@ -2475,19 +1999,13 @@ mod tests {
 
     #[test]
     fn generate_fused_matches_brute() {
-        // generate_fused is the in-process -generate decompose: for each valued full
-        // rack R with value v(R)=best[R], apportion to every subrack S with the draw-ways
-        // completion weight cw = prod_t C(unseen[t]-S[t], R[t]-S[t]); num[S] = sum_R
-        // cw*v(R), den[S] = sum_R cw. Brute-force both over every (R, S<=R). UNPLAYABLE
-        // racks are skipped; values may be negative.
         let lat = MultisetLattice::new(3, 3);
         let unseen = [4u8, 3u8, 2u8];
         let n = lat.num_letters();
         let mut best = vec![UNPLAYABLE; lat.len()];
         for (idx, slot) in best.iter_mut().enumerate().skip(lat.full_rack_start()) {
             let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
-            // value most racks (signed, including negatives); leave a few UNPLAYABLE
-            // to exercise the skip.
+
             if (h & 7) != 0 {
                 *slot = h.rem_euclid(80_000) - 40_000;
             }
@@ -2547,7 +2065,6 @@ mod tests {
 
     #[test]
     fn apportion_matches_naive() {
-        // 3 letters, rack 3. Pseudo-random best[] over full racks; an unseen pool.
         let lat = MultisetLattice::new(3, 3);
         let unseen = [4u8, 3u8, 2u8];
         let mut best = vec![UNPLAYABLE; lat.len()];
@@ -2558,7 +2075,7 @@ mod tests {
         let mut num = vec![0f64; lat.len()];
         let mut den = vec![0f64; lat.len()];
         apportion_table(&lat, &best, &unseen, &mut num, &mut den);
-        // naive: enumerate full racks, brute-force every subrack, apportion w(R).
+
         let n = lat.num_letters();
         let mut num_naive = vec![0f64; lat.len()];
         let mut den_naive = vec![0f64; lat.len()];
@@ -2573,7 +2090,7 @@ mod tests {
             }
             let e = bval as f64;
             let mut s = vec![0u8; n];
-            // every subrack S <= R (independent per-letter count 0..=rk[t]).
+
             for a in 0..=rk[0] {
                 for b in 0..=rk[1] {
                     for c in 0..=rk[2] {
@@ -2605,8 +2122,6 @@ mod tests {
 
     #[test]
     fn mark_drawable_best_copies_drawable() {
-        // 3 letters, rack 3. mark_drawable_best copies best[R] for racks drawable
-        // from `unseen` and leaves every other index UNPLAYABLE.
         let lat = MultisetLattice::new(3, 3);
         let add = AddTable::new(&lat);
         let unseen = [4u8, 1u8, 2u8];
@@ -2629,11 +2144,6 @@ mod tests {
 
     #[test]
     fn apportion_fused_matches_split() {
-        // the fused step2+step3 must equal best_equity_table then
-        // apportion_table for BOTH modes (push and zeta). The push adds
-        // in the same order as the reference; the zeta reorders the sums, but every
-        // term is an integer (w * best) far below 2^53, so f64 addition is exact and
-        // order-free -- exact equality still holds.
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
@@ -2652,9 +2162,7 @@ mod tests {
         apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
         let add = AddTable::new(&lat);
         let mut maxsheet = vec![0i32; lat.len()];
-        // leave is nonzero here, so null_leave is false. Cover the per-rack rec_max
-        // path (scatter=false) and the word-scatter path (scatter=true, engages only
-        // with zeta); both must reproduce the reference exactly.
+
         for scatter in [false, true] {
             for zeta in [false, true] {
                 let mut num_b = vec![0f64; lat.len()];
@@ -2700,11 +2208,6 @@ mod tests {
 
     #[test]
     fn apportion_fused_null_leave_matches() {
-        // gen-1 bootstrap: with an all-zero leave, best_equity(R) = max_{P<=R} sheet[P].
-        // The subset-max fast path (null_leave=true, zeta=true) must equal the reference
-        // (best_equity_table + apportion_table) AND the general rec_max path
-        // (null_leave=false), confirming the subset-max is an exact stand-in for the
-        // per-rack descent on a null leave.
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
@@ -2722,8 +2225,7 @@ mod tests {
         apportion_table(&lat, &best, &unseen, &mut num_a, &mut den_a);
         let add = AddTable::new(&lat);
         let mut maxsheet = vec![0i32; lat.len()];
-        // subset_max engages only when null_leave && zeta; the other three combinations
-        // fall back to rec_max. All four must reproduce the reference exactly.
+
         for null_leave in [false, true] {
             for zeta in [false, true] {
                 let mut num_b = vec![0f64; lat.len()];
@@ -2769,12 +2271,6 @@ mod tests {
 
     #[test]
     fn apportion_fused_oppdenial_rack_matches_brute() {
-        // the opponent-denial seed term must apportion like a brute-force reference: for every
-        // drawable full rack R, credit (best(R) + oppdenial_rack*sum_t R[t]*marginal[t]) weighted
-        // by w(R) = prod_t C(unseen[t], R[t]) to every subrack S <= R. oppdenial_rack makes the
-        // seed non-integer, so the zeta fold reorders the f64 sums -- compare within a
-        // relative tolerance rather than exactly. Cover both rec_max/scatter and
-        // push/zeta.
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()];
@@ -2791,7 +2287,7 @@ mod tests {
         let n = lat.num_letters();
         let marginal = [1.5f64, -0.5, 3.0, 2.0];
         let oppdenial_rack = 0.75f64;
-        // brute reference.
+
         let mut num_ref = vec![0f64; lat.len()];
         let mut den_ref = vec![0f64; lat.len()];
         let mut r = [0u8; MAX_LETTERS];
@@ -2872,10 +2368,6 @@ mod tests {
 
     #[test]
     fn opp_value_per_rack_matches_brute() {
-        // opp_value_per_rack(R) must equal the brute-force opp_value(U-R) =
-        // sum_{R'<=U-R} prod_t C((U-R)[t], R'[t]) * best[R'] / sum_t C(...), the
-        // opponent's expected best_equity over a full rack drawn from the
-        // R-depleted pool. f64 sums reorder, so compare within a relative tolerance.
         let lat = MultisetLattice::new(4, 3);
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let n = lat.num_letters();
@@ -2929,11 +2421,6 @@ mod tests {
 
     #[test]
     fn opp_me2_per_rack_me2_scale_zero_is_opp_value() {
-        // me2_scale = 0 drops the my-next (me2) double-count, so the exact-model term
-        // reduces to the exact opponent-only denial opp_value(U-R) -- it must match the
-        // standalone opp_value_per_rack primitive on every drawable full rack. (The
-        // full-rack fixed point already unrolls my own future, so me2 double-counts;
-        // opponent-only is the sound exact opponent-denial.)
         let lat = MultisetLattice::new(4, 3);
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()];
@@ -2984,13 +2471,6 @@ mod tests {
 
     #[test]
     fn apportion_fused_oppdenial_exact_matches_brute() {
-        // the exact-model seed term must apportion like a brute reference: for
-        // every drawable full rack R, credit (best(R) - oppdenial_exact *
-        // (opp_value(U-R) - my_next_value(K*,U-R))) weighted by w(R) = prod_t
-        // C(unseen[t], R[t]) to every subrack S <= R. The per-rack term is
-        // opp_me2_per_rack's output; cover rec_max/scatter x push/zeta.
-        // oppdenial_exact makes the seed non-integer, so compare within
-        // a relative tolerance.
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let n = lat.num_letters();
@@ -3106,13 +2586,6 @@ mod tests {
 
     #[test]
     fn opp_me2_per_rack_matches_brute() {
-        // out_diff(R) must equal opp_value(U-R) - my_next_value(K*, U-R), each a
-        // brute-force full-rack expectation of best_equity over draws from the
-        // R-depleted pool: opp draws a fresh rack, me2 keeps the table's argmax K* and
-        // refills the rest. K* comes from best_equity_argmax_table (whose argmax is
-        // first verified to achieve best_equity(R)), so the brute uses the SAME K* --
-        // independent tie-breaks would pick a different valid argmax and diverge. f64
-        // sums reorder, so compare within a relative tolerance.
         let lat = MultisetLattice::new(4, 3);
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let n = lat.num_letters();
@@ -3137,7 +2610,7 @@ mod tests {
             &mut kept_idx,
             &mut kept_size,
         );
-        // the argmax table's `best` column must match best_equity_table exactly.
+
         let mut best_ref = vec![UNPLAYABLE; lat.len()];
         best_equity_table(&lat, &sheet, &leave, &mut best_ref);
         for idx in lat.full_rack_start()..lat.len() {
@@ -3167,7 +2640,7 @@ mod tests {
             for t in 0..n {
                 pool[t] = unseen[t] - r[t];
             }
-            // K* recorded by the argmax table; verify it is a true argmax of R.
+
             let kr = kept_idx[ridx] as usize;
             let ks = kept_size[ridx] as usize;
             let mut kstar = [0u8; MAX_LETTERS];
@@ -3184,7 +2657,7 @@ mod tests {
             }
             let pr = lat.rank(&played[..n]) as usize;
             assert_eq!(sheet[pr] + leave[kr], best[ridx], "K* not argmax at {ridx}");
-            // opp1 = E_{R' from pool}[best[R']]; me2 = E_{fill from pool}[best[K*+fill]].
+
             let (mut on, mut od) = (0f64, 0f64);
             let (mut mn, mut md) = (0f64, 0f64);
             for (r2, &b2) in best.iter().enumerate().skip(lat.full_rack_start()) {
@@ -3222,8 +2695,6 @@ mod tests {
 
     #[test]
     fn opp_denial_marginals_matches_brute() {
-        // the fast marginals must equal a brute-force opp_value(U) - opp_value(U - t)
-        // over every drawable full rack.
         let lat = MultisetLattice::new(4, 4);
         let add = AddTable::new(&lat);
         let unseen = [5u8, 4u8, 6u8, 3u8];
@@ -3288,7 +2759,6 @@ mod tests {
 
     #[test]
     fn record_blank_variants_enumerates_designations() {
-        // lattice: blank=0, A=1, B=2, C=3; racks up to 4 tiles.
         let lat = MultisetLattice::new(4, 4);
         let key = |tally: &[u8]| lat.rank(tally) as usize;
         let run = |placed: &mut [(u8, i32)], unseen: &[u8], blanks: usize, real_score: i32| {
@@ -3297,32 +2767,25 @@ mod tests {
             sheet
         };
 
-        // two A's placed (drops 4 and 10), 2 real A available, 1 blank: forced 0,
-        // leftover 1 -> {A,A} (no blank) and {blank,A} (blank the cheaper A, drop 4).
         let sheet = run(&mut [(1, 10), (1, 4)], &[0, 2, 0, 0], 1, 100);
         assert_eq!(sheet[key(&[0, 2, 0, 0])], 100); // {A,A}
         assert_eq!(sheet[key(&[1, 1, 0, 0])], 96); // {blank,A}, dropped 4
         assert_eq!(sheet[key(&[2, 0, 0, 0])], 0); // {blank,blank}: only 1 blank, unreached
 
-        // same word, only 1 real A but 2 blanks: forced 1, leftover 1 -> {blank,A}
-        // and {blank,blank}; the all-real {A,A} is infeasible (one real A).
         let sheet = run(&mut [(1, 10), (1, 4)], &[0, 1, 0, 0], 2, 100);
         assert_eq!(sheet[key(&[0, 2, 0, 0])], 0); // {A,A} infeasible
         assert_eq!(sheet[key(&[1, 1, 0, 0])], 96); // {blank,A}: drop the cheaper (4)
         assert_eq!(sheet[key(&[2, 0, 0, 0])], 86); // {blank,blank}: drop both (4+10)
 
-        // three distinct unavailable letters, only 2 blanks: forced 3 > 2 -> skip all.
         let sheet = run(&mut [(1, 8), (2, 5), (3, 3)], &[0, 0, 0, 0], 2, 70);
         assert!(sheet.iter().all(|&v| v == 0));
 
-        // A + B, one real each, 1 blank: blank at most one of the two.
         let sheet = run(&mut [(1, 8), (2, 6)], &[0, 1, 1, 0], 1, 50);
         assert_eq!(sheet[key(&[0, 1, 1, 0])], 50); // {A,B} all real
         assert_eq!(sheet[key(&[1, 0, 1, 0])], 42); // {blank,B}: A is the blank, drop 8
         assert_eq!(sheet[key(&[1, 1, 0, 0])], 44); // {blank,A}: B is the blank, drop 6
         assert_eq!(sheet[key(&[2, 0, 0, 0])], 0); // two blanks unreached (1 blank)
 
-        // max-merge: a higher-scoring word for the same multiset wins.
         let mut sheet = vec![0i32; lat.len()];
         record_blank_variants(
             &lat,
