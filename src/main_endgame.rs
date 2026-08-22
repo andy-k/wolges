@@ -425,11 +425,6 @@ impl Question {
     }
 }
 
-// batch endgame solver: read the harvested "FEN\tR0\tR1\tP" lines and print
-// "<line index>\t<value>" for each. solve() is headless and deterministic, so
-// re-running yields byte-identical output -- this is the value list that any
-// behavior-preserving speedup to the solver diffs against.
-// assumes the harvested positions are CSW24 english (as produced by autoplay).
 fn run_batch(path: &str) -> error::Returns<()> {
     let game_config = game_config::make_english_game_config();
     let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
@@ -467,8 +462,6 @@ fn run_batch(path: &str) -> error::Returns<()> {
             error::new(format!("line {line_index}: bad player {player_str:?}: {e}"))
         })?;
 
-        // word-prune once per position: keep only words still playable on this
-        // board, build a smaller gaddawg, and let the solver search that.
         let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
         move_generator.gen_remaining_words(
             &movegen::BoardSnapshot {
@@ -496,21 +489,10 @@ fn run_batch(path: &str) -> error::Returns<()> {
 }
 
 fn main() -> error::Returns<()> {
-    // opt-in batch mode (WOLGES_ENDGAME_BATCH=<path>): solve every harvested
-    // position in the file and print just "<line index>\t<value>" per line, so
-    // the value lists can be diffed before and after a speedup change. When the
-    // env var is unset the hardcoded demo below runs unchanged.
     if let Ok(batch_path) = std::env::var("WOLGES_ENDGAME_BATCH") {
         return run_batch(&batch_path);
     }
 
-    // opt-in single-position mode: any command-line argument switches from the
-    // built-in demo to solving one user-supplied position. Grammar:
-    //   endgame <config> <kwg-file> <fen> <rack> [score-diff]
-    // The mover is player 0 (holding <rack>); the opponent's tiles are
-    // inferred as whatever is unseen, and the one-in-bag PEG case is
-    // auto-detected -- exactly the model the demo uses. No arguments (and no
-    // batch env var) runs the demo unchanged.
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() > 1 {
         return run_cli(&args);
@@ -1231,20 +1213,6 @@ fn main() -> error::Returns<()> {
     solve_question(&question, 0)
 }
 
-// single-position command-line entry: parse
-// "endgame <config> <kwg-file> <fen> <rack> [score-diff]", build the Question
-// (mover = player 0, opponent inferred from unseen tiles), and run the same
-// solve the demo uses. Unlike the demo, this loads the word graph from a
-// caller-given path rather than a hardcoded lexicon-to-file table, so any
-// lexicon works without recompiling -- config only selects the alphabet, board
-// layout, and tile set (the config the kwg was built for), never a specific
-// word list.
-//
-// score-diff is how many points the mover is ahead of the opponent right now
-// on the board (negative if behind); it is added to the solver's point margin
-// so the printed win/draw/loss reflects the actual game, not just the value of
-// the tiles left to play. Default 0 asks only about the rest of the game,
-// ignoring the score so far.
 fn run_cli(args: &[String]) -> error::Returns<()> {
     const USAGE: &str = "\
 usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
@@ -1278,8 +1246,7 @@ usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
     } else {
         0
     };
-    // the -big suffix picks the 24-bit node layout (a .kbwg) for word lists
-    // too large to fit a plain .kwg; the base name still selects the config.
+
     let (base_name, big) = match config_name.strip_suffix("-big") {
         Some(base) => (base, true),
         None => (config_name.as_str(), false),
@@ -1289,9 +1256,7 @@ usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
     };
     let question = Question::from_fen(&game_config, config_name, fen, rack)?;
     let kwg_bytes = std::fs::read(kwg_path)?;
-    // Node22 (.kwg/.kad) vs Node24 (.kbwg): only the source graph's layout
-    // differs; solve_position is generic over it and rebuilds a Node22 pruned
-    // graph internally, so both arms converge after the load.
+
     if big {
         let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
         solve_position(&game_config, &kwg, &question, score_diff)
@@ -1301,14 +1266,6 @@ usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
     }
 }
 
-// the alphabet, board layout, and tile set for a config name -- language-
-// named, not lexicon-named, since a config is reusable across any word list
-// built for it (a config has no notion of which words are valid). The
-// jumbled- prefix selects the anagram variant (any letters in any order form
-// a word), the super- prefix selects the 21x21 Super board, and they combine
-// as jumbled-super-. A jumbled config expects a .kad (alphagram dawg) word
-// graph rather than a .kwg gaddawg; the word-prune step below rebuilds in the
-// matching shape automatically.
 fn game_config_for_name(name: &str) -> Option<game_config::GameConfig> {
     Some(match name {
         "english" => game_config::make_english_game_config(),
@@ -1339,12 +1296,6 @@ fn game_config_for_name(name: &str) -> Option<game_config::GameConfig> {
     })
 }
 
-// word-prune a board into a smaller word graph for the solver to search: keep
-// only words still playable here, then rebuild them in the shape the config's
-// rules need -- a gaddawg for classic play, or an alphagram dawg (dawg over
-// sorted-letter words) for jumbled play, matching how movegen dispatches on
-// game_rules(). The pruned set is always tiny, so Node22 suffices regardless
-// of how big the source graph was.
 fn build_pruned_kwg(
     game_config: &game_config::GameConfig,
     words: &[bites::Bites],
@@ -1363,9 +1314,6 @@ fn build_pruned_kwg(
     }
 }
 
-// resolve the lexicon to its built-in kwg file, then solve. Used only by the
-// hardcoded demo below, which ships its own small kwg per lexicon; the CLI
-// (run_cli) loads a caller-given kwg file instead, via solve_position.
 fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
     // of course this should be cached
     let (kwg, game_config) = match question.lexicon.as_str() {
@@ -1385,12 +1333,6 @@ fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
     solve_position(&game_config, &kwg, question, score_diff)
 }
 
-// word-prune the board and solve the position: a plain empty-bag endgame,
-// or the one-in-bag PEG when exactly one tile is unseen beyond the
-// opponent's rack. Shared by the built-in demo and the CLI. score_diff is
-// the mover's current game score minus the opponent's, in whole points;
-// add it to the solver's point margin to get the mover's actual game
-// outcome, not just the value of the remaining tiles.
 fn solve_position<N: kwg::Node>(
     game_config: &game_config::GameConfig,
     kwg: &kwg::Kwg<N>,
@@ -1485,10 +1427,7 @@ fn solve_position<N: kwg::Node>(
         .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize))
         .collect::<Box<_>>();
     let rack_size = game_config.rack_size() as usize;
-    // oppo_rack.len() == rack_size means the bag is empty (a plain endgame);
-    // == rack_size + 1 means exactly one tile is in the bag (the PEG case
-    // handled below). Two or more in the bag still falls through to the
-    // unseen-tile-count error below.
+
     if oppo_rack.len() > rack_size + 1 {
         wolges::return_error!(format!(
             "not endgame yet as there are {} unseen tiles",
@@ -1523,10 +1462,6 @@ fn solve_position<N: kwg::Node>(
     let mut egs =
         endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(game_config, &smaller_kwg);
     if oppo_rack.len() == rack_size + 1 {
-        // exactly one tile is in the bag. The mover (p0) does not know which
-        // unseen tile it is, so enumerate every distinct unseen tile as the bag
-        // tile (the word prune above is invariant across these hypotheses, so it
-        // is done once), solve each fully-known hypothesis, and average.
         let scaled_score_diff = equity::scale_score(score_diff) as f32;
         let result = egs.solve_peg_one_in_bag(
             0,
@@ -1535,9 +1470,7 @@ fn solve_position<N: kwg::Node>(
             &available_tally,
             scaled_score_diff,
         );
-        // an honest decline beats a silently wrong number: some configs allow an
-        // exchange with one tile in the bag but have no forced scoreless-turn end,
-        // so such a position is not exactly solvable and is declined here.
+
         let result = match result {
             Ok(result) => result,
             Err(unsupported) => {
@@ -1546,10 +1479,7 @@ fn solve_position<N: kwg::Node>(
             }
         };
         let total_unseen: u32 = result.hypotheses.iter().map(|&(_, weight, _)| weight).sum();
-        // The committed model reports the single move the mover should commit to
-        // without seeing the bag tile; the hypotheses below are THAT move's
-        // per-tile outcomes. The clairvoyant fallback (exchange-legal configs)
-        // reports an optimistic bound with no single move.
+
         match &result.best_move {
             Some(endgame::PegMove::Pass) => {
                 println!("peg: model = committed; best move = pass");
@@ -1590,14 +1520,12 @@ fn solve_position<N: kwg::Node>(
             total_unseen,
         );
         for &(bag_tile, weight, value) in &result.hypotheses {
-            // rebuild the opponent rack for this hypothesis for display only.
             let mut opp = Vec::new();
             for (u, &c) in available_tally.iter().enumerate() {
                 let take = if u as u8 == bag_tile { c - 1 } else { c } as usize;
                 opp.extend(std::iter::repeat_n(u as u8, take));
             }
-            // value already includes score_diff, so this is the final game
-            // margin, not just the value of the tiles left to play.
+
             let outcome = if value > 0.0 {
                 "win"
             } else if value == 0.0 {
@@ -1637,13 +1565,11 @@ fn solve_position<N: kwg::Node>(
 mod tests {
     use super::*;
 
-    // fast parse check for the CLI path: from_fen on an empty English board with
-    // a two-tile rack yields the expected Question (no solve -- parse only).
     #[test]
     fn from_fen_empty_board_parses() {
         let game_config = game_config::make_english_game_config();
         let dim = game_config.board_layout().dim();
-        // empty 15x15 board: each row is the full row width as one empty run.
+
         let empty_fen = std::iter::repeat_n(dim.cols.to_string(), dim.rows as usize)
             .collect::<Vec<_>>()
             .join("/");
@@ -1659,15 +1585,12 @@ mod tests {
         );
     }
 
-    // unknown config is rejected with None so the CLI can print usage.
     #[test]
     fn game_config_for_name_rejects_unknown() {
         assert!(game_config_for_name("english").is_some());
         assert!(game_config_for_name("BOGUS").is_none());
     }
 
-    // the jumbled- and super- prefixes resolve, and their game_rules match
-    // (jumbled -> Jumbled, so the word-prune below picks the alphagram dawg).
     #[test]
     fn game_config_for_name_handles_jumbled_and_super() {
         assert!(matches!(
@@ -1686,20 +1609,17 @@ mod tests {
                 .game_rules(),
             game_config::GameRules::Jumbled
         ));
-        // super- alone stays classic (only the board grows to 21x21).
+
         let super_english = game_config_for_name("super-english").unwrap();
         assert!(matches!(
             super_english.game_rules(),
             game_config::GameRules::Classic
         ));
         assert_eq!(super_english.board_layout().dim().rows, 21);
-        // the -big node-width suffix is not part of the config name itself.
+
         assert!(game_config_for_name("english-big").is_none());
     }
 
-    // the classic word-prune builds a gaddawg (finds the word forward), the
-    // jumbled one an alphagram dawg (finds the sorted letters), so a single
-    // word round-trips under each config's own lookup but not the other's.
     #[test]
     fn build_pruned_kwg_matches_game_rules() {
         use wolges::kwg::Node; // arc_index is a Node trait method
@@ -1712,12 +1632,10 @@ mod tests {
         let mut sorted_buf = buf.clone();
         sorted_buf.sort_unstable();
         let sorted: bites::Bites = sorted_buf[..].into();
-        // DOG's spelling and its alphagram (DGO) differ, so each lookup is
-        // decisive about which shape was built.
+
         assert_ne!(word, sorted);
         let words = [word.clone()];
-        // a dawg word is present iff get_word_index (from the dawg root arc)
-        // returns something other than the !0 not-found sentinel.
+
         let present = |kwg: &kwg::Kwg<kwg::Node22>, w: &[u8]| {
             let counts = kwg.count_dawg_words_alloc();
             kwg.get_word_index(&counts, kwg[0].arc_index(), w) != !0
@@ -1725,13 +1643,13 @@ mod tests {
 
         let classic_kwg =
             kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&classic, &words).unwrap());
-        // gaddawg indexes the word as spelled; the sorted letters are not a word.
+
         assert!(present(&classic_kwg, &word));
         assert!(!present(&classic_kwg, &sorted));
 
         let jumbled_kwg =
             kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&jumbled, &words).unwrap());
-        // the alphagram dawg indexes the sorted letters, not the spelling.
+
         assert!(present(&jumbled_kwg, &sorted));
         assert!(!present(&jumbled_kwg, &word));
     }
