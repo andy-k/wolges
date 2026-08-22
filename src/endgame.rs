@@ -94,10 +94,6 @@ struct WorkBuffer {
 
 impl WorkBuffer {
     fn new(game_config: &game_config::GameConfig) -> Self {
-        // the placed-tile scratch holds at most one tile per board square, so
-        // its length is bounded by the board area; reserve that once up front
-        // so the search reallocates it zero times (the debug_assert in
-        // get_new_state_idx proves the bound holds).
         let dim = game_config.board_layout().dim();
         let board_area = dim.rows as usize * dim.cols as usize;
         Self {
@@ -230,9 +226,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     }
                 }
 
-                // the placed-tile scratch never holds more than one tile per
-                // board square, so it stays within the board area reserved in
-                // WorkBuffer::new -- the search does not reallocate it.
                 debug_assert!(
                     self.work_buffer.vec_placed_tile.len() <= dim.rows as usize * dim.cols as usize,
                     "placed-tile buffer exceeded the board area"
@@ -321,17 +314,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         (rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize]) as f32
     }
 
-    // iterative-deepening core shared by evaluate (verbose) and solve (quiet).
-    // returns the final (deepest, converged) root valuation.
     fn run_id_loop(&mut self, player_idx: u8, verbose: bool) -> f32 {
         let mut last_valuation = f32::NAN;
         for max_depth in 1.. {
             let old_num_state_eval = self.work_buffer.state_eval.len();
-            // reset ONCE per depth, before any aspiration re-search below, so
-            // the final accepted search's depth-limit flag is what's observed.
+
             self.work_buffer.depth_limited = false;
             let valuation = if max_depth == 1 {
-                // no previous value to aim at; search the full window.
                 self.negamax_eval(
                     0,
                     player_idx,
@@ -353,10 +342,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 self.print_best_line(player_idx);
             }
             // check for time limit here
-            // stop once the search has fully resolved: no new states were
-            // reached AND no line was cut short by the ply limit. Requiring
-            // the latter avoids stopping while deep pass-then-play-out lines
-            // are still truncated (they add plies but no new states).
+
             if self.work_buffer.state_eval.len() == old_num_state_eval
                 && !self.work_buffer.depth_limited
             {
@@ -366,26 +352,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         last_valuation
     }
 
-    // Aspiration window for one iterative-deepening depth. Each depth otherwise
-    // re-searches the whole tree with the full (-inf, +inf) window; instead we
-    // first search a narrow band around the previous depth's value, where the
-    // answer almost always lands, letting alpha-beta prune far more. A fail-soft
-    // result strictly inside the band is the exact value. If it falls on or
-    // outside an edge (fail-low <= lo, or fail-high >= hi), that result is only a
-    // bound, so we re-search once with the full window, which is always exact.
-    // Same converged value as the full-window search, fewer nodes.
     fn aspiration_search(&mut self, player_idx: u8, max_depth: i8, last_valuation: f32) -> f32 {
-        // narrow band half-width, in movegen's scaled unit (equity::SCALE=1000).
         const ASPIRATION_WINDOW: f32 = (3 * super::equity::SCALE) as f32;
         let lo = last_valuation - ASPIRATION_WINDOW;
         let hi = last_valuation + ASPIRATION_WINDOW;
         let v = self.negamax_eval(0, player_idx, max_depth, lo, hi, false);
         if v > lo && v < hi {
-            // strictly inside the band: exact.
             v
         } else {
-            // fail-low or fail-high: the narrow result is only a bound, so
-            // re-search the full window once for the exact value.
             self.negamax_eval(
                 0,
                 player_idx,
@@ -401,9 +375,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         self.run_id_loop(player_idx, true)
     }
 
-    // headless entry point: returns the root valuation as data, with no
-    // per-depth prints. "quiet" means no per-depth spam; the throttled
-    // in-search tick can still fire on a multi-second search.
     pub fn solve(&mut self, player_idx: u8) -> f32 {
         self.run_id_loop(player_idx, false)
     }
@@ -420,21 +391,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     ) -> f32 {
         // movegen not done for depth == 0, so no state_eval.
         if depth == 0 {
-            // this line still had legal continuations but ran out of plies, so
-            // its value here (0) is a placeholder. Record that this pass was
-            // cut short so the iterative-deepening loop keeps going deeper
-            // instead of mistaking the truncated value for a solved one. This
-            // matters for lines that end in a run of passes (e.g. one side is
-            // stuck and can only pass while the other plays out a blank several
-            // plies later): those passes add depth without adding new states,
-            // so a states-only stop would freeze on the truncated value.
             self.work_buffer.depth_limited = true;
 
-            // static leaf value: the standing point margin if the game ended here
-            // (both players pass), from the side-to-move's perspective. negamax keeps
-            // every value from the mover's view and the caller composes it via
-            // (score - v), so no explicit negation is needed. This is a meaningful
-            // bound for a depth-capped search (aspiration) instead of a placeholder 0.
             return self.both_pass_value(state_idx, player_idx);
         }
 
@@ -443,10 +401,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let state_eval = if let Some(state_eval) = self.work_buffer.state_eval.get(&state_idx) {
             let state_side_eval = &state_eval.best_move[player_idx as usize];
             if state_side_eval.depth >= depth {
-                // invariant: a table-served (real-depth) best_move is always a PLACE
-                // move, so its value does not depend on the consecutive-pass count.
-                // pass-dependent values are stored with depth i8::MIN (see the
-                // pass-store sites below) and never satisfy i8::MIN >= depth here.
+                // a table-served best_move is always a PLACE, so its value cannot depend on the
+                // consecutive-pass count.
                 debug_assert!(
                     state_side_eval.play_idx != 0,
                     "endgame TT served a pass value; pass-count invariant broken",
@@ -603,30 +559,16 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 .or_insert(state_eval)
         };
 
-        // order moves by equity descending, then negamax them in that order.
         let low_idx = state_eval.child_play_idxs[player_idx as usize];
         let high_idx = state_eval.child_play_idxs[player_idx as usize + 1];
-        // Lazy move ordering (OPT-IN study lever, DEFAULT OFF). None keeps the
-        // plain full sort; Some(k) instead brings only the best k moves to the
-        // front now and sorts the remaining tail only if the search runs past
-        // them. Either way the result is value-identical -- alpha-beta returns
-        // the same value regardless of the order moves are tried. It is off by
-        // default because measurement found it SLOWER on the harvested endgame
-        // positions: bag-empty endgames have small racks, so each node's move
-        // list is short, and iterative deepening re-visits each node many
-        // times, so the full sort is already near-linear on the partly-ordered
-        // slice and the select-then-tail-sort machinery is pure overhead
-        // (about 7% slower on corpus-med at every k in 2..24). Flip to
-        // Some(6) to benchmark, or study wider/deeper position mixes.
+
         const LAZY_MOVE_ORDER_PREFIX: Option<usize> = None;
-        // how far the slice is already in equity-desc order: children in
-        // [low_idx..sorted_end) are sorted, the rest keep their prior
-        // valuations until the loop reaches them and sorts the tail once.
+
         let mut sorted_end = high_idx;
         match LAZY_MOVE_ORDER_PREFIX {
             Some(k) if high_idx - low_idx > k => {
                 let slice = &mut self.work_buffer.child_plays[low_idx..high_idx];
-                // partition the best k to the front, then order just those k.
+
                 slice.select_nth_unstable_by(k, |a, b| b.valuation.total_cmp(&a.valuation));
                 slice[..k].sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
                 sorted_end = low_idx + k;
@@ -642,10 +584,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut best_valuation = f32::NEG_INFINITY;
         for child_play_idx in low_idx..high_idx {
             if sorted_end < high_idx && child_play_idx == sorted_end {
-                // reached the end of the pre-selected prefix without a cutoff;
-                // sort the still-unsearched tail once and continue. the tail
-                // keeps its pre-loop valuations, so this produces exactly the
-                // order a full sort would have for those moves.
                 self.work_buffer.child_plays[sorted_end..high_idx]
                     .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
                 sorted_end = high_idx;
@@ -722,10 +660,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 play_idx: 0,
                 new_state_idx: state_idx,
                 equity_type: StateSideEvalEquityType::Exact,
-                // i8::MIN keeps the single state_idx key correct w.r.t. the pass
-                // count: this pass value depends on just_passed, so marking it
-                // never-reusable (no real depth satisfies i8::MIN >= depth) stops
-                // the TT from serving it. Do not "optimize" this depth away.
                 depth: i8::MIN, // cannot cache pass_valuation
             };
         } else {
@@ -752,10 +686,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 play_idx: 0,
                 new_state_idx: state_idx,
                 equity_type: StateSideEvalEquityType::Exact,
-                // i8::MIN keeps the single state_idx key correct w.r.t. the pass
-                // count: this pass value depends on just_passed, so marking it
-                // never-reusable (no real depth satisfies i8::MIN >= depth) stops
-                // the TT from serving it. Do not "optimize" this depth away.
                 depth: i8::MIN, // cannot cache pass_valuation
             };
             best_valuation = pass_valuation;
@@ -818,8 +748,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
-    // collect the principal variation as owned data (each Play cloned) so the
-    // caller can hold it past the solver borrow. out is caller-owned and reused.
     pub fn collect_pv(&'a self, player_idx: u8, out: &mut Vec<(f32, movegen::Play)>) {
         out.clear();
         self.append_solution(0, player_idx, |found| {
@@ -927,50 +855,19 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         );
     }
 
-    // Solve a pre-endgame that has exactly ONE tile left in the bag, and that
-    // tile is KNOWN to be `bag_tile`. Returns the game-theoretic point margin
-    // from `player_idx`'s view, in the SAME scaled unit (equity::SCALE = 1000)
-    // as solve().
-    //
-    // With one tile in the bag the rules are simple:
-    //  - Any play places at least one tile, so it draws min(placed, 1) = 1: it
-    //    always draws that one bag tile. The bag then empties and the mover's
-    //    rack = old rack - placed tiles + bag_tile. Because the draw refills the
-    //    rack, no play can empty it here -- there is no "play-out" while the bag
-    //    is non-empty. After the draw it is a plain empty-bag endgame with the
-    //    opponent to move, which the existing (byte-identical) solver handles.
-    //  - A pass draws nothing and leaves the bag holding just the one tile.
-    //  - Two consecutive passes end the game; the bag tile stays unseen and is
-    //    not scored against either player.
-    //
-    // This is a thin bag-phase layer on top of the empty-bag solver: it does not
-    // touch negamax_eval / solve / get_new_state_idx / both_pass_value.
     pub fn solve_one_in_bag(&mut self, player_idx: u8, bag_tile: u8) -> f32 {
-        // copy the Copy refs first so the sub-solver + the bag-phase move
-        // generator can borrow them without tangling with the &self borrow of
-        // board_tiles/racks below.
         let gc = self.game_config;
         let kwg = self.kwg;
-        // one empty-bag sub-solver, created once and reused across every play
-        // branch (no fresh solver per branch). num_players == 2 was already
-        // checked when self was built, so this construction cannot panic.
+
         let mut sub = EndgameSolver::<N, L>::new(gc, kwg);
-        // a bag-phase move generator, separate from the sub-solver's own.
+
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
-        // an empty leave-value table for bag-phase generation, matching the
-        // empty-bag search (self.klv is always the empty klv too).
+
         let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
-        // board + racks as locals so the bag phase never clobbers self.*.
+
         let board = self.board_tiles.clone();
         let racks = [self.racks[0].clone(), self.racks[1].clone()];
-        // The bag holds exactly one tile. An exchange is legal here only when the
-        // config's exchange_tile_limit permits exchanging against a one-tile bag
-        // (Spanish sets it to 1; English and friends set it to 7). When exchange
-        // is legal the exchange-aware search is required; otherwise the only
-        // scoreless move is a pass and the plain two-pass minimax applies. The
-        // caller (solve_peg_one_in_bag) has already declined the exchange-legal
-        // configs whose scoreless-turn rule cannot force the game to end, so the
-        // exchange search below always terminates.
+
         if one_in_bag_exchange_solvable(gc) {
             let mut memo = fash::MyHashMap::<BagExchangeKey, f32>::default();
             Self::one_in_bag_minimax_ex(
@@ -984,11 +881,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
-    // Bag-phase minimax for the one-known-bag-tile case. Shape mirrors the
-    // tests' plain-negamax `reference`: generate the mover's plays into a LOCAL
-    // Vec (so the reused generator is free for the pass-branch recursion), then
-    // for each play draw the bag tile and hand the resulting empty-bag position
-    // to the optimized sub-solver. Value is from `mover`'s view, scaled.
     #[allow(clippy::too_many_arguments)]
     fn one_in_bag_minimax(
         gc: &game_config::GameConfig,
@@ -1012,14 +904,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         };
         mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover as usize], 0, true);
 
-        // the mover draws the one bag tile after playing. A drawn blank goes on
-        // the rack as an undesignated blank (rack byte 0); a drawn letter goes
-        // on as itself. This is the same blank-wipe idiom used elsewhere here.
         let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
 
-        // iterate this node's place moves directly out of the generator; the loop
-        // body never touches mg, and the pass-branch recursion that reuses mg runs
-        // after this loop, so no copy of the plays is needed.
         let mut best = f32::NEG_INFINITY;
         for vm in &mg.plays {
             if let movegen::Play::Place {
@@ -1030,9 +916,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 score,
             } = &vm.play
             {
-                // play P on a cloned board + mover rack (same apply convention
-                // as print_best_line / the tests' apply_place), then draw the
-                // bag tile so the bag empties. A play is never a play-out here.
                 let mut nb = board.to_vec();
                 let mut nr = racks.clone();
                 {
@@ -1049,11 +932,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     rack.retain(|&t| t != 0x80);
                     rack.push(drawn);
                 }
-                // now a plain empty-bag endgame, opponent to move.
+
                 sub.init(&nb, [&nr[0], &nr[1]]);
                 let v = sub.solve(opp);
-                // negamax compose: the mover collects score(P) then the value
-                // of the empty-bag position from the opponent's view is a loss.
+
                 let val = *score as f32 - v;
                 if val > best {
                     best = val;
@@ -1062,8 +944,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
 
         let pass_val = if just_passed {
-            // both sides passed with the tile still in the bag: leftover point
-            // margin, bag tile unscored (same form as both_pass_value).
             (alphabet.scaled_rack_score(&racks[opp as usize])
                 - alphabet.scaled_rack_score(&racks[mover as usize])) as f32
         } else {
@@ -1075,27 +955,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         best
     }
 
-    // Bag-phase minimax for the one-known-bag-tile case WHEN an exchange is legal
-    // (Spanish). It extends one_in_bag_minimax with the two missing pieces:
-    //
-    //  - Exchange. With one tile in the bag the only legal exchange is a
-    //    one-for-one swap: return one rack tile r, draw the lone bag tile, and r
-    //    becomes the new (still fully known) one-tile bag, with the opponent to
-    //    move. Each distinct rack tile is enumerated as r.
-    //  - A real scoreless-turn end. A pass leaves the racks untouched, so a run
-    //    of passes is state-preserving and still resolves to the leftover point
-    //    margin -- but an exchange CHANGES the racks, so the two-pass shortcut is
-    //    no longer valid. Instead this tracks the consecutive-pass and
-    //    consecutive-zero counts and ends the game when the config's
-    //    num_passes_to_end / num_zeros_to_end rule is met (a pass advances both
-    //    counters; an exchange, taken only when exchanges count as zeros, resets
-    //    the pass count and advances the zero count).
-    //
-    // Because a node's value now depends on how close the scoreless-turn end
-    // already is, (mover, racks, bag tile, pass count, zero count) is memoized;
-    // the board never changes in the bag phase, so it is not part of the key. A
-    // scoring play still draws the bag tile and drops into the empty-bag
-    // sub-solver exactly as in one_in_bag_minimax.
     #[allow(clippy::too_many_arguments)]
     fn one_in_bag_minimax_ex(
         gc: &game_config::GameConfig,
@@ -1111,8 +970,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         zeros: u8,
         memo: &mut fash::MyHashMap<BagExchangeKey, f32>,
     ) -> f32 {
-        // canonical key: rack order does not affect value, so both racks are
-        // sorted. Return a memoized value before regenerating any moves.
         let mut rack0 = racks[0].clone();
         let mut rack1 = racks[1].clone();
         rack0.sort_unstable();
@@ -1138,8 +995,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             klv,
         };
         mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover as usize], 0, true);
-        // collect this node's place moves before recursing: the pass and exchange
-        // branches reuse mg for deeper generation.
+
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &mg.plays {
             if let movegen::Play::Place { .. } = &vm.play {
@@ -1147,12 +1003,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
 
-        // a drawn blank lands on the rack as an undesignated blank (byte 0).
         let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
 
         let mut best = f32::NEG_INFINITY;
-        // scoring plays: play P, draw the one bag tile so the bag empties, and
-        // hand the resulting empty-bag position to the optimized sub-solver.
+
         for play in &places {
             if let movegen::Play::Place {
                 down,
@@ -1187,10 +1041,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
 
-        // pass: a scoreless turn that advances both counters and leaves the racks
-        // untouched. If either end rule is now met the game ends by passing out
-        // (leftover point margin, bag tile unscored); otherwise the opponent
-        // moves with the same racks and bag.
         let pass_passes = passes + 1;
         let pass_zeros = zeros + 1;
         let pass_val = if scoreless_turns_end(gc, pass_passes, pass_zeros) {
@@ -1216,11 +1066,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             best = pass_val;
         }
 
-        // exchange: swap one rack tile r for the drawn bag tile; r becomes the new
-        // one-tile bag. An exchange is a zero turn but not a pass, so it resets the
-        // pass count and advances the zero count. Enumerate each distinct rack tile
-        // as r, skipping r == drawn (swapping the bag tile for itself reproduces
-        // the pass branch's state).
         let exch_zeros = zeros + 1;
         let mut seen: u64 = 0; // bitset over rack tile values 0..=63
         for i in 0..racks[mover as usize].len() {
@@ -1233,7 +1078,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 continue;
             }
             seen |= bit;
-            // new mover rack: one r out, the drawn bag tile in.
+
             let mut nr = racks.clone();
             {
                 let rack = &mut nr[mover as usize];
@@ -1257,28 +1102,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         best
     }
 
-    // Solve a pre-endgame that has exactly ONE tile left in the bag, without
-    // knowing which unseen tile it is. Every tile that is not on the board and
-    // not on the mover's rack is UNSEEN; exactly one of them sits in the bag
-    // and the rest form the opponent's rack, so
-    // |unseen| = opponent_rack_size + 1.
-    //
-    // The mover cannot see the bag tile, so this tries every distinct unseen
-    // tile T as the bag tile, weighting each hypothesis by how many copies of
-    // T are unseen (a tile with 3 copies unseen is 3x as likely to be the one
-    // in the bag). For each T the opponent rack is the unseen multiset with
-    // one T removed, which makes the position fully known, and the
-    // one-known-bag-tile solver returns that hypothesis's scaled point margin
-    // from the mover's view. peg_aggregate then averages win/draw/loss and the
-    // point margin.
-    //
-    // `unseen_tally[t]` is the count of tile t in the unseen multiset (index 0
-    // is the blank). This is full enumeration, not sampling.
-    // score_diff is the mover's current game score minus the opponent's,
-    // scaled (equity::SCALE = 1000 per point) -- add it to each hypothesis's
-    // point margin so win_pct and expected_margin reflect the mover's actual
-    // chances in the whole game, not just the value of the tiles left to play.
-    // 0 asks only about the rest of the game, ignoring the board score so far.
     pub fn solve_peg_one_in_bag(
         &mut self,
         mover: u8,
@@ -1287,22 +1110,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         unseen_tally: &[u8],
         score_diff: f32,
     ) -> Result<PegResult, PegUnsupported> {
-        // When an exchange is legal against the one-tile bag (Spanish), solving
-        // requires the exchange-aware search, and that search only terminates when
-        // the scoreless-turn rule can force the game to end. Decline honestly --
-        // rather than silently ignore the exchange and report a no-exchange number
-        // -- for any exchange-legal config whose scoreless turns never force an
-        // end.
         let gc = self.game_config;
         if one_in_bag_exchange_legal(gc) && !one_in_bag_exchange_solvable(gc) {
             return Err(PegUnsupported::ExchangeWithoutForcedEnd);
         }
-        // In the real game the mover does NOT see the bag tile, so it must commit
-        // ONE first move that fares best AVERAGED over every possible bag tile
-        // (argmax_M E_T value(M,T)) -- the move that wins the most endgames. The
-        // exchange-aware search is not yet expressed under that committed model,
-        // so an exchange-legal config falls back to the clairvoyant E_T max_M
-        // aggregate (an optimistic bound); every other config is solved committed.
+
         if one_in_bag_exchange_legal(gc) {
             Ok(self.peg_clairvoyant_aggregate(mover, board, mover_rack, unseen_tally, score_diff))
         } else {
@@ -1316,12 +1128,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
-    // Clairvoyant aggregate: for each possible bag tile solve the now-fully-known
-    // position, letting the mover pick the best move FOR THAT tile, then average
-    // (E_T max_M). This lets the mover peek at the hidden tile, so it is an
-    // optimistic bound on the mover's win rate, not the in-game value. Retained
-    // for the exchange-legal path (whose committed handling is not built yet) and
-    // as the reference bound in tests. Reports no single committed move.
     fn peg_clairvoyant_aggregate(
         &mut self,
         mover: u8,
@@ -1331,15 +1137,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         score_diff: f32,
     ) -> PegResult {
         let mut hypotheses: Vec<(u8, u32, f32)> = Vec::new();
-        // opp_rack is rebuilt in place for each hypothesis (one allocation).
+
         let mut opp_rack: Vec<u8> = Vec::new();
         for (t, &count) in unseen_tally.iter().enumerate() {
             if count == 0 {
                 continue;
             }
             let bag_tile = t as u8;
-            // opp_rack = the unseen multiset with exactly one copy of bag_tile
-            // removed (that copy is the one in the bag).
+
             opp_rack.clear();
             for (u, &c) in unseen_tally.iter().enumerate() {
                 let take = if u == t { c - 1 } else { c } as usize;
@@ -1363,28 +1168,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
-    // Committed one-in-bag PEG for configs WITHOUT a legal one-tile-bag exchange
-    // (English and friends). The mover commits ONE first move without seeing the
-    // bag tile and is judged by how it fares averaged over every possible tile:
-    // committed = argmax_M E_T value(M,T), ranked by win rate then expected
-    // margin. Contrast peg_clairvoyant_aggregate (E_T max_M), which lets the move
-    // change per tile and so over-reports.
-    //
-    // The candidate first moves come from the PRE-DRAW rack, so they are the same
-    // for every bag tile; the value(M,T) matrix is therefore rectangular. For a
-    // DRAWING move (any Place plays >= 1 tile -> draws -> empties the bag) the
-    // continuation is an exact perfect-info endgame, value(M,T) = score(M) -
-    // endgame(post-M, drew T); those are the very values the clairvoyant path
-    // already computes, reduced here max-of-avg instead of avg-of-max, so the same
-    // sub-solver and its transposition table are reused across the whole matrix.
-    //
-    // A PASS keeps the tile in the bag and hands the opponent a one-in-bag
-    // position. v1 LIMITATION: that continuation is valued with the clairvoyant
-    // recursion (the opponent should also be committed there). It is conservative
-    // -- the clairvoyant value over-credits the on-turn opponent, so the mover's
-    // pass value is a lower bound and pass never spuriously wins the argmax -- and
-    // pass is dominated whenever the mover has a scoring play. Fully committed pass
-    // (and exchange, and 2+ tiles in the bag) are the retower follow-ups.
     fn peg_committed_no_exchange(
         &self,
         mover: u8,
@@ -1399,9 +1182,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let opp = mover ^ 1;
         let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
 
-        // Candidate first moves are generated once from the pre-draw rack (bag-tile
-        // independent). Snapshot the place plays out of the shared generator so the
-        // pass branch can reuse the generator afterwards.
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
         mg.gen_moves_raw_all_unsorted(
             &movegen::BoardSnapshot {
@@ -1422,8 +1202,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
 
-        // One empty-bag sub-solver reused across every (move, bag tile) so the
-        // endgame transposition table is shared across the whole matrix.
         let mut sub = EndgameSolver::<N, L>::new(gc, kwg);
 
         let mut best_win = f32::NEG_INFINITY;
@@ -1436,9 +1214,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             let mut marg = 0.0f32;
             let mut hyps: Vec<(u8, u32, f32)> = Vec::with_capacity(unseen.len());
             for &(t, w) in unseen {
-                // a drawn blank lands on the rack as an undesignated blank (0).
                 let drawn = t & !((t as i8) >> 7) as u8;
-                // opp rack = the unseen multiset minus one copy of this bag tile.
+
                 let mut opp_rack: Vec<u8> = Vec::new();
                 for &(u, c) in unseen {
                     let take = if u == t { c - 1 } else { c };
@@ -1454,8 +1231,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         word,
                         score,
                     }) => {
-                        // play the committed move, draw the bag tile, hand the now
-                        // empty-bag position (opponent to move) to the sub-solver.
                         let mut nb = board.to_vec();
                         let mut mr = mover_rack.to_vec();
                         let strider = gc.board_layout().dim().lane(*down, *lane);
@@ -1476,22 +1251,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         *score as f32 - sub.solve(opp)
                     }
                     PegMove::Pass => {
-                        // mover passes (draws nothing); opponent faces the one-in-bag
-                        // position. v1 values that clairvoyantly (see the doc above).
-                        //
-                        // PEG2-7 NOTE: one tile in the bag has no draw-order
-                        // choice (a play draws the single known tile; a pass draws
-                        // nothing). When this generalizes to two-or-more, draw
-                        // every tile from the SAME end -- pop (the back), the fast
-                        // end -- and store a scenario reversed to match: draw
-                        // sequence A,B,C is the bag [C,B,A], so pop yields A, then
-                        // B, then C in play order (the unit is a draw, not a move;
-                        // a pass consumes no tile). Do NOT reuse Bag::replenish for
-                        // the enumeration: it pops EVEN players from the back but
-                        // shifts ODD players from the front (bag.rs, a game-pair
-                        // variance device) -- fine under a shuffle, but on [C,B,A]
-                        // it makes p1 take the front (C, the leftover) instead of
-                        // the next popped tile (B). Keep both players on pop here.
+                        // PEG2-7: with two or more in the bag, draw every tile from the SAME end -- pop,
+                        // the back -- and store a scenario reversed to match. Do NOT reuse Bag::replenish
+                        // for the enumeration: it pops for even players and shifts for odd ones, which on
+                        // a reversed bag hands p1 the leftover instead of the next popped tile.
                         let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
                         r2[mover as usize] = mover_rack.to_vec();
                         r2[opp as usize] = opp_rack;
@@ -1517,7 +1280,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
             win /= total;
             marg /= total;
-            // rank by win rate, then expected margin (the macondo/MAGPIE order).
+
             if win > best_win || (win == best_win && marg > best_marg) {
                 best_win = win;
                 best_marg = marg;
@@ -1536,26 +1299,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 }
 
-// The first move the mover commits to in a one-in-bag pre-endgame, before it
-// draws (so before it can know the bag tile): either a pass, or a Place play.
-// Exchange first moves are not yet modeled under the committed model (v1); an
-// exchange-legal config falls back to the clairvoyant aggregate, which reports
-// no committed best move.
 #[derive(Clone)]
 pub enum PegMove {
     Pass,
     Place(movegen::Play),
 }
 
-// The outcome of a one-in-bag PEG enumeration. Under the committed model
-// (`committed == true`) this describes the single best move the mover can commit
-// to without seeing the bag tile: `best_move` is that move, `win_pct` /
-// `expected_margin` are its win rate (a draw counting half) and expected scaled
-// point margin averaged over every possible bag tile, and `hypotheses` is that
-// move's per-tile (bag tile, weight, scaled point margin) breakdown. Under the
-// clairvoyant fallback (`committed == false`, exchange-legal configs) there is no
-// single committed move: `best_move` is None and the fields describe the
-// optimistic E_T max_M bound as before.
 pub struct PegResult {
     pub win_pct: f32,
     pub expected_margin: f32,
@@ -1564,12 +1313,8 @@ pub struct PegResult {
     pub committed: bool,
 }
 
-// Why a one-in-bag PEG position could not be solved exactly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PegUnsupported {
-    // An exchange is legal with one tile in the bag, but the config's scoreless
-    // turns can never force the game to end, so the exchange search need not
-    // terminate. The position is not exactly solvable by this enumeration.
     ExchangeWithoutForcedEnd,
 }
 
@@ -1584,11 +1329,6 @@ impl std::fmt::Display for PegUnsupported {
     }
 }
 
-// Memo key for the exchange-aware one-in-bag search. Rack order does not affect
-// value, so both racks are stored sorted; the scoreless-turn counters are part
-// of the key because, once an exchange is possible, a node's value depends on
-// how close the scoreless-turn end rule already is. The board never changes in
-// the bag phase, so it is not part of the key.
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct BagExchangeKey {
     mover: u8,
@@ -1599,37 +1339,20 @@ struct BagExchangeKey {
     rack1: Vec<u8>,
 }
 
-// Whether an exchange is legal when the bag holds a single tile. Movegen would
-// exchange only when num_tiles_in_bag >= exchange_tile_limit; here the real bag
-// size is one, so the test is exchange_tile_limit <= 1 (Spanish sets it to 1).
 fn one_in_bag_exchange_legal(gc: &game_config::GameConfig) -> bool {
     gc.exchange_tile_limit() <= 1
 }
 
-// Whether the exchange-aware one-in-bag search both applies and terminates: an
-// exchange must be legal, an exchange must count as a zero turn, and a run of
-// zero turns must force the game to end (num_zeros_to_end != 0). Otherwise an
-// exchange chain need never terminate and the position is not exactly solvable.
 fn one_in_bag_exchange_solvable(gc: &game_config::GameConfig) -> bool {
     one_in_bag_exchange_legal(gc) && gc.exchanges_are_zeros() && gc.num_zeros_to_end() != 0
 }
 
-// Whether a run of scoreless turns has met the config's end rule: either enough
-// consecutive passes (num_passes_to_end, when that rule is enabled) or enough
-// consecutive zero turns (num_zeros_to_end, when enabled). A pass advances both
-// counts; an exchange advances only the zero count (and resets the pass count).
 fn scoreless_turns_end(gc: &game_config::GameConfig, passes: u8, zeros: u8) -> bool {
     let npte = gc.num_passes_to_end();
     let nzte = gc.num_zeros_to_end();
     (npte != 0 && passes >= npte) || (nzte != 0 && zeros >= nzte)
 }
 
-// Aggregate one-in-bag hypotheses into a win rate and an expected point margin.
-// Each hypothesis is (weight, scaled point margin). win_score is 1.0 for a win
-// (margin > 0), 0.5 for a draw (margin == 0), 0.0 for a loss (margin < 0).
-// win_pct = sum(win_score * weight) / sum(weight); the expected point margin is
-// sum(margin * weight) / sum(weight), in the same scaled unit as the inputs. An
-// empty (or zero-weight) input returns (0.0, 0.0) rather than a NaN.
 pub fn peg_aggregate(hypotheses: &[(u32, f32)]) -> (f32, f32) {
     let mut total = 0.0f32;
     let mut win_sum = 0.0f32;
@@ -1654,20 +1377,11 @@ pub fn peg_aggregate(hypotheses: &[(u32, f32)]) -> (f32, f32) {
     }
 }
 
-// Reference-check tests for the endgame solver. A small self-contained gaddawg
-// and a set of hand-built and fixed-seed positions drive an obviously-correct
-// plain-negamax reference; the fast solver is asserted to agree with it, to
-// reproduce its own principal-variation value on replay, and to return only
-// legal lines. All values are in movegen's native scaled unit (equity::SCALE
-// = 1000), so the reference and the solver share one consistent scale.
 #[cfg(test)]
 mod tests {
     use super::{EndgameSolver, PegMove};
     use crate::{alphabet, bites, build, game_config, klv, kwg, movegen};
 
-    // ---- tiny gaddawg over a short English word list --------------------------
-    // Two- to four-letter words drawn from the letters A, B, T, H so the racks
-    // below can hook onto them. Kept intentionally small.
     fn tiny_word_list() -> Vec<bites::Bites> {
         let gc = game_config::make_english_game_config();
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
@@ -1678,8 +1392,6 @@ mod tests {
         let mut words = Vec::<bites::Bites>::new();
         let mut buf = Vec::new();
         for w in word_strs {
-            // words with letters not in the alphabet reader would error; all of
-            // the above use A/B/T/H/S/L which the english reader knows.
             if reader.set_word(w, &mut buf).is_ok() {
                 words.push(buf[..].into());
             }
@@ -1698,8 +1410,6 @@ mod tests {
         .unwrap()
     }
 
-    // Apply a Place to a cloned board + the mover's rack, matching
-    // print_best_line's apply logic exactly.
     fn apply_place(
         gc: &game_config::GameConfig,
         board: &mut [u8],
@@ -1721,13 +1431,6 @@ mod tests {
         rack.retain(|&t| t != 0x80);
     }
 
-    // Obviously-correct plain negamax. Returns the game-theoretic endgame point
-    // margin from `mover`'s perspective. NOTE: movegen's Play::Place.score is already
-    // premultiplied by equity::SCALE (=1000); to be internally CONSISTENT the
-    // reference expresses every term in that same scaled unit -- place score
-    // scaled (native), play-out bonus 2*scaled_rack_score, both-pass leftover as
-    // a scaled_rack_score differential. The fast solver values every term in the
-    // same scaled unit, so it agrees with this reference term for term.
     #[allow(clippy::too_many_arguments)]
     fn reference<N: kwg::Node, L: kwg::Node>(
         gc: &game_config::GameConfig,
@@ -1747,7 +1450,7 @@ mod tests {
             klv,
         };
         mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover], 0, true);
-        // collect this node's place moves before recursing (recursion reuses mg).
+
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &mg.plays {
             if let movegen::Play::Place { .. } = &vm.play {
@@ -1768,8 +1471,6 @@ mod tests {
             {
                 let placed = word.iter().filter(|&&t| t != 0).count();
                 let val = if placed == racks[mover].len() {
-                    // playing out: game ends, mover empties the rack. Bonus in
-                    // the SAME scaled unit as the play score.
                     (*score + 2 * alphabet.scaled_rack_score(&racks[opp])) as f32
                 } else {
                     let mut nb = board.to_vec();
@@ -1784,8 +1485,6 @@ mod tests {
         }
 
         let pass_val = if just_passed {
-            // both sides passed: leftover differential, scaled (matches the
-            // scaled play scores and the solver's both_pass_value).
             (alphabet.scaled_rack_score(&racks[opp]) - alphabet.scaled_rack_score(&racks[mover]))
                 as f32
         } else {
@@ -1797,13 +1496,6 @@ mod tests {
         best
     }
 
-    // Obviously-correct plain negamax for the ONE-KNOWN-BAG-TILE case. Mirrors
-    // `reference` but adds the single known draw: after any Place the mover
-    // draws the one bag tile (so the bag empties and the rack cannot empty --
-    // there is no play-out while the bag is non-empty), turning the rest into a
-    // plain empty-bag endgame solved by the empty-bag `reference`. A pass leaves
-    // the tile in the bag; two passes end the game with the bag tile unscored.
-    // Value from `mover`'s view, in the same scaled unit as `reference`.
     #[allow(clippy::too_many_arguments)]
     fn reference_one_in_bag<N: kwg::Node, L: kwg::Node>(
         gc: &game_config::GameConfig,
@@ -1824,7 +1516,7 @@ mod tests {
             klv,
         };
         mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover], 0, true);
-        // collect this node's place moves before recursing (recursion reuses mg).
+
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &mg.plays {
             if let movegen::Play::Place { .. } = &vm.play {
@@ -1832,7 +1524,6 @@ mod tests {
             }
         }
 
-        // a drawn blank lands on the rack as an undesignated blank (byte 0).
         let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
 
         let opp = mover ^ 1;
@@ -1846,14 +1537,11 @@ mod tests {
                 score,
             } = play
             {
-                // the mover plays P and draws the one known bag tile; never a
-                // play-out here because the draw refills the rack.
                 let mut nb = board.to_vec();
                 let mut nr = racks.clone();
                 apply_place(gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                 nr[mover].push(drawn);
-                // now a plain EMPTY-BAG endgame, opp to move: recurse the plain
-                // empty-bag reference (the bag is gone).
+
                 let val = *score as f32 - reference(gc, kwg, klv, mg, &nb, &nr, opp, false);
                 if val > best {
                     best = val;
@@ -1862,8 +1550,6 @@ mod tests {
         }
 
         let pass_val = if just_passed {
-            // both sides passed with the tile still in the bag: leftover point
-            // margin, bag tile unscored.
             (alphabet.scaled_rack_score(&racks[opp]) - alphabet.scaled_rack_score(&racks[mover]))
                 as f32
         } else {
@@ -1875,12 +1561,6 @@ mod tests {
         best
     }
 
-    // Trusted, un-memoized reference for the exchange-aware one-in-bag case: the
-    // same shape as one_in_bag_minimax_ex, but built on the plain-negamax
-    // `reference` empty-bag solver and with no transposition table, so a bug in
-    // the fast search's memo or empty-bag sub-solver shows up as a disagreement.
-    // Kept correct and slow; only used on tiny positions with a short
-    // scoreless-turn end so the un-memoized recursion stays cheap.
     #[allow(clippy::too_many_arguments)]
     fn reference_one_in_bag_ex<N: kwg::Node, L: kwg::Node>(
         gc: &game_config::GameConfig,
@@ -1987,7 +1667,6 @@ mod tests {
         best
     }
 
-    // ---- position construction ------------------------------------------------
     struct Position {
         board: Vec<u8>,
         racks: [Vec<u8>; 2],
@@ -1997,14 +1676,12 @@ mod tests {
         vec![0u8; 15 * 15]
     }
 
-    // place a word horizontally starting at (row, col0)
     fn put_word(board: &mut [u8], row: i8, col0: i8, word: &[u8]) {
         for (k, &t) in word.iter().enumerate() {
             board[(row as usize) * 15 + col0 as usize + k] = t;
         }
     }
 
-    // human-readable rendering of a position
     fn describe(gc: &game_config::GameConfig, pos: &Position) -> String {
         let a = gc.alphabet();
         let mut s = String::new();
@@ -2035,12 +1712,9 @@ mod tests {
         s
     }
 
-    // embedded, hand-built positions
     fn embedded_positions() -> Vec<(String, Position)> {
         let mut out = Vec::new();
 
-        // (1) BOTH sides can only pass. Empty board; neither rack forms a listed
-        // word. B=3,B=3 -> 6; H=4,T=1 -> 5. leftover from p0 = 5-6 = -1 raw.
         out.push((
             "both-pass-only (BB vs HT)".to_string(),
             Position {
@@ -2049,7 +1723,6 @@ mod tests {
             },
         ));
 
-        // (1b) both-pass with a nonzero symmetric-ish leftover the other way.
         out.push((
             "both-pass-only (BB vs BH)".to_string(),
             Position {
@@ -2058,11 +1731,6 @@ mod tests {
             },
         ));
 
-        // (2) One side must pass, other can act. Board has AT across center row 7
-        // cols 6-7. p0 has [B] -> can hook (e.g. TAB/BAT/AB) ; p1 has [B,H] but
-        // BB/BH not words alone off the AT? p1 can still hook. Provide a case
-        // where p1 cannot move: p1 = [Q]? Q not in tiny alphabet moves. Use a
-        // letter with no hooks: give p1 a single tile that forms nothing.
         {
             let mut b = empty_board();
             put_word(&mut b, 7, 6, &[1, 20]); // A T at r7 c6,c7
@@ -2075,7 +1743,6 @@ mod tests {
             ));
         }
 
-        // (3) play-out optimal: empty board, both have 2-tile playable racks.
         out.push((
             "playout race (AB vs AT)".to_string(),
             Position {
@@ -2084,7 +1751,6 @@ mod tests {
             },
         ));
 
-        // (3b) play-out with board present.
         {
             let mut b = empty_board();
             put_word(&mut b, 7, 6, &[1, 20]); // AT
@@ -2097,7 +1763,6 @@ mod tests {
             ));
         }
 
-        // (4) larger-ish: 3-tile racks over a board word.
         {
             let mut b = empty_board();
             put_word(&mut b, 7, 6, &[1, 1, 8]); // A A H (AAH)
@@ -2113,7 +1778,6 @@ mod tests {
         out
     }
 
-    // ---- fixed-seed random positions -----------------------------------------
     fn splitmix64(s: &mut u64) -> u64 {
         *s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = *s;
@@ -2138,13 +1802,12 @@ mod tests {
         let mut made = 0usize;
         while made < n {
             let mut b = empty_board();
-            // place one word horizontally on a random row, random start col.
+
             let w = &words[(splitmix64(&mut seed) as usize) % words.len()];
             let row = (splitmix64(&mut seed) % 15) as i8;
             let col0 = (splitmix64(&mut seed) % (15 - w.len() as u64)) as i8;
             put_word(&mut b, row, col0, w);
-            // build two racks, size 2 (occasionally 3), from the letter set +
-            // occasional blank (0).
+
             let mut racks: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
             for rack in racks.iter_mut() {
                 let size = if splitmix64(&mut seed).is_multiple_of(5) {
@@ -2178,7 +1841,6 @@ mod tests {
         v
     }
 
-    // ---- the differential probe ----------------------------------------------
     #[test]
     fn differential_reference_vs_solve() {
         let gc = game_config::make_english_game_config();
@@ -2208,35 +1870,19 @@ mod tests {
         assert_eq!(disagreements, 0, "solve() disagreed with the reference");
     }
 
-    // ---- PEG one-in-bag aggregation -------------------------------------------
-    // Pure arithmetic check of peg_aggregate, no solver involved: a win with
-    // weight 2, a draw, and a loss. win_sum = 1*2 + 0.5*1 + 0*1 = 2.5 over total
-    // weight 4 -> win% 0.625; margin_sum = 3000*2 + 0 + (-5000)*1 = 1000 over 4
-    // -> expected margin 250 (scaled). Every value divides exactly in f32.
     #[test]
     fn peg_aggregate_arithmetic() {
         let (win_pct, expected) = super::peg_aggregate(&[(2, 3000.0), (1, 0.0), (1, -5000.0)]);
         assert_eq!(win_pct, 0.625);
         assert_eq!(expected, 250.0);
-        // win-score mapping at the boundaries, all equal weight.
+
         let (win_pct, expected) = super::peg_aggregate(&[(1, 1.0), (1, 0.0), (1, -1.0)]);
         assert_eq!(win_pct, 0.5);
         assert_eq!(expected, 0.0);
-        // empty input is NaN-free.
+
         assert_eq!(super::peg_aggregate(&[]), (0.0, 0.0));
     }
 
-    // ---- PEG one-in-bag hand-checkable position -------------------------------
-    // Empty board. The mover (p0) holds a lone B (3 pts); a single tile on an
-    // empty board forms no word, so p0 can only pass. The unseen multiset is
-    // {H, T} (one each), so exactly one is in the bag and the other is the
-    // opponent's one-tile rack -- and that lone tile also forms no word, so the
-    // opponent can only pass too. Both pass, the bag tile stays unseen and
-    // unscored, and the point margin is the opponent's kept tile minus B (3).
-    //   bag = H  -> opp rack [T]: margin = 1 - 3 = -2 pts (-2000 scaled), loss
-    //   bag = T  -> opp rack [H]: margin = 4 - 3 = +1 pt  (+1000 scaled), win
-    // One win and one loss, equal weight: win% = 0.5; expected margin =
-    // (-2000 + 1000) / 2 = -500 scaled.
     #[test]
     fn peg_one_in_bag_hand_checkable() {
         let gc = game_config::make_english_game_config();
@@ -2254,15 +1900,11 @@ mod tests {
             .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
             .expect("english one-in-bag is always solvable");
 
-        // hypotheses come out in ascending tile order (H = 8, then T = 20).
         assert_eq!(result.hypotheses, vec![(8, 1, -2000.0), (20, 1, 1000.0)]);
         assert_eq!(result.win_pct, 0.5);
         assert_eq!(result.expected_margin, -500.0);
     }
 
-    // Same position, but the mover is already up 3 points on the board before
-    // this PEG position: score_diff shifts every hypothesis's margin by that
-    // much, so what was a 50/50 split (one win, one loss) becomes two wins.
     #[test]
     fn peg_one_in_bag_score_diff_shifts_the_outcome() {
         let gc = game_config::make_english_game_config();
@@ -2280,18 +1922,11 @@ mod tests {
             .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 3000.0)
             .expect("english one-in-bag is always solvable");
 
-        // -2000 + 3000 = 1000 (win); 1000 + 3000 = 4000 (win).
         assert_eq!(result.hypotheses, vec![(8, 1, 1000.0), (20, 1, 4000.0)]);
         assert_eq!(result.win_pct, 1.0);
         assert_eq!(result.expected_margin, 2500.0);
     }
 
-    // ---- PV-playout invariant -------------------------------------------------
-    // Replay solve()'s principal variation and check the realized final value
-    // equals solve()'s returned value. This is a self-consistency check, so the
-    // replay mirrors the solver's own accounting exactly (scaled play score,
-    // scaled play-out bonus, scaled both-pass leftover); it must reproduce the
-    // returned value the solver computed.
     #[test]
     fn pv_playout_invariant() {
         let gc = game_config::make_english_game_config();
@@ -2307,7 +1942,6 @@ mod tests {
             let v = egs.solve(0);
             egs.collect_pv(0, &mut pv);
 
-            // replay
             let a = gc.alphabet();
             let mut board = pos.board.clone();
             let mut racks = pos.racks.clone();
@@ -2364,7 +1998,6 @@ mod tests {
         assert_eq!(bad, 0, "PV replay did not reproduce solve()'s value");
     }
 
-    // ---- properties -----------------------------------------------------------
     #[test]
     fn properties_pv_legal_and_value_bounds() {
         let gc = game_config::make_english_game_config();
@@ -2382,9 +2015,6 @@ mod tests {
             let v = egs.solve(0);
             egs.collect_pv(0, &mut pv);
 
-            // value bound: |v| <= a generous scaled cap. Every solve value is in
-            // the scaled unit (place score, doubled leftover bonus, and both-pass
-            // leftover all scaled), so a scaled cap bounds it.
             let a = gc.alphabet();
             let board_pts: i32 = pos.board.iter().map(|&t| a.scaled_score(t)).sum();
             let rack_pts = a.scaled_rack_score(&pos.racks[0]) + a.scaled_rack_score(&pos.racks[1]);
@@ -2394,8 +2024,6 @@ mod tests {
                 println!("VALUE OOB [{name}]: v={v} cap={cap}");
             }
 
-            // legality: replay, and at each place step re-generate and confirm
-            // the played word/coords appear among generated place moves.
             let mut board = pos.board.clone();
             let mut racks = pos.racks.clone();
             let mut mover = 0usize;
@@ -2459,11 +2087,6 @@ mod tests {
         assert_eq!(oob, 0, "a solve() value exceeded the scaled bound");
     }
 
-    // ---- one-in-bag: differential vs the trusted reference --------------------
-    // On a handful of small positions, with a chosen bag tile drawable from the
-    // tiny alphabet, assert solve_one_in_bag(mover, T) reproduces the
-    // reference_one_in_bag value exactly (bit-for-bit in the scaled unit), for
-    // BOTH movers and several distinct T.
     #[test]
     fn differential_one_in_bag() {
         let gc = game_config::make_english_game_config();
@@ -2472,14 +2095,11 @@ mod tests {
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
 
-        // A=1 B=2 T=20 H=8 in this tiny alphabet, plus blank (0). These are all
-        // drawable "one tile left in the bag" hypotheses.
         let bag_tiles: [u8; 4] = [1, 8, 20, 0];
 
         let mut disagreements = 0usize;
         let mut total = 0usize;
-        // a modest slice of small positions is plenty; each one_in_bag node
-        // expands into a full empty-bag solve per play, so keep it small.
+
         let mut positions = embedded_positions();
         positions.extend(random_positions(12));
         for (name, pos) in positions {
@@ -2517,14 +2137,6 @@ mod tests {
         );
     }
 
-    // ---- one-in-bag: hand-checkable forced double-pass ------------------------
-    // Empty board; neither rack forms a listed word and the lone bag tile is
-    // also unplayable, so BOTH sides can only pass. The game ends on the double
-    // pass with the bag tile unscored, so the value is exactly the leftover
-    // point margin: scaled_rack_score(opp) - scaled_rack_score(mover).
-    // p0 = [B,B] -> 3+3 = 6 pts; p1 = [H,T] -> 4+1 = 5 pts (scaled x1000).
-    // From p0's view the value is (5 - 6) * 1000 = -1000; from p1's, +1000.
-    // The bag tile below is B (=2), which forms nothing on the empty board.
     #[test]
     fn one_in_bag_forced_double_pass() {
         let gc = game_config::make_english_game_config();
@@ -2536,7 +2148,7 @@ mod tests {
 
         let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
-        // p0 to move, one B left in the bag.
+
         let v0 = egs.solve_one_in_bag(0, 2);
         assert_eq!(v0, -1000.0, "p0 forced-pass leftover should be -1000");
 
@@ -2546,15 +2158,6 @@ mod tests {
         assert_eq!(v1, 1000.0, "p1 forced-pass leftover should be +1000");
     }
 
-    // ---- one-in-bag: hand-checkable play-out after the draw -------------------
-    // Empty board; p0 holds [A,B] and there is one A (=1) in the bag. p0 can
-    // play a two-tile word (AB or BA, each scoring 1+3 = 4 = 4000 scaled) and
-    // then draws the A, leaving p0 with [A]. It is then a plain empty-bag
-    // endgame with p1 to move. Rather than pin the exact deep value (which
-    // depends on p1's best reply), assert the bag layer AGREES with the trusted
-    // reference here, and that playing beats passing for p0 (a nonnegative value
-    // vs the pass-only leftover). This exercises the "draw then empty-bag solve"
-    // path directly.
     #[test]
     fn one_in_bag_play_then_draw() {
         let gc = game_config::make_english_game_config();
@@ -2573,10 +2176,6 @@ mod tests {
         let solvev = egs.solve_one_in_bag(0, bag);
         assert_eq!(solvev.to_bits(), refv.to_bits(), "bag layer vs reference");
 
-        // p0 can play (and does no worse than the pass-only leftover). The
-        // pass-only leftover from p0's view here is (p1 - p0) points =
-        // (5 - 4) * 1000 = 1000; pass is always an option in the minimax, so the
-        // solved value is >= that regardless of how the play lines resolve.
         let a = gc.alphabet();
         let pass_only = (a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0])) as f32;
         assert!(
@@ -2585,12 +2184,6 @@ mod tests {
         );
     }
 
-    // ---- one-in-bag with exchange: differential vs the trusted reference ------
-    // Under a config that allows exchanging against a one-tile bag (the
-    // Spanish-style test config), assert solve_one_in_bag reproduces the
-    // un-memoized reference_one_in_bag_ex exactly, for both movers and several
-    // bag tiles. This exercises the exchange search, its zero-turn end handling,
-    // and its transposition table against an independent slow solver.
     #[test]
     fn differential_one_in_bag_exchange() {
         let gc = game_config::make_exchange_test_game_config();
@@ -2603,9 +2196,7 @@ mod tests {
 
         let mut disagreements = 0usize;
         let mut total = 0usize;
-        // tiny positions only (racks of at most two tiles): each exchange node
-        // fans out over the whole rack and the reference has no transposition
-        // table, so the un-memoized recursion cost climbs fast with rack size.
+
         let positions: Vec<(String, Position)> = embedded_positions()
             .into_iter()
             .filter(|(_, pos)| pos.racks[0].len() <= 2 && pos.racks[1].len() <= 2)
@@ -2648,16 +2239,6 @@ mod tests {
         );
     }
 
-    // ---- one-in-bag with exchange: hand-checkable, exchange beats passing -----
-    // Exchange-allowing config, empty board. p0 holds a lone Q (10 pts) and there
-    // is one A (1 pt) in the bag; p1 holds a lone A. A single tile on an empty
-    // board plays nothing, so p0's only moves are pass and exchange.
-    //   - Pass-out with the Q kept: leftover is p1(A=1) - p0(Q=10) = -9 pts.
-    //   - Exchange Q for the bag A: p0 becomes [A], the Q goes into the bag. p1
-    //     will not take the Q back (that only helps p0), so everyone passes out
-    //     with p0=[A] and p1=[A]: leftover 0.
-    // So exchanging is strictly better: the solved value is exactly 0, well above
-    // the -9000 pass-only leftover.
     #[test]
     fn one_in_bag_exchange_beats_passing() {
         let gc = game_config::make_exchange_test_game_config();
@@ -2681,16 +2262,11 @@ mod tests {
         );
     }
 
-    // ---- one-in-bag PEG: exchange-legal configs are solved, not declined ------
-    // The exchange-allowing config produces a real PegResult (Ok), while a config
-    // that allows the exchange but can never force the game to end is declined
-    // honestly rather than answered with a silently wrong no-exchange number.
     #[test]
     fn peg_one_in_bag_exchange_solved_or_declined() {
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
 
-        // solvable exchange config -> Ok with the expected hypotheses.
         let gc = game_config::make_exchange_test_game_config();
         let board = empty_board();
         let mover_rack = [2u8]; // B, unplayable alone on an empty board
@@ -2703,7 +2279,6 @@ mod tests {
             .expect("the exchange test config forces an end and is solvable");
         assert_eq!(result.hypotheses.len(), 2);
 
-        // English is not exchange-legal at a one-tile bag, so it is solved too.
         let gc_en = game_config::make_english_game_config();
         let mut egs_en = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_en, &kwg);
         assert!(
@@ -2712,8 +2287,6 @@ mod tests {
                 .is_ok()
         );
 
-        // a config that allows the exchange but never forces an end is declined
-        // honestly, not answered with a silently wrong no-exchange number.
         let gc_bad = game_config::make_exchange_unsolvable_test_game_config();
         let mut egs_bad = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_bad, &kwg);
         assert!(matches!(
@@ -2722,12 +2295,6 @@ mod tests {
         ));
     }
 
-    // Differential: the committed solver (`solve_peg_one_in_bag`, now
-    // `max_M E_T value(M,T)`) must equal an independent committed reference built
-    // on the trusted plain-negamax `reference` empty-bag solver, and must never
-    // exceed the clairvoyant `E_T max_M` bound (`peg_clairvoyant_aggregate`). The
-    // scan also confirms the toy corpus actually exercises the strict
-    // committed < clairvoyant case (else the test would prove nothing).
     #[test]
     fn differential_peg_committed() {
         let gc = game_config::make_english_game_config();
@@ -2738,10 +2305,6 @@ mod tests {
         let a = gc.alphabet();
         let alen = a.len() as usize;
 
-        // committed reference: fix the mover's first move, average over bag
-        // tiles, keep the best move (ranked by win% then margin, macondo order).
-        // opp holds (unseen minus the drawn bag tile). Returns (win%, margin,
-        // best_is_place, label).
         let committed = |board: &[u8],
                          mover_rack: &[u8],
                          unseen: &[(u8, u32)],
@@ -2792,9 +2355,6 @@ mod tests {
                             *score as f32 - reference(&gc, &kwg, &klv, mg, &nb, &nr, opp, false)
                         }
                         _ => {
-                            // pass: mover drew nothing; opponent faces the
-                            // one-in-bag with a pass already on the clock
-                            // (just_passed = true), matching the solver's pass arm.
                             let nr = [mover_rack.to_vec(), opp_rack];
                             -reference_one_in_bag(&gc, &kwg, &klv, mg, board, &nr, opp, t, true)
                         }
@@ -2866,15 +2426,15 @@ mod tests {
                             unseen.push((ti, 1));
                             unseen.push((tj, 1));
                         }
-                        // committed solver (the shipped path).
+
                         let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
                         let got = egs
                             .solve_peg_one_in_bag(0, board, mrack, &unseen_tally, 0.0)
                             .expect("english one-in-bag is always solvable");
-                        // independent committed reference.
+
                         let (ref_win, ref_marg, _ref_place, _ref_label) =
                             committed(board, mrack, &unseen, &mut mg);
-                        // clairvoyant bound (E_T max_M).
+
                         let mut egs2 = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
                         let clair =
                             egs2.peg_clairvoyant_aggregate(0, board, mrack, &unseen_tally, 0.0);
