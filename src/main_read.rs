@@ -800,7 +800,6 @@ fn do_wg_dawg<R: WgReader>(
     )
 }
 
-// output format not guaranteed to be stable.
 fn do_wg_nodes<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
@@ -844,7 +843,6 @@ fn do_wg_nodes<R: WgReader>(
     Ok(())
 }
 
-// output format not guaranteed to be stable.
 fn do_wg_prob<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
