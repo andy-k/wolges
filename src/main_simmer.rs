@@ -247,8 +247,7 @@ fn main() -> error::Returns<()> {
     driver.set_observe(true);
     driver.set_verbose(false);
     driver.set_num_sim_iters(10000);
-    // run in chunks so the leaderboard can be shown as it converges, exercising
-    // the resumable accumulator.
+
     let chunk = 50u64;
     let mut done = 0u64;
     driver.begin_decision(&move_generator, &game_state, chunk);
