@@ -9,9 +9,6 @@ use wolges::{
     game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
 
-// opt-in endgame-position harvester (WOLGES_ENDGAME_HARVEST=<path>): a single
-// shared writer that every worker appends bag-empty positions to. None when the
-// env var is unset, in which case autoplay is byte-identical to before.
 type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
 
 fn main() -> error::Returns<()> {
@@ -44,7 +41,6 @@ fn main() -> error::Returns<()> {
         return Ok(());
     }
 
-    // set up the harvester once; None (env unset) means no behavior change.
     let harvest: Option<HarvestWriter> = match std::env::var("WOLGES_ENDGAME_HARVEST") {
         Ok(path) => Some(Arc::new(Mutex::new(BufWriter::new(File::create(path)?)))),
         Err(_) => None,
@@ -218,7 +214,7 @@ fn do_it<N: kwg::Node + Sync>(
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
         final_scores.iter_mut().for_each(|s| *s = 0);
-        //timers.reset_to(25 * 60 * 1000);
+
         timers.reset_to(15 * 1000);
 
         loop {
@@ -282,14 +278,14 @@ fn do_it<N: kwg::Node + Sync>(
                     always_include_pass: false,
                     dynamic_leaves: None,
                 });
-                // test word prune, only for classic.
+
                 let plays2;
                 let plays = if match &board_snapshot.game_config.game_rules() {
                     game_config::GameRules::Classic => true,
                     game_config::GameRules::Jumbled => false,
                 } {
                     let plays1 = move_generator.plays.clone();
-                    // these always allocate for now.
+
                     let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
                     move_generator.gen_remaining_words(board_snapshot, |word: &[u8]| {
                         set_of_words.insert(word.into());
@@ -342,7 +338,6 @@ fn do_it<N: kwg::Node + Sync>(
                 }
             }
 
-            // stress-test scoring algorithm
             if match &board_snapshot.game_config.game_rules() {
                 game_config::GameRules::Classic => false,
                 game_config::GameRules::Jumbled => false,
@@ -430,7 +425,6 @@ fn do_it<N: kwg::Node + Sync>(
             }
 
             if false {
-                // not required for now.
                 move_generator.reset_for_another_kwg();
             }
             move_picker.pick_a_move(
@@ -462,8 +456,6 @@ fn do_it<N: kwg::Node + Sync>(
             }
             game_state.next_turn();
 
-            // harvest bag-empty endgame positions when opted in. off path is a
-            // single None-check per turn; on path formats + writes under lock.
             if let Some(harvest) = &harvest
                 && game_state.bag.is_empty()
             {
