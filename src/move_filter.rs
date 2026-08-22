@@ -130,17 +130,14 @@ impl<'a> Tilt<'a> {
 
     #[inline(always)]
     pub fn tilt_to(&mut self, new_tilt_factor: i32, bot_level: i8) {
-        // 0 = untilted (can see all valid moves)
-        // TILT_DENOM = tilted (can see no valid moves)
         self.tilt_factor = new_tilt_factor.clamp(0, TILT_DENOM);
-        // 0.1 * 1024 ≈ 102
+
         self.leave_scale =
             (bot_level as i32 * 102 + TILT_DENOM - self.tilt_factor).clamp(0, LEAVE_SCALE_DENOM);
     }
 
     #[inline(always)]
     pub fn tilt_by_rng(&mut self, rng: &mut dyn Rng, bot_level: i8) {
-        // range: (0.5 - bot_level * 0.1) .. 1.0, scaled to 0..TILT_DENOM
         let lo = TILT_DENOM / 2 - bot_level as i32 * 102;
         self.tilt_to(rng.random_range(lo..TILT_DENOM), bot_level);
     }
@@ -155,15 +152,8 @@ impl<'a> Tilt<'a> {
             let word_len = word.len();
             let this_wp = self.word_prob.word_draw_ways(word);
             let max_wp = self.max_prob_by_len[word_len];
-            // Accept if: importance[len] * p*(2-p) >= tilt_factor,
-            // where p = this_wp / max_wp.
-            //
-            // Rewrite as: importance[len] * this_wp*(2*max_wp - this_wp) / max_wp^2
-            //              >= tilt_factor / TILT_DENOM
-            //
-            // Cross-multiply (all terms non-negative):
-            //   imp * this_wp * (2*max_wp - this_wp) * TILT_DENOM
-            //     >= tilt_factor * IMPORTANCE_DENOM * max_wp * max_wp
+            // accept if importance[len] * p*(2-p) >= tilt_factor, p = this_wp / max_wp, cross
+            // multiplied so every term stays a non-negative integer.
             let imp = self.length_importances[word_len] as u128;
             let twp = this_wp as u128;
             let mwp = max_wp as u128;
