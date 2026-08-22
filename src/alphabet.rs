@@ -181,7 +181,6 @@ impl Alphabet {
         self.get(idx & !((idx as i8) >> 7) as u8).score
     }
 
-    /// Score premultiplied by equity::SCALE (millipoints). Precomputed at construction.
     #[inline(always)]
     pub fn scaled_score(&self, idx: u8) -> i32 {
         self.get(idx & !((idx as i8) >> 7) as u8).scaled_score as i32
