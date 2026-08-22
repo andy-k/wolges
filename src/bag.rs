@@ -65,7 +65,6 @@ impl Bag {
         }
     }
 
-    // Even players draw from back, odd players draw from front.
     pub fn replenish(&mut self, rack: &mut Vec<u8>, rack_size: usize, player_index: usize) {
         if player_index.is_multiple_of(2) {
             self.replenish_back(rack, rack_size);
@@ -121,7 +120,6 @@ impl Bag {
         self.tiles.len() <= self.fc
     }
 
-    // Order-preserving removal: shift right portion left, pop.
     pub fn remove_tile(&mut self, tile: u8) -> Option<()> {
         self.tiles[self.fc..]
             .iter()
@@ -134,9 +132,6 @@ impl Bag {
             })
     }
 
-    // Put back m tiles in random order. Keep the existing n tiles in order.
-    // If fc >= m: vec.len() unchanged, fc -= m (no allocation).
-    // If fc < m: vec.len() += m, fc unchanged.
     pub fn put_back(&mut self, rng: &mut dyn Rng, tiles: &[u8]) {
         let m = tiles.len();
         if m == 0 {
@@ -144,7 +139,6 @@ impl Bag {
         }
         let n = self.len();
         if m == 1 {
-            // Insert 1 tile at a uniformly random position among n+1 slots.
             let pos = rng.random_range(0..n + 1);
             if self.fc >= 1 {
                 self.fc -= 1;
@@ -159,9 +153,6 @@ impl Bag {
             return;
         }
         if m == 2 {
-            // Insert 2 tiles at 2 uniformly random positions among n+2 slots.
-            // The swap doubles as a coin flip for tile assignment order,
-            // giving all (n+2)(n+1) ordered arrangements uniformly.
             let a = rng.random_range(0..n + 1);
             let b = rng.random_range(0..n + 2);
             let (a, b, first, second) = if a < b {
@@ -171,8 +162,7 @@ impl Bag {
             };
             if self.fc >= 2 {
                 self.fc -= 2;
-                // Old at fc+2..fc+2+n. Left-to-right:
-                // old[0..a] shift -2, old[a..b-1] shift -1, old[b-1..n] stays.
+
                 self.tiles
                     .copy_within(self.fc + 2..self.fc + 2 + a, self.fc);
                 self.tiles[self.fc + a] = first;
@@ -181,8 +171,7 @@ impl Bag {
                 self.tiles[self.fc + b] = second;
             } else {
                 self.tiles.resize(self.fc + n + 2, 0);
-                // Old at fc..fc+n. Right-to-left:
-                // old[b-1..n] shift +2, old[a..b-1] shift +1, old[0..a] stays.
+
                 self.tiles
                     .copy_within(self.fc + b - 1..self.fc + n, self.fc + b + 1);
                 self.tiles[self.fc + b] = second;
@@ -192,18 +181,14 @@ impl Bag {
             }
             return;
         }
-        // General case: m >= 3. Interleave with Fisher-Yates probability.
-        // Scratch buffer for new tiles stored in self.tiles itself.
+
         let mut remaining_new = m;
         let mut remaining_old = n;
         if self.fc >= m {
-            // Dead space: left-to-right (wp <= old_ptr since new_placed <= m).
             let new_base = if self.fc >= 2 * m {
-                // Scratch in dead space [0..m), disjoint from write range [fc-m..fc+n).
                 self.tiles[..m].copy_from_slice(tiles);
                 0
             } else {
-                // fc < 2m: dead space overlaps write range. Use vec's back.
                 self.tiles.extend_from_slice(tiles);
                 self.fc + n
             };
@@ -235,8 +220,6 @@ impl Bag {
                 self.tiles.truncate(self.fc + m + n);
             }
         } else {
-            // Grow: right-to-left (wp >= old_ptr since new_placed <= m).
-            // Scratch at [fc+n+m..fc+n+2m), disjoint from write range [fc..fc+n+m).
             let final_len = self.fc + n + m;
             self.tiles.resize(final_len + m, 0);
             self.tiles[final_len..].copy_from_slice(tiles);
