@@ -1,44 +1,16 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-// Empirical win-probability table backfilled from self-play, keyed by the
-// count-state (bag, my, opp) -- the bag size and the two rack sizes -- that
-// the player on move faces. It replaces a fixed sigmoid as a win_prob
-// estimator and gives the census a win%-objective.
-//
-// Storage is a RAW SPARSE INTEGER histogram: per key, the (delta, count) pairs
-// where future swings landed, where delta = final_spread - snapshot_spread
-// from the mover's view. This is the composable num/den primitive -- merging
-// two runs just adds counts -- and it is lossless and self-describing (no
-// fixed spread cap or unseen grid is baked in; a key spans exactly its
-// observed deltas).
-//
-// Method (the cumulative trick): static self-play is score-independent, so the
-// trajectory from a state onward does not depend on the lead at that state.
-// One game therefore informs every hypothetical lead: a state with lead s wins
-// iff the future swing exceeds -s. Hence
-//   win%(s, key) = P(delta > -s | key) + 0.5 P(delta == -s | key),
-// monotone nondecreasing in s by construction. The reader symmetrizes each
-// key's histogram (folding delta with -delta) so win%(0, key) == 0.5 and
-// win%(s, key) + win%(-s, key) == 1 exactly, then reverse-cumulates into a
-// dense per-key row for O(1) get.
-//
-// Why (bag, my, opp) and not a scalar unseen count: a scalar comingles the
-// rack split in the endgame, which is exactly where a win_prob estimate
-// matters most. The state space is L-shaped (bag > 0 implies both racks are
-// full, since you draw back up; only when the bag empties do racks deplete),
-// so the keyed form is the scalar midgame and exact in the endgame at little
-// extra cost.
+// a raw sparse histogram of future swings per (bag, my, opp) count-state, so two
+// runs merge by adding counts. The reader symmetrizes each key, which is what
+// makes win%(0) exactly 0.5, then reverse-cumulates for an O(1) read.
 
 use std::collections::{BTreeMap, HashMap};
 
-// (bag, my, opp). bag is u16 to cover larger tile sets; rack sizes fit u8.
 pub type Key = (u16, u8, u8);
 
-// CSV format tag and version on the self-describing header line.
 const CSV_TAG: &str = "winpct";
 const CSV_VERSION: &str = "2";
 
-// Accumulates the raw per-key delta histogram. Composable via merge.
 #[derive(Default)]
 pub struct WinPctAccumulator {
     rows: BTreeMap<Key, BTreeMap<i32, u64>>,
@@ -51,9 +23,6 @@ impl WinPctAccumulator {
         }
     }
 
-    // Record one snapshot from the mover's view: the player on move held a lead
-    // of `spread` at count-state (bag, my, opp) and finished at `final_spread`.
-    // Tallies the raw future swing delta = final_spread - spread.
     pub fn record(&mut self, bag: usize, my: usize, opp: usize, spread: i32, final_spread: i32) {
         let key = (bag as u16, my as u8, opp as u8);
         *self
@@ -64,7 +33,6 @@ impl WinPctAccumulator {
             .or_insert(0) += 1;
     }
 
-    // Add another accumulator's counts into this one (the composable merge).
     pub fn merge(&mut self, other: &WinPctAccumulator) {
         for (key, hist) in &other.rows {
             let dst = self.rows.entry(*key).or_default();
@@ -74,9 +42,6 @@ impl WinPctAccumulator {
         }
     }
 
-    // Raw sparse CSV: a structured header line, then one line per key
-    //   bag,my,opp,total,delta:count,delta:count,...
-    // (deltas ascending; total = sum of counts, a redundant checksum).
     pub fn to_csv(&self) -> String {
         use std::fmt::Write as _;
         let mut out = format!("{CSV_TAG},{CSV_VERSION},bag,my,opp\n");
@@ -133,11 +98,9 @@ impl WinPctAccumulator {
         Ok(acc)
     }
 
-    // Symmetrize and reverse-cumulate each key into a dense O(1) lookup row.
     pub fn finalize(&self) -> WinPctTable {
         let mut rows = HashMap::with_capacity(self.rows.len());
         for (&key, hist) in &self.rows {
-            // cap = widest observed |delta|; the symmetric row spans [-cap, cap].
             let cap = match hist.keys().map(|d| d.unsigned_abs()).max() {
                 Some(c) => c as i32,
                 None => continue,
@@ -149,9 +112,7 @@ impl WinPctAccumulator {
                 sym[(-delta + cap) as usize] += count;
             }
             let total = sym.iter().sum::<u64>() as f64;
-            // For lead s the break-even swing is delta == -s; win iff delta > -s
-            // with half credit at equality. Walk spreads s from -cap to cap;
-            // index i = s + cap, break bucket j = width - 1 - i.
+
             let mut win = vec![0.0f32; width];
             let mut strictly_greater = 0u64;
             for i in 0..width {
@@ -165,28 +126,20 @@ impl WinPctAccumulator {
     }
 }
 
-// Per key, a dense win% row over the key's observed spread range [-cap, cap];
-// queries past either end saturate to 0.0 / 1.0.
 struct DenseRow {
     cap: i32,
     win: Vec<f32>,
 }
 
-// Finalized win-probability lookup.
 pub struct WinPctTable {
     rows: HashMap<Key, DenseRow>,
 }
 
 impl WinPctTable {
-    // P(mover wins | lead `spread`, count-state (bag, my, opp)). An unsampled
-    // key returns 0.5; a spread past the key's observed range saturates.
     pub fn get(&self, spread: i32, bag: usize, my: usize, opp: usize) -> f32 {
         self.get_opt(spread, bag, my, opp).unwrap_or(0.5)
     }
 
-    // Like get, but distinguishes an unsampled key (None) from a sampled 0.5, so
-    // a caller can fall back to its own estimator only where the table has no
-    // data. A spread past the key's observed range still saturates to 0.0 / 1.0.
     pub fn get_opt(&self, spread: i32, bag: usize, my: usize, opp: usize) -> Option<f32> {
         match self.rows.get(&(bag as u16, my as u8, opp as u8)) {
             None => None,
@@ -207,8 +160,6 @@ mod tests {
 
     const EPS: f32 = 1e-5;
 
-    // Future swings symmetric about zero give a monotone, antisymmetric
-    // table that is 0.5 at lead 0 and saturates past the range.
     #[test]
     fn finalize_is_monotone_symmetric_and_half_at_zero() {
         let mut acc = WinPctAccumulator::new();
@@ -221,44 +172,42 @@ mod tests {
             "got {}",
             t.get(0, 50, 7, 7)
         );
-        // a lead past the widest observed swing is a certain win (and loss).
+
         assert!((t.get(999, 50, 7, 7) - 1.0).abs() < EPS);
         assert!((t.get(-999, 50, 7, 7) - 0.0).abs() < EPS);
-        // monotone nondecreasing in spread.
+
         let mut prev = -1.0f32;
         for s in -60..=60 {
             let w = t.get(s, 50, 7, 7);
             assert!(w >= prev - EPS, "not monotone at s={s}: {w} < {prev}");
             prev = w;
         }
-        // antisymmetric.
+
         for s in [7, 23, 41] {
             assert!((t.get(s, 50, 7, 7) + t.get(-s, 50, 7, 7) - 1.0).abs() < EPS);
         }
     }
 
-    // A single observed swing informs every hypothetical lead, with a half
-    // credit at the exact break-even (tie) and saturation just past it.
     #[test]
     fn cumulative_informs_all_leads() {
         let mut acc = WinPctAccumulator::new();
         acc.record(60, 7, 7, 0, -45); // one game swung -45 from this state.
         let t = acc.finalize();
-        // lead 50: even the -45 swing leaves +5 -> certain win (past the range).
+
         assert!(
             (t.get(50, 60, 7, 7) - 1.0).abs() < EPS,
             "got {}",
             t.get(50, 60, 7, 7)
         );
-        // lead 46: -45 swing leaves +1 -> still a win (past the range).
+
         assert!((t.get(46, 60, 7, 7) - 1.0).abs() < EPS);
-        // lead 45: -45 swing is an exact tie -> half credit.
+
         assert!(
             (t.get(45, 60, 7, 7) - 0.75).abs() < EPS,
             "got {}",
             t.get(45, 60, 7, 7)
         );
-        // lead 40: -45 swing loses, +45 swing wins -> 0.5.
+
         assert!(
             (t.get(40, 60, 7, 7) - 0.5).abs() < EPS,
             "got {}",
@@ -266,7 +215,6 @@ mod tests {
         );
     }
 
-    // Spreads past the observed range saturate to the extremes.
     #[test]
     fn get_saturates_out_of_range() {
         let mut acc = WinPctAccumulator::new();
@@ -276,7 +224,7 @@ mod tests {
         let t = acc.finalize();
         assert!((t.get(999_999, 50, 7, 7) - 1.0).abs() < EPS);
         assert!((t.get(-999_999, 50, 7, 7) - 0.0).abs() < EPS);
-        // the widest observed lead is not yet a certain win (opp can still tie).
+
         assert!(
             (t.get(30, 50, 7, 7) - 0.875).abs() < EPS,
             "got {}",
@@ -284,7 +232,6 @@ mod tests {
         );
     }
 
-    // An unsampled key falls back to 0.5 everywhere.
     #[test]
     fn absent_key_is_half() {
         let mut acc = WinPctAccumulator::new();
@@ -295,10 +242,6 @@ mod tests {
         }
     }
 
-    // Distinct keys keep their own swings -- one key's data does not
-    // bleed into another. (50,7,7) sees tight swings; (50,6,7) wide ones, so the
-    // same +10 lead is a certain win at the tight key but a coin flip at the
-    // wide one.
     #[test]
     fn distinct_keys_independent() {
         let mut acc = WinPctAccumulator::new();
@@ -319,13 +262,11 @@ mod tests {
             "wide: {}",
             t.get(10, 50, 6, 7)
         );
-        // both stay 0.5 at lead 0 (symmetrized per key).
+
         assert!((t.get(0, 50, 7, 7) - 0.5).abs() < EPS);
         assert!((t.get(0, 50, 6, 7) - 0.5).abs() < EPS);
     }
 
-    // Merging two accumulators equals recording every snapshot into one (the
-    // composable num/den primitive).
     #[test]
     fn merge_is_additive() {
         let mut a = WinPctAccumulator::new();
@@ -359,7 +300,6 @@ mod tests {
         }
     }
 
-    // The raw sparse format round-trips losslessly through CSV.
     #[test]
     fn csv_raw_round_trip() {
         let mut acc = WinPctAccumulator::new();
@@ -381,7 +321,6 @@ mod tests {
         }
     }
 
-    // The header is a structured first line; no '#' comment lines anywhere.
     #[test]
     fn csv_header_is_structured() {
         let mut acc = WinPctAccumulator::new();
@@ -392,10 +331,6 @@ mod tests {
         assert!(!csv.lines().any(|l| l.starts_with('#')), "no '#' comments");
     }
 
-    // The english-winpct-combine pipeline: parse several raw CSVs, merge, and
-    // the result equals one table built from all the records at once. Exercises
-    // the CSV boundary (to_csv/from_csv) that the CLI crosses, not just an
-    // in-memory merge.
     #[test]
     fn combine_csvs_sums_counts() {
         let mut a = WinPctAccumulator::new();
