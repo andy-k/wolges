@@ -33,8 +33,6 @@ impl Pascal {
         &self.raw[start..start + row + 1]
     }
 
-    // Eagerly build rows 0..num_rows so binom() can read immutably (and across
-    // threads) without the lazy &mut growth.
     pub fn with_rows(num_rows: usize) -> Self {
         let mut p = Self::new();
         if num_rows > 1 {
@@ -68,8 +66,7 @@ impl WordProbability {
             .map(|tile| alphabet.freq(tile))
             .collect::<Box<_>>();
         let word_tally = vec![0; alphabet_freqs.len()].into_boxed_slice();
-        // build Pascal eagerly up to the largest single-letter count, so binom()
-        // reads immutably -- this lets the draw-ways helpers take &self.
+
         let max_freq = alphabet_freqs.iter().copied().max().unwrap_or(0) as usize;
         Self {
             dp: vec![0; alphabet_freqs[0] as usize + 1].into_boxed_slice(),
@@ -147,19 +144,12 @@ impl WordProbability {
         *self.pascal.row(n).get(r).unwrap_or(&0)
     }
 
-    // the full bag, the draw source for the global (board-independent)
-    // decompose. board-conditional apportionments pass a board's unseen pool instead.
     #[inline(always)]
     pub fn bag(&self) -> &[u8] {
         &self.alphabet_freqs
     }
 
-    // number of ways to draw the completion R-S (the tiles added to fill a held
-    // leave S up to the full rack R) from `source` with S removed: the product
-    // over letters of C(source[t]-S[t], R[t]-S[t]). returns 0 (never panics) when
-    // the draw is impossible -- S is not a subrack of R, or R is not drawable from
-    // `source`. `source` is bag() for the global decompose, or a board's unseen
-    // pool for a board-conditional apportionment.
+    // returns 0 rather than panicking when the draw is impossible.
     pub fn completion_draw_ways(
         &self,
         full_rack_tally: &[u8],
@@ -178,8 +168,6 @@ impl WordProbability {
         v
     }
 
-    // number of ways to draw the full rack R from `source`: the product over
-    // letters of C(source[t], R[t]). returns 0 when R is not drawable from source.
     pub fn full_rack_draw_ways(&self, full_rack_tally: &[u8], source: &[u8]) -> u64 {
         let mut v: u64 = 1;
         for c in 0..self.alphabet_freqs.len() {
