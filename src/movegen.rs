@@ -2,8 +2,6 @@
 
 use super::{alphabet, bites, display, equity, game_config, klv, kwg, matrix};
 
-// Stack scratch width for a whole-alphabet tally (the live pool). MultisetLattice
-// caps num_letters at this same bound, so every supported alphabet fits.
 const MAX_ALPHABET_LEN: usize = 64;
 
 #[derive(Clone)]
@@ -22,11 +20,6 @@ struct CachedCrossSet {
 #[derive(Clone)]
 struct CrossSetComputation {
     score: i32,
-    // the full board tile at this square (letter plus the 0x80 blank bit), or 0
-    // when empty. Cached to validate the reuse chain below; it must keep the
-    // blank bit so a played blank (score 0) is never confused with a natural
-    // tile of the same letter (nonzero score) when a square's tile changes
-    // between generations on a reused move generator.
     b_letter: u8,
     end_range: i8,
     p: i32,
@@ -99,12 +92,6 @@ struct WorkingBuffer {
     used_tile_scores_shadowr: Vec<i32>, // rack.len() (for shadow_play_right, premultiplied by SCALE)
     rack_tally_shadowl: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_left)
     rack_tally_shadowr: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_right)
-    // when set, the place-move descent uses a blank for a letter only if no real
-    // tile of that letter remains (real-before-blank, one branch per letter)
-    // instead of also branching the blank as that letter. Set via set_spell_once; used
-    // by the census's spell-once sheet build, which reconstructs the blank
-    // designations afterwards (so the redundant blank-as-available-letter branches
-    // are skipped). Off for normal generation.
     spell_once: bool,
 }
 
@@ -378,13 +365,11 @@ impl WorkingBuffer {
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
         let area = (dim.rows as isize * dim.cols as isize) as usize;
-        // Skip board-dependent work if board tiles haven't changed.
-        // prev_board_tiles stores the most recent board_tiles (row-major).
-        // On first call it's 0xff so this always runs initially.
+
         if self.prev_board_tiles[..area] != board_snapshot.board_tiles[..area] {
             let premiums = board_layout.premiums();
             let transposed_premiums = board_layout.transposed_premiums();
-            // row * dim.cols + col
+
             for (idx, &b) in board_snapshot.board_tiles.iter().enumerate().take(area) {
                 if b == 0 {
                     let premium = &premiums[idx];
@@ -393,7 +378,7 @@ impl WorkingBuffer {
                     self.face_value_scores_for_across_plays[idx] = 0;
                 } else {
                     self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
-                    //self.remaining_tile_multipliers_for_across_plays[idx] = 1; // not as crucial to set to 1
+
                     self.face_value_scores_for_across_plays[idx] = alphabet.scaled_score(b);
                 }
             }
@@ -405,7 +390,7 @@ impl WorkingBuffer {
                             [(row as isize * dim.cols as isize + col as isize) as usize];
                 }
             }
-            // col * dim.rows + row
+
             for (idx, &b) in self.transposed_board_tiles.iter().enumerate().take(area) {
                 if b == 0 {
                     let premium = &transposed_premiums[idx];
@@ -414,7 +399,7 @@ impl WorkingBuffer {
                     self.face_value_scores_for_down_plays[idx] = 0;
                 } else {
                     self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
-                    //self.remaining_tile_multipliers_for_down_plays[idx] = 1; // not as crucial to set to 1
+
                     self.face_value_scores_for_down_plays[idx] = alphabet.scaled_score(b);
                 }
             }
@@ -446,7 +431,6 @@ impl WorkingBuffer {
         };
         self.play_out_bonus = play_out_bonus;
 
-        // eg if my rack is ZY??YVA it'd be [10000,4000,4000,4000,1000,0,0] (in millipoints).
         self.descending_scores.clear();
         self.descending_scores
             .reserve(self.num_tiles_on_rack as usize);
@@ -490,11 +474,6 @@ impl WorkingBuffer {
             );
             if self.multi_leaves.is_dense() {
                 if let Some(dyn_ref) = dynamic_leaves {
-                    // live_pool[t] = freq(t) - board(t) - rack(t): the tiles this
-                    // mover can still draw (bag + opponent), excluding the current
-                    // rack. A board tile's blank-designation bit is stripped back to
-                    // the blank so a played blank returns to the blank pool. Applied
-                    // before extract so the shadow-play bound also sees the reweight.
                     let n = dyn_ref.lat.num_letters();
                     let mut live_pool = [0u8; MAX_ALPHABET_LEN];
                     for (t, slot) in live_pool[..n].iter_mut().enumerate() {
@@ -528,7 +507,6 @@ impl WorkingBuffer {
                     &mut self.best_leave_values,
                 );
             }
-            // Leave values are already i32 millipoints from MultiLeaves.
         }
         for i in 0..=self.num_tiles_on_rack {
             self.best_leave_values[i as usize] +=
@@ -564,7 +542,7 @@ impl WorkingBuffer {
         let area = (dim.rows as isize * dim.cols as isize) as usize;
         if recompute_across {
             let premiums = board_layout.premiums();
-            // row * dim.cols + col
+
             for (idx, premium) in premiums.iter().enumerate().take(area) {
                 let cross_set = &mut self.cross_set_for_across_plays[idx];
                 if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
@@ -579,7 +557,7 @@ impl WorkingBuffer {
         }
         if recompute_down {
             let transposed_premiums = board_layout.transposed_premiums();
-            // col * dim.rows + row
+
             for (idx, premium) in transposed_premiums.iter().enumerate().take(area) {
                 let cross_set = &mut self.cross_set_for_down_plays[idx];
                 if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
@@ -631,7 +609,6 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
     cross_set_buffer: &'a mut [CrossSetComputation],
     cached_cross_sets: &'a mut [CachedCrossSet],
 ) {
-    // Compute bitmask of tiles in a sibling group on the fly.
     let sibling_bits = |kwg: &kwg::Kwg<N>, mut p: i32, accepting_only: bool| -> u64 {
         let mut bits = 0u64;
         if p > 0 {
@@ -658,18 +635,13 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
         let mut p = 1;
         let mut score = 0i32;
         let mut last_empty = len;
-        // Within each tile group (contiguous nonempty tiles), the seek chain
-        // starts from p=1. If tiles from the right edge of the group haven't
-        // changed AND the group boundary is in the same place, the cached
-        // seek results are valid.
+
         let mut chain_valid = true; // right edge is always a valid group start
         for j in (0..len).rev() {
             let b = board_strip[j as usize];
             if b != 0 {
                 let b_letter = b & 0x7f;
                 if chain_valid && cross_set_buffer[j as usize].b_letter == b {
-                    // Same exact tile (blank bit included), chain unbroken -
-                    // use cached seek result and score.
                     p = cross_set_buffer[j as usize].p;
                     score = cross_set_buffer[j as usize].score;
                 } else {
@@ -683,7 +655,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                         p,
                     };
                 }
-                // Always update end_range (depends on current scan state, not cached).
+
                 cross_set_buffer[j as usize].end_range = last_empty;
                 last_nonempty = j;
             } else {
@@ -691,8 +663,7 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                 p = 1; // cumulative gaddag traversal results
                 score = 0; // cumulative face-value score
                 last_empty = j; // last seen empty square
-                // Chain is valid at this group boundary only if the cached
-                // state was also empty here (group boundary hasn't moved).
+
                 chain_valid = cross_set_buffer[j as usize].b_letter == 0;
                 cross_set_buffer[j as usize].b_letter = 0;
                 cross_set_buffer[j as usize].end_range = last_nonempty;
@@ -758,23 +729,17 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                     let arc_right = kwg[p_right].arc_index();
                     let arc_left = kwg[p_left].arc_index();
                     if arc_right > 0 && arc_left > 0 {
-                        // Pre-filter: only tiles present in both child sets
-                        // need full word verification.
                         let mut candidates = sibling_bits(kwg, arc_right, false)
                             & sibling_bits(kwg, arc_left, false)
                             & !1; // exclude separator
                         if j_end - j > j - 1 - prev_j {
-                            // Right is longer than left: verify by traversing
-                            // the right path through the shorter left tiles.
                             while candidates != 0 {
                                 let tile = candidates.trailing_zeros() as u8;
                                 candidates &= candidates - 1;
                                 let mut q = kwg.seek(p_right, tile);
                                 if q > 0 {
                                     for qi in (prev_j..j - 1).rev() {
-                                        // mask off the blank bit: the reuse key keeps
-                                        // it (score differs) but the trie seek needs the
-                                        // bare letter (a blank forms its designated word).
+                                        // mask off the blank bit: the seek needs the bare letter.
                                         q = kwg
                                             .seek(q, cross_set_buffer[qi as usize].b_letter & 0x7f);
                                         if q <= 0 {
@@ -787,17 +752,13 @@ fn gen_classic_cross_set<'a, N: kwg::Node, L: kwg::Node>(
                                 }
                             }
                         } else {
-                            // Left is longer or equal: verify by traversing
-                            // the left path through the right tiles.
                             while candidates != 0 {
                                 let tile = candidates.trailing_zeros() as u8;
                                 candidates &= candidates - 1;
                                 let mut q = kwg.seek(p_left, tile);
                                 if q > 0 {
                                     for qi in j..j_end {
-                                        // mask off the blank bit: the reuse key keeps
-                                        // it (score differs) but the trie seek needs the
-                                        // bare letter (a blank forms its designated word).
+                                        // mask off the blank bit: the seek needs the bare letter.
                                         q = kwg
                                             .seek(q, cross_set_buffer[qi as usize].b_letter & 0x7f);
                                         if q <= 0 {
@@ -1514,11 +1475,6 @@ fn gen_classic_place_moves<
         idx_left: i8,
         idx_right: i8,
     ) {
-        // SPELL_ONCE (blank-spell_once sheet build) ignores the play's score and leave -- the
-        // caller recounts the score from the word and needs no leave -- so skip the
-        // finalize entirely; const SPELL_ONCE folds these to constants and the compiler
-        // drops the dead score/leave arithmetic (and the per-tile accumulation it
-        // feeds, via DCE of the Accumulator fields below).
         let score = if SPELL_ONCE {
             0
         } else {
@@ -1634,7 +1590,6 @@ fn gen_classic_place_moves<
                         leave_idx: 0,
                     }
                 } else {
-                    // intentional to not hardcode blank tile value as zero
                     let tile_value = env.alphabet.scaled_score(0) * tile_multiplier as i32;
                     Accumulator {
                         main_score: acc.main_score + tile_value,
@@ -1724,9 +1679,6 @@ fn gen_classic_place_moves<
     ) {
         // tail-recurse placing current sequence of tiles
         if p == 1 && idx >= env.params.leftmost && env.params.board_strip[idx as usize] != 0 {
-            // Initial call from anchor with p=1. The cross_set_buffer has
-            // the cached GADDAG state from the same right-to-left traversal.
-            // Jump directly to the leftmost tile of this preset group.
             let mut jump_idx = idx;
             while jump_idx > env.params.leftmost
                 && env.params.board_strip[jump_idx as usize - 1] != 0
@@ -1809,7 +1761,6 @@ fn gen_classic_place_moves<
                         leave_idx: 0,
                     }
                 } else {
-                    // intentional to not hardcode blank tile value as zero
                     let tile_value = env.alphabet.scaled_score(0) * tile_multiplier as i32;
                     Accumulator {
                         main_score: acc.main_score + tile_value,
@@ -1888,8 +1839,6 @@ fn gen_classic_place_moves<
     let alphabet = params.board_snapshot.game_config.alphabet();
     let anchor = params.anchor;
     let pass_leave_idx = params.multi_leaves.pass_leave_idx();
-    // monomorphize on spell_once once at the entry: the const lets the compiler drop the
-    // per-tile score/leave accumulation and the end-of-word finalize on the spell_once path.
     let spell_once = params.spell_once;
     let mut env = Env {
         params,
@@ -2047,7 +1996,6 @@ fn gen_jumbled_place_moves<
                 let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
                 env.num_played += 1;
                 let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
-                    // intentional to not hardcode blank tile value as zero
                     let tile_value = env.alphabet.scaled_score(0) * tile_multiplier as i32;
                     Accumulator {
                         main_score: acc.main_score + tile_value,
@@ -2154,7 +2102,6 @@ fn gen_jumbled_place_moves<
                     let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
                     env.num_played += 1;
                     let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
-                        // intentional to not hardcode blank tile value as zero
                         let tile_value = env.alphabet.scaled_score(0) * tile_multiplier as i32;
                         Accumulator {
                             main_score: acc.main_score + tile_value,
@@ -2291,8 +2238,6 @@ fn gen_place_moves_at<
             } else {
                 &working_buffer.cross_set_for_across_plays[strip_range_start..strip_range_end]
             },
-            // Across play_left uses cross_set_buffer_for_down_plays (both process rows).
-            // Down play_left uses cross_set_buffer_for_across_plays (both process columns).
             cross_set_buffer_strip: if placement.down {
                 &working_buffer.cross_set_buffer_for_across_plays
                     [strip_range_start..strip_range_end]
@@ -2578,9 +2523,6 @@ pub struct GenMovesParams<'a, N: kwg::Node, L: kwg::Node> {
     pub max_gen: usize,
     pub num_exchanges_by_this_player: i16,
     pub always_include_pass: bool,
-    // When set, reweight this player's dense leaves by the live pool before
-    // generating (midgame only). None (the default) leaves generation exactly as
-    // it was -- byte-identical -- so only opt-in callers pay for it.
     pub dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
 }
 
@@ -2616,16 +2558,6 @@ impl KurniaMoveGenerator {
         }
     }
 
-    // Real-before-blank place-move descent: when set, the generator uses a blank
-    // for a letter only if no real tile of that letter remains, instead of also
-    // branching the blank as a letter it already has. This emits each feasible word
-    // once (real-preferred) rather than once per real/blank combination -- the
-    // census's spell-once sheet build reconstructs the full set of blank
-    // designations afterwards, so the redundant branches (and the GADDAG blank
-    // wildcard fan-out) are skipped. Leave it off (the default) for normal move
-    // generation, where every distinct blank play and its score is wanted. The flag
-    // persists on the generator; reset it after a spell-once run before reusing the
-    // generator for ordinary generation.
     #[inline(always)]
     pub fn set_spell_once(&mut self, spell_once: bool) {
         self.working_buffer.spell_once = spell_once;
@@ -3079,7 +3011,6 @@ fn kurnia_gen_place_moves_iter<
     let max_rack_size = game_config.rack_size();
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
-    // Compute dirty rows and columns in one pass over board_tiles.
     let area = (dim.rows as isize * dim.cols as isize) as usize;
     let mut dirty_rows = 0u32;
     let mut dirty_cols = 0u32;
@@ -3098,7 +3029,6 @@ fn kurnia_gen_place_moves_iter<
     let any_across_strip_changed = dirty_cols != 0;
     let any_down_strip_changed = dirty_rows != 0;
 
-    // Cross sets for across plays: recompute dirty columns.
     for col in 0..dim.cols {
         if dirty_cols & (1 << col) != 0 {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
@@ -3120,7 +3050,7 @@ fn kurnia_gen_place_moves_iter<
         rows: dim.cols,
         cols: dim.rows,
     };
-    // Cross sets for down plays: recompute dirty rows.
+
     for row in 0..dim.rows {
         if dirty_rows & (1 << row) != 0 {
             let strip_range_start = (row as isize * dim.cols as isize) as usize;
@@ -3149,7 +3079,7 @@ fn kurnia_gen_place_moves_iter<
         working_buffer.cross_set_for_across_plays[dim.at_row_col(star_row, star_col)] =
             CrossSet { bits: !1, score: 0 };
     }
-    // Update prev_board after all dirty processing is done.
+
     if dirty_rows != 0 || dirty_cols != 0 {
         working_buffer.prev_board_tiles[..area]
             .copy_from_slice(&board_snapshot.board_tiles[..area]);
@@ -3655,16 +3585,6 @@ mod tests {
     use super::*;
     use crate::{alphabet, bites, build, game_config, klv, kwg};
 
-    // A move generator's cross-set score cache keys the reuse check on the
-    // exact board tile (letter plus the 0x80 blank bit). Only the endgame
-    // solver replays this scan on the SAME scratch buffers across successive
-    // board states (normal play always starts from a fresh generator), so a
-    // natural tile and a blank forming the same letter must NOT be confused
-    // by that reuse check -- a blank scores 0 points, a natural tile does
-    // not. This test drives the scan directly, across two board states that
-    // share one square (a natural 'A' tile, then a blank playing 'A'), and
-    // checks the cached score updates instead of staying stuck on the first
-    // state's nonzero value.
     #[test]
     fn cross_set_score_cache_distinguishes_blank_from_natural_tile() {
         let gc = game_config::make_english_game_config();
@@ -3717,8 +3637,6 @@ mod tests {
             len
         ];
 
-        // First board: square 2 holds the natural 'A'. The two flanking empty
-        // squares (1 and 3) pick up its scaled score as a hookable bonus.
         let mut board_strip = vec![0u8; len];
         board_strip[2] = natural_a;
         gen_classic_cross_set(
@@ -3732,10 +3650,6 @@ mod tests {
         assert_eq!(cross_sets[1].score, natural_a_score);
         assert_eq!(cross_sets[3].score, natural_a_score);
 
-        // Second board: the SAME square now holds a blank playing 'A' -- same
-        // letter, same word validity, but 0 points. Reuse the same scratch
-        // buffers (as the endgame solver does across board states) without
-        // resetting them.
         board_strip[2] = blank_a;
         gen_classic_cross_set(
             &board_snapshot,
