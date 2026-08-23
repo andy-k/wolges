@@ -5149,10 +5149,6 @@ mod tests {
     fn sweep_kwg_covering(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
         let dim = gc.board_layout().dim();
         let longest = dim.rows.max(dim.cols) as u8;
-        assert!(
-            (longest as usize) < gc.alphabet().len() as usize,
-            "this alphabet cannot spell a word as long as the line",
-        );
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
         let mut word_buf = Vec::new();
         let mut words = Vec::<bites::Bites>::with_capacity(SWEEP_WORDS.len() + 1);
@@ -5160,7 +5156,31 @@ mod tests {
             reader.set_word(w, &mut word_buf).unwrap();
             words.push(word_buf[..].into());
         }
-        words.push((1u8..=longest).collect::<Vec<_>>()[..].into());
+        let alphabet = gc.alphabet();
+        let mut blanks_left = alphabet.freq(0);
+        let mut spanning = Vec::with_capacity(longest as usize);
+        let mut used = vec![0u8; alphabet.len() as usize];
+        while spanning.len() < longest as usize {
+            let before = spanning.len();
+            for tile in 1..alphabet.len() {
+                if spanning.len() >= longest as usize {
+                    break;
+                }
+                if used[tile as usize] < alphabet.freq(tile) {
+                    used[tile as usize] += 1;
+                    spanning.push(tile);
+                } else if blanks_left > 0 {
+                    blanks_left -= 1;
+                    used[tile as usize] += 1;
+                    spanning.push(tile);
+                }
+            }
+            assert!(
+                spanning.len() > before,
+                "this alphabet cannot spell a word as long as the line",
+            );
+        }
+        words.push(spanning[..].into());
         words.sort_unstable();
         words.dedup();
         kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
