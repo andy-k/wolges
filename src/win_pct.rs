@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn distinct_keys_independent() {
+    fn recording_under_one_key_does_not_move_another() {
         let mut acc = WinPctAccumulator::new();
         for &v in &[-5, 5] {
             acc.record(50, 7, 7, 0, v);
