@@ -206,6 +206,13 @@ fn main() -> error::Returns<()> {
     let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
     let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv_bytes);
     let game_config = game_config::make_english_game_config();
+    let alphabet_len = game_config.alphabet().len();
+    if !kwg.fits_alphabet(alphabet_len) {
+        return_error!(format!(
+            "{} has tiles past this game's {alphabet_len}",
+            args[2]
+        ));
+    }
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
 
