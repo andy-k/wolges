@@ -170,6 +170,11 @@ impl<N: Node> Kwg<N> {
     }
 
     #[inline(always)]
+    pub fn fits_alphabet(&self, alphabet_len: u8) -> bool {
+        self.0.iter().all(|node| node.tile() < alphabet_len)
+    }
+
+    #[inline(always)]
     pub fn compute_letter_bits(&self) -> LetterBits {
         let len = self.0.len();
         let mut letter_bits = vec![0u64; len];
@@ -386,5 +391,48 @@ impl<N: Node> Kwg<N> {
             p += 1;
         }
         answer
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{alphabet, bites, build, game_config};
+
+    #[inline]
+    fn graph_of(gc: &game_config::GameConfig, words: &[&str]) -> Kwg<Node22> {
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut buf = Vec::new();
+        let mut out = Vec::<bites::Bites>::with_capacity(words.len());
+        for w in words {
+            reader.set_word(w, &mut buf).unwrap();
+            out.push(buf[..].into());
+        }
+        out.sort_unstable();
+        Kwg::<Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                &out,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    #[inline]
+    fn a_graph_fits_only_an_alphabet_that_has_all_its_tiles() {
+        let english = game_config::make_english_game_config();
+        let polish = game_config::make_polish_game_config();
+        assert!(polish.alphabet().len() > english.alphabet().len());
+
+        let theirs = graph_of(&polish, &["ZOLZA", "ZABA"]);
+        assert!(theirs.fits_alphabet(polish.alphabet().len()));
+        assert!(!theirs.fits_alphabet(english.alphabet().len()));
+
+        let ours = graph_of(&english, &["SEAT", "TEA"]);
+        assert!(ours.fits_alphabet(english.alphabet().len()));
+        assert!(ours.fits_alphabet(polish.alphabet().len()));
+        assert!(!ours.fits_alphabet(1));
     }
 }
