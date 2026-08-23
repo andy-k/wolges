@@ -401,7 +401,6 @@ impl PlayScorer {
                                 true
                             }
                         {
-                            // no perpendicular tile
                             continue;
                         }
                         let mut word_multiplier = 1;
@@ -562,24 +561,6 @@ impl Default for PlayScorer {
     }
 }
 
-/// Recount an all-real place play's score exactly like
-/// [`PlayScorer::compute_score`], and additionally report, per newly-placed
-/// tile (in `word` order), how much the total score would DROP if that tile
-/// were a blank designated as the same letter.
-///
-/// Blanking a placed tile only zeroes its own face value: it keeps the tile
-/// (and thus every word/tile multiplier and the played-count bonus) in place,
-/// and only removes that tile's contribution to its main word and, if any, its
-/// crossword. The drop is therefore independent and additive across positions,
-/// so the best score for any blank designation of this single traversal is the
-/// all-real score minus the smallest drops of the positions chosen to be
-/// blanks. This lets the census derive every blank variant of one real-tile
-/// GADDAG traversal instead of re-running the wildcard descent, which makes a
-/// separate traversal for every letter each blank could spell. `out` is
-/// cleared then filled with `(letter, drop)` for each placed tile, where
-/// `letter` is the real tile (high bit clear). The drop uses the blank's own
-/// scaled score (which may be non-zero for a custom alphabet), not a
-/// hardcoded 0.
 pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     down: bool,
@@ -600,9 +581,6 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
     let mut recounted_score = 0;
     let mut num_played = 0;
 
-    // main word: accumulate the word score/multiplier exactly as compute_score,
-    // and stage each placed tile's pre-word-multiplier drop = (real face - blank
-    // face) * this square's tile multiplier.
     {
         let mut word_multiplier = 1;
         let mut word_score = 0i32;
@@ -614,9 +592,7 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
                 num_played += 1;
                 word_multiplier *= premium.word_multiplier as i32;
                 tile_multiplier = premium.tile_multiplier;
-                // recount as if all-real: mask off any blank designation the descent
-                // chose for this newly-placed tile (the blank variants, including this
-                // letter as a blank, are reconstructed afterwards from the drop).
+
                 let letter = tile & 0x7f;
                 out.push((
                     letter,
@@ -631,20 +607,15 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
             word_score += face_value_tile_score * tile_multiplier as i32;
         }
         recounted_score += word_score * word_multiplier;
-        // fold the main word's multiplier into each staged drop.
+
         for e in out.iter_mut() {
             e.1 *= word_multiplier;
         }
     }
 
-    // crosswords: for each placed tile that forms a perpendicular word, add its
-    // crossword contribution to the recount and its crossword drop (the placed
-    // tile is the only new tile, so its square's word multiplier is the whole
-    // crossword's multiplier).
     let mut k = 0;
     for (i, &tile) in (idx..).zip(word.iter()) {
         if tile != 0 {
-            // all-real letter for this newly-placed tile (mask any blank designation).
             let letter = tile & 0x7f;
             let perpendicular_strider = dim.lane(!down, i);
             let mut j = lane;
@@ -659,16 +630,12 @@ pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
                     true
                 }
             {
-                // no perpendicular tile
                 k += 1;
                 continue;
             }
             let mut word_multiplier = 1;
             let mut word_score = 0i32;
-            // the placed square's tile multiplier, captured while walking the
-            // crossword: at j == lane the premium being read is this same cell
-            // (the perpendicular strider through lane i at position lane is the
-            // placed cell strider.at(i)), so there is no need to re-index it.
+
             let mut placed_tile_multiplier = 1i32;
             for j in j..perpendicular_strider_len {
                 let perpendicular_strider_at_j = perpendicular_strider.at(j);
