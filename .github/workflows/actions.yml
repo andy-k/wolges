@@ -19,12 +19,16 @@ jobs:
     - name: System Rust version
       run: cargo version
     - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
     - name: Stable Rust version
       run: cargo version
     - name: Format
       run: cargo fmt --check
     - name: Type-check without the optional feature
       run: cargo check --all-targets --verbose
+    - name: Type-check for the target that ships
+      run: cargo check --target wasm32-unknown-unknown --verbose
     - name: Clippy
       run: cargo clippy --all-targets --all-features --verbose -- -D warnings
     - name: Run tests with overflow checks

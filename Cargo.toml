@@ -26,6 +26,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 shell-words = { version = "1.1.1", optional = true }
 
+[target.wasm32-unknown-unknown.dependencies]
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+
 [features]
 # The interactive shell (main_shell + rlhelper) is the only consumer of the
 # REPL crates, and those crates do not build for wasm32. Gating them keeps a
