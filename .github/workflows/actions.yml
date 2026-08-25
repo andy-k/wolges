@@ -27,5 +27,7 @@ jobs:
       run: cargo check --all-targets --verbose
     - name: Clippy
       run: cargo clippy --all-targets --all-features --verbose -- -D warnings
-    - name: Run tests
+    - name: Run tests with overflow checks
+      run: cargo test --all-features --verbose
+    - name: Run tests as shipped
       run: cargo test --release --all-features --verbose
