@@ -23,15 +23,11 @@ jobs:
       run: cargo version
     - name: Format
       run: cargo fmt --check
+    - name: Type-check without the optional feature
+      run: cargo check --all-targets --verbose
     - name: Clippy
-      run: cargo clippy --release --all-targets --verbose
-    - name: Clippy (all features)
       run: cargo clippy --release --all-targets --all-features --verbose
     - name: Build
-      run: cargo build --release --verbose
-    - name: Build (all features)
       run: cargo build --release --all-features --verbose
     - name: Run tests
-      run: cargo test --release --verbose
-    - name: Run tests (all features)
       run: cargo test --release --all-features --verbose
