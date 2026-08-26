@@ -247,16 +247,20 @@ fn main() -> error::Returns<()> {
         dynamic_leaves: None,
     });
 
+    let sim_iters = 10000u64;
     let mut driver = move_picker::Simmer::<_, _, true>::new(
         &game_config,
         &smaller_kwg,
         &klv,
         move_picker::SimmerParams {
-            num_sim_iters: 10000,
+            num_sim_iters: sim_iters,
             sim_threads: 1,
             win_pct_table: None,
         },
     );
+    if let Some(seed) = std::env::args().nth(1).and_then(|s| s.parse::<u64>().ok()) {
+        driver.reseed(seed);
+    }
 
     let chunk = 50u64;
     let mut done = 0u64;
@@ -273,7 +277,7 @@ fn main() -> error::Returns<()> {
                 move_generator.plays[play_index].play.fmt(board_snapshot)
             );
         }
-        if done >= 10000 {
+        if done >= sim_iters {
             break;
         }
         driver.resume(&move_generator, chunk);
