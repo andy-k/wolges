@@ -38,16 +38,16 @@ at the end of this file.
 
 The last generation's board count is the number that matters, and it is the
 only reason this costs more than the older recommendation of 4x256 (four
-generations of 256). Both are worth knowing. 4x256 finishes in about 44 seconds
-to this one's 142, because every board is fixed by its position in the run, so
-4x256 builds 256 boards and reuses them while 3x256,2048 must build all 2048
-for its last generation. What the extra wait buys is about a hundredth of a
-percentage point: 4096 boards beat 256 by roughly 50.02 to 49.98 over five
-million game pairs, and 3x256,2048 edges 4x256 by a similar hair on every seed
-tried. Small -- but it has landed the same way every time it has been measured,
-so 4x256 is not the best table, just a very close and much faster one. Reach
-for 4x256 while iterating, and for 3x256,2048 when the table is one you mean to
-keep. Fewer than 2048 boards in the final generation gives the edge back.
+generations of 256). Both are worth knowing. 4x256 finishes much sooner,
+because every board is fixed by its position in the run, so 4x256 builds 256
+boards and reuses them while 3x256,2048 must build all 2048 for its last
+generation. What the extra wait buys is about a hundredth of a percentage
+point: 4096 boards beat 256 by roughly 50.02 to 49.98 over five million game
+pairs, and 3x256,2048 edges 4x256 by a similar hair on every seed tried. Small
+-- but it has landed the same way every time it has been measured, so 4x256 is
+not the best table, just a very close and much faster one. Reach for 4x256
+while iterating, and for 3x256,2048 when the table is one you mean to keep.
+Fewer than 2048 boards in the final generation gives the edge back.
 
 The 4x256 is shorthand for four generations of 256 boards. You can also write
 the counts out, one per generation, to let them differ -- 256,512,1024 runs
@@ -1862,15 +1862,15 @@ want depends on what the table is for:
 
     cargo run --release --bin leave -- english-census CSW24.kwg - - 4x256
 
-4x256 takes about 44 seconds against roughly 142 for 3x256,2048, because every
-board is fixed by its position in the run: 4x256 builds 256 boards and reuses
-them for its later generations, while 3x256,2048 must build all 2048 for its
-last one. Three times the wait buys about a hundredth of a percentage point --
-4096 boards beat 256 by about 50.02 to 49.98 over five million game pairs, and
-3x256,2048 edges 4x256 by a similar hair on every seed tried. That is a small
-edge, but it has fallen the same way every time it has been measured, so 4x256
-is not quite the best table, only a very close and much faster one. Take 4x256
-while iterating; take 3x256,2048 for a table you intend to keep.
+4x256 finishes much sooner than 3x256,2048, because every board is fixed by its
+position in the run: 4x256 builds 256 boards and reuses them for its later
+generations, while 3x256,2048 must build all 2048 for its last one. The longer
+run buys about a hundredth of a percentage point -- 4096 boards beat 256 by
+about 50.02 to 49.98 over five million game pairs, and 3x256,2048 edges 4x256
+by a similar hair on every seed tried. That is a small edge, but it has fallen
+the same way every time it has been measured, so 4x256 is not quite the best
+table, only a very close and much faster one. Take 4x256 while iterating; take
+3x256,2048 for a table you intend to keep.
 
 Below 2048 boards in the final generation the edge goes away, and more
 generations do not pay -- a fifth measured no better than the third. Those
