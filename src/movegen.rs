@@ -1355,6 +1355,7 @@ fn gen_place_placements_impl<
         deferred: u128,
         low_end: usize,
         ranked: u128,
+        stale_rack: bool,
     }
 
     #[inline(always)]
@@ -1362,7 +1363,7 @@ fn gen_place_placements_impl<
         env: &mut Env<'_>,
         mut acc: Accumulator,
         walk: ShadowRightWalk,
-    ) {
+    ) -> bool {
         let ShadowRightWalk {
             mut idx,
             mut is_unique,
@@ -1372,13 +1373,19 @@ fn gen_place_placements_impl<
             mut deferred,
             mut low_end,
             mut ranked,
+            stale_rack,
         } = walk;
-        env.params
-            .used_tile_scores_shadowr
-            .copy_from(env.params.used_tile_scores_shadowl);
-        env.params
-            .rack_tally_shadowr
-            .clone_from_slice(env.params.rack_tally_shadowl);
+        if !env.params.used_tile_scores_shadowl.is_empty() {
+            env.params
+                .used_tile_scores_shadowr
+                .copy_from(env.params.used_tile_scores_shadowl);
+        }
+        if stale_rack {
+            env.params
+                .rack_tally_shadowr
+                .clone_from_slice(env.params.rack_tally_shadowl);
+        }
+        let mut took_a_tile = false;
         loop {
             if idx < env.rightmost {
                 // tail-recurse placing current sequence of tiles in one go
@@ -1420,6 +1427,7 @@ fn gen_place_placements_impl<
                     // consume the square and the tile.
                     // rack_bits will turn off if the tile is depleted.
                     env.params.rack_tally_shadowr[tile as usize] -= 1;
+                    took_a_tile = true;
                     // this is (rack_tally[tile] == 0 ? matching_bits : 0).
                     rack_bits ^= matching_bits
                         & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64)) as u64;
@@ -1470,6 +1478,7 @@ fn gen_place_placements_impl<
             idx += 1;
         }
         env.params.used_tile_scores_shadowr.clear(); // use shadowl in shadow_record
+        took_a_tile
     }
 
     #[inline(always)]
@@ -1488,6 +1497,7 @@ fn gen_place_placements_impl<
             .unwrap()
             * env.strider_len;
         let mut num_played = 0;
+        let mut stale_rack = true;
         env.params.used_tile_scores_shadowl.clear();
         let mut rack_bits = env.params.rack_bits;
         env.params
@@ -1520,7 +1530,7 @@ fn gen_place_placements_impl<
 
             // can switch direction only after using the anchor square
             if idx < env.anchor {
-                shadow_play_right::<PER_SPAN>(
+                stale_rack = shadow_play_right::<PER_SPAN>(
                     env,
                     Accumulator { ..acc },
                     ShadowRightWalk {
@@ -1532,6 +1542,7 @@ fn gen_place_placements_impl<
                         deferred,
                         low_end,
                         ranked,
+                        stale_rack,
                     },
                 );
             }
@@ -1560,6 +1571,7 @@ fn gen_place_placements_impl<
                     // consume the square and the tile.
                     // rack_bits will turn off if the tile is depleted.
                     env.params.rack_tally_shadowl[tile as usize] -= 1;
+                    stale_rack = true;
                     // this is (rack_tally[tile] == 0 ? matching_bits : 0).
                     rack_bits ^= matching_bits
                         & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64)) as u64;
