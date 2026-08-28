@@ -40,12 +40,6 @@ while :; do
   break
 done
 
-# Full-rack impossible-tolerant forcing is on by default for the autoplay path
-# (the strongest static recipe). It forces each undersampled full rack to the
-# per-gen :min (defaulting :min to 1 = cover each globally-possible rack once)
-# and places racks impossible-tolerantly. Pairs with the per-rack
-# -generate decompose (also the default). --gilles uses its own sampler (never
-# forced); --no-forcing reverts to plain natural sampling.
 forcing_on=""
 if [ -z "$gilles_mode" ] && [ -z "$no_forcing_mode" ]; then
   forcing_on=1
@@ -183,8 +177,6 @@ while [ "${!i:-}" != "" ]; do
   if [ "${full_arg}" != "${before_colon}" ]; then
     after_colon="${full_arg#*:}"
   else
-    # default: with forcing on (the autoplay default), :1 covers each
-    # globally-possible rack at least once; plain :0 otherwise.
     if [ "$forcing_on" ]; then
       after_colon="1"
     else
@@ -192,15 +184,10 @@ while [ "${!i:-}" != "" ]; do
     fi
   fi
 
-  # every generation smooths: a leave too thinly sampled to trust borrows from its
-  # neighbors, and a well-sampled one keeps its own average untouched, so there is
-  # nothing left to turn off. leaves<N> needs no qualifier now that there is one kind.
   effective_generate_subcommand="${generate_subcommand}"
   leave_name="leaves"
 
-  # rare-subrack coverage summary (only produced by autoplay when :min_samples > 0).
-  # left empty when forcing is off, so the gilles path and the no-forcing
-  # autoplay path stay byte-identical to before.
+  # rare-subrack coverage, written by autoplay only when :min_samples > 0
   rare_summary=""
   if [ "$gilles_mode" ]; then
     time cargo run --release --bin leave -- "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
@@ -212,9 +199,6 @@ while [ "${!i:-}" != "" ]; do
     log_file="$(ls -1td games-log-* | head -1 | cut -f2- -d-)"
     echo "$log_file"
     mv -fv "summary-${log_file}" "summary${num_processed}.csv"
-    # the run identifier reconstructed above names the full-rack file exactly
-    # (summary-${log_file}), so there is no glob to disambiguate; the rare
-    # file, when present, is summary-rare-${log_file}.
     if [ -f "summary-rare-${log_file}" ]; then
       mv -fv "summary-rare-${log_file}" "summary${num_processed}-rare.csv"
       rare_summary="summary${num_processed}-rare.csv"
