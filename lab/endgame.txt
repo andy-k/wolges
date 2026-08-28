@@ -87,9 +87,9 @@ returns the same result regardless of the order moves are tried in -- but for
 bag-empty endgames it turns out to be a slowdown, not a speedup: the move lists
 are short and iterative deepening revisits each node many times, so the full
 sort is already cheap and the extra partial-select-then-tail-sort step is pure
-overhead, about 7% slower here at every cutoff point tried. It ships off by
-default behind a const, kept as an opt-in study lever for wider or deeper
-position mixes where trying fewer moves first might still pay off.
+overhead, slower at every cutoff point tried. It ships off by default behind a
+const, kept as an opt-in study lever for wider or deeper position mixes where
+trying fewer moves first might still pay off.
 
 
 A ZERO-REALLOCATION SCRATCH BUFFER
