@@ -131,6 +131,7 @@ impl StateMaker<'_> {
     }
 }
 
+#[inline]
 fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
     let mut machine_drowwords = Vec::new();
     let mut reverse_buffer = Vec::new();
@@ -166,6 +167,7 @@ fn gen_machine_drowwords(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> 
 }
 
 // AlphaDawg is DawgOnly on make_alphagrams(machine_words).
+#[inline]
 pub fn make_alphagrams(machine_words: &[bites::Bites]) -> Box<[bites::Bites]> {
     let mut machine_dorws = Vec::with_capacity(machine_words.len());
     let mut rearrange_buffer = Vec::new();
@@ -391,6 +393,7 @@ impl StatesDefragger<'_> {
         // non-legacy mode already reserves the space.
     }
 
+    #[inline]
     fn build_experimental(&mut self, num_ways: &[u32], top_indexes: &[u32]) {
         let mut idxs = Box::from_iter(1..self.states.len() as u32);
         idxs.sort_unstable_by(|&a, &b| {
@@ -417,6 +420,7 @@ impl StatesDefragger<'_> {
             ((params.block_len.len() as u32 - 1) << 4) + *params.block_len.last().unwrap() as u32;
     }
 
+    #[inline]
     fn build_wolges(
         &mut self,
         num_ways: &[u32],
@@ -520,6 +524,7 @@ impl StatesDefragger<'_> {
         }
     }
 
+    #[inline]
     fn to_vec<const VARIANT: u8>(
         &self,
         build_content: BuildContent,
@@ -572,6 +577,7 @@ impl StatesDefragger<'_> {
     }
 }
 
+#[inline]
 fn gen_head_indexes(states: &[State]) -> Vec<u32> {
     let states_len = states.len();
     let mut head_indexes = Vec::from_iter(0..states_len as u32);
@@ -590,6 +596,7 @@ fn gen_head_indexes(states: &[State]) -> Vec<u32> {
     head_indexes
 }
 
+#[inline]
 fn gen_to_end_lens(states: &[State]) -> Vec<u32> {
     let states_len = states.len();
     let mut to_end_lens = vec![1u32; states_len];
@@ -604,6 +611,7 @@ fn gen_to_end_lens(states: &[State]) -> Vec<u32> {
     to_end_lens
 }
 
+#[inline]
 fn gen_num_ways(
     states: &[State],
     build_content: &BuildContent,
@@ -632,6 +640,7 @@ fn gen_num_ways(
     num_ways
 }
 
+#[inline]
 fn gen_top_indexes(states: &[State], head_indexes: &[u32]) -> Vec<u32> {
     let states_len = states.len();
     let mut top_indexes = vec![0u32; states_len];
@@ -661,6 +670,7 @@ fn gen_top_indexes(states: &[State], head_indexes: &[u32]) -> Vec<u32> {
 }
 
 // machine_words must be sorted and unique.
+#[inline]
 fn do_build<const VARIANT: u8>(
     build_content: BuildContent,
     build_layout: BuildLayout,
@@ -813,6 +823,7 @@ mod tests {
         }
     }
 
+    #[inline]
     fn round_trip_dawg(layout: BuildLayout, words: &[&str]) {
         let machine_words: Vec<bites::Bites> = words
             .iter()
@@ -835,21 +846,25 @@ mod tests {
     ];
 
     #[test]
+    #[inline(always)]
     fn round_trip_wolges() {
         round_trip_dawg(BuildLayout::Wolges, WORD_LIST);
     }
 
     #[test]
+    #[inline(always)]
     fn round_trip_legacy() {
         round_trip_dawg(BuildLayout::Legacy, WORD_LIST);
     }
 
     #[test]
+    #[inline(always)]
     fn round_trip_empty() {
         round_trip_dawg(BuildLayout::Wolges, &[]);
     }
 
     #[test]
+    #[inline(always)]
     fn round_trip_single() {
         round_trip_dawg(BuildLayout::Wolges, &["HELLO"]);
     }
