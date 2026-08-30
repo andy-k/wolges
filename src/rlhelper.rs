@@ -33,6 +33,7 @@ impl rustyline::hint::Hinter for MyHelper {
 }
 
 impl rustyline::highlight::Highlighter for MyHelper {
+    #[inline(always)]
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
         &'s self,
         prompt: &'p str,
@@ -45,6 +46,7 @@ impl rustyline::highlight::Highlighter for MyHelper {
         }
     }
 
+    #[inline(always)]
     fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
         std::borrow::Cow::Owned("\x1b[1m".to_owned() + hint + "\x1b[m")
     }
@@ -76,6 +78,7 @@ impl rustyline::validate::Validator for MyHelper {
     }
 }
 
+#[inline(always)]
 pub fn new_rl_editor() -> Result<
     rustyline::Editor<MyHelper, rustyline::history::DefaultHistory>,
     rustyline::error::ReadlineError,
