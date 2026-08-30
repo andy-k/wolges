@@ -10,6 +10,7 @@ pub struct Bag {
 }
 
 impl Bag {
+    #[inline(always)]
     pub fn new(alphabet: &alphabet::Alphabet) -> Bag {
         let total_tiles: usize = (0..alphabet.len())
             .map(|tile| alphabet.freq(tile) as usize)
@@ -28,6 +29,7 @@ impl Bag {
         }
     }
 
+    #[inline(always)]
     pub fn reset(&mut self) {
         self.tiles.clear();
         self.fc = 0;
@@ -38,15 +40,18 @@ impl Bag {
         self.tiles[self.fc..].shuffle(&mut rng);
     }
 
+    #[inline(always)]
     pub fn shuffle_n(&mut self, mut rng: &mut dyn Rng, amount: usize) {
         // this "correctly" puts the shuffled amount at the end
         let _ = self.tiles[self.fc..].partial_shuffle(&mut rng, amount);
     }
 
+    #[inline(always)]
     pub fn pop(&mut self) -> Option<u8> {
         self.pop_back()
     }
 
+    #[inline(always)]
     pub fn pop_back(&mut self) -> Option<u8> {
         if self.tiles.len() > self.fc {
             self.tiles.pop()
@@ -55,6 +60,7 @@ impl Bag {
         }
     }
 
+    #[inline(always)]
     pub fn pop_front(&mut self) -> Option<u8> {
         if self.fc < self.tiles.len() {
             let tile = self.tiles[self.fc];
@@ -65,6 +71,7 @@ impl Bag {
         }
     }
 
+    #[inline(always)]
     pub fn replenish(&mut self, rack: &mut Vec<u8>, rack_size: usize, player_index: usize) {
         if player_index.is_multiple_of(2) {
             self.replenish_back(rack, rack_size);
@@ -73,6 +80,7 @@ impl Bag {
         }
     }
 
+    #[inline(always)]
     pub fn replenish_back(&mut self, rack: &mut Vec<u8>, rack_size: usize) {
         let playable = self.tiles.len() - self.fc;
         for _ in 0..(rack_size - rack.len()).min(playable) {
@@ -80,6 +88,7 @@ impl Bag {
         }
     }
 
+    #[inline(always)]
     pub fn replenish_front(&mut self, rack: &mut Vec<u8>, rack_size: usize) {
         let playable = self.tiles.len() - self.fc;
         for _ in 0..(rack_size - rack.len()).min(playable) {
@@ -87,6 +96,7 @@ impl Bag {
         }
     }
 
+    #[inline(always)]
     pub fn return_tile(&mut self, tile: u8) {
         if self.fc > 0 {
             self.fc -= 1;
@@ -96,18 +106,21 @@ impl Bag {
         }
     }
 
+    #[inline(always)]
     pub fn return_tiles(&mut self, tiles: &[u8]) {
         for &tile in tiles {
             self.return_tile(tile);
         }
     }
 
+    #[inline(always)]
     pub fn set_from_iter<I: IntoIterator<Item = u8>>(&mut self, iter: I) {
         self.tiles.clear();
         self.fc = 0;
         self.tiles.extend(iter);
     }
 
+    #[inline(always)]
     pub fn as_slice(&self) -> &[u8] {
         &self.tiles[self.fc..]
     }
@@ -116,10 +129,12 @@ impl Bag {
         self.tiles.len() - self.fc
     }
 
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.tiles.len() <= self.fc
     }
 
+    #[inline(always)]
     pub fn remove_tile(&mut self, tile: u8) -> Option<()> {
         self.tiles[self.fc..]
             .iter()
@@ -132,6 +147,7 @@ impl Bag {
             })
     }
 
+    #[inline(always)]
     pub fn put_back(&mut self, rng: &mut dyn Rng, tiles: &[u8]) {
         let m = tiles.len();
         if m == 0 {
