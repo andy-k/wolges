@@ -137,6 +137,7 @@ impl MultiLeaves {
         }
     }
 
+    #[inline]
     pub fn init<AdjustLeaveValue: Fn(i32) -> i32, L: kwg::Node>(
         &mut self,
         rack_tally: &[u8],
@@ -271,6 +272,7 @@ impl MultiLeaves {
         }
     }
 
+    #[inline(always)]
     pub fn init_endgame_leaves<AlphabetScore: Fn(u8) -> i8>(
         &mut self,
         alphabet_score: AlphabetScore,
@@ -289,6 +291,7 @@ impl MultiLeaves {
         self.leave_values[0] = play_out_bonus;
     }
 
+    #[inline]
     pub fn extract_best_leave_values_from_klv<AdjustLeaveValue: Fn(i32) -> i32, L: kwg::Node>(
         rack_tally: &mut [u8],
         klv: &Klv<L>,
@@ -379,6 +382,7 @@ impl MultiLeaves {
         }
     }
 
+    #[inline(always)]
     pub fn apply_dynamic_leaves(
         &mut self,
         lat: &census::MultisetLattice,
@@ -484,6 +488,7 @@ impl MultiLeaves {
         !self.leave_values.is_empty()
     }
 
+    #[inline(always)]
     pub fn gen_exchange_moves_via_klv<'a, FoundExchangeMove: FnMut(&[u8], i32), L: kwg::Node>(
         klv: &Klv<L>,
         found_exchange_move: FoundExchangeMove,
@@ -572,6 +577,7 @@ impl MultiLeaves {
 mod tests {
     use super::*;
 
+    #[inline]
     fn binom(n: u64, k: u64) -> u64 {
         if k > n {
             return 0;
@@ -587,6 +593,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn apply_dynamic_leaves_matches_brute() {
         let num_letters = 3usize;
         let rack_size = 3usize;
