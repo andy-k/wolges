@@ -90,6 +90,7 @@ pub enum BoardLayout {
 }
 
 impl BoardLayout {
+    #[inline(always)]
     pub fn new_static(x: StaticBoardLayout) -> Self {
         let rows_times_cols = (x.dim.rows as isize * x.dim.cols as isize) as usize;
         let mut transposed_premiums = Vec::with_capacity(rows_times_cols);
@@ -220,6 +221,7 @@ impl BoardLayout {
 }
 
 // https://en.wikipedia.org/wiki/Scrabble
+#[inline(always)]
 pub fn make_standard_board_layout() -> BoardLayout {
     BoardLayout::new_static(StaticBoardLayout {
         premiums: Box::new([
@@ -457,6 +459,7 @@ pub fn make_standard_board_layout() -> BoardLayout {
 }
 
 // Add some punctured squares for fun. This is not an official layout.
+#[inline(always)]
 pub fn make_punctured_board_layout() -> BoardLayout {
     BoardLayout::new_static(StaticBoardLayout {
         premiums: Box::new([
@@ -694,6 +697,7 @@ pub fn make_punctured_board_layout() -> BoardLayout {
 }
 
 // https://www.boardgamegeek.com/image/52794/super-scrabble
+#[inline(always)]
 pub fn make_super_board_layout() -> BoardLayout {
     BoardLayout::new_static(StaticBoardLayout {
         premiums: Box::new([
