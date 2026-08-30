@@ -18,6 +18,7 @@ abcdefghijklmnopqrstuvwxyz\
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // support "-" to mean stdout.
+#[inline]
 fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
     Ok(if filename == "-" {
         USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -27,6 +28,7 @@ fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error
     })
 }
 
+#[inline]
 fn run_stamp() -> String {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -35,6 +37,7 @@ fn run_stamp() -> String {
     format!("{ticks:012x}")
 }
 
+#[inline]
 fn claim_output_path(desired: &str) -> std::io::Result<String> {
     use std::fmt::Write as _;
     match std::fs::OpenOptions::new()
@@ -73,6 +76,7 @@ fn claim_output_path(desired: &str) -> std::io::Result<String> {
 }
 
 // when using "-" as output filename, print things to stderr.
+#[inline]
 fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
     if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
         Box::new(std::io::stderr()) as Box<dyn std::io::Write>
@@ -82,6 +86,7 @@ fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
 }
 
 // support "-" to mean stdin.
+#[inline]
 fn make_reader(filename: &str) -> Result<Box<dyn std::io::Read>, std::io::Error> {
     Ok(if filename == "-" {
         Box::new(std::io::stdin())
@@ -97,6 +102,7 @@ fn read_to_end(reader: &mut Box<dyn std::io::Read>) -> Result<Vec<u8>, std::io::
     Ok(v)
 }
 
+#[inline]
 fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
     args: &[String],
     language_name: &str,
@@ -113,6 +119,7 @@ fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
     do_lang_kwg::<_, kwg::Node22>(args, language_name, &make_game_config)
 }
 
+#[inline]
 fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + Sync + Send>(
     args: &[String],
     language_name: &str,
@@ -980,6 +987,7 @@ when low disk space, note that in bash:
     }
 }
 
+#[inline]
 fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name)
         .ok()
@@ -987,10 +995,12 @@ fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+#[inline(always)]
 fn env_flag(name: &str, default: bool) -> bool {
     env_parse::<u64>(name, default as u64) != 0
 }
 
+#[inline]
 fn wolges_threads() -> usize {
     std::env::var("WOLGES_THREADS")
         .ok()
@@ -1004,6 +1014,7 @@ enum Apportion {
     Entering,
 }
 
+#[inline]
 fn wolges_apportion() -> error::Returns<Apportion> {
     match std::env::var("WOLGES_APPORTION").ok().as_deref() {
         None | Some("full-rack") => Ok(Apportion::FullRack),
@@ -1021,6 +1032,7 @@ enum CiReport {
     Leave,
 }
 
+#[inline]
 fn wolges_census_ci_report() -> error::Returns<CiReport> {
     match std::env::var("WOLGES_CENSUS_CI_REPORT").ok().as_deref() {
         None | Some("off") => Ok(CiReport::Off),
@@ -1033,6 +1045,7 @@ fn wolges_census_ci_report() -> error::Returns<CiReport> {
     }
 }
 
+#[inline]
 fn generate_autoplay_logs<
     const WRITE_LOGS: bool,
     const SUMMARIZE: bool,
@@ -2300,10 +2313,12 @@ fn generate_autoplay_logs<
     Ok(())
 }
 
+#[inline(always)]
 fn env_usize(name: &str, default: usize) -> usize {
     env_parse(name, default)
 }
 
+#[inline(always)]
 fn env_path(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|x| !x.is_empty())
 }
@@ -2315,6 +2330,7 @@ enum GillesRealRack {
     InWindow,
 }
 
+#[inline]
 fn wolges_gilles_real_rack() -> error::Returns<GillesRealRack> {
     match std::env::var("WOLGES_GILLES_REAL_RACK").ok().as_deref() {
         None | Some("off") => Ok(GillesRealRack::Off),
@@ -2327,6 +2343,7 @@ fn wolges_gilles_real_rack() -> error::Returns<GillesRealRack> {
     }
 }
 
+#[inline]
 fn parse_board_counts(spec: &str) -> error::Returns<Vec<u64>> {
     let mut out = Vec::new();
     for part in spec.split(',') {
@@ -2350,6 +2367,7 @@ fn parse_board_counts(spec: &str) -> error::Returns<Vec<u64>> {
     Ok(out)
 }
 
+#[inline]
 fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -3424,6 +3442,7 @@ struct GillesMutexed {
     oppdenial_leave_boards: u64,
 }
 
+#[inline]
 fn merge_rack_map(
     dst: &mut fash::MyHashMap<bites::Bites, Cumulate>,
     src: &mut fash::MyHashMap<bites::Bites, Cumulate>,
@@ -3441,6 +3460,7 @@ fn merge_rack_map(
     }
 }
 
+#[inline]
 fn recompute_undersampled(
     g: &mut GillesMutexed,
     scratch_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
@@ -3490,6 +3510,7 @@ struct RecomputeParams {
     min_samples: u64,
 }
 
+#[inline]
 fn recompute_undersampled_subracks(
     full_rack_map: &fash::MyHashMap<bites::Bites, Cumulate>,
     rare_subrack_map: &fash::MyHashMap<bites::Bites, Cumulate>,
@@ -3626,6 +3647,7 @@ struct SampleBudget<'a> {
     knob: KnobFold<'a>,
 }
 
+#[inline]
 fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
     rack_size: u8,
     move_generator: &mut movegen::KurniaMoveGenerator,
@@ -3679,6 +3701,7 @@ fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
     });
 }
 
+#[inline]
 fn n_choose_k(n: usize, k: usize) -> usize {
     if k > n {
         return 0;
@@ -3691,6 +3714,7 @@ fn n_choose_k(n: usize, k: usize) -> usize {
     result
 }
 
+#[inline]
 fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     game_config: game_config::GameConfig,
     f: Readable,
@@ -3831,6 +3855,7 @@ fn generate_neighbors<FoundNeighbor: FnMut(&[u8])>(
     }
 }
 
+#[inline]
 fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std::io::Write>(
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
@@ -3906,6 +3931,7 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     Ok(())
 }
 
+#[inline]
 const fn census_mix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
@@ -3926,6 +3952,7 @@ struct SpellPool<'a> {
     blank_cap: usize,
 }
 
+#[inline]
 fn oppdenial_leave_marginal_path() -> error::Returns<String> {
     match std::env::var("WOLGES_OPPDENIAL_LEAVE_MARGINAL") {
         Ok(path) => Ok(path),
@@ -3935,6 +3962,7 @@ fn oppdenial_leave_marginal_path() -> error::Returns<String> {
     }
 }
 
+#[inline]
 fn write_oppdenial_leave_marginal_sidecar(sum_marg: &[f64], boards: u64) -> error::Returns<()> {
     let path = oppdenial_leave_marginal_path()?;
     let mut w = csv::Writer::from_path(&path)?;
@@ -3952,6 +3980,7 @@ fn write_oppdenial_leave_marginal_sidecar(sum_marg: &[f64], boards: u64) -> erro
     Ok(())
 }
 
+#[inline]
 fn load_oppdenial_leave_marginal_sidecar(
     path: &str,
     num_letters: usize,
@@ -3970,6 +3999,7 @@ fn load_oppdenial_leave_marginal_sidecar(
     Ok(avg)
 }
 
+#[inline]
 fn oppdenial_rack_fold(oppdenial_rack: f64, marginal: &[f64], rack_bytes: &[u8]) -> f64 {
     if marginal.is_empty() {
         return 0.0;
@@ -3981,6 +4011,7 @@ fn oppdenial_rack_fold(oppdenial_rack: f64, marginal: &[f64], rack_bytes: &[u8])
     oppdenial_rack * d / equity::SCALE as f64
 }
 
+#[inline]
 fn oppdenial_exact_fold(oppdenial_exact: f64, oppdenial_exact_term: &[f64], rank: usize) -> f64 {
     if rank >= oppdenial_exact_term.len() {
         return 0.0;
@@ -3999,6 +4030,7 @@ struct KnobFold<'a> {
 }
 
 impl KnobFold<'_> {
+    #[inline]
     fn apply(&self, base: equity::Equity, rack: &[u8]) -> f64 {
         let rank = match self.oppdenial_exact_lat {
             Some(lat) => lat.rank_bytes(rack) as usize,
@@ -4010,6 +4042,7 @@ impl KnobFold<'_> {
     }
 }
 
+#[inline]
 fn winpct_remap(
     table: &win_pct::WinPctTable,
     best: &mut [i32],
@@ -4027,6 +4060,7 @@ fn winpct_remap(
     }
 }
 
+#[inline]
 fn winpct_inv_slope(
     table: &win_pct::WinPctTable,
     bag: usize,
@@ -4043,6 +4077,7 @@ fn winpct_inv_slope(
     }
 }
 
+#[inline]
 fn winpct_g(
     table: &win_pct::WinPctTable,
     e_mp: i32,
@@ -4069,6 +4104,7 @@ struct WinpctBoard<'a> {
 }
 
 impl WinpctBoard<'_> {
+    #[inline(always)]
     fn new(
         table: Option<&win_pct::WinPctTable>,
         unseen: usize,
@@ -4083,6 +4119,7 @@ impl WinpctBoard<'_> {
         )
     }
 
+    #[inline]
     fn from_bag(
         table: Option<&win_pct::WinPctTable>,
         bag: usize,
@@ -4102,6 +4139,7 @@ impl WinpctBoard<'_> {
     }
 }
 
+#[inline]
 fn winpct_apply(wpb: &Option<WinpctBoard>, e: equity::Equity) -> f64 {
     match wpb {
         Some(w) => {
@@ -4120,6 +4158,7 @@ fn winpct_apply(wpb: &Option<WinpctBoard>, e: equity::Equity) -> f64 {
     }
 }
 
+#[inline]
 fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
     move_generator: &mut movegen::KurniaMoveGenerator,
     board_tiles: &[u8],
@@ -4198,6 +4237,7 @@ enum Scatter {
     Auto,
 }
 
+#[inline]
 fn wolges_census_scatter() -> error::Returns<Scatter> {
     match std::env::var("WOLGES_CENSUS_SCATTER").ok().as_deref() {
         None | Some("auto") => Ok(Scatter::Auto),
@@ -4211,6 +4251,7 @@ fn wolges_census_scatter() -> error::Returns<Scatter> {
 
 type SheetCacheSlot = std::sync::Mutex<Option<(Vec<i32>, Vec<u8>)>>;
 
+#[inline]
 fn census_sheet_reuse_plan(board_counts: &[u64]) -> (Vec<usize>, usize) {
     let gens = board_counts.len();
     let mut live_after = vec![0usize; gens];
@@ -4224,6 +4265,7 @@ fn census_sheet_reuse_plan(board_counts: &[u64]) -> (Vec<usize>, usize) {
     (live_after, cache_len)
 }
 
+#[inline]
 fn write_census_klv2(
     lat: &census::MultisetLattice,
     value_mp: &dyn Fn(usize) -> f64,
@@ -4290,6 +4332,7 @@ fn write_census_klv2(
     Ok(leave_values.len())
 }
 
+#[inline]
 fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -5866,6 +5909,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     Ok(())
 }
 
+#[inline]
 fn decompose_contribution(fv: &Cumulate, w: u64, per_rack: bool) -> (f64, u64) {
     if per_rack {
         (fv.equity / fv.count as f64 * w as f64, w)
@@ -5874,6 +5918,7 @@ fn decompose_contribution(fv: &Cumulate, w: u64, per_rack: bool) -> (f64, u64) {
     }
 }
 
+#[inline]
 fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RACK: bool>(
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
@@ -6287,6 +6332,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     Ok(())
 }
 
+#[inline]
 fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -6636,6 +6682,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     Ok(())
 }
 
+#[inline]
 fn plural<'a>(n: u64, singular: &'a str, plural: &'a str) -> &'a str {
     if n == 1 { singular } else { plural }
 }
@@ -6665,6 +6712,7 @@ impl GameStats {
         }
     }
 
+    #[inline]
     fn add_game(
         &mut self,
         p0_final: i32,
@@ -6687,6 +6735,7 @@ impl GameStats {
         }
     }
 
+    #[inline]
     fn merge(&mut self, other: &GameStats) {
         self.p0_wins += other.p0_wins;
         self.p0_losses += other.p0_losses;
@@ -6698,10 +6747,12 @@ impl GameStats {
         self.zero_scores += other.zero_scores;
     }
 
+    #[inline(always)]
     fn total_games(&self) -> u64 {
         self.p0_wins + self.p0_losses + self.p0_draws
     }
 
+    #[inline]
     fn print(&self, label: &str) {
         let total = self.total_games();
         if total == 0 {
@@ -6760,6 +6811,7 @@ impl GameStats {
         }
     }
 
+    #[inline]
     fn print_porcelain(&self) {
         let total = self.total_games();
         if total == 0 {
@@ -6854,6 +6906,7 @@ impl GamePairStats {
     }
 }
 
+#[inline]
 fn apportion_subracks(
     lat: &census::MultisetLattice,
     r_tally: &[u8],
@@ -6919,6 +6972,7 @@ fn apportion_subracks(
     .rec(0);
 }
 
+#[inline]
 fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -7195,6 +7249,7 @@ struct WinpctTables<'a, N: kwg::Node, L: kwg::Node> {
     arc_klv: &'a klv::Klv<L>,
 }
 
+#[inline]
 fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
     tables: WinpctTables<'_, N, L>,
     move_generator: &mut movegen::KurniaMoveGenerator,
@@ -7245,6 +7300,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
     }
 }
 
+#[inline]
 fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -7323,6 +7379,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     Ok(())
 }
 
+#[inline]
 fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -7416,6 +7473,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     Ok(())
 }
 
+#[inline]
 fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -7612,6 +7670,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     })
 }
 
+#[inline]
 fn sim_compare_seat_config(prefix: &str) -> simmer::SimmerConfig {
     let mut config = simmer::SimmerConfig {
         descale: true,
@@ -7632,6 +7691,7 @@ fn sim_compare_seat_config(prefix: &str) -> simmer::SimmerConfig {
     config
 }
 
+#[inline]
 fn win_prob_source_name(source: simmer::WinProbSource) -> &'static str {
     match source {
         simmer::WinProbSource::Sigmoid => "sigmoid",
@@ -7639,6 +7699,7 @@ fn win_prob_source_name(source: simmer::WinProbSource) -> &'static str {
     }
 }
 
+#[inline]
 fn sim_compare_allocator(prefix: &str) -> move_picker::Allocator {
     match std::env::var(format!("{prefix}ALLOCATOR")).ok().as_deref() {
         Some("adaptive") => move_picker::Allocator::Adaptive,
@@ -7646,6 +7707,7 @@ fn sim_compare_allocator(prefix: &str) -> move_picker::Allocator {
     }
 }
 
+#[inline]
 fn allocator_name(allocator: move_picker::Allocator) -> &'static str {
     match allocator {
         move_picker::Allocator::RoundRobin => "round-robin",
@@ -7653,6 +7715,7 @@ fn allocator_name(allocator: move_picker::Allocator) -> &'static str {
     }
 }
 
+#[inline]
 fn sim_compare_stop_rule(prefix: &str) -> move_picker::StopRule {
     match std::env::var(format!("{prefix}STOP")).ok().as_deref() {
         Some("confidence") => move_picker::StopRule::Confidence,
@@ -7660,12 +7723,14 @@ fn sim_compare_stop_rule(prefix: &str) -> move_picker::StopRule {
     }
 }
 
+#[inline]
 fn sim_compare_stop_delta(prefix: &str) -> Option<f64> {
     std::env::var(format!("{prefix}STOP_DELTA"))
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
 }
 
+#[inline]
 fn stop_rule_name(stop_rule: move_picker::StopRule) -> &'static str {
     match stop_rule {
         move_picker::StopRule::FixedCap => "fixed-cap",
@@ -7673,6 +7738,7 @@ fn stop_rule_name(stop_rule: move_picker::StopRule) -> &'static str {
     }
 }
 
+#[inline]
 fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -7916,6 +7982,7 @@ mod tests {
     ];
 
     #[test]
+    #[inline]
     fn census_sheet_reuse_plan_looks_past_the_next_generation() {
         for &(counts, want_live, want_len) in SHEET_PLANS {
             let (live_after, cache_len) = census_sheet_reuse_plan(counts);
@@ -7925,6 +7992,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn census_sheet_reuse_plan_never_reads_an_uncached_slot() {
         for &(counts, _, want_len) in SHEET_PLANS {
             let (live_after, cache_len) = census_sheet_reuse_plan(counts);
@@ -7960,6 +8028,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn pooling_keeps_value_square_and_count_together() {
         let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
         pool_one(&mut m, &b"\x01"[..], 3.0);
@@ -7972,6 +8041,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn merging_thread_maps_keeps_every_square() {
         let mut dst = fash::MyHashMap::<bites::Bites, Cumulate>::default();
         pool_one(&mut dst, &b"\x01"[..], 3.0);
@@ -7991,6 +8061,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn pooled_spread_cannot_undercut_its_mean() {
         let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
         for v in [12.5f64, -3.0, 40.0, 0.0, 7.25] {
@@ -8001,6 +8072,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn parse_board_counts_expands_repeats() {
         assert_eq!(parse_board_counts("256").unwrap(), vec![256]);
         assert_eq!(
@@ -8027,6 +8099,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn per_rack_decompose_weights_by_mean_not_count() {
         let fv = Cumulate {
             equity: 10.0,
@@ -8044,6 +8117,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn rare_pools_by_count_into_subrack_map() {
         let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
         m.insert(
