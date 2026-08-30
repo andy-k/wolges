@@ -9,6 +9,7 @@ pub enum MacondoFormat {
 
 // Macondo project is at https://github.com/domino14/macondo/.
 // This function converts a KWG into a Macondo-compatible gaddag or dawg file.
+#[inline(always)]
 pub fn to_macondo<'a, N: kwg::Node>(
     kwg: &'a kwg::Kwg<N>,
     alphabet: &'a alphabet::Alphabet,
@@ -182,6 +183,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
     bin.into_boxed_slice()
 }
 
+#[inline(always)]
 fn str1_to_windows_u8(s: &str) -> Option<u8> {
     let mut chars = s.chars();
     if let Some(first_char) = chars.next()
@@ -193,6 +195,7 @@ fn str1_to_windows_u8(s: &str) -> Option<u8> {
     None
 }
 
+#[inline(always)]
 fn str_to_windows_vec_u8(s: &str, v: &mut Vec<u8>) -> Option<()> {
     for ch in s.chars() {
         if ch as u32 <= 0xff {
@@ -204,6 +207,7 @@ fn str_to_windows_vec_u8(s: &str, v: &mut Vec<u8>) -> Option<()> {
     Some(())
 }
 
+#[inline(always)]
 pub fn to_lxd<'a, N: kwg::Node>(
     kwg: &'a kwg::Kwg<N>,
     alphabet: &'a alphabet::Alphabet,
