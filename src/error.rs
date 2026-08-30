@@ -5,6 +5,7 @@ pub struct MyError {
 }
 
 impl std::fmt::Display for MyError {
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.pad(&self.s)
     }
@@ -18,6 +19,7 @@ impl std::fmt::Debug for MyError {
 
 impl std::error::Error for MyError {}
 
+#[inline(always)]
 pub fn new(s: String) -> MyError {
     MyError { s }
 }
