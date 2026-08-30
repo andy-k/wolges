@@ -25,6 +25,7 @@ struct Question {
 // and "word" response for "action":"play"). everywhere else, use 0x81u8.
 
 impl Question {
+    #[inline(always)]
     fn from_fen(
         game_config: &game_config::GameConfig,
         lexicon: &str,
