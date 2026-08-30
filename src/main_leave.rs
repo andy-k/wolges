@@ -443,6 +443,8 @@ enum Task {
     Census(Census),
     #[command(about = "play game pairs to compare two sets of leaves")]
     Compare(Compare),
+    #[command(about = "same as compare, generating with the lean arm")]
+    CompareLean(Compare),
     #[command(about = "play game pairs where both seats choose moves by the simmer")]
     SimCompare(SimCompare),
     #[command(about = "check that a resumed decision matches the same decision run in one call")]
@@ -501,7 +503,11 @@ impl Task {
     fn needs_two_players(&self) -> bool {
         matches!(
             self,
-            Task::Compare(_) | Task::SimCompare(_) | Task::Winpct(_) | Task::WinpctEval(_)
+            Task::Compare(_)
+                | Task::CompareLean(_)
+                | Task::SimCompare(_)
+                | Task::Winpct(_)
+                | Task::WinpctEval(_)
         )
     }
 }
@@ -625,7 +631,12 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::Compare(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
-            compare_leaves::<_, _>(game_config, kwg, klv0, klv1, a.pairs, a.seed, threads)
+            compare_leaves::<_, _, false>(game_config, kwg, klv0, klv1, a.pairs, a.seed, threads)
+        }
+        Task::CompareLean(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
+            compare_leaves::<_, _, true>(game_config, kwg, klv0, klv1, a.pairs, a.seed, threads)
         }
         Task::SimCompare(a) => {
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
@@ -4250,7 +4261,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 }
 
 #[inline]
-fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send, const LEAN: bool>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
@@ -4269,7 +4280,9 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let arc_anagrams = {
+    let arc_anagrams = if LEAN {
+        None
+    } else {
         let dim = game_config.board_layout().dim();
         wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
             .and_then(|layout| wolges::anagrams::Anagrams::build(&kwg, layout))
@@ -4341,7 +4354,11 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
                             };
-                            move_generator.gen_moves_unfiltered(&gen_params);
+                            if LEAN {
+                                move_generator.gen_moves_unfiltered_lean(&gen_params);
+                            } else {
+                                move_generator.gen_moves_unfiltered(&gen_params);
+                            }
                             let play = &move_generator.plays[0].play;
                             if klv_swapped {
                                 if !pair_diverged
