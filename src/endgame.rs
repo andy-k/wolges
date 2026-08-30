@@ -113,6 +113,7 @@ impl WorkBuffer {
         }
     }
 
+    #[inline]
     fn init(&mut self) {
         self.t0 = std::time::Instant::now();
         self.tick_periods = move_picker::Periods(0);
@@ -314,6 +315,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         (rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize]) as f32
     }
 
+    #[inline]
     fn run_id_loop(&mut self, player_idx: u8, verbose: bool) -> f32 {
         let mut last_valuation = f32::NAN;
         for max_depth in 1.. {
@@ -352,6 +354,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         last_valuation
     }
 
+    #[inline]
     fn aspiration_search(&mut self, player_idx: u8, max_depth: i8, last_valuation: f32) -> f32 {
         const ASPIRATION_WINDOW: f32 = (3 * super::equity::SCALE) as f32;
         let lo = last_valuation - ASPIRATION_WINDOW;
@@ -371,10 +374,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
+    #[inline(always)]
     pub fn evaluate(&mut self, player_idx: u8) -> f32 {
         self.run_id_loop(player_idx, true)
     }
 
+    #[inline(always)]
     pub fn solve(&mut self, player_idx: u8) -> f32 {
         self.run_id_loop(player_idx, false)
     }
@@ -748,6 +753,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
+    #[inline]
     pub fn collect_pv(&'a self, player_idx: u8, out: &mut Vec<(f32, movegen::Play)>) {
         out.clear();
         self.append_solution(0, player_idx, |found| {
@@ -755,6 +761,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         });
     }
 
+    #[inline]
     pub fn print_best_line(&mut self, player_idx: u8) {
         let mut current_ply_buffer = std::mem::take(&mut self.work_buffer.current_ply_buffer);
         let board_tiles = &mut current_ply_buffer.board_tiles;
@@ -841,6 +848,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         self.work_buffer.current_ply_buffer = current_ply_buffer;
     }
 
+    #[inline]
     fn print_progress(&self) {
         let dur0 = self.work_buffer.t0.elapsed();
         let dur1 = self.work_buffer.dur_movegen;
@@ -855,6 +863,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         );
     }
 
+    #[inline]
     pub fn solve_one_in_bag(&mut self, player_idx: u8, bag_tile: u8) -> f32 {
         let gc = self.game_config;
         let kwg = self.kwg;
@@ -1112,6 +1121,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         best
     }
 
+    #[inline]
     pub fn solve_peg_one_in_bag(
         &mut self,
         mover: u8,
@@ -1138,6 +1148,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
+    #[inline]
     fn peg_clairvoyant_aggregate(
         &mut self,
         mover: u8,
@@ -1178,6 +1189,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
+    #[inline]
     fn peg_committed_no_exchange(
         &self,
         mover: u8,
@@ -1329,6 +1341,7 @@ pub enum PegUnsupported {
 }
 
 impl std::fmt::Display for PegUnsupported {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PegUnsupported::ExchangeWithoutForcedEnd => f.write_str(
@@ -1349,20 +1362,24 @@ struct BagExchangeKey {
     rack1: Vec<u8>,
 }
 
+#[inline(always)]
 fn one_in_bag_exchange_legal(gc: &game_config::GameConfig) -> bool {
     gc.exchange_tile_limit() <= 1
 }
 
+#[inline(always)]
 fn one_in_bag_exchange_solvable(gc: &game_config::GameConfig) -> bool {
     one_in_bag_exchange_legal(gc) && gc.exchanges_are_zeros() && gc.num_zeros_to_end() != 0
 }
 
+#[inline]
 fn scoreless_turns_end(gc: &game_config::GameConfig, passes: u8, zeros: u8) -> bool {
     let npte = gc.num_passes_to_end();
     let nzte = gc.num_zeros_to_end();
     (npte != 0 && passes >= npte) || (nzte != 0 && zeros >= nzte)
 }
 
+#[inline]
 pub fn peg_aggregate(hypotheses: &[(u32, f32)]) -> (f32, f32) {
     let mut total = 0.0f32;
     let mut win_sum = 0.0f32;
@@ -1392,6 +1409,7 @@ mod tests {
     use super::{EndgameSolver, PegMove};
     use crate::{alphabet, bites, build, game_config, klv, kwg, movegen};
 
+    #[inline]
     fn tiny_word_list() -> Vec<bites::Bites> {
         let gc = game_config::make_english_game_config();
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
@@ -1411,6 +1429,7 @@ mod tests {
         words
     }
 
+    #[inline]
     fn tiny_kwg_bytes() -> bites::Bites {
         build::build(
             build::BuildContent::Gaddawg,
@@ -1420,6 +1439,7 @@ mod tests {
         .unwrap()
     }
 
+    #[inline]
     fn apply_place(
         gc: &game_config::GameConfig,
         board: &mut [u8],
@@ -1697,16 +1717,19 @@ mod tests {
         racks: [Vec<u8>; 2],
     }
 
+    #[inline(always)]
     fn empty_board() -> Vec<u8> {
         vec![0u8; 15 * 15]
     }
 
+    #[inline]
     fn put_word(board: &mut [u8], row: i8, col0: i8, word: &[u8]) {
         for (k, &t) in word.iter().enumerate() {
             board[(row as usize) * 15 + col0 as usize + k] = t;
         }
     }
 
+    #[inline]
     fn describe(gc: &game_config::GameConfig, pos: &Position) -> String {
         let a = gc.alphabet();
         let mut s = String::new();
@@ -1737,6 +1760,7 @@ mod tests {
         s
     }
 
+    #[inline]
     fn embedded_positions() -> Vec<(String, Position)> {
         let mut out = Vec::new();
 
@@ -1803,6 +1827,7 @@ mod tests {
         out
     }
 
+    #[inline]
     fn splitmix64(s: &mut u64) -> u64 {
         *s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = *s;
@@ -1811,6 +1836,7 @@ mod tests {
         z ^ (z >> 31)
     }
 
+    #[inline]
     fn random_positions(n: usize) -> Vec<(String, Position)> {
         let letters = [1u8, 2, 20, 8]; // A B T H
         let words: Vec<Vec<u8>> = vec![
@@ -1860,6 +1886,7 @@ mod tests {
         out
     }
 
+    #[inline]
     fn all_positions() -> Vec<(String, Position)> {
         let mut v = embedded_positions();
         v.extend(random_positions(200));
@@ -1867,6 +1894,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn differential_reference_vs_solve() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -1896,6 +1924,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn peg_aggregate_arithmetic() {
         let (win_pct, expected) = super::peg_aggregate(&[(2, 3000.0), (1, 0.0), (1, -5000.0)]);
         assert_eq!(win_pct, 0.625);
@@ -1909,6 +1938,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn peg_one_in_bag_hand_checkable() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -1931,6 +1961,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn peg_one_in_bag_score_diff_shifts_the_outcome() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -1953,6 +1984,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn pv_playout_invariant() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -2024,6 +2056,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn properties_pv_legal_and_value_bounds() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -2118,6 +2151,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn differential_one_in_bag() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -2168,6 +2202,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn one_in_bag_forced_double_pass() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -2189,6 +2224,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn one_in_bag_play_then_draw() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -2215,6 +2251,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn differential_one_in_bag_exchange() {
         let gc = game_config::make_exchange_test_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -2270,6 +2307,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn one_in_bag_exchange_beats_passing() {
         let gc = game_config::make_exchange_test_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -2293,6 +2331,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn peg_one_in_bag_exchange_solved_or_declined() {
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
@@ -2326,6 +2365,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn differential_peg_committed() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
