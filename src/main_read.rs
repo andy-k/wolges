@@ -250,6 +250,7 @@ impl AlphabetLabel for QuackleLeavesAlphabetLabel {
 }
 
 #[expect(clippy::too_many_arguments)]
+#[inline]
 fn iter_dawg<
     F: FnMut(&str) -> error::Returns<()>,
     In: FnMut(u8) -> error::Returns<Option<u8>>,
@@ -346,6 +347,7 @@ fn iter_dawg<
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // support "-" to mean stdout.
+#[inline]
 fn use_writer(filename: &str) {
     if filename == "-" {
         USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -353,6 +355,7 @@ fn use_writer(filename: &str) {
 }
 
 // support "-" to mean stdout.
+#[inline]
 fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
     Ok(if filename == "-" {
         USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -363,6 +366,7 @@ fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error
 }
 
 // when using "-" as output filename, print things to stderr.
+#[inline]
 fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
     if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
         Box::new(std::io::stderr()) as Box<dyn std::io::Write>
@@ -372,6 +376,7 @@ fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
 }
 
 // support "-" to mean stdin.
+#[inline]
 fn make_reader(filename: &str) -> Result<Box<dyn std::io::Read>, std::io::Error> {
     Ok(if filename == "-" {
         Box::new(std::io::stdin())
@@ -388,6 +393,7 @@ fn read_to_end(reader: &mut Box<dyn std::io::Read>) -> Result<Vec<u8>, std::io::
 }
 
 // adjusted from main_build read_machine_words.
+#[inline]
 fn read_machine_words_sorted_by_length(
     alphabet_reader: &alphabet::AlphabetReader,
     giant_string: &str,
@@ -509,6 +515,7 @@ fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Re
     }
 }
 
+#[inline]
 fn do_wg_check<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
@@ -573,6 +580,7 @@ enum AnagramMode {
     Super,
 }
 
+#[inline]
 fn do_wg_anagram<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
@@ -663,6 +671,7 @@ fn do_wg_anagram<R: WgReader>(
     Ok(())
 }
 
+#[inline]
 fn dump_dawg<R: WgReader, A: AlphabetLabel>(
     args: &[String],
     label: &A,
@@ -690,6 +699,7 @@ fn dump_dawg<R: WgReader, A: AlphabetLabel>(
     Ok(())
 }
 
+#[inline]
 fn do_klv_anagram<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
@@ -779,6 +789,7 @@ fn do_klv_anagram<R: WgReader>(
     Ok(())
 }
 
+#[inline]
 fn do_wg_dawg<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
@@ -800,6 +811,7 @@ fn do_wg_dawg<R: WgReader>(
     )
 }
 
+#[inline]
 fn do_wg_nodes<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
@@ -843,6 +855,7 @@ fn do_wg_nodes<R: WgReader>(
     Ok(())
 }
 
+#[inline]
 fn do_wg_prob<R: WgReader>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
@@ -922,6 +935,7 @@ fn wmp3_hash(bit_rack: u128) -> u32 {
     k as u32
 }
 
+#[inline]
 fn do_quackle<R: WgReader>(
     args: &[String],
     make_reader_fn: impl FnOnce(usize) -> R,
@@ -961,6 +975,7 @@ fn do_quackle<R: WgReader>(
     )
 }
 
+#[inline]
 fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     args: &[String],
     language_name: &str,
@@ -2512,6 +2527,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
 
 // note: kwg in legacy layout is reported to be slower than the newer layouts.
 // this cache simulation contradicts that observation. can someone explain?
+#[inline]
 fn kwg_hitcheck<R: WgReader>(
     ret: &mut String,
     r: &R,
@@ -2645,6 +2661,7 @@ fn kwg_hitcheck<R: WgReader>(
 }
 
 // naive algorithm.
+#[inline]
 fn next_prime(mut x: u32) -> u32 {
     if x <= 2 {
         return 2;
