@@ -3749,8 +3749,40 @@ impl KurniaMoveGenerator {
     }
 
     // skip equity computation and sorting
-    #[inline]
+    #[inline(always)]
     pub fn gen_moves_raw_all_unsorted<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        num_exchanges_by_this_player: i16,
+        pass_policy: PassPolicy,
+    ) {
+        self.gen_moves_raw_all_unsorted_impl::<false, _, _>(
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            pass_policy,
+        )
+    }
+
+    #[inline(always)]
+    pub fn gen_moves_raw_all_unsorted_lean<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        num_exchanges_by_this_player: i16,
+        pass_policy: PassPolicy,
+    ) {
+        self.gen_moves_raw_all_unsorted_impl::<true, _, _>(
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            pass_policy,
+        )
+    }
+
+    #[inline]
+    fn gen_moves_raw_all_unsorted_impl<'a, const LEAN: bool, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &'a BoardSnapshot<'a, N, L>,
         rack: &'a [u8],
@@ -3777,7 +3809,7 @@ impl KurniaMoveGenerator {
                     },
                 });
             };
-        if working_buffer.turn_is_supported(true, board_snapshot) {
+        if !LEAN && working_buffer.turn_is_supported(true, board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
                 want_raw: true,
                 board_snapshot,
@@ -3826,9 +3858,64 @@ impl KurniaMoveGenerator {
         working_buffer.multi_leaves = multi_leaves;
     }
 
-    #[inline]
+    #[inline(always)]
     pub async fn gen_moves_filtered_async<
         'a,
+        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
+        AdjustLeaveValue: Fn(i32) -> i32,
+        EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
+        BreatheFuture: std::future::Future,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlaceMovePredicate,
+        adjust_leave_value: AdjustLeaveValue,
+        equity_predicate: EquityPredicate,
+        breathe: impl FnMut() -> BreatheFuture,
+    ) {
+        self.gen_moves_filtered_async_impl::<false, _, _, _, _, _, _>(
+            params,
+            place_move_predicate,
+            adjust_leave_value,
+            equity_predicate,
+            breathe,
+        )
+        .await
+    }
+
+    #[inline(always)]
+    pub async fn gen_moves_filtered_async_lean<
+        'a,
+        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
+        AdjustLeaveValue: Fn(i32) -> i32,
+        EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
+        BreatheFuture: std::future::Future,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlaceMovePredicate,
+        adjust_leave_value: AdjustLeaveValue,
+        equity_predicate: EquityPredicate,
+        breathe: impl FnMut() -> BreatheFuture,
+    ) {
+        self.gen_moves_filtered_async_impl::<true, _, _, _, _, _, _>(
+            params,
+            place_move_predicate,
+            adjust_leave_value,
+            equity_predicate,
+            breathe,
+        )
+        .await
+    }
+
+    #[inline]
+    async fn gen_moves_filtered_async_impl<
+        'a,
+        const LEAN: bool,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
@@ -3933,7 +4020,7 @@ impl KurniaMoveGenerator {
                     );
                 }
             };
-        if working_buffer.turn_is_supported(false, params.board_snapshot) {
+        if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
@@ -4005,7 +4092,7 @@ impl KurniaMoveGenerator {
         working_buffer.multi_leaves = multi_leaves;
     }
 
-    #[inline]
+    #[inline(always)]
     // The census sheet wants each WORD once, not each PLAY, so its descent
     // takes a real tile before a blank. That is a different generator, not a
     // setting: the placement path that reads a word source does not run it.
@@ -4033,8 +4120,56 @@ impl KurniaMoveGenerator {
         self.working_buffer.is_census = false;
     }
 
+    #[inline(always)]
     pub fn gen_moves_filtered<
         'a,
+        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
+        AdjustLeaveValue: Fn(i32) -> i32,
+        EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlaceMovePredicate,
+        adjust_leave_value: AdjustLeaveValue,
+        equity_predicate: EquityPredicate,
+    ) {
+        self.gen_moves_filtered_impl::<false, _, _, _, _, _>(
+            params,
+            place_move_predicate,
+            adjust_leave_value,
+            equity_predicate,
+        )
+    }
+
+    #[inline(always)]
+    pub fn gen_moves_filtered_lean<
+        'a,
+        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
+        AdjustLeaveValue: Fn(i32) -> i32,
+        EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlaceMovePredicate,
+        adjust_leave_value: AdjustLeaveValue,
+        equity_predicate: EquityPredicate,
+    ) {
+        self.gen_moves_filtered_impl::<true, _, _, _, _, _>(
+            params,
+            place_move_predicate,
+            adjust_leave_value,
+            equity_predicate,
+        )
+    }
+
+    #[inline]
+    fn gen_moves_filtered_impl<
+        'a,
+        const LEAN: bool,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
@@ -4137,7 +4272,7 @@ impl KurniaMoveGenerator {
                     );
                 }
             };
-        if working_buffer.turn_is_supported(false, params.board_snapshot) {
+        if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
                 want_raw: false,
                 board_snapshot: params.board_snapshot,
@@ -4211,6 +4346,19 @@ impl KurniaMoveGenerator {
         params: &'a GenMovesParams<'a, N, L>,
     ) {
         self.gen_moves_filtered(
+            params,
+            |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
+            |leave_value: i32| leave_value,
+            |_equity: equity::Equity, _play: &Play| true,
+        );
+    }
+
+    #[inline(always)]
+    pub fn gen_moves_unfiltered_lean<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+    ) {
+        self.gen_moves_filtered_lean(
             params,
             |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
             |leave_value: i32| leave_value,
