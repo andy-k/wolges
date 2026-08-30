@@ -16,6 +16,7 @@ impl PlayScorer {
     }
 
     // Does not validate rack, may crash if invalid tile.
+    #[inline(always)]
     fn set_rack_tally(&mut self, game_config: &game_config::GameConfig, rack: &[u8]) {
         self.rack_tally.clear();
         self.rack_tally
@@ -27,6 +28,7 @@ impl PlayScorer {
     // Ok(None) if valid and canonical.
     // Ok(Some(canonical_play)) if valid but not canonical.
     // Err(reason) if invalid.
+    #[inline(always)]
     pub fn validate_play<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
@@ -215,6 +217,7 @@ impl PlayScorer {
         }
     }
 
+    #[inline(always)]
     pub fn words_all<Callback: FnMut(&[u8]) -> bool, N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
@@ -336,6 +339,7 @@ impl PlayScorer {
 
     // Unused &mut self for future-proofing.
     // Assume play is valid.
+    #[inline(always)]
     pub fn compute_score<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
@@ -437,6 +441,7 @@ impl PlayScorer {
     }
 
     // Assume recounted_score came from compute_score().
+    #[inline(always)]
     pub fn compute_equity<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
@@ -561,6 +566,7 @@ impl Default for PlayScorer {
     }
 }
 
+#[inline(always)]
 pub fn score_and_blank_deltas<N: kwg::Node, L: kwg::Node>(
     board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
     down: bool,
