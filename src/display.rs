@@ -44,6 +44,7 @@ pub fn board_label<'a>(
 pub struct ColumnStr(usize);
 
 impl std::fmt::Display for ColumnStr {
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
@@ -60,11 +61,13 @@ impl std::fmt::Display for ColumnStr {
 }
 
 // Negative numbers not handled.
+#[inline(always)]
 pub fn column(col: i8) -> ColumnStr {
     ColumnStr(col as usize)
 }
 
 // Parses ColumnStr strings (passed as str.as_bytes()).
+#[inline(always)]
 pub fn str_to_column_usize(sb: &[u8]) -> Option<usize> {
     if sb.is_empty() {
         return None;
@@ -86,6 +89,7 @@ pub fn str_to_column_usize(sb: &[u8]) -> Option<usize> {
 }
 
 // Parses ColumnStr strings (passed as str.as_bytes()).
+#[inline(always)]
 pub fn str_to_column_usize_ignore_case(sb: &[u8]) -> Option<usize> {
     if sb.is_empty() {
         return None;
@@ -114,6 +118,7 @@ struct BoardPrinter<'a> {
 }
 
 impl std::fmt::Display for BoardPrinter<'_> {
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
@@ -170,6 +175,7 @@ impl std::fmt::Display for BoardPrinter<'_> {
     }
 }
 
+#[inline(always)]
 pub fn print_board(
     alphabet: &alphabet::Alphabet,
     board_layout: &board_layout::BoardLayout,
@@ -192,6 +198,7 @@ pub struct BoardFenner<'a> {
 }
 
 impl std::fmt::Display for BoardFenner<'_> {
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
@@ -229,6 +236,7 @@ impl std::fmt::Display for BoardFenner<'_> {
 }
 
 impl<'a> BoardFenner<'a> {
+    #[inline(always)]
     pub fn new(
         alphabet: &'a alphabet::Alphabet,
         board_layout: &'a board_layout::BoardLayout,
@@ -249,6 +257,7 @@ pub struct BoardFenParser<'a> {
 }
 
 impl<'a> BoardFenParser<'a> {
+    #[inline(always)]
     pub fn new(
         alphabet: &'a alphabet::Alphabet,
         board_layout: &'a board_layout::BoardLayout,
@@ -263,6 +272,7 @@ impl<'a> BoardFenParser<'a> {
         }
     }
 
+    #[inline(always)]
     pub fn parse(&mut self, s: &str) -> Result<&[u8], error::MyError> {
         let sb = s.as_bytes();
         let mut ix = 0;
@@ -326,6 +336,7 @@ struct MsPrinter {
 }
 
 impl std::fmt::Display for MsPrinter {
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
@@ -353,6 +364,7 @@ struct GameStatePrinter<'a> {
 }
 
 impl std::fmt::Display for GameStatePrinter<'_> {
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
@@ -407,6 +419,7 @@ impl std::fmt::Display for GameStatePrinter<'_> {
     }
 }
 
+#[inline(always)]
 pub fn print_game_state(
     game_config: &game_config::GameConfig,
     game_state: &game_state::GameState,
