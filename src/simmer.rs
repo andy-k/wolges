@@ -52,6 +52,7 @@ pub fn sim_objective(sim_spread: i32, win_prob: f64, weightage: f64, descale: bo
     spread + win_prob * weightage
 }
 
+#[inline(always)]
 fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen::Play) {
     rack_tally.iter_mut().for_each(|m| *m = 0);
     rack.iter().for_each(|&tile| rack_tally[tile as usize] += 1);
@@ -124,6 +125,7 @@ impl Simmer {
         self.rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
     }
 
+    #[inline(always)]
     pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
         let mut clone = Simmer::new(game_config, self.config);
         clone.prepare(
@@ -362,6 +364,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[inline]
     fn exchanging_rollout_leaves_shared_rng_untouched() {
         let game_config = game_config::make_english_game_config();
         let mut game_state = game_state::GameState::new(&game_config);
@@ -407,6 +410,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn spread_points_descales_millipoints_to_points() {
         assert_eq!(spread_points(0), 0.0);
         assert_eq!(spread_points(equity::SCALE), 1.0);
@@ -415,6 +419,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn win_prob_unfinished_hits_sigmoid_prob_at_the_crafted_lead() {
         let cfg = SimmerConfig {
             descale: true,
@@ -436,6 +441,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn sim_objective_descales_spread_and_scales_win_prob() {
         assert_eq!(sim_objective(30 * equity::SCALE, 0.0, 10.0, true), 30.0);
         assert_eq!(sim_objective(0, 1.0, 10.0, true), 10.0);
@@ -446,6 +452,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn per_instance_rng_reseed_is_deterministic() {
         let game_config = game_config::make_english_game_config();
         let mut game_state = game_state::GameState::new(&game_config);
@@ -475,6 +482,7 @@ mod tests {
         assert_ne!(opponent_draw(777), opponent_draw(778));
     }
 
+    #[inline]
     fn prepared_simmer(config: SimmerConfig) -> (Simmer, usize, usize, usize) {
         let game_config = game_config::make_english_game_config();
         let mut game_state = game_state::GameState::new(&game_config);
@@ -495,6 +503,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn table_source_uses_table_where_sampled_else_sigmoid() {
         let cfg = SimmerConfig {
             descale: true,
@@ -529,6 +538,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn sigmoid_source_ignores_table() {
         let cfg = SimmerConfig {
             descale: true,
