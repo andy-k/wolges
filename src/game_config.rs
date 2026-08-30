@@ -133,6 +133,7 @@ impl GameConfig {
     }
 }
 
+#[inline]
 pub fn make_catalan_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -150,6 +151,7 @@ pub fn make_catalan_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_catalan_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -167,6 +169,7 @@ pub fn make_jumbled_catalan_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_super_catalan_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -184,6 +187,7 @@ pub fn make_super_catalan_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_super_catalan_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -201,6 +205,7 @@ pub fn make_jumbled_super_catalan_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_dutch_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -218,6 +223,7 @@ pub fn make_dutch_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_dutch_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -235,6 +241,7 @@ pub fn make_jumbled_dutch_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -253,6 +260,7 @@ pub fn make_english_game_config() -> GameConfig {
 }
 
 #[cfg(test)]
+#[inline]
 pub fn make_exchange_test_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -271,6 +279,7 @@ pub fn make_exchange_test_game_config() -> GameConfig {
 }
 
 #[cfg(test)]
+#[inline]
 pub fn make_exchange_unsolvable_test_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -288,6 +297,7 @@ pub fn make_exchange_unsolvable_test_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -305,6 +315,7 @@ pub fn make_jumbled_english_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_punctured_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -322,6 +333,7 @@ pub fn make_punctured_english_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_punctured_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -339,6 +351,7 @@ pub fn make_jumbled_punctured_english_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_hong_kong_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -356,6 +369,7 @@ pub fn make_hong_kong_english_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_super_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -373,6 +387,7 @@ pub fn make_super_english_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_super_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -390,6 +405,7 @@ pub fn make_jumbled_super_english_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_french_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -407,6 +423,7 @@ pub fn make_french_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_french_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -424,6 +441,7 @@ pub fn make_jumbled_french_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_german_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -441,6 +459,7 @@ pub fn make_german_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_german_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -458,6 +477,7 @@ pub fn make_jumbled_german_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_norwegian_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -475,6 +495,7 @@ pub fn make_norwegian_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_norwegian_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -494,6 +515,7 @@ pub fn make_jumbled_norwegian_game_config() -> GameConfig {
 
 // http://www.pfs.org.pl/regulaminy.php
 // select the second tab.
+#[inline]
 pub fn make_polish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -511,6 +533,7 @@ pub fn make_polish_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_polish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -528,6 +551,7 @@ pub fn make_jumbled_polish_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_slovene_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -545,6 +569,7 @@ pub fn make_slovene_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_slovene_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -563,6 +588,7 @@ pub fn make_jumbled_slovene_game_config() -> GameConfig {
 }
 
 // https://fisescrabble.org/reglamentos/modalidad-clasica/
+#[inline]
 pub fn make_spanish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -580,6 +606,7 @@ pub fn make_spanish_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_spanish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
@@ -597,6 +624,7 @@ pub fn make_jumbled_spanish_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_swedish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
@@ -614,6 +642,7 @@ pub fn make_swedish_game_config() -> GameConfig {
     })
 }
 
+#[inline]
 pub fn make_jumbled_swedish_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Jumbled,
