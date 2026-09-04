@@ -481,11 +481,11 @@ impl WorkingBuffer {
                 .is_some_and(|layout| layout.covers(board_snapshot.game_config.alphabet(), extent))
     }
 
-    fn init<AdjustLeaveValue: Fn(i32) -> i32, N: kwg::Node, L: kwg::Node>(
+    fn init<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
         rack: &[u8],
-        adjust_leave_value: &AdjustLeaveValue,
+        adjust_leave_value: klv::AdjustLeave,
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
@@ -3793,7 +3793,7 @@ impl KurniaMoveGenerator {
         let mut vec_moves = std::mem::take(&mut self.plays);
 
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, rack, &|leave_value: i32| leave_value, None);
+        working_buffer.init(board_snapshot, rack, klv::AdjustLeave::Identity, None);
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
 
         let found_place_move =
@@ -3862,7 +3862,6 @@ impl KurniaMoveGenerator {
     pub async fn gen_moves_filtered_async<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
-        AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
@@ -3871,11 +3870,11 @@ impl KurniaMoveGenerator {
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         place_move_predicate: PlaceMovePredicate,
-        adjust_leave_value: AdjustLeaveValue,
+        adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
         breathe: impl FnMut() -> BreatheFuture,
     ) {
-        self.gen_moves_filtered_async_impl::<false, _, _, _, _, _, _>(
+        self.gen_moves_filtered_async_impl::<false, _, _, _, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -3889,7 +3888,6 @@ impl KurniaMoveGenerator {
     pub async fn gen_moves_filtered_async_lean<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
-        AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
@@ -3898,11 +3896,11 @@ impl KurniaMoveGenerator {
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         place_move_predicate: PlaceMovePredicate,
-        adjust_leave_value: AdjustLeaveValue,
+        adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
         breathe: impl FnMut() -> BreatheFuture,
     ) {
-        self.gen_moves_filtered_async_impl::<true, _, _, _, _, _, _>(
+        self.gen_moves_filtered_async_impl::<true, _, _, _, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -3917,7 +3915,6 @@ impl KurniaMoveGenerator {
         'a,
         const LEAN: bool,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
-        AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
@@ -3926,7 +3923,7 @@ impl KurniaMoveGenerator {
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         mut place_move_predicate: PlaceMovePredicate,
-        adjust_leave_value: AdjustLeaveValue,
+        adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
         mut breathe: impl FnMut() -> BreatheFuture,
     ) {
@@ -3977,7 +3974,7 @@ impl KurniaMoveGenerator {
         working_buffer.init(
             params.board_snapshot,
             params.rack,
-            &adjust_leave_value,
+            adjust_leave_value,
             params.dynamic_leaves,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
@@ -4099,7 +4096,6 @@ impl KurniaMoveGenerator {
     pub fn gen_census_sheet<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
-        AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
@@ -4107,7 +4103,7 @@ impl KurniaMoveGenerator {
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         place_move_predicate: PlaceMovePredicate,
-        adjust_leave_value: AdjustLeaveValue,
+        adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
     ) {
         self.working_buffer.is_census = true;
@@ -4124,7 +4120,6 @@ impl KurniaMoveGenerator {
     pub fn gen_moves_filtered<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
-        AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
@@ -4132,10 +4127,10 @@ impl KurniaMoveGenerator {
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         place_move_predicate: PlaceMovePredicate,
-        adjust_leave_value: AdjustLeaveValue,
+        adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
     ) {
-        self.gen_moves_filtered_impl::<false, _, _, _, _, _>(
+        self.gen_moves_filtered_impl::<false, _, _, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -4147,7 +4142,6 @@ impl KurniaMoveGenerator {
     pub fn gen_moves_filtered_lean<
         'a,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
-        AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
@@ -4155,10 +4149,10 @@ impl KurniaMoveGenerator {
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         place_move_predicate: PlaceMovePredicate,
-        adjust_leave_value: AdjustLeaveValue,
+        adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
     ) {
-        self.gen_moves_filtered_impl::<true, _, _, _, _, _>(
+        self.gen_moves_filtered_impl::<true, _, _, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -4171,7 +4165,6 @@ impl KurniaMoveGenerator {
         'a,
         const LEAN: bool,
         PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
-        AdjustLeaveValue: Fn(i32) -> i32,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
@@ -4179,7 +4172,7 @@ impl KurniaMoveGenerator {
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
         mut place_move_predicate: PlaceMovePredicate,
-        adjust_leave_value: AdjustLeaveValue,
+        adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
     ) {
         self.plays.clear();
@@ -4229,7 +4222,7 @@ impl KurniaMoveGenerator {
         working_buffer.init(
             params.board_snapshot,
             params.rack,
-            &adjust_leave_value,
+            adjust_leave_value,
             params.dynamic_leaves,
         );
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
@@ -4348,7 +4341,7 @@ impl KurniaMoveGenerator {
         self.gen_moves_filtered(
             params,
             |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
-            |leave_value: i32| leave_value,
+            klv::AdjustLeave::Identity,
             |_equity: equity::Equity, _play: &Play| true,
         );
     }
@@ -4361,7 +4354,7 @@ impl KurniaMoveGenerator {
         self.gen_moves_filtered_lean(
             params,
             |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
-            |leave_value: i32| leave_value,
+            klv::AdjustLeave::Identity,
             |_equity: equity::Equity, _play: &Play| true,
         );
     }
@@ -4374,7 +4367,7 @@ impl KurniaMoveGenerator {
         found_word: FoundWord,
     ) {
         let working_buffer = &mut self.working_buffer;
-        working_buffer.init(board_snapshot, &[], &|leave_value: i32| leave_value, None);
+        working_buffer.init(board_snapshot, &[], klv::AdjustLeave::Identity, None);
         working_buffer.prev_board_tiles.fill(0xff);
         gen_remaining_words(board_snapshot, working_buffer, found_word)
     }

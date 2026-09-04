@@ -21,6 +21,24 @@ impl DynamicLeavesRef<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum AdjustLeave {
+    Identity,
+    Scaled { scale: i32, denom: i32 },
+}
+
+impl AdjustLeave {
+    #[inline(always)]
+    pub fn apply(&self, leave_value: i32) -> i32 {
+        match *self {
+            AdjustLeave::Identity => leave_value,
+            AdjustLeave::Scaled { scale, denom } => {
+                (leave_value as i64 * scale as i64 / denom as i64) as i32
+            }
+        }
+    }
+}
+
 pub struct Klv<L: kwg::Node> {
     kwg: kwg::Kwg<L>,
     counts: Box<[u32]>,
@@ -227,13 +245,13 @@ impl MultiLeaves {
         }
     }
 
-    #[inline]
-    pub fn init<AdjustLeaveValue: Fn(i32) -> i32, L: kwg::Node>(
+    #[inline(always)]
+    pub fn init<L: kwg::Node>(
         &mut self,
         rack_tally: &[u8],
         klv: &Klv<L>,
         use_klv: bool,
-        adjust_leave_value: &AdjustLeaveValue,
+        adjust_leave_value: AdjustLeave,
     ) {
         self.unique_tiles.clear();
         self.digits.clear();
@@ -357,7 +375,7 @@ impl MultiLeaves {
             if use_klv {
                 self.leave_values
                     .iter_mut()
-                    .for_each(|m| *m = adjust_leave_value(*m));
+                    .for_each(|m| *m = adjust_leave_value.apply(*m));
             }
         }
     }
@@ -381,30 +399,27 @@ impl MultiLeaves {
         self.leave_values[0] = play_out_bonus;
     }
 
-    #[inline]
-    pub fn extract_best_leave_values_from_klv<AdjustLeaveValue: Fn(i32) -> i32, L: kwg::Node>(
+    #[inline(always)]
+    pub fn extract_best_leave_values_from_klv<L: kwg::Node>(
         rack_tally: &mut [u8],
         klv: &Klv<L>,
         num_tiles_on_rack: u8,
-        adjust_leave_value: &AdjustLeaveValue,
+        adjust_leave_value: AdjustLeave,
         best_leave_values: &mut Vec<i32>,
     ) {
         best_leave_values.clear();
         best_leave_values.resize(num_tiles_on_rack as usize + 1, i32::MIN);
-        struct Env<'a, AdjustLeaveValue, L: kwg::Node> {
+        struct Env<'a, L: kwg::Node> {
             klv: &'a Klv<L>,
             rack_tally: &'a mut [u8],
             kept_tally: &'a mut [u8],
             best_leave_values: &'a mut [i32],
             num_tiles_on_rack: u8,
             num_kept: u8,
-            adjust_leave_value: &'a AdjustLeaveValue,
+            adjust_leave_value: AdjustLeave,
         }
 
-        fn traverse<AdjustLeaveValue: Fn(i32) -> i32, L: kwg::Node>(
-            env: &mut Env<'_, AdjustLeaveValue, L>,
-            mut p: i32,
-        ) {
+        fn traverse<L: kwg::Node>(env: &mut Env<'_, L>, mut p: i32) {
             if p <= 0 {
                 return;
             }
@@ -416,9 +431,9 @@ impl MultiLeaves {
                     env.kept_tally[tile as usize] += 1;
                     env.num_kept += 1;
                     if node.accepts() {
-                        let leave_val = (env.adjust_leave_value)(
-                            env.klv.leave_value_from_tally(env.kept_tally),
-                        );
+                        let leave_val = env
+                            .adjust_leave_value
+                            .apply(env.klv.leave_value_from_tally(env.kept_tally));
                         let num_played = (env.num_tiles_on_rack - env.num_kept) as usize;
                         if num_played < env.best_leave_values.len()
                             && leave_val > env.best_leave_values[num_played]

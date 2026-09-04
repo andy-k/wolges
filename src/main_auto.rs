@@ -403,9 +403,9 @@ fn do_it<N: kwg::Node + Sync>(
                         dynamic_leaves: None,
                     },
                     |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
-                    |leave_value: i32| {
-                        (leave_value as i64 * leave_scale as i64
-                            / move_filter::LEAVE_SCALE_DENOM as i64) as i32
+                    klv::AdjustLeave::Scaled {
+                        scale: leave_scale,
+                        denom: move_filter::LEAVE_SCALE_DENOM,
                     },
                     |_equity: equity::Equity, _play: &movegen::Play| true,
                 );

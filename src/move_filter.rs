@@ -224,8 +224,9 @@ impl GenMoves<'_> {
                             |word: &[u8]| tilt.word_is_ok(word),
                         )
                     },
-                    |leave_value: i32| {
-                        (leave_value as i64 * leave_scale as i64 / LEAVE_SCALE_DENOM as i64) as i32
+                    klv::AdjustLeave::Scaled {
+                        scale: leave_scale,
+                        denom: LEAVE_SCALE_DENOM,
                     },
                     |_equity: equity::Equity, _play: &movegen::Play| true,
                 );
@@ -257,7 +258,7 @@ impl GenMoves<'_> {
                 move_generator.gen_moves_filtered(
                     &params,
                     |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| false,
-                    |leave_value: i32| leave_value,
+                    klv::AdjustLeave::Identity,
                     |_equity: equity::Equity, _play: &movegen::Play| true,
                 );
             }
@@ -266,8 +267,9 @@ impl GenMoves<'_> {
                 move_generator.gen_moves_filtered(
                     &params,
                     |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| false,
-                    |leave_value: i32| {
-                        (leave_value as i64 * leave_scale as i64 / LEAVE_SCALE_DENOM as i64) as i32
+                    klv::AdjustLeave::Scaled {
+                        scale: leave_scale,
+                        denom: LEAVE_SCALE_DENOM,
                     },
                     |_equity: equity::Equity, _play: &movegen::Play| true,
                 );

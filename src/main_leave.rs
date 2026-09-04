@@ -2490,7 +2490,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
             );
             false // never keep the move
         },
-        |leave_value| leave_value,
+        klv::AdjustLeave::Identity,
         |_equity, _play| false,
     );
     n_cand
@@ -3572,7 +3572,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     dynamic_leaves: None,
                                 },
                                 |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
-                                |leave_value: i32| leave_value,
+                                klv::AdjustLeave::Identity,
                                 |equity: equity::Equity, play: &movegen::Play| {
                                     match equity.cmp(&best_equity_so_far) {
                                         std::cmp::Ordering::Greater => {
