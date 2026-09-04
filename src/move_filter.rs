@@ -214,16 +214,18 @@ impl GenMoves<'_> {
                         pass_policy: movegen::PassPolicy::OnlyWhenForced,
                         dynamic_leaves,
                     },
-                    |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
-                        limited_vocab_checker.words_placed_are_ok(
-                            board_snapshot,
-                            down,
-                            lane,
-                            idx,
-                            word,
-                            |word: &[u8]| tilt.word_is_ok(word),
-                        )
-                    },
+                    movegen::PlacePredicate::Dyn(
+                        &mut |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
+                            limited_vocab_checker.words_placed_are_ok(
+                                board_snapshot,
+                                down,
+                                lane,
+                                idx,
+                                word,
+                                |word: &[u8]| tilt.word_is_ok(word),
+                            )
+                        },
+                    ),
                     klv::AdjustLeave::Scaled {
                         scale: leave_scale,
                         denom: LEAVE_SCALE_DENOM,
@@ -257,7 +259,7 @@ impl GenMoves<'_> {
             Self::Unfiltered => {
                 move_generator.gen_moves_filtered(
                     &params,
-                    |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| false,
+                    movegen::PlacePredicate::RejectAll,
                     klv::AdjustLeave::Identity,
                     |_equity: equity::Equity, _play: &movegen::Play| true,
                 );
@@ -266,7 +268,7 @@ impl GenMoves<'_> {
                 let leave_scale = tilt.leave_scale;
                 move_generator.gen_moves_filtered(
                     &params,
-                    |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| false,
+                    movegen::PlacePredicate::RejectAll,
                     klv::AdjustLeave::Scaled {
                         scale: leave_scale,
                         denom: LEAVE_SCALE_DENOM,

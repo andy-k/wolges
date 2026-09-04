@@ -402,7 +402,7 @@ fn do_it<N: kwg::Node + Sync>(
                         pass_policy: movegen::PassPolicy::AsACandidate,
                         dynamic_leaves: None,
                     },
-                    |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
+                    movegen::PlacePredicate::AcceptAll,
                     klv::AdjustLeave::Scaled {
                         scale: leave_scale,
                         denom: move_filter::LEAVE_SCALE_DENOM,

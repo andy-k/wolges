@@ -55,6 +55,25 @@ struct CrossSetComputation {
     p: i32,
 }
 
+type PlaceMoveFn<'a> = &'a mut dyn FnMut(bool, i8, i8, &[u8], i32) -> bool;
+
+pub enum PlacePredicate<'a> {
+    AcceptAll,
+    RejectAll,
+    Dyn(PlaceMoveFn<'a>),
+}
+
+impl PlacePredicate<'_> {
+    #[inline(always)]
+    fn test(&mut self, down: bool, lane: i8, idx: i8, word: &[u8], score: i32) -> bool {
+        match self {
+            PlacePredicate::AcceptAll => true,
+            PlacePredicate::RejectAll => false,
+            PlacePredicate::Dyn(f) => f(down, lane, idx, word, score),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct PossiblePlacement {
     num_played: u8,
@@ -3861,7 +3880,6 @@ impl KurniaMoveGenerator {
     #[inline(always)]
     pub async fn gen_moves_filtered_async<
         'a,
-        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
@@ -3869,12 +3887,12 @@ impl KurniaMoveGenerator {
     >(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
-        place_move_predicate: PlaceMovePredicate,
+        place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
         breathe: impl FnMut() -> BreatheFuture,
     ) {
-        self.gen_moves_filtered_async_impl::<false, _, _, _, _, _>(
+        self.gen_moves_filtered_async_impl::<false, _, _, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -3887,7 +3905,6 @@ impl KurniaMoveGenerator {
     #[inline(always)]
     pub async fn gen_moves_filtered_async_lean<
         'a,
-        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
@@ -3895,12 +3912,12 @@ impl KurniaMoveGenerator {
     >(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
-        place_move_predicate: PlaceMovePredicate,
+        place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
         breathe: impl FnMut() -> BreatheFuture,
     ) {
-        self.gen_moves_filtered_async_impl::<true, _, _, _, _, _>(
+        self.gen_moves_filtered_async_impl::<true, _, _, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -3914,7 +3931,6 @@ impl KurniaMoveGenerator {
     async fn gen_moves_filtered_async_impl<
         'a,
         const LEAN: bool,
-        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         BreatheFuture: std::future::Future,
         N: kwg::Node,
@@ -3922,7 +3938,7 @@ impl KurniaMoveGenerator {
     >(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
-        mut place_move_predicate: PlaceMovePredicate,
+        mut place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
         mut breathe: impl FnMut() -> BreatheFuture,
@@ -3982,7 +3998,7 @@ impl KurniaMoveGenerator {
 
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
-                if place_move_predicate(down, lane, idx, word, score) {
+                if place_move_predicate.test(down, lane, idx, word, score) {
                     let other_adjustments = if num_tiles_on_board == 0 {
                         (idx..)
                             .zip(word)
@@ -4095,14 +4111,13 @@ impl KurniaMoveGenerator {
     // setting: the placement path that reads a word source does not run it.
     pub fn gen_census_sheet<
         'a,
-        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
     >(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
-        place_move_predicate: PlaceMovePredicate,
+        place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
     ) {
@@ -4119,18 +4134,17 @@ impl KurniaMoveGenerator {
     #[inline(always)]
     pub fn gen_moves_filtered<
         'a,
-        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
     >(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
-        place_move_predicate: PlaceMovePredicate,
+        place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
     ) {
-        self.gen_moves_filtered_impl::<false, _, _, _, _>(
+        self.gen_moves_filtered_impl::<false, _, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -4141,18 +4155,17 @@ impl KurniaMoveGenerator {
     #[inline(always)]
     pub fn gen_moves_filtered_lean<
         'a,
-        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
     >(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
-        place_move_predicate: PlaceMovePredicate,
+        place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
     ) {
-        self.gen_moves_filtered_impl::<true, _, _, _, _>(
+        self.gen_moves_filtered_impl::<true, _, _, _>(
             params,
             place_move_predicate,
             adjust_leave_value,
@@ -4164,14 +4177,13 @@ impl KurniaMoveGenerator {
     fn gen_moves_filtered_impl<
         'a,
         const LEAN: bool,
-        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
         EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
         N: kwg::Node,
         L: kwg::Node,
     >(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
-        mut place_move_predicate: PlaceMovePredicate,
+        mut place_move_predicate: PlacePredicate<'_>,
         adjust_leave_value: klv::AdjustLeave,
         equity_predicate: EquityPredicate,
     ) {
@@ -4230,7 +4242,7 @@ impl KurniaMoveGenerator {
 
         let found_place_move =
             |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
-                if place_move_predicate(down, lane, idx, word, score) {
+                if place_move_predicate.test(down, lane, idx, word, score) {
                     let other_adjustments = if num_tiles_on_board == 0 {
                         (idx..)
                             .zip(word)
@@ -4340,7 +4352,7 @@ impl KurniaMoveGenerator {
     ) {
         self.gen_moves_filtered(
             params,
-            |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
+            PlacePredicate::AcceptAll,
             klv::AdjustLeave::Identity,
             |_equity: equity::Equity, _play: &Play| true,
         );
@@ -4353,7 +4365,7 @@ impl KurniaMoveGenerator {
     ) {
         self.gen_moves_filtered_lean(
             params,
-            |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
+            PlacePredicate::AcceptAll,
             klv::AdjustLeave::Identity,
             |_equity: equity::Equity, _play: &Play| true,
         );

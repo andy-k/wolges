@@ -2470,7 +2470,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
     };
     move_generator.gen_census_sheet(
         &params,
-        |down, lane, idx, word: &[u8], _score: i32| {
+        movegen::PlacePredicate::Dyn(&mut |down, lane, idx, word: &[u8], _score: i32| {
             n_cand += 1;
             let real_score = play_scorer::score_and_blank_deltas(
                 board_snapshot,
@@ -2489,7 +2489,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
                 num_blanks_eff,
             );
             false // never keep the move
-        },
+        }),
         klv::AdjustLeave::Identity,
         |_equity, _play| false,
     );
@@ -3571,7 +3571,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                     dynamic_leaves: None,
                                 },
-                                |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| true,
+                                movegen::PlacePredicate::AcceptAll,
                                 klv::AdjustLeave::Identity,
                                 |equity: equity::Equity, play: &movegen::Play| {
                                     match equity.cmp(&best_equity_so_far) {
