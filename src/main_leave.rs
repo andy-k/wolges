@@ -2491,7 +2491,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
             false // never keep the move
         }),
         klv::AdjustLeave::Identity,
-        |_equity, _play| false,
+        movegen::EquityPredicate::RejectAll,
     );
     n_cand
 }
@@ -3560,6 +3560,74 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             let mut best_equity_so_far = equity::Equity::NEG_INFINITY;
                             let mut num_plays = 0usize;
                             vec_played.clear();
+                            let mut best_play_seen = |equity: equity::Equity, play: &movegen::Play| {
+                                        match equity.cmp(&best_equity_so_far) {
+                                            std::cmp::Ordering::Greater => {
+                                                best_equity_so_far = equity;
+                                                vec_played.clear();
+                                                num_plays = 0;
+                                                match play {
+                                                    movegen::Play::Exchange { .. } => {}
+                                                    movegen::Play::Place {
+                                                        down,
+                                                        lane,
+                                                        idx,
+                                                        word,
+                                                        ..
+                                                    } => {
+                                                        word_iter.words_placed_are_ok(
+                                                            board_snapshot,
+                                                            *down,
+                                                            *lane,
+                                                            *idx,
+                                                            &word[..],
+                                                            |w: &[u8]| {
+                                                                tally_word(
+                                                                    &mut vec_played,
+                                                                    num_plays,
+                                                                    w,
+                                                                );
+                                                                true
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                                num_plays += 1;
+                                                true
+                                            }
+                                            std::cmp::Ordering::Equal => {
+                                                match play {
+                                                    movegen::Play::Exchange { .. } => {}
+                                                    movegen::Play::Place {
+                                                        down,
+                                                        lane,
+                                                        idx,
+                                                        word,
+                                                        ..
+                                                    } => {
+                                                        word_iter.words_placed_are_ok(
+                                                            board_snapshot,
+                                                            *down,
+                                                            *lane,
+                                                            *idx,
+                                                            &word[..],
+                                                            |w: &[u8]| {
+                                                                tally_word(
+                                                                    &mut vec_played,
+                                                                    num_plays,
+                                                                    w,
+                                                                );
+                                                                true
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                                num_plays += 1;
+                                                false // ensure top two have different equities.
+                                            }
+                                            std::cmp::Ordering::Less => false,
+                                        }
+                                };
                             move_generator.gen_moves_filtered(
                                 &movegen::GenMovesParams {
                                     board_snapshot,
@@ -3573,74 +3641,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 },
                                 movegen::PlacePredicate::AcceptAll,
                                 klv::AdjustLeave::Identity,
-                                |equity: equity::Equity, play: &movegen::Play| {
-                                    match equity.cmp(&best_equity_so_far) {
-                                        std::cmp::Ordering::Greater => {
-                                            best_equity_so_far = equity;
-                                            vec_played.clear();
-                                            num_plays = 0;
-                                            match play {
-                                                movegen::Play::Exchange { .. } => {}
-                                                movegen::Play::Place {
-                                                    down,
-                                                    lane,
-                                                    idx,
-                                                    word,
-                                                    ..
-                                                } => {
-                                                    word_iter.words_placed_are_ok(
-                                                        board_snapshot,
-                                                        *down,
-                                                        *lane,
-                                                        *idx,
-                                                        &word[..],
-                                                        |w: &[u8]| {
-                                                            tally_word(
-                                                                &mut vec_played,
-                                                                num_plays,
-                                                                w,
-                                                            );
-                                                            true
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            num_plays += 1;
-                                            true
-                                        }
-                                        std::cmp::Ordering::Equal => {
-                                            match play {
-                                                movegen::Play::Exchange { .. } => {}
-                                                movegen::Play::Place {
-                                                    down,
-                                                    lane,
-                                                    idx,
-                                                    word,
-                                                    ..
-                                                } => {
-                                                    word_iter.words_placed_are_ok(
-                                                        board_snapshot,
-                                                        *down,
-                                                        *lane,
-                                                        *idx,
-                                                        &word[..],
-                                                        |w: &[u8]| {
-                                                            tally_word(
-                                                                &mut vec_played,
-                                                                num_plays,
-                                                                w,
-                                                            );
-                                                            true
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            num_plays += 1;
-                                            false // ensure top two have different equities.
-                                        }
-                                        std::cmp::Ordering::Less => false,
-                                    }
-                                },
+                                movegen::EquityPredicate::Dyn(&mut best_play_seen),
                             );
 
                             if num_plays > 0 {

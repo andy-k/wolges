@@ -407,7 +407,7 @@ fn do_it<N: kwg::Node + Sync>(
                         scale: leave_scale,
                         denom: move_filter::LEAVE_SCALE_DENOM,
                     },
-                    |_equity: equity::Equity, _play: &movegen::Play| true,
+                    movegen::EquityPredicate::AcceptAll,
                 );
                 let plays = &mut move_generator.plays;
                 println!("{} moves found...", plays.len());

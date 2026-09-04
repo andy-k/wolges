@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{equity, game_config, klv, kwg, movegen, prob};
+use super::{game_config, klv, kwg, movegen, prob};
 use rand::prelude::*;
 
 #[derive(Clone)]
@@ -230,7 +230,7 @@ impl GenMoves<'_> {
                         scale: leave_scale,
                         denom: LEAVE_SCALE_DENOM,
                     },
-                    |_equity: equity::Equity, _play: &movegen::Play| true,
+                    movegen::EquityPredicate::AcceptAll,
                 );
                 tilt.limited_vocab_checker = limited_vocab_checker;
             }
@@ -261,7 +261,7 @@ impl GenMoves<'_> {
                     &params,
                     movegen::PlacePredicate::RejectAll,
                     klv::AdjustLeave::Identity,
-                    |_equity: equity::Equity, _play: &movegen::Play| true,
+                    movegen::EquityPredicate::AcceptAll,
                 );
             }
             Self::Tilt { tilt, bot_level: _ } => {
@@ -273,7 +273,7 @@ impl GenMoves<'_> {
                         scale: leave_scale,
                         denom: LEAVE_SCALE_DENOM,
                     },
-                    |_equity: equity::Equity, _play: &movegen::Play| true,
+                    movegen::EquityPredicate::AcceptAll,
                 );
             }
         }
