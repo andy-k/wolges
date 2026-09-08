@@ -1345,22 +1345,35 @@ fn gen_place_placements_impl<
             let high_end = low_end + env.strider_len;
             let precomputed_square_multiplier_slice =
                 &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
-            let mut used_tile_scores_iter = used_tile_scores.iter().rev().peekable(); // iterate from highest score
-            let mut desc_scores_iter = env
-                .params
-                .descending_scores
-                .iter()
-                .filter(|&score| used_tile_scores_iter.next_if_eq(&score).is_none());
             let indexes_to_descending_square_multiplier_slice =
                 &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
             let mut remaining = ranked;
-            while to_assign != 0 && remaining != 0 {
-                let idx = indexes_to_descending_square_multiplier_slice
-                    [remaining.trailing_zeros() as usize];
-                remaining &= remaining - 1;
-                best_scoring += *desc_scores_iter.next().unwrap()
-                    * precomputed_square_multiplier_slice[idx as usize];
-                to_assign -= 1;
+            if used_tile_scores.is_empty() {
+                let mut di = 0;
+                while to_assign != 0 && remaining != 0 {
+                    let idx = indexes_to_descending_square_multiplier_slice
+                        [remaining.trailing_zeros() as usize];
+                    remaining &= remaining - 1;
+                    best_scoring += env.params.descending_scores[di]
+                        * precomputed_square_multiplier_slice[idx as usize];
+                    di += 1;
+                    to_assign -= 1;
+                }
+            } else {
+                let mut used_tile_scores_iter = used_tile_scores.iter().rev().peekable(); // iterate from highest score
+                let mut desc_scores_iter = env
+                    .params
+                    .descending_scores
+                    .iter()
+                    .filter(|&score| used_tile_scores_iter.next_if_eq(&score).is_none());
+                while to_assign != 0 && remaining != 0 {
+                    let idx = indexes_to_descending_square_multiplier_slice
+                        [remaining.trailing_zeros() as usize];
+                    remaining &= remaining - 1;
+                    best_scoring += *desc_scores_iter.next().unwrap()
+                        * precomputed_square_multiplier_slice[idx as usize];
+                    to_assign -= 1;
+                }
             }
         }
         let equity = acc.main_score * acc.word_multiplier
