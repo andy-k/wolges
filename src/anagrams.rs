@@ -21,6 +21,8 @@ pub struct Anagrams {
     answers: Box<[BlankAnswer]>,
     filter: Box<[u64]>,
     filter_block_mask: usize,
+    blank_filter: Box<[u64]>,
+    blank_filter_block_mask: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -142,10 +144,14 @@ impl Anagrams {
 
         let key_count = groups.iter().map(|t| t.len()).sum::<usize>();
         let (filter, filter_block_mask) = Self::filter_of(&groups, key_count);
+        let blank_key_count = blanked.iter().map(|t| t.len()).sum::<usize>();
+        let (blank_filter, blank_filter_block_mask) = Self::filter_of(&blanked, blank_key_count);
         Some(Anagrams {
             layout,
             filter,
             filter_block_mask,
+            blank_filter,
+            blank_filter_block_mask,
             arena: arena.into_boxed_slice(),
             groups: groups.into_boxed_slice(),
             blanked: blanked.into_boxed_slice(),
@@ -155,15 +161,25 @@ impl Anagrams {
 
     #[inline(always)]
     fn filter_may_hold(&self, key: u128, len: u8) -> bool {
-        if self.filter.is_empty() {
+        Self::filter_may_hold_in(&self.filter, self.filter_block_mask, key, len)
+    }
+
+    #[inline(always)]
+    fn blank_filter_may_hold(&self, key: u128, len: u8) -> bool {
+        Self::filter_may_hold_in(&self.blank_filter, self.blank_filter_block_mask, key, len)
+    }
+
+    #[inline(always)]
+    fn filter_may_hold_in(filter: &[u64], block_mask: usize, key: u128, len: u8) -> bool {
+        if filter.is_empty() {
             return true;
         }
         let h = filter_hash(key, len);
-        let base = ((h >> 32) as usize & self.filter_block_mask) * FILTER_BLOCK_WORDS;
+        let base = ((h >> 32) as usize & block_mask) * FILTER_BLOCK_WORDS;
         let mut probe = h;
         for _ in 0..FILTER_PROBES {
             let bit = probe as usize & (FILTER_BLOCK_BITS - 1);
-            if self.filter[base + (bit >> 6)] >> (bit & 63) & 1 == 0 {
+            if filter[base + (bit >> 6)] >> (bit & 63) & 1 == 0 {
                 return false;
             }
             probe >>= FILTER_BLOCK_SHIFT;
@@ -237,6 +253,9 @@ impl Anagrams {
         ok: u64,
         mut f: F,
     ) {
+        if !self.blank_filter_may_hold(key.0, len) {
+            return;
+        }
         let Some(table) = self.blanked.get(len as usize) else {
             return;
         };
