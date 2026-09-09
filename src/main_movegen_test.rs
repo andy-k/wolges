@@ -232,57 +232,84 @@ fn main() -> error::Returns<()> {
     let mut total_elapsed = std::time::Duration::ZERO;
     let mut total_moves = 0usize;
 
+    let anagrams = wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config)
+        .ok_or("this alphabet does not lay out a key")?;
+
+    let mut disagreements = 0usize;
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
         let board_tiles = fen_parser.parse(case.fen)?;
         let rack = parse_rack(alphabet, case.rack)?;
 
-        let board_snapshot = movegen::BoardSnapshot {
-            board_tiles,
-            game_config: &game_config,
-            kwg: &kwg,
-            anagrams: None,
-            klv: &klv,
-        };
+        let mut lean = String::new();
+        for (arm, table) in [("lean", None), ("unadorned", Some(&anagrams))] {
+            let board_snapshot = movegen::BoardSnapshot {
+                board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                anagrams: table,
+                klv: &klv,
+            };
+            let params = movegen::GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &rack,
+                max_gen: case.max_gen,
+                num_exchanges_by_this_player: case.num_exchanges_by_this_player,
+                pass_policy: case.pass_policy,
+                dynamic_leaves: None,
+            };
 
-        let t0 = std::time::Instant::now();
-        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-            board_snapshot: &board_snapshot,
-            rack: &rack,
-            max_gen: case.max_gen,
-            num_exchanges_by_this_player: case.num_exchanges_by_this_player,
-            pass_policy: case.pass_policy,
-            dynamic_leaves: None,
-        });
-        let elapsed = t0.elapsed();
-        total_elapsed += elapsed;
+            let t0 = std::time::Instant::now();
+            if table.is_some() {
+                move_generator.gen_moves_unfiltered(&params);
+            } else {
+                move_generator.gen_moves_unfiltered_lean(&params);
+            }
+            let elapsed = t0.elapsed();
+            total_elapsed += elapsed;
 
+            let mut list = String::new();
+            for play in move_generator.plays.iter() {
+                writeln!(
+                    list,
+                    "  {:.3} {}",
+                    play.equity,
+                    play.play.fmt(&board_snapshot)
+                )
+                .unwrap();
+            }
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "Case {case_idx} {arm}: {} moves, {elapsed:?}",
+                move_generator.plays.len()
+            )?;
+            total_moves += move_generator.plays.len();
+            if table.is_none() {
+                lean = list;
+            } else if list != lean {
+                writeln!(
+                    boxed_stdout_or_stderr(),
+                    "Case {case_idx}: the arms generate different plays"
+                )?;
+                disagreements += 1;
+            }
+        }
         writeln!(
             output,
             "=== Case {case_idx}: rack={} fen={} ===",
             case.rack, case.fen
         )
         .unwrap();
-        for play in move_generator.plays.iter() {
-            writeln!(
-                output,
-                "  {:.3} {}",
-                play.equity,
-                play.play.fmt(&board_snapshot)
-            )
-            .unwrap();
-        }
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "Case {case_idx}: {} moves, {elapsed:?}",
-            move_generator.plays.len()
-        )?;
-        total_moves += move_generator.plays.len();
+        output.push_str(&lean);
     }
 
     writeln!(
         boxed_stdout_or_stderr(),
         "Total: {total_moves} moves, {total_elapsed:?}"
     )?;
+
+    if disagreements != 0 {
+        return_error!(format!("the arms disagree on {disagreements} cases"));
+    }
 
     if let Some(baseline) = &baseline {
         if output == *baseline {
