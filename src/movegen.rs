@@ -2566,40 +2566,27 @@ fn gen_classic_place_moves<
     }
 
     #[inline]
-    fn check_words<
-        const BLANKED: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
-        N: kwg::Node,
-        L: kwg::Node,
-    >(
+    fn check_words<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         key: alphagram::Key,
-        base_key: u128,
         leave_idx: u32,
-        blank_ok: u64,
-    ) -> u8 {
+    ) {
         let source = env.source;
         let len = (env.right - env.left) as u8;
         let Some(found) = source.words(key, len) else {
-            return 0;
+            return;
         };
-        fit_words::<BLANKED, _, _, _>(env, found, base_key, leave_idx, blank_ok)
+        fit_words::<false, _, _, _>(env, found, leave_idx, 0)
     }
 
     #[inline]
-    fn fit_words_apart<
-        const BLANKED: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
-        N: kwg::Node,
-        L: kwg::Node,
-    >(
+    fn fit_words_apart<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         found: alphagram::Words<'_>,
-        base_key: u128,
         leave_idx: u32,
-        blank_ok: u64,
-    ) -> u8 {
-        fit_words::<BLANKED, _, _, _>(env, found, base_key, leave_idx, blank_ok)
+        blank_letter: u8,
+    ) {
+        fit_words::<true, _, _, _>(env, found, leave_idx, blank_letter)
     }
 
     #[inline(always)]
@@ -2611,25 +2598,10 @@ fn gen_classic_place_moves<
     >(
         env: &mut Env<'_, CallbackType, N, L>,
         found: alphagram::Words<'_>,
-        base_key: u128,
         leave_idx: u32,
-        blank_ok: u64,
-    ) -> u8 {
+        blank_letter: u8,
+    ) {
         let len = (env.right - env.left) as u8;
-        let mut blank_letter = 0u8;
-        if BLANKED {
-            let mut spelled = 0u128;
-            for &tile in &found.words[..len as usize] {
-                spelled += env.layout.place_value(tile);
-            }
-            let Some(tile) = env.layout.tile_added(base_key, spelled) else {
-                return 0;
-            };
-            blank_letter = tile;
-            if blank_ok >> tile & 1 == 0 {
-                return tile;
-            }
-        }
         let board_strip = env.params.board_strip;
         let cross_set_strip = env.params.cross_set_strip;
         let tile_multipliers = env.params.remaining_tile_multipliers_strip;
@@ -2737,7 +2709,6 @@ fn gen_classic_place_moves<
                 env.params.word_strip_buffer[pos] = c;
             }
         }
-        blank_letter
     }
 
     #[derive(Clone, Copy)]
@@ -2883,26 +2854,14 @@ fn gen_classic_place_moves<
                 }
                 let key = e.playthrough_key + subrack.key;
                 if subrack.blanks == 0 {
-                    check_words::<false, _, _, _>(
-                        &mut env,
-                        alphagram::Fitted(key),
-                        0,
-                        subrack.leave_idx,
-                        0,
-                    );
+                    check_words(&mut env, alphagram::Fitted(key), subrack.leave_idx);
                     continue;
                 }
                 let source = env.source;
                 let len = (right - left) as u8;
-                source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |_, at| {
+                source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |tile, at| {
                     let found = source.words_at(at);
-                    fit_words_apart::<true, _, _, _>(
-                        &mut env,
-                        found,
-                        key,
-                        subrack.leave_idx,
-                        e.blank_ok,
-                    );
+                    fit_words_apart(&mut env, found, subrack.leave_idx, tile);
                 });
             }
         }

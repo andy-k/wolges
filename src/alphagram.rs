@@ -71,7 +71,6 @@ const MAX_LAYOUT_TILES: usize = 64;
 pub struct KeyLayout {
     shift: Box<[u8]>,
     max_count: Box<[u8]>,
-    by_bit: Box<[u8]>,
     bits: u32,
 }
 
@@ -94,7 +93,6 @@ impl KeyLayout {
     #[inline(always)]
     pub fn of_max_counts(max_count: &[u8]) -> Option<Self> {
         let mut shift = vec![0u8; max_count.len()].into_boxed_slice();
-        let mut by_bit = vec![0u8; Self::BITS as usize].into_boxed_slice();
         let mut bits = 0u32;
         for (tile, &supply) in max_count.iter().enumerate().skip(1) {
             if supply == 0 {
@@ -108,9 +106,6 @@ impl KeyLayout {
             if bits + width > Self::BITS {
                 return None;
             }
-            for bit in bits..bits + width {
-                by_bit[bit as usize] = tile as u8;
-            }
             bits += width;
         }
         if bits == 0 {
@@ -119,7 +114,6 @@ impl KeyLayout {
         Some(Self {
             shift,
             max_count: max_count.to_vec().into_boxed_slice(),
-            by_bit,
             bits,
         })
     }
@@ -133,25 +127,6 @@ impl KeyLayout {
                 .get(tile as usize)
                 .is_some_and(|&room| room >= reachable)
         })
-    }
-
-    #[inline(always)]
-    pub fn tile_added(&self, less: u128, more: u128) -> Option<u8> {
-        let apart = less ^ more;
-        let tile = *self.by_bit.get(apart.trailing_zeros() as usize)?;
-        if tile == 0 {
-            return None;
-        }
-        let shift = self.shift[tile as usize];
-        let width = u8::BITS - self.max_count[tile as usize].leading_zeros();
-        if apart >> shift >> width != 0 {
-            return None;
-        }
-        let mask = (1u128 << width) - 1;
-        if (more >> shift) & mask != ((less >> shift) & mask) + 1 {
-            return None;
-        }
-        Some(tile)
     }
 
     #[inline(always)]
@@ -333,58 +308,6 @@ mod tests {
         assert!(layout.key_of(&[5; 15]).is_none());
         assert!(layout.key_of(&[27]).is_none());
         assert!(layout.key_of(&[0]).is_none());
-    }
-
-    #[test]
-    #[inline]
-    fn a_blank_reads_back_as_the_letter_it_stands_for() {
-        let alphabet = crate::alphabet::make_english_alphabet();
-        let layout = KeyLayout::of(&alphabet, 15).unwrap();
-        let base_key = layout.key_of(&[1, 2, 3]).unwrap();
-        for tile in [1u8, 5, 26] {
-            assert_eq!(
-                layout.tile_added(base_key, base_key + layout.place_value(tile)),
-                Some(tile),
-            );
-        }
-        assert_eq!(layout.tile_added(base_key, base_key), None);
-        assert_eq!(
-            layout.tile_added(base_key, base_key + layout.place_value(5) * 2),
-            None,
-            "two of one letter is not one letter",
-        );
-        assert_eq!(
-            layout.tile_added(
-                base_key,
-                base_key + layout.place_value(5) + layout.place_value(6)
-            ),
-            None,
-            "two letters is not one letter",
-        );
-        assert_eq!(
-            layout.tile_added(base_key, base_key - layout.place_value(1)),
-            None,
-            "one fewer is not one more",
-        );
-    }
-
-    #[test]
-    #[inline]
-    fn a_letter_the_bag_supplies_once_is_one_bit_wide() {
-        let layout = KeyLayout::of_max_counts(&[0, 1, 1, 3]).unwrap();
-        assert_eq!(layout.place_value(2), layout.place_value(1) * 2);
-        assert_eq!(layout.tile_added(0, layout.place_value(1)), Some(1));
-        assert_eq!(layout.tile_added(0, layout.place_value(2)), Some(2));
-        assert_eq!(
-            layout.tile_added(layout.place_value(1), layout.place_value(2)),
-            None,
-            "one letter for another is not one letter added",
-        );
-        assert_eq!(
-            layout.tile_added(layout.place_value(3), layout.place_value(3) * 2),
-            Some(3),
-            "a field wider than one bit still counts",
-        );
     }
 
     #[test]
