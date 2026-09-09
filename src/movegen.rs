@@ -810,40 +810,59 @@ impl WorkingBuffer {
     fn init_after_cross_sets<N: kwg::Node, L: kwg::Node>(
         &mut self,
         board_snapshot: &BoardSnapshot<'_, N, L>,
-        recompute_across: bool,
-        recompute_down: bool,
+        dirty_cols: u128,
+        dirty_rows: u128,
     ) {
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
-        let area = (dim.rows as isize * dim.cols as isize) as usize;
-        if recompute_across {
+        if dirty_cols != 0 {
             let premiums = board_layout.premiums();
 
-            for (idx, premium) in premiums.iter().enumerate().take(area) {
-                let cross_set = &mut self.cross_set_for_across_plays[idx];
-                if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
-                    cross_set.bits = 1;
+            for col in 0..dim.cols {
+                if dirty_cols & (1 << col) == 0 {
+                    continue;
                 }
-                let effective_pwm = self.remaining_word_multipliers_for_across_plays[idx]
-                    & -(cross_set.bits as i8 & 1);
-                self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
-                self.perpendicular_scores_for_across_plays[idx] =
-                    cross_set.score * effective_pwm as i32;
+                let strider = dim.down(col);
+                for i in 0..strider.len() {
+                    let idx = strider.at(i);
+                    let premium = &premiums[idx];
+                    let cross_set = &mut self.cross_set_for_across_plays[idx];
+                    if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
+                        cross_set.bits = 1;
+                    }
+                    let effective_pwm = self.remaining_word_multipliers_for_across_plays[idx]
+                        & -(cross_set.bits as i8 & 1);
+                    self.perpendicular_word_multipliers_for_across_plays[idx] = effective_pwm;
+                    self.perpendicular_scores_for_across_plays[idx] =
+                        cross_set.score * effective_pwm as i32;
+                }
             }
         }
-        if recompute_down {
+        if dirty_rows != 0 {
+            let transposed_dim = matrix::Dim {
+                rows: dim.cols,
+                cols: dim.rows,
+            };
             let transposed_premiums = board_layout.transposed_premiums();
 
-            for (idx, premium) in transposed_premiums.iter().enumerate().take(area) {
-                let cross_set = &mut self.cross_set_for_down_plays[idx];
-                if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
-                    cross_set.bits = 1;
+            for row in 0..dim.rows {
+                if dirty_rows & (1 << row) == 0 {
+                    continue;
                 }
-                let effective_pwm = self.remaining_word_multipliers_for_down_plays[idx]
-                    & -(cross_set.bits as i8 & 1);
-                self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
-                self.perpendicular_scores_for_down_plays[idx] =
-                    cross_set.score * effective_pwm as i32;
+                let strider = transposed_dim.down(row);
+                for i in 0..strider.len() {
+                    let idx = strider.at(i);
+                    let premium = &transposed_premiums[idx];
+                    let cross_set = &mut self.cross_set_for_down_plays[idx];
+                    if premium.word_multiplier == 0 && premium.tile_multiplier == 0 {
+                        cross_set.bits = 1;
+                    }
+                    let effective_pwm = self.remaining_word_multipliers_for_down_plays[idx]
+                        & -(cross_set.bits as i8 & 1);
+                    self.perpendicular_word_multipliers_for_down_plays[idx] = effective_pwm;
+                    self.perpendicular_scores_for_down_plays[idx] =
+                        cross_set.score * effective_pwm as i32;
+                }
             }
         }
     }
@@ -4615,9 +4634,6 @@ fn kurnia_gen_place_moves_iter_lean<
             dirty_cols |= 1 << col;
         }
     }
-    let any_across_strip_changed = dirty_cols != 0;
-    let any_down_strip_changed = dirty_rows != 0;
-
     for col in 0..dim.cols {
         if dirty_cols & (1 << col) != 0 {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
@@ -4673,11 +4689,8 @@ fn kurnia_gen_place_moves_iter_lean<
         working_buffer.prev_board_tiles[..area]
             .copy_from_slice(&board_snapshot.board_tiles[..area]);
     }
-    working_buffer.init_after_cross_sets(
-        board_snapshot,
-        any_across_strip_changed,
-        any_down_strip_changed,
-    );
+    working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
+
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
     let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
@@ -4900,9 +4913,6 @@ fn kurnia_gen_place_moves_iter<
             dirty_cols |= 1 << col;
         }
     }
-    let any_across_strip_changed = dirty_cols != 0;
-    let any_down_strip_changed = dirty_rows != 0;
-
     for col in 0..dim.cols {
         if dirty_cols & (1 << col) != 0 {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
@@ -4958,11 +4968,8 @@ fn kurnia_gen_place_moves_iter<
         working_buffer.prev_board_tiles[..area]
             .copy_from_slice(&board_snapshot.board_tiles[..area]);
     }
-    working_buffer.init_after_cross_sets(
-        board_snapshot,
-        any_across_strip_changed,
-        any_down_strip_changed,
-    );
+    working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
+
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
     let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
