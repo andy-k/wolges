@@ -1226,6 +1226,7 @@ struct GenPlacePlacementsParams<'a> {
     perpendicular_word_multipliers_strip: &'a [i8],
     perpendicular_scores_strip: &'a [i32],
     rack_bits: u64,
+    feasible_lengths: u64,
     descending_scores: &'a [i32],
     aggregated_word_multipliers: &'a mut Vec<i32>,
     precomputed_square_multiplier_buffer: &'a mut Vec<i32>,
@@ -1240,6 +1241,59 @@ struct GenPlacePlacementsParams<'a> {
     num_max_played: u8,
     rack_tally_shadowl: &'a mut [u8],
     rack_tally_shadowr: &'a mut [u8],
+}
+
+fn feasible_word_lengths<const USE_TABLE: bool>(
+    anagrams: Option<&anagrams::Anagrams>,
+    rack_tally: &[u8],
+) -> u64 {
+    if rack_tally[0] > 0 {
+        return !0;
+    }
+    match anagrams.filter(|_| USE_TABLE) {
+        Some(a) => rack_subset_lengths(a.layout(), rack_tally, |key, len| {
+            a.words(alphagram::Fitted(key), len).is_some()
+        }),
+        None => !0,
+    }
+}
+
+#[inline]
+fn rack_subset_lengths(
+    layout: &alphagram::KeyLayout,
+    rack_tally: &[u8],
+    spells: impl Fn(u128, u8) -> bool,
+) -> u64 {
+    let mut tiles = [(0u8, 0u128); MAX_ALPHABET_LEN];
+    let mut n = 0;
+    for (tile, &count) in rack_tally.iter().enumerate().skip(1) {
+        if count != 0 {
+            tiles[n] = (count, layout.place_value(tile as u8));
+            n += 1;
+        }
+    }
+    fn rec(
+        of: &[(u8, u128)],
+        len: u8,
+        key: u128,
+        found: &mut u64,
+        spells: &impl Fn(u128, u8) -> bool,
+    ) {
+        let Some((&(count, place_value), rest)) = of.split_first() else {
+            if len >= 2 && *found & 1 << len == 0 && spells(key, len) {
+                *found |= 1 << len;
+            }
+            return;
+        };
+        let mut k_key = key;
+        for k in 0..=count {
+            rec(rest, len + k, k_key, found, spells);
+            k_key += place_value;
+        }
+    }
+    let mut found = 0u64;
+    rec(&tiles[..n], 0, 0, &mut found, &spells);
+    found | 3
 }
 
 #[inline]
@@ -1454,6 +1508,7 @@ fn gen_place_placements_impl<
         main_score: i32,                     // main_played_through_score
         perpendicular_cumulative_score: i32, // perpendicular_additional_score
         word_multiplier: i32,
+        crossed_board_tiles: bool,
     }
 
     #[inline(always)]
@@ -1480,6 +1535,15 @@ fn gen_place_placements_impl<
         low_end: usize,
         ranked: u128,
     ) {
+        debug_assert_eq!(
+            env.params.board_strip[idx_left as usize..idx_right as usize]
+                .iter()
+                .all(|&t| t == 0),
+            !acc.crossed_board_tiles
+        );
+        if !acc.crossed_board_tiles && env.params.feasible_lengths & 1 << num_played == 0 {
+            return;
+        }
         let used_tile_scores = if env.params.used_tile_scores_shadowr.is_empty() {
             env.params.used_tile_scores_shadowl.as_slice()
         } else {
@@ -1591,6 +1655,7 @@ fn gen_place_placements_impl<
                 // tail-recurse placing current sequence of tiles in one go
                 let multi_jump = &env.params.multi_jumps_buffer[idx as usize];
                 acc.main_score += multi_jump.right_score;
+                acc.crossed_board_tiles |= multi_jump.right_idx != idx;
                 idx = multi_jump.right_idx;
             }
             // tiles have been placed from idx_left to idx - 1.
@@ -1708,6 +1773,7 @@ fn gen_place_placements_impl<
                 // tail-recurse placing current sequence of tiles in one go
                 let multi_jump = &env.params.multi_jumps_buffer[idx as usize];
                 acc.main_score += multi_jump.left_score;
+                acc.crossed_board_tiles |= multi_jump.left_idx != idx;
                 idx = multi_jump.left_idx;
             }
             // tiles have been placed from env.anchor to idx + 1.
@@ -1852,6 +1918,7 @@ fn gen_place_placements_impl<
                     main_score: 0,
                     perpendicular_cumulative_score: 0,
                     word_multiplier: 1,
+                    crossed_board_tiles: false,
                 },
                 env.anchor,
                 single_tile_plays,
@@ -4719,6 +4786,8 @@ fn kurnia_gen_place_moves_iter_lean<
     }
     working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
 
+    let feasible_lengths =
+        feasible_word_lengths::<false>(board_snapshot.anagrams, &working_buffer.rack_tally);
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
@@ -4749,6 +4818,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_across_plays
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
+                feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
@@ -4812,6 +4882,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_down_plays
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
+                feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
@@ -5007,6 +5078,8 @@ fn kurnia_gen_place_moves_iter<
     }
     working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
 
+    let feasible_lengths =
+        feasible_word_lengths::<true>(board_snapshot.anagrams, &working_buffer.rack_tally);
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
@@ -5037,6 +5110,7 @@ fn kurnia_gen_place_moves_iter<
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_across_plays
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
+                feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
@@ -5100,6 +5174,7 @@ fn kurnia_gen_place_moves_iter<
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_down_plays
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
+                feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
