@@ -162,6 +162,83 @@ static TEST_CASES: &[TestCase] = &[
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         num_exchanges_by_this_player: i16::MAX, // skip exchanges for threat analysis
     },
+    TestCase {
+        fen: "15/15/15/15/15/15/15/4WORD7/15/15/15/15/15/15/15",
+        rack: "??",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
+    TestCase {
+        fen: "15/15/15/15/15/15/15/4QUIRKY5/15/15/15/15/15/15/15",
+        rack: "??AEIRS",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
+    TestCase {
+        fen: "ZONULE1B2APAID/1KY2RHANJA4/GAM4R2HUI2/7G6D/6FECIT3O/6AE1TOWIES/6I7E/1EnGUARD6D/NAOI2W8/6AT7/5PYE7/5L1L7/2COVE1L7/5X1E7/7N7",
+        rack: "??ST",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
+    TestCase {
+        fen: "5MOZ6S/2FIREPOTS4p/2Y2UTA1HWAN1E/DAK8L2C/OWE1BIB4E2I/CADGE6U1PA/I4DOGY2R1aT/L2GLORIA1LOVIE/E1XI1TAED2N1N1/RAI8S1T1/13I1/13E1/13R1/15/15",
+        rack: "??EEDNR",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
+    TestCase {
+        fen: "13V1/13I1/10YEGGS/7PHLOX2U/6GROAN3A/J3OWIE6B/ENNUI2B2A3L/T6UT1N1M1E/E6YO1O1A2/8R1DUI2/7SI1i1D1L/7HI1Z1h1E/1PLECTRA2E1O1A/7WARRIORS/7N4D1E",
+        rack: "??OO",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: i16::MAX,
+    },
+    TestCase {
+        fen: "15/15/15/15/15/15/7F7/7ALOW4/7N7/15/15/15/15/15/15",
+        rack: "??QZJX",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
+    TestCase {
+        fen: "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15",
+        rack: "??AEINR",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
+    TestCase {
+        fen: "15/15/15/15/15/15/15/4WORD7/4I10/4N10/4E10/15/15/15/15",
+        rack: "?AEIRST",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
+    TestCase {
+        fen: "5MOZ6S/2FIREPOTS4p/2Y2UTA1HWAN1E/DAK8L2C/OWE1BIB4E2I/CADGE6U1PA/I4DOGY2R1aT/L2GLORIA1LOVIE/E1XI1TAED2N1N1/RAI8S1T1/13I1/13E1/13R1/15/15",
+        rack: "AEINRST",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
+    TestCase {
+        fen: "ZONULE1B2APAID/1KY2RHANJA4/GAM4R2HUI2/7G6D/6FECIT3O/6AE1TOWIES/6I7E/1EnGUARD6D/NAOI2W8/6AT7/5PYE7/5L1L7/2COVE1L7/5X1E7/7N7",
+        rack: "?",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
+    TestCase {
+        fen: "15/15/15/15/15/15/15/4QUIRKY5/15/15/15/15/15/15/15",
+        rack: "??",
+        max_gen: 15,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        num_exchanges_by_this_player: 0,
+    },
 ];
 
 #[inline(always)]
