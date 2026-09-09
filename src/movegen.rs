@@ -113,9 +113,78 @@ struct MultiJump {
     right_idx: i8,
 }
 
+#[derive(Clone)]
+struct LaneScaffold {
+    valid: bool,
+    board_strip: Vec<u8>,
+    remaining_word_multipliers_strip: Vec<i8>,
+    remaining_tile_multipliers_strip: Vec<i8>,
+    perpendicular_word_multipliers_strip: Vec<i8>,
+    aggregated_word_multipliers: Vec<i32>,
+    precomputed_square_multiplier: Vec<i32>,
+    indexes_to_descending_square_multiplier: Vec<i8>,
+    square_ranks: Vec<u8>,
+    multi_jumps: Vec<MultiJump>,
+}
+
+impl LaneScaffold {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            valid: false,
+            board_strip: Vec::new(),
+            remaining_word_multipliers_strip: Vec::new(),
+            remaining_tile_multipliers_strip: Vec::new(),
+            perpendicular_word_multipliers_strip: Vec::new(),
+            aggregated_word_multipliers: Vec::new(),
+            precomputed_square_multiplier: Vec::new(),
+            indexes_to_descending_square_multiplier: Vec::new(),
+            square_ranks: Vec::new(),
+            multi_jumps: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn matches(
+        &self,
+        board_strip: &[u8],
+        remaining_word_multipliers_strip: &[i8],
+        remaining_tile_multipliers_strip: &[i8],
+        perpendicular_word_multipliers_strip: &[i8],
+    ) -> bool {
+        self.valid
+            && self.board_strip == board_strip
+            && self.remaining_word_multipliers_strip == remaining_word_multipliers_strip
+            && self.remaining_tile_multipliers_strip == remaining_tile_multipliers_strip
+            && self.perpendicular_word_multipliers_strip == perpendicular_word_multipliers_strip
+    }
+
+    #[inline]
+    fn store_inputs(
+        &mut self,
+        board_strip: &[u8],
+        remaining_word_multipliers_strip: &[i8],
+        remaining_tile_multipliers_strip: &[i8],
+        perpendicular_word_multipliers_strip: &[i8],
+    ) {
+        self.valid = true;
+        self.board_strip.clear();
+        self.board_strip.extend_from_slice(board_strip);
+        self.remaining_word_multipliers_strip.clear();
+        self.remaining_word_multipliers_strip
+            .extend_from_slice(remaining_word_multipliers_strip);
+        self.remaining_tile_multipliers_strip.clear();
+        self.remaining_tile_multipliers_strip
+            .extend_from_slice(remaining_tile_multipliers_strip);
+        self.perpendicular_word_multipliers_strip.clear();
+        self.perpendicular_word_multipliers_strip
+            .extend_from_slice(perpendicular_word_multipliers_strip);
+    }
+}
+
 const SHADOW_SCORES_INLINE: usize = 8;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct ShadowScores {
     inline: [i32; SHADOW_SCORES_INLINE],
     len: u8,
@@ -123,6 +192,15 @@ struct ShadowScores {
 }
 
 impl ShadowScores {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            inline: [0i32; SHADOW_SCORES_INLINE],
+            len: 0,
+            spill: Vec::new(),
+        }
+    }
+
     #[inline(always)]
     fn clear(&mut self) {
         self.len = 0;
@@ -217,6 +295,7 @@ struct WorkingBuffer {
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
     square_ranks_buffer: Vec<u8>,
     multi_jumps_buffer: Box<[MultiJump]>, // max(r, c)
+    lane_scaffold: Box<[LaneScaffold]>,   // rows + cols, across lanes first
     best_leave_values: Vec<i32>,          // rack.len() + 1
     placement_scores: Vec<i32>,
     shadow_scores: Vec<i32>,
@@ -287,6 +366,7 @@ impl Clone for WorkingBuffer {
                 .clone(),
             square_ranks_buffer: self.square_ranks_buffer.clone(),
             multi_jumps_buffer: self.multi_jumps_buffer.clone(),
+            lane_scaffold: self.lane_scaffold.clone(),
             best_leave_values: self.best_leave_values.clone(),
             placement_scores: self.placement_scores.clone(),
             shadow_scores: self.shadow_scores.clone(),
@@ -365,6 +445,7 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.square_ranks_buffer);
         self.multi_jumps_buffer
             .clone_from(&source.multi_jumps_buffer);
+        self.lane_scaffold.clone_from(&source.lane_scaffold);
         self.best_leave_values.clone_from(&source.best_leave_values);
         self.placement_scores.clone_from(&source.placement_scores);
         self.shadow_scores.clone_from(&source.shadow_scores);
@@ -478,6 +559,8 @@ impl WorkingBuffer {
                 dim.rows.max(dim.cols) as usize
             ]
             .into_boxed_slice(),
+            lane_scaffold: vec![LaneScaffold::new(); dim.rows as usize + dim.cols as usize]
+                .into_boxed_slice(),
             best_leave_values: Vec::new(),
             placement_scores: Vec::new(),
             shadow_scores: Vec::new(),
@@ -486,8 +569,8 @@ impl WorkingBuffer {
             subracks_by_played: Vec::new(),
             found_placements: Vec::new(),
             used_letters_tally: Vec::new(),
-            used_tile_scores_shadowl: ShadowScores::default(),
-            used_tile_scores_shadowr: ShadowScores::default(),
+            used_tile_scores_shadowl: ShadowScores::new(),
+            used_tile_scores_shadowr: ShadowScores::new(),
             rack_tally_shadowl: [0u8; MAX_ALPHABET_LEN],
             rack_tally_shadowr: [0u8; MAX_ALPHABET_LEN],
             is_census: false,
@@ -779,6 +862,9 @@ impl WorkingBuffer {
             bits: 0,
         });
         self.prev_board_tiles.fill(0xff);
+        for lane in self.lane_scaffold.iter_mut() {
+            lane.valid = false;
+        }
     }
 }
 
@@ -1123,6 +1209,7 @@ struct GenPlacePlacementsParams<'a> {
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
     square_ranks_buffer: &'a mut Vec<u8>,
     multi_jumps_buffer: &'a mut [MultiJump],
+    lane_scaffold: &'a mut LaneScaffold,
     best_leave_values: &'a [i32],
     shadow_scores: &'a mut Vec<i32>,
     span_out: &'a mut Vec<(i8, i8, u8, i32)>,
@@ -1173,106 +1260,145 @@ fn gen_place_placements_impl<
     let strider_len = params.board_strip.len();
 
     if !want_raw {
-        // process the square multipliers.
-        params.aggregated_word_multipliers.clear();
-        // each contiguous subsequence of multiple 1s needs to be processed just once.
-        let mut last_was_one = false;
-        for i in 0..strider_len {
-            let mut wm = params.remaining_word_multipliers_strip[i] as i32;
-            if last_was_one {
+        let hit = params.lane_scaffold.matches(
+            params.board_strip,
+            params.remaining_word_multipliers_strip,
+            params.remaining_tile_multipliers_strip,
+            params.perpendicular_word_multipliers_strip,
+        );
+        if hit {
+            params
+                .aggregated_word_multipliers
+                .clone_from(&params.lane_scaffold.aggregated_word_multipliers);
+            params
+                .precomputed_square_multiplier_buffer
+                .clone_from(&params.lane_scaffold.precomputed_square_multiplier);
+            params
+                .indexes_to_descending_square_multiplier_buffer
+                .clone_from(&params.lane_scaffold.indexes_to_descending_square_multiplier);
+            params
+                .square_ranks_buffer
+                .clone_from(&params.lane_scaffold.square_ranks);
+            params.multi_jumps_buffer[..strider_len]
+                .clone_from_slice(&params.lane_scaffold.multi_jumps);
+        } else {
+            params.aggregated_word_multipliers.clear();
+            let mut last_was_one = false;
+            for i in 0..strider_len {
+                let mut wm = params.remaining_word_multipliers_strip[i] as i32;
+                if last_was_one {
+                    last_was_one = wm == 1;
+                    continue;
+                }
                 last_was_one = wm == 1;
-                continue;
-            }
-            last_was_one = wm == 1;
-            if let Err(idx) = params.aggregated_word_multipliers.binary_search(&wm) {
-                params.aggregated_word_multipliers.insert(idx, wm);
-            }
-            for &wm_val in &params.remaining_word_multipliers_strip[i + 1..strider_len] {
-                if wm_val != 1 {
-                    // wm_val == 1 is frequent.
-                    if wm > i32::MAX / equity::SCALE {
-                        break;
-                    }
-                    wm *= wm_val as i32;
-                    // monotonically increasing only if all multipliers are positive.
-                    if let Err(idx) = params.aggregated_word_multipliers.binary_search(&wm) {
-                        params.aggregated_word_multipliers.insert(idx, wm);
+                if let Err(idx) = params.aggregated_word_multipliers.binary_search(&wm) {
+                    params.aggregated_word_multipliers.insert(idx, wm);
+                }
+                for &wm_val in &params.remaining_word_multipliers_strip[i + 1..strider_len] {
+                    if wm_val != 1 {
+                        if wm > i32::MAX / equity::SCALE {
+                            break;
+                        }
+                        wm *= wm_val as i32;
+                        if let Err(idx) = params.aggregated_word_multipliers.binary_search(&wm) {
+                            params.aggregated_word_multipliers.insert(idx, wm);
+                        }
                     }
                 }
             }
-        }
-        let vec_size = strider_len * params.aggregated_word_multipliers.len();
-        params
-            .precomputed_square_multiplier_buffer
-            .resize(vec_size, 0);
-        params
-            .indexes_to_descending_square_multiplier_buffer
-            .resize(vec_size, 0);
-        params.square_ranks_buffer.resize(vec_size, 0);
-        for (k, low_end) in params
-            .aggregated_word_multipliers
-            .iter()
-            .zip((0..).step_by(strider_len))
-        {
-            // k is the aggregated main word multiplier.
-            // low_end is the index of the strider_len-length slice.
-            let high_end = low_end + strider_len;
-            let precomputed_square_multiplier_slice =
-                &mut params.precomputed_square_multiplier_buffer[low_end..high_end];
-            let indexes_to_descending_square_multiplier_slice =
-                &mut params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
-            let mut left = 0;
-            for j in (0..strider_len).filter(|&j| params.board_strip[j] == 0) {
-                // perpendicular_word_multipliers_strip[j] is 0 if no perpendicular tile.
-                precomputed_square_multiplier_slice[j] = params.remaining_tile_multipliers_strip[j]
-                    as i32
-                    * (k + params.perpendicular_word_multipliers_strip[j] as i32);
-                // put the indexes of empty squares first.
-                // the indexes of non-empty squares should never be visited.
-                indexes_to_descending_square_multiplier_slice[left] = j as i8;
-                left += 1;
-            }
-            indexes_to_descending_square_multiplier_slice[..left].sort_unstable_by(|&a, &b| {
-                precomputed_square_multiplier_slice[b as usize]
-                    .cmp(&precomputed_square_multiplier_slice[a as usize])
-            });
-            let square_ranks_slice = &mut params.square_ranks_buffer[low_end..high_end];
-            for (rank, &j) in indexes_to_descending_square_multiplier_slice[..left]
+            let vec_size = strider_len * params.aggregated_word_multipliers.len();
+            params
+                .precomputed_square_multiplier_buffer
+                .resize(vec_size, 0);
+            params
+                .indexes_to_descending_square_multiplier_buffer
+                .resize(vec_size, 0);
+            params.square_ranks_buffer.resize(vec_size, 0);
+            for (k, low_end) in params
+                .aggregated_word_multipliers
                 .iter()
-                .enumerate()
+                .zip((0..).step_by(strider_len))
             {
-                square_ranks_slice[j as usize] = rank as u8;
+                let high_end = low_end + strider_len;
+                let precomputed_square_multiplier_slice =
+                    &mut params.precomputed_square_multiplier_buffer[low_end..high_end];
+                let indexes_to_descending_square_multiplier_slice =
+                    &mut params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
+                let mut left = 0;
+                for j in (0..strider_len).filter(|&j| params.board_strip[j] == 0) {
+                    precomputed_square_multiplier_slice[j] = params.remaining_tile_multipliers_strip
+                        [j] as i32
+                        * (k + params.perpendicular_word_multipliers_strip[j] as i32);
+                    indexes_to_descending_square_multiplier_slice[left] = j as i8;
+                    left += 1;
+                }
+                indexes_to_descending_square_multiplier_slice[..left].sort_unstable_by(|&a, &b| {
+                    precomputed_square_multiplier_slice[b as usize]
+                        .cmp(&precomputed_square_multiplier_slice[a as usize])
+                });
+                let square_ranks_slice = &mut params.square_ranks_buffer[low_end..high_end];
+                for (rank, &j) in indexes_to_descending_square_multiplier_slice[..left]
+                    .iter()
+                    .enumerate()
+                {
+                    square_ranks_slice[j as usize] = rank as u8;
+                }
             }
-        }
 
-        // precompute the multi jumps. (code is similar to cross set computation.)
-        let mut score = 0i32;
-        let mut last_empty = strider_len as i8;
-        for j in (0..strider_len).rev() {
-            let b = params.board_strip[j];
-            if b != 0 {
-                score += params.alphabet.scaled_score(b);
-            } else {
-                // empty square, reset
-                score = 0; // cumulative face-value score (millipoints)
-                last_empty = j as i8; // last seen empty square
+            let mut score = 0i32;
+            let mut last_empty = strider_len as i8;
+            for j in (0..strider_len).rev() {
+                let b = params.board_strip[j];
+                if b != 0 {
+                    score += params.alphabet.scaled_score(b);
+                } else {
+                    score = 0; // cumulative face-value score (millipoints)
+                    last_empty = j as i8; // last seen empty square
+                }
+                params.multi_jumps_buffer[j].right_score = score;
+                params.multi_jumps_buffer[j].right_idx = last_empty;
             }
-            params.multi_jumps_buffer[j].right_score = score;
-            params.multi_jumps_buffer[j].right_idx = last_empty;
-        }
-        score = 0i32;
-        last_empty = -1i8;
-        for j in 0..strider_len {
-            let b = params.board_strip[j];
-            if b != 0 {
-                score += params.alphabet.scaled_score(b);
-            } else {
-                // empty square, reset
-                score = 0; // cumulative face-value score (millipoints)
-                last_empty = j as i8; // last seen empty square
+            score = 0i32;
+            last_empty = -1i8;
+            for j in 0..strider_len {
+                let b = params.board_strip[j];
+                if b != 0 {
+                    score += params.alphabet.scaled_score(b);
+                } else {
+                    score = 0; // cumulative face-value score (millipoints)
+                    last_empty = j as i8; // last seen empty square
+                }
+                params.multi_jumps_buffer[j].left_score = score;
+                params.multi_jumps_buffer[j].left_idx = last_empty;
             }
-            params.multi_jumps_buffer[j].left_score = score;
-            params.multi_jumps_buffer[j].left_idx = last_empty;
+
+            params.lane_scaffold.store_inputs(
+                params.board_strip,
+                params.remaining_word_multipliers_strip,
+                params.remaining_tile_multipliers_strip,
+                params.perpendicular_word_multipliers_strip,
+            );
+            params
+                .lane_scaffold
+                .aggregated_word_multipliers
+                .clone_from(params.aggregated_word_multipliers);
+            params
+                .lane_scaffold
+                .precomputed_square_multiplier
+                .clone_from(params.precomputed_square_multiplier_buffer);
+            params
+                .lane_scaffold
+                .indexes_to_descending_square_multiplier
+                .clone_from(params.indexes_to_descending_square_multiplier_buffer);
+            params
+                .lane_scaffold
+                .square_ranks
+                .clone_from(params.square_ranks_buffer);
+            params.lane_scaffold.multi_jumps.clear();
+            params
+                .lane_scaffold
+                .multi_jumps
+                .extend_from_slice(&params.multi_jumps_buffer[..strider_len]);
         }
     }
 
@@ -4588,6 +4714,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     .indexes_to_descending_square_multiplier_buffer,
                 square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
+                lane_scaffold: &mut working_buffer.lane_scaffold[row as usize],
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
@@ -4650,6 +4777,7 @@ fn kurnia_gen_place_moves_iter_lean<
                     .indexes_to_descending_square_multiplier_buffer,
                 square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
+                lane_scaffold: &mut working_buffer.lane_scaffold[dim.rows as usize + col as usize],
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
@@ -4871,6 +4999,7 @@ fn kurnia_gen_place_moves_iter<
                     .indexes_to_descending_square_multiplier_buffer,
                 square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
+                lane_scaffold: &mut working_buffer.lane_scaffold[row as usize],
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
@@ -4933,6 +5062,7 @@ fn kurnia_gen_place_moves_iter<
                     .indexes_to_descending_square_multiplier_buffer,
                 square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
+                lane_scaffold: &mut working_buffer.lane_scaffold[dim.rows as usize + col as usize],
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
