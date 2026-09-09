@@ -93,7 +93,7 @@ impl PlacePredicate<'_> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct PossiblePlacement {
     num_played: u8,
     down: bool,
@@ -303,6 +303,7 @@ struct WorkingBuffer {
     subracks: Vec<Subrack>,
     subracks_by_played: Vec<u32>,
     found_placements: Vec<PossiblePlacement>,
+    placement_order: Vec<(i32, u32)>,
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
     used_tile_scores_shadowl: ShadowScores, // for shadow_play_left, premultiplied by SCALE
     used_tile_scores_shadowr: ShadowScores, // for shadow_play_right, premultiplied by SCALE
@@ -374,6 +375,7 @@ impl Clone for WorkingBuffer {
             subracks: self.subracks.clone(),
             subracks_by_played: self.subracks_by_played.clone(),
             found_placements: self.found_placements.clone(),
+            placement_order: self.placement_order.clone(),
             used_letters_tally: self.used_letters_tally.clone(),
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
@@ -454,6 +456,7 @@ impl Clone for WorkingBuffer {
         self.subracks_by_played
             .clone_from(&source.subracks_by_played);
         self.found_placements.clone_from(&source.found_placements);
+        self.placement_order.clone_from(&source.placement_order);
         self.used_letters_tally
             .clone_from(&source.used_letters_tally);
         self.used_tile_scores_shadowl
@@ -568,6 +571,7 @@ impl WorkingBuffer {
             subracks: Vec::new(),
             subracks_by_played: Vec::new(),
             found_placements: Vec::new(),
+            placement_order: Vec::new(),
             used_letters_tally: Vec::new(),
             used_tile_scores_shadowl: ShadowScores::new(),
             used_tile_scores_shadowr: ShadowScores::new(),
@@ -4717,6 +4721,8 @@ fn kurnia_gen_place_moves_iter_lean<
 
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
+    let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
+    placement_order.clear();
     let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
     placement_scores.clear();
     for row in 0..dim.rows {
@@ -4846,15 +4852,22 @@ fn kurnia_gen_place_moves_iter_lean<
             },
         );
     }
+    placement_order.extend(
+        found_placements
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.best_possible_equity, i as u32)),
+    );
     if !want_raw {
-        // this will be iterated in reverse order, so sort by best_possible_equity increasing.
-        found_placements.sort_unstable_by_key(|a| a.best_possible_equity);
+        placement_order.sort_unstable_by_key(|&(equity, _)| equity);
     }
     working_buffer.found_placements = found_placements;
+    working_buffer.placement_order = placement_order;
     working_buffer.placement_scores = placement_scores;
-    std::iter::from_fn(move || match working_buffer.found_placements.pop() {
-        Some(placement) => {
-            if can_accept(placement.best_possible_equity) {
+    std::iter::from_fn(move || match working_buffer.placement_order.pop() {
+        Some((equity, idx)) => {
+            if can_accept(equity) {
+                let placement = working_buffer.found_placements[idx as usize];
                 gen_place_moves_at_lean(GenPlaceMovesAtParams {
                     board_snapshot,
                     working_buffer,
@@ -4888,7 +4901,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 Some(())
             } else {
                 // fuse the iterator
-                working_buffer.found_placements.clear();
+                working_buffer.placement_order.clear();
                 None
             }
         }
@@ -4996,6 +5009,8 @@ fn kurnia_gen_place_moves_iter<
 
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
+    let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
+    placement_order.clear();
     let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
     placement_scores.clear();
     for row in 0..dim.rows {
@@ -5125,15 +5140,22 @@ fn kurnia_gen_place_moves_iter<
             },
         );
     }
+    placement_order.extend(
+        found_placements
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.best_possible_equity, i as u32)),
+    );
     if !want_raw {
-        // this will be iterated in reverse order, so sort by best_possible_equity increasing.
-        found_placements.sort_unstable_by_key(|a| a.best_possible_equity);
+        placement_order.sort_unstable_by_key(|&(equity, _)| equity);
     }
     working_buffer.found_placements = found_placements;
+    working_buffer.placement_order = placement_order;
     working_buffer.placement_scores = placement_scores;
-    std::iter::from_fn(move || match working_buffer.found_placements.pop() {
-        Some(placement) => {
-            if can_accept(placement.best_possible_equity) {
+    std::iter::from_fn(move || match working_buffer.placement_order.pop() {
+        Some((equity, idx)) => {
+            if can_accept(equity) {
+                let placement = working_buffer.found_placements[idx as usize];
                 gen_place_moves_at(GenPlaceMovesAtParams {
                     board_snapshot,
                     working_buffer,
@@ -5167,7 +5189,7 @@ fn kurnia_gen_place_moves_iter<
                 Some(())
             } else {
                 // fuse the iterator
-                working_buffer.found_placements.clear();
+                working_buffer.placement_order.clear();
                 None
             }
         }
