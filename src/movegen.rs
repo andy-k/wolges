@@ -897,6 +897,7 @@ pub struct BoardSnapshot<'a, N: kwg::Node, L: kwg::Node> {
     pub game_config: &'a game_config::GameConfig,
     pub kwg: &'a kwg::Kwg<N>,
     pub anagrams: Option<&'a anagrams::Anagrams>,
+    pub rack_lengths: Option<&'a anagrams::RackLengths>,
     pub klv: &'a klv::Klv<L>,
 }
 
@@ -1245,16 +1246,18 @@ struct GenPlacePlacementsParams<'a> {
 
 fn feasible_word_lengths<const USE_TABLE: bool>(
     anagrams: Option<&anagrams::Anagrams>,
+    rack_lengths: Option<&anagrams::RackLengths>,
     rack_tally: &[u8],
 ) -> u64 {
     if rack_tally[0] > 0 {
         return !0;
     }
-    match anagrams.filter(|_| USE_TABLE) {
-        Some(a) => rack_subset_lengths(a.layout(), rack_tally, |key, len| {
+    match (anagrams.filter(|_| USE_TABLE), rack_lengths) {
+        (Some(a), _) => rack_subset_lengths(a.layout(), rack_tally, |key, len| {
             a.words(alphagram::Fitted(key), len).is_some()
         }),
-        None => !0,
+        (None, Some(r)) => rack_subset_lengths(r.layout(), rack_tally, |key, _| r.contains(key)),
+        (None, None) => !0,
     }
 }
 
@@ -4786,8 +4789,11 @@ fn kurnia_gen_place_moves_iter_lean<
     }
     working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
 
-    let feasible_lengths =
-        feasible_word_lengths::<false>(board_snapshot.anagrams, &working_buffer.rack_tally);
+    let feasible_lengths = feasible_word_lengths::<false>(
+        board_snapshot.anagrams,
+        board_snapshot.rack_lengths,
+        &working_buffer.rack_tally,
+    );
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
@@ -5078,8 +5084,11 @@ fn kurnia_gen_place_moves_iter<
     }
     working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
 
-    let feasible_lengths =
-        feasible_word_lengths::<true>(board_snapshot.anagrams, &working_buffer.rack_tally);
+    let feasible_lengths = feasible_word_lengths::<true>(
+        board_snapshot.anagrams,
+        board_snapshot.rack_lengths,
+        &working_buffer.rack_tally,
+    );
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
@@ -5762,6 +5771,7 @@ mod tests {
                 game_config: &gc,
                 kwg: &kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             };
             let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -5808,6 +5818,7 @@ mod tests {
         let dim = gc.board_layout().dim();
         let layout = alphagram::KeyLayout::of(gc.alphabet(), dim.rows.max(dim.cols) as u8).unwrap();
         let held = anagrams::Anagrams::build(&kwg, layout.clone()).unwrap();
+        let rack_lengths = anagrams::RackLengths::build(&kwg, layout, gc.rack_size() as usize + 1);
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         for max_gen in [1usize, 5, 100_000] {
@@ -5823,6 +5834,7 @@ mod tests {
                             game_config: gc,
                             kwg: &kwg,
                             anagrams,
+                            rack_lengths: anagrams.is_none().then_some(&rack_lengths),
                             klv: &klv,
                         };
                         let mut move_generator = KurniaMoveGenerator::new(gc);
@@ -5977,6 +5989,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -6010,6 +6023,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -6070,6 +6084,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -6131,6 +6146,7 @@ mod tests {
                 game_config: &gc,
                 kwg: &kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             };
             let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -6200,6 +6216,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
 
@@ -6478,6 +6495,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -6613,6 +6631,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let empty_snapshot = BoardSnapshot {
@@ -6620,6 +6639,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let plays = |move_generator: &mut KurniaMoveGenerator| {
@@ -6666,6 +6686,7 @@ mod tests {
                 game_config: &gc,
                 kwg: &kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             };
             move_generator.gen_moves_unfiltered(&GenMovesParams {
@@ -6809,6 +6830,7 @@ mod tests {
                     game_config: &gc,
                     kwg: &kwg,
                     anagrams,
+                    rack_lengths: None,
                     klv: &klv,
                 };
                 let transposed_board_snapshot = BoardSnapshot {
@@ -6816,6 +6838,7 @@ mod tests {
                     game_config: &transposed_gc,
                     kwg: &kwg,
                     anagrams,
+                    rack_lengths: None,
                     klv: &klv,
                 };
                 let fresh = place_plays(
@@ -6918,6 +6941,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let plays = place_plays(

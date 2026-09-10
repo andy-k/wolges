@@ -278,6 +278,41 @@ impl Anagrams {
     }
 }
 
+pub struct RackLengths {
+    layout: alphagram::KeyLayout,
+    present: std::collections::HashSet<u128, std::hash::BuildHasherDefault<KeyHasher>>,
+}
+
+impl RackLengths {
+    pub fn build<N: kwg::Node>(
+        g: &kwg::Kwg<N>,
+        layout: alphagram::KeyLayout,
+        max_tiles: usize,
+    ) -> Self {
+        let list = alphagram::WordList::build(g);
+        let mut present =
+            std::collections::HashSet::<u128, std::hash::BuildHasherDefault<KeyHasher>>::default();
+        for w in list.iter() {
+            if w.len() <= max_tiles
+                && let Some(key) = layout.key_of(w)
+            {
+                present.insert(key);
+            }
+        }
+        Self { layout, present }
+    }
+
+    #[inline(always)]
+    pub fn layout(&self) -> &alphagram::KeyLayout {
+        &self.layout
+    }
+
+    #[inline(always)]
+    pub fn contains(&self, key: u128) -> bool {
+        self.present.contains(&key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

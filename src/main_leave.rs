@@ -672,6 +672,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     game_config: &game_config,
                     kwg: &kwg,
                     anagrams: None,
+                    rack_lengths: None,
                     klv: &klv,
                 },
                 rack: &game_state.current_player().rack,
@@ -749,6 +750,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     game_config: &game_config,
                     kwg: &kwg,
                     anagrams: None,
+                    rack_lengths: None,
                     klv: &klv,
                 },
                 rack: &game_state.current_player().rack,
@@ -1308,6 +1310,7 @@ fn generate_autoplay_logs<
                             game_config: &game_config,
                             kwg: &kwg,
                             anagrams: None,
+                            rack_lengths: None,
                             klv: if game_state.turn == 0 {
                                 &arc_klv0
                             } else {
@@ -1873,6 +1876,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     game_config: &game_config,
                                     kwg: &kwg,
                                     anagrams: None,
+                                    rack_lengths: None,
                                     klv: if game_state.turn == 0 {
                                         &arc_klv0
                                     } else {
@@ -1913,6 +1917,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             game_config: &game_config,
                             kwg: &kwg,
                             anagrams: None,
+                            rack_lengths: None,
                             klv: if game_state.turn == 0 {
                                 &arc_klv0
                             } else {
@@ -2458,6 +2463,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         game_config,
         kwg,
         anagrams: None,
+        rack_lengths: None,
         klv,
     };
     let params = movegen::GenMovesParams {
@@ -2937,6 +2943,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 game_config: &game_config,
                                 kwg: &kwg,
                                 anagrams: None,
+                                rack_lengths: None,
                                 klv: if game_state.turn == 0 {
                                     &arc_klv0
                                 } else {
@@ -3553,6 +3560,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             game_config: &game_config,
                             kwg: &kwg,
                             anagrams: None,
+                            rack_lengths: None,
                             klv: &klv,
                         };
 
@@ -4066,6 +4074,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             game_config,
             kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: arc_klv,
         };
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -4290,6 +4299,16 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send, const 
             .map(std::sync::Arc::new)
     };
 
+    let arc_rack_lengths = if LEAN {
+        let dim = game_config.board_layout().dim();
+        let max_tiles = game_config.rack_size() as usize + 1;
+        wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
+            .map(|layout| wolges::anagrams::RackLengths::build(&kwg, layout, max_tiles))
+            .map(std::sync::Arc::new)
+    } else {
+        None
+    };
+
     std::thread::scope(|s| -> error::Returns<()> {
         let mut thread_handles = Vec::new();
         for _ in 0..num_threads {
@@ -4298,6 +4317,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send, const 
             let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
             let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
             let arc_anagrams = arc_anagrams.clone();
+            let arc_rack_lengths = arc_rack_lengths.clone();
             let claimed_pairs = std::sync::Arc::clone(&claimed_pairs);
             let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
@@ -4343,6 +4363,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send, const 
                                 game_config: &game_config,
                                 kwg: &kwg,
                                 anagrams: arc_anagrams.as_deref(),
+                                rack_lengths: arc_rack_lengths.as_deref(),
                                 klv: if is_klv0_side { &arc_klv0 } else { &arc_klv1 },
                             };
                             let gen_params = movegen::GenMovesParams {
@@ -4490,6 +4511,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                 game_config: &game_config,
                 kwg: &kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             },
             rack: &game_state.current_player().rack,
@@ -4526,6 +4548,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             game_config: &game_config,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let rack = &game_state.current_player().rack;
@@ -4664,6 +4687,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             game_config: &game_config,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         },
         rack: &game_state.current_player().rack,
@@ -4873,6 +4897,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
                 game_config: &game_config,
                 kwg: &kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             },
             rack: &rack,
@@ -5124,6 +5149,7 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
                     game_config: &game_config,
                     kwg: &kwg,
                     anagrams: None,
+                    rack_lengths: None,
                     klv: &klv,
                 },
                 rack: &game_state.current_player().rack,
@@ -5455,6 +5481,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 game_config: &game_config,
                                 kwg: &kwg,
                                 anagrams: None,
+                                rack_lengths: None,
                                 klv: &arc_klv,
                             };
                             let driver = if is_p0_seat {
