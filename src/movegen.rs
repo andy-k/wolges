@@ -1512,6 +1512,7 @@ fn gen_place_placements_impl<
         perpendicular_cumulative_score: i32, // perpendicular_additional_score
         word_multiplier: i32,
         crossed_board_tiles: bool,
+        deferred_score_cap: i32,
     }
 
     #[inline(always)]
@@ -1563,6 +1564,11 @@ fn gen_place_placements_impl<
                 &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
             let indexes_to_descending_square_multiplier_slice =
                 &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
+            debug_assert!(
+                ranked == 0 || acc.deferred_score_cap != i32::MIN,
+                "a deferred square with no deferred_score_cap recorded"
+            );
+            let cap = acc.deferred_score_cap;
             let mut remaining = ranked;
             if used_tile_scores.is_empty() {
                 let mut di = 0;
@@ -1570,7 +1576,7 @@ fn gen_place_placements_impl<
                     let idx = indexes_to_descending_square_multiplier_slice
                         [remaining.trailing_zeros() as usize];
                     remaining &= remaining - 1;
-                    best_scoring += env.params.descending_scores[di]
+                    best_scoring += env.params.descending_scores[di].min(cap)
                         * precomputed_square_multiplier_slice[idx as usize];
                     di += 1;
                     to_assign -= 1;
@@ -1586,7 +1592,7 @@ fn gen_place_placements_impl<
                     let idx = indexes_to_descending_square_multiplier_slice
                         [remaining.trailing_zeros() as usize];
                     remaining &= remaining - 1;
-                    best_scoring += *desc_scores_iter.next().unwrap()
+                    best_scoring += (*desc_scores_iter.next().unwrap()).min(cap)
                         * precomputed_square_multiplier_slice[idx as usize];
                     to_assign -= 1;
                 }
@@ -1682,6 +1688,7 @@ fn gen_place_placements_impl<
                 is_unique = true;
                 deferred |= 1u128 << (idx as u32);
                 ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
+                acc.deferred_score_cap = i32::MAX;
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
@@ -1723,6 +1730,14 @@ fn gen_place_placements_impl<
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
                     // defer to greedy algorithm.
+                    let mut remaining = matching_bits;
+                    let mut admissible_max = i32::MIN;
+                    while remaining != 0 {
+                        let t = remaining.trailing_zeros() as u8;
+                        remaining &= remaining - 1;
+                        admissible_max = admissible_max.max(env.params.alphabet.scaled_score(t));
+                    }
+                    acc.deferred_score_cap = acc.deferred_score_cap.max(admissible_max);
                     deferred |= 1u128 << (idx as u32);
                     ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
                     acc.perpendicular_cumulative_score +=
@@ -1827,6 +1842,7 @@ fn gen_place_placements_impl<
                 is_unique = true;
                 deferred |= 1u128 << (idx as u32);
                 ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
+                acc.deferred_score_cap = i32::MAX;
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
@@ -1868,6 +1884,14 @@ fn gen_place_placements_impl<
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
                     // defer to greedy algorithm.
+                    let mut remaining = matching_bits;
+                    let mut admissible_max = i32::MIN;
+                    while remaining != 0 {
+                        let t = remaining.trailing_zeros() as u8;
+                        remaining &= remaining - 1;
+                        admissible_max = admissible_max.max(env.params.alphabet.scaled_score(t));
+                    }
+                    acc.deferred_score_cap = acc.deferred_score_cap.max(admissible_max);
                     deferred |= 1u128 << (idx as u32);
                     ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
                     acc.perpendicular_cumulative_score +=
@@ -1922,6 +1946,7 @@ fn gen_place_placements_impl<
                     perpendicular_cumulative_score: 0,
                     word_multiplier: 1,
                     crossed_board_tiles: false,
+                    deferred_score_cap: i32::MIN,
                 },
                 env.anchor,
                 single_tile_plays,
