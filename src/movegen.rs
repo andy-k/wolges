@@ -102,7 +102,6 @@ struct PossiblePlacement {
     leftmost: i8,
     rightmost: i8,
     best_possible_equity: i32,
-    scores_at: u32,
 }
 
 #[derive(Clone)]
@@ -381,8 +380,6 @@ struct WorkingBuffer {
     exchange_buffer: Vec<u8>,    // rack.len(), or max(word length) with word prune
     lane_scaffold: Box<[LaneScaffold]>, // rows + cols, across lanes first
     best_leave_values: Vec<i32>, // rack.len() + 1
-    placement_scores: Vec<i32>,
-    shadow_scores: Vec<i32>,
     span_out: Vec<(i8, i8, u8, i32)>,
     subracks: Vec<Subrack>,
     subracks_by_played: Vec<u32>,
@@ -446,8 +443,6 @@ impl Clone for WorkingBuffer {
             exchange_buffer: self.exchange_buffer.clone(),
             lane_scaffold: self.lane_scaffold.clone(),
             best_leave_values: self.best_leave_values.clone(),
-            placement_scores: self.placement_scores.clone(),
-            shadow_scores: self.shadow_scores.clone(),
             span_out: self.span_out.clone(),
             subracks: self.subracks.clone(),
             subracks_by_played: self.subracks_by_played.clone(),
@@ -516,8 +511,6 @@ impl Clone for WorkingBuffer {
         self.exchange_buffer.clone_from(&source.exchange_buffer);
         self.lane_scaffold.clone_from(&source.lane_scaffold);
         self.best_leave_values.clone_from(&source.best_leave_values);
-        self.placement_scores.clone_from(&source.placement_scores);
-        self.shadow_scores.clone_from(&source.shadow_scores);
         self.span_out.clone_from(&source.span_out);
         self.subracks.clone_from(&source.subracks);
         self.subracks_by_played
@@ -618,8 +611,6 @@ impl WorkingBuffer {
             lane_scaffold: vec![LaneScaffold::new(); dim.rows as usize + dim.cols as usize]
                 .into_boxed_slice(),
             best_leave_values: Vec::new(),
-            placement_scores: Vec::new(),
-            shadow_scores: Vec::new(),
             span_out: Vec::new(),
             subracks: Vec::new(),
             subracks_by_played: Vec::new(),
@@ -1284,7 +1275,6 @@ struct GenPlacePlacementsParams<'a> {
     descending_scores: &'a [i32],
     lane_scaffold: &'a mut LaneScaffold,
     best_leave_values: &'a [i32],
-    shadow_scores: &'a mut Vec<i32>,
     span_out: &'a mut Vec<(i8, i8, u8, i32)>,
     per_span: bool,
     num_max_played: u8,
@@ -1348,10 +1338,7 @@ fn rack_subset_lengths(
 }
 
 #[inline]
-fn gen_place_placements<
-    'a,
-    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32], u8),
->(
+fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8)>(
     params: &'a mut GenPlacePlacementsParams<'a>,
     single_tile_plays: bool,
     want_raw: bool,
@@ -1378,7 +1365,7 @@ fn gen_place_placements<
 fn gen_place_placements_impl<
     'a,
     const PER_SPAN: bool,
-    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32], u8),
+    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
 >(
     params: &'a mut GenPlacePlacementsParams<'a>,
     single_tile_plays: bool,
@@ -1414,9 +1401,6 @@ fn gen_place_placements_impl<
         rightmost: 0,
         best_possible_equity: i32::MIN,
     };
-    env.params
-        .shadow_scores
-        .resize(env.params.num_max_played as usize + 1, i32::MIN);
 
     // during shadow-playing, main_score and perpendicular_cumulative_score
     // assume all tiles placed from rack this turn are worth zero,
@@ -1526,12 +1510,6 @@ fn gen_place_placements_impl<
         }
         if equity > env.best_possible_equity {
             env.best_possible_equity = equity;
-        }
-        let score = equity - env.params.best_leave_values[num_played as usize];
-        if let Some(slot) = env.params.shadow_scores.get_mut(num_played as usize)
-            && score > *slot
-        {
-            *slot = score;
         }
     }
 
@@ -1841,7 +1819,7 @@ fn gen_place_placements_impl<
     #[inline(always)]
     fn gen_places_from<
         const PER_SPAN: bool,
-        PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32], u8),
+        PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
     >(
         env: &mut Env<'_>,
         single_tile_plays: bool,
@@ -1849,18 +1827,10 @@ fn gen_place_placements_impl<
         mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
     ) {
         if want_raw {
-            possible_strip_placement_callback(
-                env.anchor,
-                env.leftmost,
-                env.rightmost,
-                i32::MAX,
-                &[],
-                0,
-            );
+            possible_strip_placement_callback(env.anchor, env.leftmost, env.rightmost, i32::MAX, 0);
         } else {
             env.best_possible_equity = i32::MIN;
             env.params.span_out.clear();
-            env.params.shadow_scores.fill(i32::MIN);
             shadow_play_left::<PER_SPAN>(
                 env,
                 Accumulator {
@@ -1878,12 +1848,7 @@ fn gen_place_placements_impl<
                     for i in 0..env.params.span_out.len() {
                         let (left, right, num_played, equity) = env.params.span_out[i];
                         possible_strip_placement_callback(
-                            env.anchor,
-                            left,
-                            right,
-                            equity,
-                            env.params.shadow_scores,
-                            num_played,
+                            env.anchor, left, right, equity, num_played,
                         );
                     }
                 } else {
@@ -1892,7 +1857,6 @@ fn gen_place_placements_impl<
                         env.leftmost,
                         env.rightmost,
                         env.best_possible_equity,
-                        env.params.shadow_scores,
                         0,
                     );
                 }
@@ -1981,7 +1945,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg:
     play_out_bonus: i32,
     used_letters_tally: &'a mut [u8], // jumbled mode only
     is_census: bool, // real-before-blank descent for the census's spell-once sheet build
-    scores: &'a [i32],
+    score_bound: i32,
     threshold: i32,
     subracks: &'a [Subrack],
     subracks_by_played: &'a [u32],
@@ -2908,18 +2872,7 @@ fn gen_classic_place_moves<
     env.score_bound = if env.params.threshold == i32::MIN {
         None
     } else {
-        match env.params.scores.get(e.num_played as usize) {
-            Some(&score) if score != i32::MIN => Some(
-                score.saturating_add(
-                    env.params
-                        .board_snapshot
-                        .game_config
-                        .num_played_bonus(e.num_played) as i32
-                        * equity::SCALE,
-                ),
-            ),
-            _ => None,
-        }
+        Some(env.params.score_bound)
     };
     let len = (rightmost - leftmost) as u8;
     let from = env.params.subracks_by_played[e.num_played as usize] as usize;
@@ -3552,13 +3505,7 @@ fn gen_place_moves_at_lean<
             play_out_bonus: working_buffer.play_out_bonus,
             used_letters_tally: &mut working_buffer.used_letters_tally,
             is_census: working_buffer.is_census,
-            scores: working_buffer
-                .placement_scores
-                .get(
-                    placement.scores_at as usize
-                        ..placement.scores_at as usize + num_max_played as usize + 1,
-                )
-                .unwrap_or(&[]),
+            score_bound: i32::MAX,
             threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
@@ -3675,13 +3622,12 @@ fn gen_place_moves_at<
             play_out_bonus: working_buffer.play_out_bonus,
             used_letters_tally: &mut working_buffer.used_letters_tally,
             is_census: working_buffer.is_census,
-            scores: working_buffer
-                .placement_scores
-                .get(
-                    placement.scores_at as usize
-                        ..placement.scores_at as usize + num_max_played as usize + 1,
-                )
-                .unwrap_or(&[]),
+            score_bound: placement.best_possible_equity
+                - working_buffer.best_leave_values[placement.num_played as usize]
+                + board_snapshot
+                    .game_config
+                    .num_played_bonus(placement.num_played) as i32
+                    * equity::SCALE,
             threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
@@ -4757,8 +4703,6 @@ fn kurnia_gen_place_moves_iter_lean<
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
     placement_order.clear();
-    let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
-    placement_scores.clear();
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
@@ -4790,20 +4734,12 @@ fn kurnia_gen_place_moves_iter_lean<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
-                shadow_scores: &mut working_buffer.shadow_scores,
                 span_out: &mut working_buffer.span_out,
                 per_span: false,
             },
             true,
             want_raw,
-            |anchor: i8,
-             leftmost: i8,
-             rightmost: i8,
-             best_possible_equity: i32,
-             best_possible_score: &[i32],
-             num_played: u8| {
-                let scores_at = placement_scores.len() as u32;
-                placement_scores.extend_from_slice(best_possible_score);
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
                     down: false,
@@ -4812,7 +4748,6 @@ fn kurnia_gen_place_moves_iter_lean<
                     leftmost,
                     rightmost,
                     best_possible_equity,
-                    scores_at,
                 });
             },
         );
@@ -4847,20 +4782,12 @@ fn kurnia_gen_place_moves_iter_lean<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
-                shadow_scores: &mut working_buffer.shadow_scores,
                 span_out: &mut working_buffer.span_out,
                 per_span: false,
             },
             false,
             want_raw,
-            |anchor: i8,
-             leftmost: i8,
-             rightmost: i8,
-             best_possible_equity: i32,
-             best_possible_score: &[i32],
-             num_played: u8| {
-                let scores_at = placement_scores.len() as u32;
-                placement_scores.extend_from_slice(best_possible_score);
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
                     down: true,
@@ -4869,7 +4796,6 @@ fn kurnia_gen_place_moves_iter_lean<
                     leftmost,
                     rightmost,
                     best_possible_equity,
-                    scores_at,
                 });
             },
         );
@@ -4885,7 +4811,6 @@ fn kurnia_gen_place_moves_iter_lean<
     }
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
-    working_buffer.placement_scores = placement_scores;
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
         Some((equity, idx)) => {
             if can_accept(equity) {
@@ -5038,8 +4963,6 @@ fn kurnia_gen_place_moves_iter<
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
     placement_order.clear();
-    let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
-    placement_scores.clear();
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
@@ -5071,20 +4994,12 @@ fn kurnia_gen_place_moves_iter<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
-                shadow_scores: &mut working_buffer.shadow_scores,
                 span_out: &mut working_buffer.span_out,
                 per_span: true,
             },
             true,
             want_raw,
-            |anchor: i8,
-             leftmost: i8,
-             rightmost: i8,
-             best_possible_equity: i32,
-             best_possible_score: &[i32],
-             num_played: u8| {
-                let scores_at = placement_scores.len() as u32;
-                placement_scores.extend_from_slice(best_possible_score);
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
                     down: false,
@@ -5093,7 +5008,6 @@ fn kurnia_gen_place_moves_iter<
                     leftmost,
                     rightmost,
                     best_possible_equity,
-                    scores_at,
                 });
             },
         );
@@ -5128,20 +5042,12 @@ fn kurnia_gen_place_moves_iter<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
-                shadow_scores: &mut working_buffer.shadow_scores,
                 span_out: &mut working_buffer.span_out,
                 per_span: true,
             },
             false,
             want_raw,
-            |anchor: i8,
-             leftmost: i8,
-             rightmost: i8,
-             best_possible_equity: i32,
-             best_possible_score: &[i32],
-             num_played: u8| {
-                let scores_at = placement_scores.len() as u32;
-                placement_scores.extend_from_slice(best_possible_score);
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
                     down: true,
@@ -5150,7 +5056,6 @@ fn kurnia_gen_place_moves_iter<
                     leftmost,
                     rightmost,
                     best_possible_equity,
-                    scores_at,
                 });
             },
         );
@@ -5166,7 +5071,6 @@ fn kurnia_gen_place_moves_iter<
     }
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
-    working_buffer.placement_scores = placement_scores;
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
         Some((equity, idx)) => {
             if can_accept(equity) {
