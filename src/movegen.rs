@@ -1920,8 +1920,12 @@ fn gen_place_placements_impl<
     }
 }
 
-struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>
-{
+struct GenPlaceMovesParams<
+    'a,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+> {
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
@@ -1982,14 +1986,14 @@ fn leave_value_of<L: kwg::Node>(
 #[inline]
 fn gen_classic_place_moves_lean<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, i32),
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
@@ -2007,7 +2011,7 @@ fn gen_classic_place_moves_lean<
     #[inline(always)]
     fn record<
         const SPELL_ONCE: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -2051,7 +2055,7 @@ fn gen_classic_place_moves_lean<
 
     fn play_right<
         const SPELL_ONCE: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -2215,7 +2219,7 @@ fn gen_classic_place_moves_lean<
 
     fn play_left<
         const SPELL_ONCE: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -2560,7 +2564,7 @@ fn build_subracks(
 #[inline]
 fn gen_classic_place_moves<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, i32),
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -2568,7 +2572,7 @@ fn gen_classic_place_moves<
     source: &'a anagrams::Anagrams,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         source: &'a anagrams::Anagrams,
         layout: &'a alphagram::KeyLayout,
@@ -2579,12 +2583,11 @@ fn gen_classic_place_moves<
         base_main: i32,
         base_perp: i32,
         word_multiplier: i32,
-        score_bound: Option<i32>,
         bound: i32,
     }
 
     #[inline]
-    fn check_words<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn check_words<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         key: alphagram::Key,
         leave_idx: u32,
@@ -2598,7 +2601,11 @@ fn gen_classic_place_moves<
     }
 
     #[inline]
-    fn fit_words_apart<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn fit_words_apart<
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, CallbackType, N, L>,
         found: alphagram::Words<'_>,
         leave_idx: u32,
@@ -2611,7 +2618,7 @@ fn gen_classic_place_moves<
     #[inline(always)]
     fn fit_words<
         const BLANKED: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -2682,15 +2689,13 @@ fn gen_classic_place_moves<
             #[cfg(debug_assertions)]
             macro_rules! covered {
                 ($score:expr) => {
-                    if env.score_bound.is_some() {
-                        debug_assert!(
-                            $score + leave_value <= env.bound,
-                            "found {} when the bound for {} tiles was {}",
-                            $score + leave_value,
-                            env.num_played,
-                            env.bound,
-                        );
-                    }
+                    debug_assert!(
+                        $score + leave_value <= env.bound,
+                        "found {} when the bound for {} tiles was {}",
+                        $score + leave_value,
+                        env.num_played,
+                        env.bound,
+                    );
                 };
             }
             #[cfg(not(debug_assertions))]
@@ -2699,7 +2704,7 @@ fn gen_classic_place_moves<
             }
             if !BLANKED {
                 covered!(score);
-                (env.params.callback)(
+                env.params.threshold = (env.params.callback)(
                     env.left,
                     &env.params.word_strip_buffer[env.left as usize..env.right as usize],
                     score,
@@ -2721,7 +2726,7 @@ fn gen_classic_place_moves<
                         + delta * perpendicular_word_multipliers[pos] as i32;
                     covered!(blanked_score);
                     env.params.word_strip_buffer[pos] = c | 0x80;
-                    (env.params.callback)(
+                    env.params.threshold = (env.params.callback)(
                         env.left,
                         &env.params.word_strip_buffer[env.left as usize..env.right as usize],
                         blanked_score,
@@ -2757,7 +2762,7 @@ fn gen_classic_place_moves<
                         + delta2 * perpendicular_word_multipliers[pos2] as i32;
                     covered!(blanked_score);
                     env.params.word_strip_buffer[pos2] = d | 0x80;
-                    (env.params.callback)(
+                    env.params.threshold = (env.params.callback)(
                         env.left,
                         &env.params.word_strip_buffer[env.left as usize..env.right as usize],
                         blanked_score,
@@ -2790,7 +2795,7 @@ fn gen_classic_place_moves<
         layout: &alphagram::KeyLayout,
         params: &GenPlaceMovesParams<
             '_,
-            impl FnMut(i8, &[u8], i32, i32),
+            impl FnMut(i8, &[u8], i32, i32) -> i32,
             impl kwg::Node,
             impl kwg::Node,
         >,
@@ -2833,7 +2838,6 @@ fn gen_classic_place_moves<
         base_main: 0,
         base_perp: 0,
         word_multiplier: 1,
-        score_bound: None,
         bound: 0,
     };
     let mut e = Extent {
@@ -2869,21 +2873,14 @@ fn gen_classic_place_moves<
     env.base_main = e.base_main;
     env.base_perp = e.base_perp;
     env.word_multiplier = e.word_multiplier;
-    env.score_bound = if env.params.threshold == i32::MIN {
-        None
-    } else {
-        Some(env.params.score_bound)
-    };
     let len = (rightmost - leftmost) as u8;
     let from = env.params.subracks_by_played[e.num_played as usize] as usize;
     let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
     for si in from..upto {
         let subrack = env.params.subracks[si];
-        if let Some(score_bound) = env.score_bound {
-            env.bound = score_bound.saturating_add(subrack.leave_value);
-            if env.bound < env.params.threshold {
-                break;
-            }
+        env.bound = env.params.score_bound.saturating_add(subrack.leave_value);
+        if env.bound < env.params.threshold {
+            break;
         }
         let key = e.playthrough_key + subrack.key;
         if subrack.blanks == 0 {
@@ -2920,14 +2917,14 @@ fn gen_classic_place_moves<
 #[inline]
 fn gen_jumbled_place_moves<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, i32),
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
@@ -2949,7 +2946,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn tally_moved<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn tally_moved<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         letter: u8,
     ) {
@@ -2960,7 +2957,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn tally_add<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn tally_add<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         letter: u8,
     ) {
@@ -2970,7 +2967,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn tally_sub<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn tally_sub<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         letter: u8,
     ) {
@@ -2982,7 +2979,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn rack_take<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn rack_take<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         tile: u8,
     ) {
@@ -2993,7 +2990,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn rack_put<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn rack_put<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         tile: u8,
     ) {
@@ -3002,7 +2999,11 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline]
-    fn alpha_accepts<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn alpha_accepts<
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, CallbackType, N, L>,
     ) -> bool {
         if env.alpha_dead {
@@ -3046,7 +3047,11 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn record_if_valid<
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
         idx_left: i8,
@@ -3097,7 +3102,7 @@ fn gen_jumbled_place_moves<
         }
     }
 
-    fn play_right<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn play_right<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut idx: i8,
@@ -3203,7 +3208,7 @@ fn gen_jumbled_place_moves<
         }
     }
 
-    fn play_left<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn play_left<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut idx: i8,
@@ -3355,7 +3360,7 @@ fn gen_jumbled_place_moves<
 #[inline(always)]
 fn gen_place_moves_lean<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, i32),
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -3369,7 +3374,12 @@ fn gen_place_moves_lean<
 }
 
 #[inline(always)]
-fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+fn gen_place_moves<
+    'a,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
@@ -3384,7 +3394,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L
 
 struct GenPlaceMovesAtParams<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 > {
@@ -3400,7 +3410,7 @@ struct GenPlaceMovesAtParams<
 #[inline(always)]
 fn gen_place_moves_at_lean<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -3517,7 +3527,7 @@ fn gen_place_moves_at_lean<
 #[inline(always)]
 fn gen_place_moves_at<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -4010,6 +4020,7 @@ impl KurniaMoveGenerator {
                         score,
                     },
                 });
+                i32::MIN
             };
         if !LEAN && working_buffer.turn_is_supported(true, board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
@@ -4212,6 +4223,7 @@ impl KurniaMoveGenerator {
                         },
                     );
                 }
+                threshold.get().raw()
             };
         if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
@@ -4435,6 +4447,7 @@ impl KurniaMoveGenerator {
                         },
                     );
                 }
+                threshold.get().raw()
             };
         if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
@@ -4581,7 +4594,7 @@ fn kurnia_gen_exchange_moves<
 
 struct KurniaIterParams<
     'a,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
@@ -4599,7 +4612,7 @@ struct KurniaIterParams<
 #[inline]
 fn kurnia_gen_place_moves_iter_lean<
     'a,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
@@ -4859,7 +4872,7 @@ fn kurnia_gen_place_moves_iter_lean<
 #[inline]
 fn kurnia_gen_place_moves_iter<
     'a,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
