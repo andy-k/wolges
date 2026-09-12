@@ -2855,7 +2855,6 @@ fn gen_classic_place_moves<
     let alphabet = params.board_snapshot.game_config.alphabet();
     let layout = source.layout();
     let letters = (u64::MAX >> (64 - alphabet.len() as u32)) & !1;
-    let anchor = params.anchor;
     let leftmost = params.leftmost;
     let rightmost = params.rightmost;
     let num_max_played = params.num_max_played;
@@ -2864,8 +2863,8 @@ fn gen_classic_place_moves<
         source,
         layout,
         alphabet,
-        left: 0,
-        right: 0,
+        left: leftmost,
+        right: rightmost,
         num_played: 0,
         base_main: 0,
         base_perp: 0,
@@ -2873,7 +2872,7 @@ fn gen_classic_place_moves<
         score_bound: None,
         bound: 0,
     };
-    let mut left_extent = Extent {
+    let mut e = Extent {
         playthrough_key: 0,
         base_main: 0,
         base_perp: 0,
@@ -2883,107 +2882,85 @@ fn gen_classic_place_moves<
         dead_squares: 0,
         blank_ok: 0,
     };
-    for left in (leftmost..=anchor).rev() {
-        add_square(
-            &mut left_extent,
-            left as usize,
-            letters,
-            env.layout,
-            env.params,
-        );
-        if left > 0 && env.params.board_strip[left as usize - 1] != 0 {
-            continue;
+    for idx in leftmost..rightmost {
+        add_square(&mut e, idx as usize, letters, env.layout, env.params);
+    }
+    debug_assert!(leftmost == 0 || env.params.board_strip[leftmost as usize - 1] == 0);
+    debug_assert!(
+        rightmost as usize == env.params.board_strip.len()
+            || env.params.board_strip[rightmost as usize] == 0
+    );
+    debug_assert_eq!(e.num_played, env.params.span_num_played);
+    if e.dead_squares != 0
+        || e.num_played > num_max_played
+        || e.num_played == 0
+        || rightmost - leftmost < 2
+    {
+        return;
+    }
+    if e.num_played == 1 && !single_tile_plays && e.free_squares == 0 {
+        return;
+    }
+    env.num_played = e.num_played;
+    env.base_main = e.base_main;
+    env.base_perp = e.base_perp;
+    env.word_multiplier = e.word_multiplier;
+    env.score_bound = if env.params.threshold == i32::MIN {
+        None
+    } else {
+        match env.params.scores.get(e.num_played as usize) {
+            Some(&score) if score != i32::MIN => Some(
+                score.saturating_add(
+                    env.params
+                        .board_snapshot
+                        .game_config
+                        .num_played_bonus(e.num_played) as i32
+                        * equity::SCALE,
+                ),
+            ),
+            _ => None,
         }
-        if env.params.span_num_played != 0 && left != leftmost {
-            continue;
-        }
-        let mut e = left_extent;
-        for right in anchor + 1..=rightmost {
-            if right > anchor + 1 {
-                add_square(&mut e, right as usize - 1, letters, env.layout, env.params);
-            }
-            if e.dead_squares != 0 || e.num_played > num_max_played {
+    };
+    let len = (rightmost - leftmost) as u8;
+    let from = env.params.subracks_by_played[e.num_played as usize] as usize;
+    let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
+    for si in from..upto {
+        let subrack = env.params.subracks[si];
+        if let Some(score_bound) = env.score_bound {
+            env.bound = score_bound.saturating_add(subrack.leave_value);
+            if env.bound < env.params.threshold {
                 break;
             }
-            debug_assert!(right == rightmost || env.params.board_strip[right as usize] == 0);
-            if e.num_played == 0 || right - left < 2 {
-                continue;
-            }
-            if e.num_played == 1 && !single_tile_plays && e.free_squares == 0 {
-                continue;
-            }
-            if env.params.span_num_played != 0 && right != rightmost {
-                continue;
-            }
-            env.left = left;
-            env.right = right;
-            env.num_played = e.num_played;
-            env.base_main = e.base_main;
-            env.base_perp = e.base_perp;
-            env.word_multiplier = e.word_multiplier;
-            env.score_bound = if env.params.threshold == i32::MIN {
-                None
-            } else {
-                match env.params.scores.get(e.num_played as usize) {
-                    Some(&score) if score != i32::MIN => Some(
-                        score.saturating_add(
-                            env.params
-                                .board_snapshot
-                                .game_config
-                                .num_played_bonus(e.num_played) as i32
-                                * equity::SCALE,
-                        ),
-                    ),
-                    _ => None,
-                }
-            };
-            let from = env.params.subracks_by_played[e.num_played as usize] as usize;
-            let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
-            for si in from..upto {
-                let subrack = env.params.subracks[si];
-                if let Some(score_bound) = env.score_bound {
-                    env.bound = score_bound.saturating_add(subrack.leave_value);
-                    if env.bound < env.params.threshold {
-                        break;
-                    }
-                }
-                let key = e.playthrough_key + subrack.key;
-                if subrack.blanks == 0 {
-                    check_words(&mut env, alphagram::Fitted(key), subrack.leave_idx);
+        }
+        let key = e.playthrough_key + subrack.key;
+        if subrack.blanks == 0 {
+            check_words(&mut env, alphagram::Fitted(key), subrack.leave_idx);
+            continue;
+        }
+        let source = env.source;
+        if subrack.blanks >= 2 {
+            let mut first = e.blank_ok & !1;
+            while first != 0 {
+                let l1 = first.trailing_zeros() as u8;
+                first &= first - 1;
+                let key1 = key + env.layout.place_value(l1);
+                if !env.layout.holds(key1) {
                     continue;
                 }
-                let source = env.source;
-                let len = (right - left) as u8;
-                if subrack.blanks >= 2 {
-                    let mut first = e.blank_ok & !1;
-                    while first != 0 {
-                        let l1 = first.trailing_zeros() as u8;
-                        first &= first - 1;
-                        let key1 = key + env.layout.place_value(l1);
-                        if !env.layout.holds(key1) {
-                            continue;
-                        }
-                        source.blank_groups(
-                            alphagram::Fitted(key1),
-                            len,
-                            e.blank_ok,
-                            |tile, at| {
-                                if tile < l1 {
-                                    return;
-                                }
-                                let found = source.words_at(at);
-                                fit_words_apart(&mut env, found, subrack.leave_idx, tile, l1);
-                            },
-                        );
+                source.blank_groups(alphagram::Fitted(key1), len, e.blank_ok, |tile, at| {
+                    if tile < l1 {
+                        return;
                     }
-                    continue;
-                }
-                source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |tile, at| {
                     let found = source.words_at(at);
-                    fit_words_apart(&mut env, found, subrack.leave_idx, tile, 0);
+                    fit_words_apart(&mut env, found, subrack.leave_idx, tile, l1);
                 });
             }
+            continue;
         }
+        source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |tile, at| {
+            let found = source.words_at(at);
+            fit_words_apart(&mut env, found, subrack.leave_idx, tile, 0);
+        });
     }
 }
 
