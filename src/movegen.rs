@@ -125,6 +125,7 @@ struct LaneScaffold {
     square_ranks: Vec<u8>,
     multi_jumps: Vec<MultiJump>,
     square_keys: Vec<u64>,
+    ranked: Vec<bool>, // per aggregated word multiplier, whether its order is filled
 }
 
 impl LaneScaffold {
@@ -142,7 +143,67 @@ impl LaneScaffold {
             square_ranks: Vec::new(),
             multi_jumps: Vec::new(),
             square_keys: Vec::new(),
+            ranked: Vec::new(),
         }
+    }
+
+    #[inline(always)]
+    fn ranking(
+        &mut self,
+        word_multiplier: i32,
+        board_strip: &[u8],
+        remaining_tile_multipliers_strip: &[i8],
+        perpendicular_word_multipliers_strip: &[i8],
+    ) -> usize {
+        let at = self
+            .aggregated_word_multipliers
+            .binary_search(&word_multiplier)
+            .unwrap();
+        if !self.ranked[at] {
+            self.rank(
+                at,
+                board_strip,
+                remaining_tile_multipliers_strip,
+                perpendicular_word_multipliers_strip,
+            );
+        }
+        at * board_strip.len()
+    }
+
+    #[inline(always)]
+    fn rank(
+        &mut self,
+        at: usize,
+        board_strip: &[u8],
+        remaining_tile_multipliers_strip: &[i8],
+        perpendicular_word_multipliers_strip: &[i8],
+    ) {
+        let strider_len = board_strip.len();
+        let k = self.aggregated_word_multipliers[at];
+        let low_end = at * strider_len;
+        let high_end = low_end + strider_len;
+        let precomputed_square_multiplier_slice =
+            &mut self.precomputed_square_multiplier[low_end..high_end];
+        let indexes_to_descending_square_multiplier_slice =
+            &mut self.indexes_to_descending_square_multiplier[low_end..high_end];
+        // a square's key: its multiplier flipped to sort descending, then its
+        // index.
+        self.square_keys.clear();
+        for j in (0..strider_len).filter(|&j| board_strip[j] == 0) {
+            let multiplier = remaining_tile_multipliers_strip[j] as i32
+                * (k + perpendicular_word_multipliers_strip[j] as i32);
+            precomputed_square_multiplier_slice[j] = multiplier;
+            self.square_keys
+                .push((!(multiplier as u32) as u64) << u8::BITS | j as u64);
+        }
+        self.square_keys.sort_unstable();
+        let square_ranks_slice = &mut self.square_ranks[low_end..high_end];
+        for (rank, &key) in self.square_keys.iter().enumerate() {
+            let j = key as u8;
+            indexes_to_descending_square_multiplier_slice[rank] = j as i8;
+            square_ranks_slice[j as usize] = rank as u8;
+        }
+        self.ranked[at] = true;
     }
 
     #[inline]
@@ -192,34 +253,9 @@ impl LaneScaffold {
         self.indexes_to_descending_square_multiplier
             .resize(vec_size, 0);
         self.square_ranks.resize(vec_size, 0);
-        for (k, low_end) in self
-            .aggregated_word_multipliers
-            .iter()
-            .zip((0..).step_by(strider_len))
-        {
-            let high_end = low_end + strider_len;
-            let precomputed_square_multiplier_slice =
-                &mut self.precomputed_square_multiplier[low_end..high_end];
-            let indexes_to_descending_square_multiplier_slice =
-                &mut self.indexes_to_descending_square_multiplier[low_end..high_end];
-            // a square's key: its multiplier flipped to sort descending, then
-            // its index.
-            self.square_keys.clear();
-            for j in (0..strider_len).filter(|&j| board_strip[j] == 0) {
-                let multiplier = remaining_tile_multipliers_strip[j] as i32
-                    * (k + perpendicular_word_multipliers_strip[j] as i32);
-                precomputed_square_multiplier_slice[j] = multiplier;
-                self.square_keys
-                    .push((!(multiplier as u32) as u64) << u8::BITS | j as u64);
-            }
-            self.square_keys.sort_unstable();
-            let square_ranks_slice = &mut self.square_ranks[low_end..high_end];
-            for (rank, &key) in self.square_keys.iter().enumerate() {
-                let j = key as u8;
-                indexes_to_descending_square_multiplier_slice[rank] = j as i8;
-                square_ranks_slice[j as usize] = rank as u8;
-            }
-        }
+        self.ranked.clear();
+        self.ranked
+            .resize(self.aggregated_word_multipliers.len(), false);
 
         self.multi_jumps.resize(
             strider_len,
@@ -1715,13 +1751,12 @@ fn gen_place_placements_impl<
             let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
             if word_multiplier != 1 {
                 acc.word_multiplier *= word_multiplier;
-                low_end = env
-                    .params
-                    .lane_scaffold
-                    .aggregated_word_multipliers
-                    .binary_search(&acc.word_multiplier)
-                    .unwrap()
-                    * env.strider_len;
+                low_end = env.params.lane_scaffold.ranking(
+                    acc.word_multiplier,
+                    env.params.board_strip,
+                    env.params.remaining_tile_multipliers_strip,
+                    env.params.perpendicular_word_multipliers_strip,
+                );
                 ranked = ranked_from(env, deferred, low_end);
             }
             idx += 1;
@@ -1739,13 +1774,12 @@ fn gen_place_placements_impl<
     ) {
         let mut deferred = 0u128;
         let mut ranked = 0u128;
-        let mut low_end = env
-            .params
-            .lane_scaffold
-            .aggregated_word_multipliers
-            .binary_search(&acc.word_multiplier)
-            .unwrap()
-            * env.strider_len;
+        let mut low_end = env.params.lane_scaffold.ranking(
+            acc.word_multiplier,
+            env.params.board_strip,
+            env.params.remaining_tile_multipliers_strip,
+            env.params.perpendicular_word_multipliers_strip,
+        );
         let mut num_played = 0;
         let mut stale_rack = true;
         env.params.used_tile_scores_shadowl.clear();
@@ -1872,13 +1906,12 @@ fn gen_place_placements_impl<
             let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
             if word_multiplier != 1 {
                 acc.word_multiplier *= word_multiplier;
-                low_end = env
-                    .params
-                    .lane_scaffold
-                    .aggregated_word_multipliers
-                    .binary_search(&acc.word_multiplier)
-                    .unwrap()
-                    * env.strider_len;
+                low_end = env.params.lane_scaffold.ranking(
+                    acc.word_multiplier,
+                    env.params.board_strip,
+                    env.params.remaining_tile_multipliers_strip,
+                    env.params.perpendicular_word_multipliers_strip,
+                );
                 ranked = ranked_from(env, deferred, low_end);
             }
             idx -= 1;
@@ -5845,8 +5878,8 @@ mod tests {
         out
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn the_generator_still_generates_what_it_generated() {
         assert_eq!(
             sweep_output(),
@@ -5855,9 +5888,9 @@ mod tests {
         );
     }
 
+    #[inline]
     #[test]
     #[ignore]
-    #[inline]
     fn write_sweep_baseline() {
         std::fs::write("src/movegen-sweep-baseline.txt", sweep_output()).unwrap();
     }
@@ -5916,8 +5949,8 @@ mod tests {
         "NNNNTTT", "ERASECS", "?EINRST", "?AT", "C?T", "?ANTES", "?", "?A", "??TANS", "?ANTS??",
     ];
 
-    #[test]
     #[inline]
+    #[test]
     fn the_tables_find_exactly_what_the_descent_finds() {
         let gc = game_config::make_english_game_config();
         let empty = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
@@ -5928,8 +5961,8 @@ mod tests {
         both_arms_agree(&gc, &[empty, one, two, three, dead], SWEEP_RACKS);
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn a_wide_board_is_read_the_same_on_every_extent() {
         let gc = game_config::make_super_english_game_config();
         let dim = gc.board_layout().dim();
@@ -5955,8 +5988,8 @@ mod tests {
         "?A",
     ];
 
-    #[test]
     #[inline]
+    #[test]
     fn a_longer_rack_is_read_the_same_way() {
         let gc = game_config::make_hong_kong_english_game_config();
         assert!(
@@ -6092,8 +6125,8 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn a_capped_generation_keeps_the_best_of_a_tie() {
         let empty = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
         let all = valued_plays(empty, "AEST", usize::MAX);
@@ -6156,8 +6189,8 @@ mod tests {
         out
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn reordered_kwg_generates_the_same_plays() {
         static WORDS: &[&str] = &[
             "AE", "AH", "AI", "AL", "AN", "AR", "AS", "AT", "EAR", "EAT", "ERA", "ETA", "HAE",
@@ -6243,8 +6276,8 @@ mod tests {
         );
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn cross_set_score_cache_distinguishes_blank_from_natural_tile() {
         let gc = game_config::make_english_game_config();
         let alphabet = gc.alphabet();
@@ -6334,8 +6367,8 @@ mod tests {
             .to_uppercase()
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn movegen_opens_through_the_star_with_dictionary_words_only() {
         let plays = placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "AEST");
         for p in &plays {
@@ -6354,8 +6387,8 @@ mod tests {
         assert_eq!(plays.len(), 50);
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn movegen_hooks_onto_a_word_on_the_board() {
         assert_eq!(
             placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "S"),
@@ -6363,8 +6396,8 @@ mod tests {
         );
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn movegen_scores_a_blank_as_zero() {
         let plays = placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "?");
         assert_eq!(
@@ -6411,8 +6444,8 @@ mod tests {
         ]
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn valued_move_order_is_total() {
         let plays = sample_plays();
         let moves: Vec<ValuedMove> = plays
@@ -6452,8 +6485,8 @@ mod tests {
         }
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn heap_drains_ties_the_same_whatever_order_they_arrive() {
         let plays = sample_plays();
         let build = |order: &[usize]| -> Vec<Play> {
@@ -6497,8 +6530,8 @@ mod tests {
         );
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn live_pool_subtracts_board_and_rack_and_returns_blanks() {
         let gc = game_config::make_english_game_config();
         let alphabet = gc.alphabet();
@@ -6573,8 +6606,8 @@ mod tests {
         jumbled_placements_once(fen, rack, false)
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn jumbled_movegen_opens_with_either_arrangement() {
         assert_eq!(
             jumbled_placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "AT"),
@@ -6582,8 +6615,8 @@ mod tests {
         );
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn jumbled_movegen_opens_with_a_blank() {
         assert_eq!(
             jumbled_placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "?A"),
@@ -6594,8 +6627,8 @@ mod tests {
         );
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn jumbled_movegen_takes_any_arrangement_of_a_word() {
         assert_eq!(
             jumbled_placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "S"),
@@ -6603,8 +6636,8 @@ mod tests {
         );
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn jumbled_movegen_scores_a_blank_as_zero() {
         assert_eq!(
             jumbled_placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "?"),
@@ -6623,8 +6656,8 @@ mod tests {
         );
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn jumbled_movegen_handles_the_widest_alphabet() {
         let words: &[&[u8]] = &[&[1, 63], &[1, 2, 63]];
         assert_eq!(
@@ -6636,8 +6669,8 @@ mod tests {
         assert!(plays.iter().all(|p| p.contains("3f")), "{plays:?}");
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn jumbled_movegen_spell_once_keeps_the_real_tile() {
         let fen = "15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15";
         let every_way = jumbled_placements_once(fen, "?S", false);
@@ -6660,8 +6693,8 @@ mod tests {
         assert!(once.iter().any(|p| p.contains('t')));
     }
 
-    #[test]
     #[inline]
+    #[test]
     fn a_generation_after_remaining_words_matches_a_fresh_one() {
         let gc = game_config::make_english_game_config();
         let kwg = test_kwg(&gc);
