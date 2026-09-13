@@ -1372,6 +1372,35 @@ fn rack_subset_lengths(
 }
 
 #[inline]
+fn feasible_lengths_of_subracks(
+    anagrams: Option<&anagrams::Anagrams>,
+    rack_lengths: Option<&anagrams::RackLengths>,
+    rack_tally: &[u8],
+    subracks: &[Subrack],
+    by_played: &[u32],
+) -> u64 {
+    let Some(anagrams) = anagrams else {
+        return feasible_word_lengths::<true>(anagrams, rack_lengths, rack_tally);
+    };
+    if rack_tally[0] > 0 {
+        return !0;
+    }
+    let mut found = 3u64;
+    for len in 2..by_played.len() - 1 {
+        let from = by_played[len] as usize;
+        let upto = by_played[len + 1] as usize;
+        if subracks[from..upto].iter().any(|subrack| {
+            anagrams
+                .words(alphagram::Fitted(subrack.key), len as u8)
+                .is_some()
+        }) {
+            found |= 1 << len;
+        }
+    }
+    found
+}
+
+#[inline]
 fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8)>(
     params: &'a mut GenPlacePlacementsParams<'a>,
     single_tile_plays: bool,
@@ -5118,10 +5147,12 @@ fn kurnia_gen_place_moves_iter<
     }
     working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
 
-    let feasible_lengths = feasible_word_lengths::<true>(
+    let feasible_lengths = feasible_lengths_of_subracks(
         board_snapshot.anagrams,
         board_snapshot.rack_lengths,
         &working_buffer.rack_tally,
+        &working_buffer.subracks,
+        &working_buffer.subracks_by_played,
     );
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
