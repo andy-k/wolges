@@ -691,43 +691,41 @@ impl WorkingBuffer {
         let area = (dim.rows as isize * dim.cols as isize) as usize;
         let was_empty = self.num_tiles_on_board == 0;
 
-        if self.prev_board_tiles[..area] != board_snapshot.board_tiles[..area] {
-            let premiums = board_layout.premiums();
-            let transposed_premiums = board_layout.transposed_premiums();
-
-            for (idx, &b) in board_snapshot.board_tiles.iter().enumerate().take(area) {
-                if b == 0 {
-                    let premium = &premiums[idx];
-                    self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
-                    self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
-                    self.face_value_scores_for_across_plays[idx] = 0;
-                } else {
-                    self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
-
-                    self.face_value_scores_for_across_plays[idx] = alphabet.scaled_score(b);
-                }
+        let premiums = board_layout.premiums();
+        let transposed_premiums = board_layout.transposed_premiums();
+        let mut board_changed = false;
+        for (idx, (&b, &prev)) in board_snapshot.board_tiles[..area]
+            .iter()
+            .zip(self.prev_board_tiles[..area].iter())
+            .enumerate()
+        {
+            if b == prev {
+                continue;
             }
-            for col in 0..dim.cols {
-                for row in 0..dim.rows {
-                    self.transposed_board_tiles
-                        [(col as isize * dim.rows as isize + row as isize) as usize] =
-                        board_snapshot.board_tiles
-                            [(row as isize * dim.cols as isize + col as isize) as usize];
-                }
+            board_changed = true;
+            let row = idx / dim.cols as usize;
+            let col = idx % dim.cols as usize;
+            let transposed_idx = col * dim.rows as usize + row;
+            self.transposed_board_tiles[transposed_idx] = b;
+            if b == 0 {
+                let premium = &premiums[idx];
+                self.remaining_word_multipliers_for_across_plays[idx] = premium.word_multiplier;
+                self.remaining_tile_multipliers_for_across_plays[idx] = premium.tile_multiplier;
+                self.face_value_scores_for_across_plays[idx] = 0;
+                let premium = &transposed_premiums[transposed_idx];
+                self.remaining_word_multipliers_for_down_plays[transposed_idx] =
+                    premium.word_multiplier;
+                self.remaining_tile_multipliers_for_down_plays[transposed_idx] =
+                    premium.tile_multiplier;
+                self.face_value_scores_for_down_plays[transposed_idx] = 0;
+            } else {
+                self.remaining_word_multipliers_for_across_plays[idx] = 1; // needed for the HashMap
+                self.face_value_scores_for_across_plays[idx] = alphabet.scaled_score(b);
+                self.remaining_word_multipliers_for_down_plays[transposed_idx] = 1; // needed for the HashMap
+                self.face_value_scores_for_down_plays[transposed_idx] = alphabet.scaled_score(b);
             }
-
-            for (idx, &b) in self.transposed_board_tiles.iter().enumerate().take(area) {
-                if b == 0 {
-                    let premium = &transposed_premiums[idx];
-                    self.remaining_word_multipliers_for_down_plays[idx] = premium.word_multiplier;
-                    self.remaining_tile_multipliers_for_down_plays[idx] = premium.tile_multiplier;
-                    self.face_value_scores_for_down_plays[idx] = 0;
-                } else {
-                    self.remaining_word_multipliers_for_down_plays[idx] = 1; // needed for the HashMap
-
-                    self.face_value_scores_for_down_plays[idx] = alphabet.scaled_score(b);
-                }
-            }
+        }
+        if board_changed {
             self.num_tiles_on_board = board_snapshot
                 .board_tiles
                 .iter()
