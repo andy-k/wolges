@@ -124,6 +124,7 @@ struct LaneScaffold {
     indexes_to_descending_square_multiplier: Vec<i8>,
     square_ranks: Vec<u8>,
     multi_jumps: Vec<MultiJump>,
+    square_keys: Vec<u64>,
 }
 
 impl LaneScaffold {
@@ -140,6 +141,7 @@ impl LaneScaffold {
             indexes_to_descending_square_multiplier: Vec::new(),
             square_ranks: Vec::new(),
             multi_jumps: Vec::new(),
+            square_keys: Vec::new(),
         }
     }
 
@@ -200,22 +202,21 @@ impl LaneScaffold {
                 &mut self.precomputed_square_multiplier[low_end..high_end];
             let indexes_to_descending_square_multiplier_slice =
                 &mut self.indexes_to_descending_square_multiplier[low_end..high_end];
-            let mut left = 0;
+            // a square's key: its multiplier flipped to sort descending, then
+            // its index.
+            self.square_keys.clear();
             for j in (0..strider_len).filter(|&j| board_strip[j] == 0) {
-                precomputed_square_multiplier_slice[j] = remaining_tile_multipliers_strip[j] as i32
+                let multiplier = remaining_tile_multipliers_strip[j] as i32
                     * (k + perpendicular_word_multipliers_strip[j] as i32);
-                indexes_to_descending_square_multiplier_slice[left] = j as i8;
-                left += 1;
+                precomputed_square_multiplier_slice[j] = multiplier;
+                self.square_keys
+                    .push((!(multiplier as u32) as u64) << u8::BITS | j as u64);
             }
-            indexes_to_descending_square_multiplier_slice[..left].sort_unstable_by(|&a, &b| {
-                precomputed_square_multiplier_slice[b as usize]
-                    .cmp(&precomputed_square_multiplier_slice[a as usize])
-            });
+            self.square_keys.sort_unstable();
             let square_ranks_slice = &mut self.square_ranks[low_end..high_end];
-            for (rank, &j) in indexes_to_descending_square_multiplier_slice[..left]
-                .iter()
-                .enumerate()
-            {
+            for (rank, &key) in self.square_keys.iter().enumerate() {
+                let j = key as u8;
+                indexes_to_descending_square_multiplier_slice[rank] = j as i8;
                 square_ranks_slice[j as usize] = rank as u8;
             }
         }
