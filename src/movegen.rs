@@ -390,7 +390,9 @@ struct WorkingBuffer {
     found_placements: Vec<PossiblePlacement>,
     placement_order: Vec<(i32, u32)>,
     placement_scratch: Vec<(i32, u32)>,
-    used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
+    anchor_left_bounds: Vec<i32>, // per lean placement, two blocks by left edge
+    bounds_at: usize,             // the popped lean placement's block, or usize::MAX
+    used_letters_tally: Vec<u8>,
     used_tile_scores_shadowl: ShadowScores, // for shadow_play_left, premultiplied by SCALE
     used_tile_scores_shadowr: ShadowScores, // for shadow_play_right, premultiplied by SCALE
     rack_tally_shadowl: [u8; MAX_ALPHABET_LEN], // for shadow_play_left
@@ -458,6 +460,8 @@ impl Clone for WorkingBuffer {
             found_placements: self.found_placements.clone(),
             placement_order: self.placement_order.clone(),
             placement_scratch: self.placement_scratch.clone(),
+            anchor_left_bounds: self.anchor_left_bounds.clone(),
+            bounds_at: self.bounds_at,
             used_letters_tally: self.used_letters_tally.clone(),
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
@@ -532,6 +536,9 @@ impl Clone for WorkingBuffer {
         self.found_placements.clone_from(&source.found_placements);
         self.placement_order.clone_from(&source.placement_order);
         self.placement_scratch.clone_from(&source.placement_scratch);
+        self.anchor_left_bounds
+            .clone_from(&source.anchor_left_bounds);
+        self.bounds_at = source.bounds_at;
         self.used_letters_tally
             .clone_from(&source.used_letters_tally);
         self.used_tile_scores_shadowl
@@ -636,6 +643,8 @@ impl WorkingBuffer {
             found_placements: Vec::new(),
             placement_order: Vec::new(),
             placement_scratch: Vec::new(),
+            anchor_left_bounds: Vec::new(),
+            bounds_at: usize::MAX,
             used_letters_tally: Vec::new(),
             used_tile_scores_shadowl: ShadowScores::new(),
             used_tile_scores_shadowr: ShadowScores::new(),
@@ -1303,6 +1312,8 @@ struct GenPlacePlacementsParams<'a> {
     num_max_played: u8,
     rack_tally_shadowl: &'a mut [u8],
     rack_tally_shadowr: &'a mut [u8],
+    left_bounds: &'a mut Vec<i32>,
+    bounds_stride: usize,
 }
 
 fn feasible_word_lengths<const USE_TABLE: bool>(
@@ -1414,6 +1425,7 @@ fn gen_place_placements_impl<
         leftmost: i8,
         rightmost: i8,
         best_possible_equity: i32,
+        bounds_at: usize,
     }
 
     let mut env = Env {
@@ -1423,6 +1435,7 @@ fn gen_place_placements_impl<
         leftmost: 0,
         rightmost: 0,
         best_possible_equity: i32::MIN,
+        bounds_at: 0,
     };
 
     // during shadow-playing, main_score and perpendicular_cumulative_score
@@ -1530,6 +1543,9 @@ fn gen_place_placements_impl<
             env.params
                 .span_out
                 .push((idx_left, idx_right, num_played, equity));
+        } else {
+            let at = &mut env.params.left_bounds[env.bounds_at + idx_left as usize];
+            *at = (*at).max(equity);
         }
         if equity > env.best_possible_equity {
             env.best_possible_equity = equity;
@@ -1854,6 +1870,12 @@ fn gen_place_placements_impl<
         } else {
             env.best_possible_equity = i32::MIN;
             env.params.span_out.clear();
+            if !PER_SPAN {
+                env.bounds_at = env.params.left_bounds.len();
+                env.params
+                    .left_bounds
+                    .resize(env.bounds_at + 2 * env.params.bounds_stride, i32::MIN);
+            }
             shadow_play_left::<PER_SPAN>(
                 env,
                 Accumulator {
@@ -1875,6 +1897,13 @@ fn gen_place_placements_impl<
                         );
                     }
                 } else {
+                    let stride = env.params.bounds_stride;
+                    let (at, upto) = env.params.left_bounds[env.bounds_at..].split_at_mut(stride);
+                    let mut best = i32::MIN;
+                    for (left, &bound) in at.iter().enumerate() {
+                        best = best.max(bound);
+                        upto[left] = best;
+                    }
                     possible_strip_placement_callback(
                         env.anchor,
                         env.leftmost,
@@ -1883,6 +1912,8 @@ fn gen_place_placements_impl<
                         0,
                     );
                 }
+            } else if !PER_SPAN {
+                env.params.left_bounds.truncate(env.bounds_at);
             }
         }
     }
@@ -2015,6 +2046,7 @@ fn gen_classic_place_moves_lean<
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
+    left_bounds: &'a [i32],
 ) {
     struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
@@ -2023,6 +2055,7 @@ fn gen_classic_place_moves_lean<
         idx_left: i8,
         rack_bits: u64,
         letter_bits: u64,
+        left_bounds: &'a [i32], // by left edge, the best span bound at it, then at or before it
     }
     struct Accumulator {
         main_score: i32,
@@ -2068,6 +2101,11 @@ fn gen_classic_place_moves_lean<
                 env.alphabet,
             )
         };
+        debug_assert!(
+            SPELL_ONCE
+                || env.left_bounds.is_empty()
+                || score + leave_value <= env.left_bounds[idx_left as usize]
+        );
         if !SPELL_ONCE && score + leave_value < env.params.threshold {
             return;
         }
@@ -2314,7 +2352,23 @@ fn gen_classic_place_moves_lean<
             }
         }
 
+        let mut turn = 1u64;
+        let bounds = env.left_bounds;
+        if !SPELL_ONCE && !bounds.is_empty() {
+            if bounds[(idx + 1) as usize] < env.params.threshold {
+                turn = 0;
+            }
+            if idx >= env.params.leftmost
+                && bounds[bounds.len() / 2 + idx as usize] < env.params.threshold
+            {
+                this_cross_bits = 0;
+            }
+        }
+
         if this_cross_bits == 0 {
+            if turn == 0 {
+                return;
+            }
             let mut turnaround_p = p;
             loop {
                 node = env.params.board_snapshot.kwg[turnaround_p];
@@ -2338,13 +2392,16 @@ fn gen_classic_place_moves_lean<
             return;
         }
 
-        let mut candidates = 1
+        let mut candidates = turn
             | (this_cross_bits
                 & if env.params.rack_tally[0] > 0 {
                     env.letter_bits
                 } else {
                     env.rack_bits
                 });
+        if candidates == 0 {
+            return;
+        }
         let new_word_multiplier =
             acc.word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
         let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
@@ -2469,6 +2526,7 @@ fn gen_classic_place_moves_lean<
         idx_left: 0,
         rack_bits,
         letter_bits: (u64::MAX >> (64 - alphabet.len() as u32)) & !1,
+        left_bounds,
     };
     let mut acc = Accumulator {
         main_score: 0,
@@ -3405,9 +3463,12 @@ fn gen_place_moves_lean<
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
+    left_bounds: &'a [i32],
 ) {
     match params.board_snapshot.game_config.game_rules() {
-        game_config::GameRules::Classic => gen_classic_place_moves_lean(params, single_tile_plays),
+        game_config::GameRules::Classic => {
+            gen_classic_place_moves_lean(params, single_tile_plays, left_bounds)
+        }
         game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays),
     }
 }
@@ -3425,7 +3486,7 @@ fn gen_place_moves<
     match params.board_snapshot.game_config.game_rules() {
         game_config::GameRules::Classic => match params.board_snapshot.anagrams {
             Some(held) => gen_classic_place_moves(params, held, single_tile_plays),
-            None => gen_classic_place_moves_lean(params, single_tile_plays),
+            None => gen_classic_place_moves_lean(params, single_tile_plays, &[]),
         },
         game_config::GameRules::Jumbled => gen_jumbled_place_moves(params, single_tile_plays),
     }
@@ -3473,6 +3534,13 @@ fn gen_place_moves_at_lean<
     } else {
         strip_range_start = (placement.lane as isize * dim.cols as isize) as usize;
         strip_range_start + dim.cols as usize
+    };
+    let bounds_at = working_buffer.bounds_at;
+    let left_bounds = if bounds_at == usize::MAX {
+        &[][..]
+    } else {
+        let stride = dim.rows.max(dim.cols) as usize + 1;
+        &working_buffer.anchor_left_bounds[bounds_at..bounds_at + 2 * stride]
     };
     gen_place_moves_lean(
         &mut GenPlaceMovesParams {
@@ -3560,6 +3628,7 @@ fn gen_place_moves_at_lean<
             subracks_by_played: &working_buffer.subracks_by_played,
         },
         !placement.down,
+        left_bounds,
     );
 }
 
@@ -4743,6 +4812,8 @@ fn kurnia_gen_place_moves_iter_lean<
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
     placement_order.clear();
+    let bounds_stride = dim.rows.max(dim.cols) as usize + 1;
+    working_buffer.anchor_left_bounds.clear();
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
@@ -4776,6 +4847,8 @@ fn kurnia_gen_place_moves_iter_lean<
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
                 span_out: &mut working_buffer.span_out,
                 per_span: false,
+                left_bounds: &mut working_buffer.anchor_left_bounds,
+                bounds_stride,
             },
             true,
             want_raw,
@@ -4824,6 +4897,8 @@ fn kurnia_gen_place_moves_iter_lean<
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
                 span_out: &mut working_buffer.span_out,
                 per_span: false,
+                left_bounds: &mut working_buffer.anchor_left_bounds,
+                bounds_stride,
             },
             false,
             want_raw,
@@ -4855,6 +4930,11 @@ fn kurnia_gen_place_moves_iter_lean<
         Some((equity, idx)) => {
             if can_accept(equity) {
                 let placement = working_buffer.found_placements[idx as usize];
+                working_buffer.bounds_at = if want_raw {
+                    usize::MAX
+                } else {
+                    idx as usize * 2 * bounds_stride
+                };
                 gen_place_moves_at_lean(GenPlaceMovesAtParams {
                     board_snapshot,
                     working_buffer,
@@ -5047,6 +5127,8 @@ fn kurnia_gen_place_moves_iter<
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
     placement_order.clear();
+    let bounds_stride = dim.rows.max(dim.cols) as usize + 1;
+    working_buffer.anchor_left_bounds.clear();
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
@@ -5080,6 +5162,8 @@ fn kurnia_gen_place_moves_iter<
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
                 span_out: &mut working_buffer.span_out,
                 per_span: true,
+                left_bounds: &mut working_buffer.anchor_left_bounds,
+                bounds_stride,
             },
             true,
             want_raw,
@@ -5128,6 +5212,8 @@ fn kurnia_gen_place_moves_iter<
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
                 span_out: &mut working_buffer.span_out,
                 per_span: true,
+                left_bounds: &mut working_buffer.anchor_left_bounds,
+                bounds_stride,
             },
             false,
             want_raw,
