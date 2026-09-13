@@ -385,6 +385,8 @@ struct WorkingBuffer {
     span_out: Vec<(i8, i8, u8, i32)>,
     subracks: Vec<Subrack>,
     subracks_by_played: Vec<u32>,
+    subrack_order: Vec<u64>,
+    subracks_spare: Vec<Subrack>,
     found_placements: Vec<PossiblePlacement>,
     placement_order: Vec<(i32, u32)>,
     placement_scratch: Vec<(i32, u32)>,
@@ -451,6 +453,8 @@ impl Clone for WorkingBuffer {
             span_out: self.span_out.clone(),
             subracks: self.subracks.clone(),
             subracks_by_played: self.subracks_by_played.clone(),
+            subrack_order: self.subrack_order.clone(),
+            subracks_spare: self.subracks_spare.clone(),
             found_placements: self.found_placements.clone(),
             placement_order: self.placement_order.clone(),
             placement_scratch: self.placement_scratch.clone(),
@@ -523,6 +527,8 @@ impl Clone for WorkingBuffer {
         self.subracks.clone_from(&source.subracks);
         self.subracks_by_played
             .clone_from(&source.subracks_by_played);
+        self.subrack_order.clone_from(&source.subrack_order);
+        self.subracks_spare.clone_from(&source.subracks_spare);
         self.found_placements.clone_from(&source.found_placements);
         self.placement_order.clone_from(&source.placement_order);
         self.placement_scratch.clone_from(&source.placement_scratch);
@@ -625,6 +631,8 @@ impl WorkingBuffer {
             span_out: Vec::new(),
             subracks: Vec::new(),
             subracks_by_played: Vec::new(),
+            subrack_order: Vec::new(),
+            subracks_spare: Vec::new(),
             found_placements: Vec::new(),
             placement_order: Vec::new(),
             placement_scratch: Vec::new(),
@@ -849,9 +857,10 @@ impl WorkingBuffer {
                 &self.multi_leaves,
                 layout,
                 &self.rack_tally,
-                self.num_tiles_on_rack,
                 &mut self.subracks,
                 &mut self.subracks_by_played,
+                &mut self.subrack_order,
+                &mut self.subracks_spare,
             );
         } else {
             self.subracks.clear();
@@ -2488,9 +2497,10 @@ fn build_subracks(
     multi_leaves: &klv::MultiLeaves,
     layout: &alphagram::KeyLayout,
     rack_tally: &[u8],
-    num_tiles_on_rack: u8,
     subracks: &mut Vec<Subrack>,
     by_played: &mut Vec<u32>,
+    order: &mut Vec<u64>,
+    spare: &mut Vec<Subrack>,
 ) {
     struct Tiles<'a> {
         layout: &'a alphagram::KeyLayout,
@@ -2560,16 +2570,25 @@ fn build_subracks(
         0,
         subracks,
     );
-    for s in subracks.iter_mut() {
+    // one key a subrack: num_played, then leave descending, then position.
+    debug_assert!(subracks.len() <= 1 << 24);
+    order.clear();
+    order.extend(subracks.iter_mut().enumerate().map(|(i, s)| {
         s.leave_value = multi_leaves.leave_value(s.leave_idx);
-    }
-    subracks.sort_unstable_by(|a, b| {
-        a.num_played
-            .cmp(&b.num_played)
-            .then(b.leave_value.cmp(&a.leave_value))
-    });
+        (s.num_played as u64) << 56
+            | (!(s.leave_value as u32 ^ i32::MIN as u32) as u64) << 24
+            | i as u64
+    }));
+    order.sort_unstable();
+    spare.clear();
+    spare.extend(order.iter().map(|&k| subracks[(k & 0xff_ffff) as usize]));
+    std::mem::swap(subracks, spare);
+    let num_tiles_on_rack = rack_tally
+        .iter()
+        .map(|&count| count as usize)
+        .sum::<usize>();
     by_played.clear();
-    by_played.resize(num_tiles_on_rack as usize + 2, subracks.len() as u32);
+    by_played.resize(num_tiles_on_rack + 2, subracks.len() as u32);
     for (i, s) in subracks.iter().enumerate().rev() {
         by_played[s.num_played as usize] = i as u32;
     }
