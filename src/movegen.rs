@@ -359,12 +359,14 @@ struct WorkingBuffer {
     cross_set_buffer_for_across_plays: Box<[CrossSetComputation]>, // c*r (perpendicular strips)
     cross_set_buffer_for_down_plays: Box<[CrossSetComputation]>, // r*c (perpendicular strips)
     prev_board_tiles: Box<[u8]>,                 // r*c (previous board tiles for dirty tracking)
+    dirty_rows: u128,
+    dirty_cols: u128,
     remaining_word_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
-    remaining_word_multipliers_for_down_plays: Box<[i8]>, // c*r
+    remaining_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     remaining_tile_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
-    remaining_tile_multipliers_for_down_plays: Box<[i8]>, // c*r
-    face_value_scores_for_across_plays: Box<[i32]>, // r*c (premultiplied by SCALE)
-    face_value_scores_for_down_plays: Box<[i32]>, // c*r (premultiplied by SCALE)
+    remaining_tile_multipliers_for_down_plays: Box<[i8]>,   // c*r
+    face_value_scores_for_across_plays: Box<[i32]>,         // r*c (premultiplied by SCALE)
+    face_value_scores_for_down_plays: Box<[i32]>,           // c*r (premultiplied by SCALE)
     perpendicular_word_multipliers_for_across_plays: Box<[i8]>, // r*c (0 if no perpendicularly adjacent tile)
     perpendicular_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     perpendicular_scores_for_across_plays: Box<[i32]>, // r*c (multiplied by perpendicular_word_multipliers)
@@ -409,6 +411,8 @@ impl Clone for WorkingBuffer {
             cross_set_buffer_for_across_plays: self.cross_set_buffer_for_across_plays.clone(),
             cross_set_buffer_for_down_plays: self.cross_set_buffer_for_down_plays.clone(),
             prev_board_tiles: self.prev_board_tiles.clone(),
+            dirty_rows: self.dirty_rows,
+            dirty_cols: self.dirty_cols,
             remaining_word_multipliers_for_across_plays: self
                 .remaining_word_multipliers_for_across_plays
                 .clone(),
@@ -480,6 +484,8 @@ impl Clone for WorkingBuffer {
         self.cross_set_buffer_for_down_plays
             .clone_from(&source.cross_set_buffer_for_down_plays);
         self.prev_board_tiles.clone_from(&source.prev_board_tiles);
+        self.dirty_rows = source.dirty_rows;
+        self.dirty_cols = source.dirty_cols;
         self.remaining_word_multipliers_for_across_plays
             .clone_from(&source.remaining_word_multipliers_for_across_plays);
         self.remaining_word_multipliers_for_down_plays
@@ -586,6 +592,8 @@ impl WorkingBuffer {
             ]
             .into_boxed_slice(),
             prev_board_tiles: vec![0xffu8; rows_times_cols].into_boxed_slice(),
+            dirty_rows: 0,
+            dirty_cols: 0,
             remaining_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
             remaining_word_multipliers_for_down_plays: vec![0i8; rows_times_cols]
@@ -693,7 +701,8 @@ impl WorkingBuffer {
 
         let premiums = board_layout.premiums();
         let transposed_premiums = board_layout.transposed_premiums();
-        let mut board_changed = false;
+        let mut dirty_rows = 0u128;
+        let mut dirty_cols = 0u128;
         for (idx, (&b, &prev)) in board_snapshot.board_tiles[..area]
             .iter()
             .zip(self.prev_board_tiles[..area].iter())
@@ -702,9 +711,10 @@ impl WorkingBuffer {
             if b == prev {
                 continue;
             }
-            board_changed = true;
             let row = idx / dim.cols as usize;
             let col = idx % dim.cols as usize;
+            dirty_rows |= 1 << row;
+            dirty_cols |= 1 << col;
             let transposed_idx = col * dim.rows as usize + row;
             self.transposed_board_tiles[transposed_idx] = b;
             if b == 0 {
@@ -725,7 +735,7 @@ impl WorkingBuffer {
                 self.face_value_scores_for_down_plays[transposed_idx] = alphabet.scaled_score(b);
             }
         }
-        if board_changed {
+        if dirty_rows != 0 {
             self.num_tiles_on_board = board_snapshot
                 .board_tiles
                 .iter()
@@ -733,9 +743,11 @@ impl WorkingBuffer {
                 .count() as u16;
         }
         if was_empty || self.num_tiles_on_board == 0 {
-            self.prev_board_tiles
-                [dim.at_row_col(board_layout.star_row(), board_layout.star_col())] = 0xff;
+            dirty_rows |= 1 << board_layout.star_row();
+            dirty_cols |= 1 << board_layout.star_col();
         }
+        self.dirty_rows = dirty_rows;
+        self.dirty_cols = dirty_cols;
         self.num_tiles_in_bag =
             bag_count_from_board(board_snapshot.game_config, self.num_tiles_on_board);
         let play_out_bonus = if self.num_tiles_in_bag <= 0 {
@@ -4644,20 +4656,8 @@ fn kurnia_gen_place_moves_iter_lean<
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
     let area = (dim.rows as isize * dim.cols as isize) as usize;
-    let mut dirty_rows = 0u128;
-    let mut dirty_cols = 0u128;
-    for (idx, (&cur, &prev)) in board_snapshot.board_tiles[..area]
-        .iter()
-        .zip(working_buffer.prev_board_tiles[..area].iter())
-        .enumerate()
-    {
-        if cur != prev {
-            let row = idx / dim.cols as usize;
-            let col = idx % dim.cols as usize;
-            dirty_rows |= 1 << row;
-            dirty_cols |= 1 << col;
-        }
-    }
+    let dirty_rows = working_buffer.dirty_rows;
+    let dirty_cols = working_buffer.dirty_cols;
     for col in 0..dim.cols {
         if dirty_cols & (1 << col) != 0 {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
@@ -4960,20 +4960,8 @@ fn kurnia_gen_place_moves_iter<
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
     let area = (dim.rows as isize * dim.cols as isize) as usize;
-    let mut dirty_rows = 0u128;
-    let mut dirty_cols = 0u128;
-    for (idx, (&cur, &prev)) in board_snapshot.board_tiles[..area]
-        .iter()
-        .zip(working_buffer.prev_board_tiles[..area].iter())
-        .enumerate()
-    {
-        if cur != prev {
-            let row = idx / dim.cols as usize;
-            let col = idx % dim.cols as usize;
-            dirty_rows |= 1 << row;
-            dirty_cols |= 1 << col;
-        }
-    }
+    let dirty_rows = working_buffer.dirty_rows;
+    let dirty_cols = working_buffer.dirty_cols;
     for col in 0..dim.cols {
         if dirty_cols & (1 << col) != 0 {
             let strip_range_start = (col as isize * dim.rows as isize) as usize;
