@@ -2045,7 +2045,10 @@ fn gen_classic_place_moves_lean<
                 env.alphabet,
             )
         };
-        (env.params.callback)(
+        if !SPELL_ONCE && score + leave_value < env.params.threshold {
+            return;
+        }
+        env.params.threshold = (env.params.callback)(
             idx_left,
             &env.params.word_strip_buffer[idx_left as usize..idx_right as usize],
             score,
