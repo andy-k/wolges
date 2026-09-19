@@ -474,7 +474,6 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 });
                 let mut driver = move_picker::Simmer::new(&game_config, &kwg, &klv);
                 driver.set_num_sim_iters(iters);
-                driver.set_verbose(false);
                 driver.reseed(seed);
                 driver.begin_decision(&move_generator, &game_state, iters);
                 let one_shot = driver.leader_summary();
@@ -538,7 +537,6 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 });
                 let mut driver = move_picker::Simmer::new(&game_config, &kwg, &klv);
                 driver.set_num_sim_iters(iters);
-                driver.set_verbose(false);
                 driver.reseed(seed);
                 driver.begin_decision(&move_generator, &game_state, iters);
                 let retired_id = driver.retired_stream_ids().next();
@@ -7636,7 +7634,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     driver.set_config(config_p0);
                     driver.set_win_pct_table(winpct_table_ref);
                     driver.set_num_sim_iters(num_sim_iters);
-                    driver.set_verbose(false);
                     driver.set_allocator(allocator_p0);
                     driver.set_stop_rule(stop_p0);
                     driver.set_sim_threads(sim_driver_threads);
@@ -7653,7 +7650,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     driver.set_config(config_p1);
                     driver.set_win_pct_table(winpct_table_ref);
                     driver.set_num_sim_iters(num_sim_iters);
-                    driver.set_verbose(false);
                     driver.set_allocator(allocator_p1);
                     driver.set_stop_rule(stop_p1);
                     driver.set_sim_threads(sim_driver_threads);

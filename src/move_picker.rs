@@ -135,7 +135,6 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     candidates: Vec<Candidate>,
     simmer: simmer::Simmer,
     num_sim_iters: u64,
-    verbose: bool,
     allocator: Allocator,
     stop_rule: StopRule,
     stop_delta: f64,
@@ -161,7 +160,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             candidates: Vec::new(),
             simmer: simmer::Simmer::new(game_config),
             num_sim_iters: DEFAULT_NUM_SIM_ITERS,
-            verbose: true,
             allocator: Allocator::RoundRobin,
             stop_rule: StopRule::FixedCap,
             stop_delta: DEFAULT_STOP_DELTA,
@@ -178,11 +176,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     #[inline(always)]
     pub fn set_num_sim_iters(&mut self, num_sim_iters: u64) {
         self.num_sim_iters = num_sim_iters;
-    }
-
-    #[inline(always)]
-    pub fn set_verbose(&mut self, verbose: bool) {
-        self.verbose = verbose;
     }
 
     #[inline(always)]
@@ -691,22 +684,6 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 let budget = simmer.num_sim_iters;
                 simmer.begin_decision(move_generator, game_state, budget);
                 let winner_play_index = top_candidate_play_index_by_mean(&simmer.candidates);
-                if simmer.verbose {
-                    const Z: f64 = 1.96; // 95% confidence interval
-                    let leader = simmer
-                        .candidates
-                        .iter()
-                        .find(|candidate| candidate.play_index == winner_play_index)
-                        .unwrap();
-                    println!(
-                        "top candidate mean = {} (sd={} count={} range {}..{})",
-                        leader.stats.mean(),
-                        leader.stats.standard_deviation(),
-                        leader.stats.count(),
-                        leader.stats.ci_max(-Z),
-                        leader.stats.ci_max(Z),
-                    );
-                }
                 move_generator.plays.swap(0, winner_play_index);
                 move_generator.plays.truncate(1);
             }
