@@ -93,6 +93,7 @@ pub struct Simmer {
     num_sim_plies: usize,
     num_tiles_that_matter: usize,
     win_prob_weightage: f64,
+    wants_win_prob: bool,
 
     game_state: game_state::GameState,
     last_seen_leave_values: Box<[i32]>,
@@ -114,6 +115,7 @@ impl Simmer {
             num_sim_plies: 0,
             num_tiles_that_matter: 0,
             win_prob_weightage: 0.0,
+            wants_win_prob: false,
 
             game_state: game_state::GameState::new(game_config),
             last_seen_leave_values: vec![0i32; game_config.num_players() as usize]
@@ -141,7 +143,12 @@ impl Simmer {
     pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
         let mut clone = Simmer::new(game_config);
         clone.config = self.config;
-        clone.prepare(game_config, &self.initial_game_state, self.num_sim_plies);
+        clone.prepare(
+            game_config,
+            &self.initial_game_state,
+            self.num_sim_plies,
+            self.wants_win_prob,
+        );
         clone
     }
 
@@ -156,6 +163,7 @@ impl Simmer {
         game_config: &game_config::GameConfig,
         game_state: &game_state::GameState,
         num_sim_plies: usize,
+        report_win_prob: bool,
     ) {
         self.initial_game_state.clone_from(game_state);
         self.game_state.clone_from(game_state);
@@ -188,6 +196,7 @@ impl Simmer {
         } else {
             w_no_out
         };
+        self.wants_win_prob = self.win_prob_weightage != 0.0 || report_win_prob;
     }
 
     #[inline(always)]
@@ -355,6 +364,11 @@ impl Simmer {
     }
 
     #[inline(always)]
+    pub fn wants_win_prob(&self) -> bool {
+        self.wants_win_prob
+    }
+
+    #[inline(always)]
     pub fn win_prob_weightage(&self) -> f64 {
         self.win_prob_weightage
     }
@@ -375,7 +389,7 @@ mod tests {
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut simmer = Simmer::new(&game_config);
         simmer.reseed(99);
-        simmer.prepare(&game_config, &game_state, 0);
+        simmer.prepare(&game_config, &game_state, 0, false);
         simmer.prepare_iteration();
 
         let exchanged =
@@ -445,7 +459,7 @@ mod tests {
 
         let opponent_draw = |seed: u64| -> Vec<u8> {
             let mut simmer = Simmer::new(&game_config);
-            simmer.prepare(&game_config, &game_state, 2);
+            simmer.prepare(&game_config, &game_state, 2, false);
             simmer.reseed(seed);
             simmer.prepare_iteration();
 
@@ -463,7 +477,7 @@ mod tests {
         let mut deal_rng = rand::rngs::ChaCha20Rng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         let mut simmer = Simmer::new(&game_config);
-        simmer.prepare(&game_config, &game_state, 2);
+        simmer.prepare(&game_config, &game_state, 2, false);
         let bag = simmer.game_state.bag.len();
         let turn = simmer.initial_game_state.turn as usize;
         let my = simmer.game_state.players[turn].rack.len();
