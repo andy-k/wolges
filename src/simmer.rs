@@ -24,8 +24,6 @@ pub struct SimmerConfig {
     pub descale: bool,
     pub w_no_out: f64,
     pub w_out: f64,
-    pub sigmoid_spread: f64,
-    pub sigmoid_prob: f64,
     pub win_prob_source: WinProbSource,
 }
 
@@ -35,19 +33,16 @@ impl Default for SimmerConfig {
             descale: true,
             w_no_out: 10.0,
             w_out: 10000.0,
-            sigmoid_spread: 30.0,
-            sigmoid_prob: 0.9,
             win_prob_source: WinProbSource::Sigmoid,
         }
     }
 }
 
-// a lead of +/- (sigmoid_spread + unseen tiles) points reads as sigmoid_prob
-// against 1 - sigmoid_prob. final_spread arrives in millipoints.
 #[inline(always)]
 pub fn win_prob_unfinished(final_spread: i32, num_unseen_tiles: usize, cfg: &SimmerConfig) -> f64 {
-    let exp_width =
-        -(cfg.sigmoid_spread + num_unseen_tiles as f64) / (1.0 / cfg.sigmoid_prob - 1.0).ln();
+    // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
+    // (to adjust these, adjust the 30.0 and 0.9 consts below)
+    let exp_width = -(30.0 + num_unseen_tiles as f64) / (1.0 / 0.9 - 1.0f64).ln();
     let spread = if cfg.descale {
         spread_points(final_spread)
     } else {
@@ -417,13 +412,10 @@ mod tests {
     #[test]
     fn win_prob_unfinished_hits_sigmoid_prob_at_the_crafted_lead() {
         let cfg = SimmerConfig::default();
-        let lead_points = cfg.sigmoid_spread + 10.0; // 40.0
+        let lead_points = 30.0 + 10.0;
         let lead_millipoints = (lead_points * equity::SCALE as f64) as i32;
-        assert!((win_prob_unfinished(lead_millipoints, 10, &cfg) - cfg.sigmoid_prob).abs() < 1e-9);
-        assert!(
-            (win_prob_unfinished(-lead_millipoints, 10, &cfg) - (1.0 - cfg.sigmoid_prob)).abs()
-                < 1e-9
-        );
+        assert!((win_prob_unfinished(lead_millipoints, 10, &cfg) - 0.9).abs() < 1e-9);
+        assert!((win_prob_unfinished(-lead_millipoints, 10, &cfg) - (1.0 - 0.9)).abs() < 1e-9);
         assert_eq!(win_prob_unfinished(0, 10, &cfg), 0.5);
 
         let raw = SimmerConfig {
