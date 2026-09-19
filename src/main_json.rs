@@ -3,7 +3,7 @@
 use rand::prelude::*;
 use wolges::{
     display, equity, error, game_config, game_state, kibitzer, klv, kwg, move_filter, move_picker,
-    movegen, play_scorer,
+    movegen, play_scorer, simmer,
 };
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -210,8 +210,26 @@ fn main() -> error::Returns<()> {
     );
 
     let mut move_filter = move_filter::GenMoves::Unfiltered;
-    let mut move_picker =
-        move_picker::MovePicker::Simmer(move_picker::Simmer::new(&game_config, &kwg, &klv));
+    let mut move_picker = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+        &game_config,
+        &kwg,
+        &klv,
+        move_picker::SimmerParams {
+            num_sim_iters: move_picker::DEFAULT_NUM_SIM_ITERS,
+            allocator: move_picker::Allocator::RoundRobin,
+            stop_rule: move_picker::StopRule::FixedCap,
+            stop_delta: None,
+            observe: false,
+            sim_threads: 1,
+            win_pct_table: None,
+            config: simmer::SimmerConfig {
+                descale: true,
+                w_no_out: 10.0,
+                w_out: 10000.0,
+                win_prob_source: simmer::WinProbSource::Sigmoid,
+            },
+        },
+    ));
     game_state
         .board_tiles
         .copy_from_slice(&kibitzer.board_tiles);

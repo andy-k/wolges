@@ -475,8 +475,26 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 });
-                let mut driver = move_picker::Simmer::new(&game_config, &kwg, &klv);
-                driver.set_num_sim_iters(iters);
+                let mut driver = move_picker::Simmer::new(
+                    &game_config,
+                    &kwg,
+                    &klv,
+                    move_picker::SimmerParams {
+                        num_sim_iters: iters,
+                        allocator: move_picker::Allocator::RoundRobin,
+                        stop_rule: move_picker::StopRule::FixedCap,
+                        stop_delta: None,
+                        observe: false,
+                        sim_threads: 1,
+                        win_pct_table: None,
+                        config: simmer::SimmerConfig {
+                            descale: true,
+                            w_no_out: 10.0,
+                            w_out: 10000.0,
+                            win_prob_source: simmer::WinProbSource::Sigmoid,
+                        },
+                    },
+                );
                 driver.reseed(seed);
                 driver.begin_decision(&move_generator, &game_state, iters);
                 let one_shot = driver.leader_summary();
@@ -538,8 +556,26 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
                     dynamic_leaves: None,
                 });
-                let mut driver = move_picker::Simmer::new(&game_config, &kwg, &klv);
-                driver.set_num_sim_iters(iters);
+                let mut driver = move_picker::Simmer::new(
+                    &game_config,
+                    &kwg,
+                    &klv,
+                    move_picker::SimmerParams {
+                        num_sim_iters: iters,
+                        allocator: move_picker::Allocator::RoundRobin,
+                        stop_rule: move_picker::StopRule::FixedCap,
+                        stop_delta: None,
+                        observe: false,
+                        sim_threads: 1,
+                        win_pct_table: None,
+                        config: simmer::SimmerConfig {
+                            descale: true,
+                            w_no_out: 10.0,
+                            w_out: 10000.0,
+                            win_prob_source: simmer::WinProbSource::Sigmoid,
+                        },
+                    },
+                );
                 driver.reseed(seed);
                 driver.begin_decision(&move_generator, &game_state, iters);
                 let retired_id = driver.retired_stream_ids().next();
@@ -7577,7 +7613,12 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 }
 
 fn sim_compare_seat_config(prefix: &str) -> simmer::SimmerConfig {
-    let mut config = simmer::SimmerConfig::default();
+    let mut config = simmer::SimmerConfig {
+        descale: true,
+        w_no_out: 10.0,
+        w_out: 10000.0,
+        win_prob_source: simmer::WinProbSource::Sigmoid,
+    };
     if let Some(descale) = std::env::var(format!("{prefix}DESCALE"))
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -7703,34 +7744,32 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     &game_config,
                     &kwg,
                     &arc_klv,
+                    move_picker::SimmerParams {
+                        num_sim_iters,
+                        allocator: allocator_p0,
+                        stop_rule: stop_p0,
+                        stop_delta: stop_delta_p0,
+                        observe: false,
+                        sim_threads: sim_driver_threads,
+                        win_pct_table: winpct_table_ref,
+                        config: config_p0,
+                    },
                 ));
-                if let move_picker::MovePicker::Simmer(driver) = &mut driver_p0 {
-                    driver.set_config(config_p0);
-                    driver.set_win_pct_table(winpct_table_ref);
-                    driver.set_num_sim_iters(num_sim_iters);
-                    driver.set_allocator(allocator_p0);
-                    driver.set_stop_rule(stop_p0);
-                    driver.set_sim_threads(sim_driver_threads);
-                    if let Some(delta) = stop_delta_p0 {
-                        driver.set_stop_delta(delta);
-                    }
-                }
                 let mut driver_p1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
                     &game_config,
                     &kwg,
                     &arc_klv,
+                    move_picker::SimmerParams {
+                        num_sim_iters,
+                        allocator: allocator_p1,
+                        stop_rule: stop_p1,
+                        stop_delta: stop_delta_p1,
+                        observe: false,
+                        sim_threads: sim_driver_threads,
+                        win_pct_table: winpct_table_ref,
+                        config: config_p1,
+                    },
                 ));
-                if let move_picker::MovePicker::Simmer(driver) = &mut driver_p1 {
-                    driver.set_config(config_p1);
-                    driver.set_win_pct_table(winpct_table_ref);
-                    driver.set_num_sim_iters(num_sim_iters);
-                    driver.set_allocator(allocator_p1);
-                    driver.set_stop_rule(stop_p1);
-                    driver.set_sim_threads(sim_driver_threads);
-                    if let Some(delta) = stop_delta_p1 {
-                        driver.set_stop_delta(delta);
-                    }
-                }
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut saved_game_state = game_state.clone();
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];

@@ -6,7 +6,7 @@ use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex};
 use wolges::{
     alphabet, bag, bites, build, display, equity, error, fash, game_config, game_state,
-    game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
+    game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, simmer, stats,
 };
 
 type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
@@ -95,8 +95,26 @@ fn do_it<N: kwg::Node + Sync>(
     }
 
     let mut move_picker_0 = move_picker::MovePicker::Hasty;
-    let mut move_picker_1 =
-        move_picker::MovePicker::Simmer(move_picker::Simmer::new(game_config, kwg, klv));
+    let mut move_picker_1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+        game_config,
+        kwg,
+        klv,
+        move_picker::SimmerParams {
+            num_sim_iters: move_picker::DEFAULT_NUM_SIM_ITERS,
+            allocator: move_picker::Allocator::RoundRobin,
+            stop_rule: move_picker::StopRule::FixedCap,
+            stop_delta: None,
+            observe: false,
+            sim_threads: 1,
+            win_pct_table: None,
+            config: simmer::SimmerConfig {
+                descale: true,
+                w_no_out: 10.0,
+                w_out: 10000.0,
+                win_prob_source: simmer::WinProbSource::Sigmoid,
+            },
+        },
+    ));
     if true {
         move_picker_1 = move_picker::MovePicker::Hasty;
     }

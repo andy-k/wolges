@@ -10,7 +10,7 @@ struct Candidate {
     win_rate_stats: stats::Stats,
 }
 
-const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
+pub const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
 
 // an iteration's draw depends only on (decision seed, iteration index), which is
 // what makes the parallel result independent of the thread count.
@@ -147,8 +147,20 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     next_stream_id: u64,
     observe: bool,
     win_pct_table: Option<&'a win_pct::WinPctTable>,
+    #[cfg(not(target_family = "wasm"))]
     sim_threads: usize,
     decision_seed: u64,
+}
+
+pub struct SimmerParams<'a> {
+    pub num_sim_iters: u64,
+    pub allocator: Allocator,
+    pub stop_rule: StopRule,
+    pub stop_delta: Option<f64>,
+    pub observe: bool,
+    pub sim_threads: usize,
+    pub win_pct_table: Option<&'a win_pct::WinPctTable>,
+    pub config: simmer::SimmerConfig,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -156,60 +168,30 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
         klv: &'a klv::Klv<L>,
+        params: SimmerParams<'a>,
     ) -> Self {
         Self {
             game_config,
             kwg,
             klv,
             candidates: Vec::new(),
-            simmer: simmer::Simmer::new(game_config),
-            num_sim_iters: DEFAULT_NUM_SIM_ITERS,
-            allocator: Allocator::RoundRobin,
-            stop_rule: StopRule::FixedCap,
-            stop_delta: DEFAULT_STOP_DELTA,
+            simmer: simmer::Simmer::new(game_config, params.config),
+            num_sim_iters: params.num_sim_iters,
+            allocator: params.allocator,
+            stop_rule: params.stop_rule,
+            stop_delta: params
+                .stop_delta
+                .unwrap_or(DEFAULT_STOP_DELTA)
+                .clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON),
             retired: Vec::new(),
             iters_done: 0,
             next_stream_id: 0,
-            observe: false,
-            win_pct_table: None,
-            sim_threads: 1,
+            observe: params.observe,
+            win_pct_table: params.win_pct_table,
+            #[cfg(not(target_family = "wasm"))]
+            sim_threads: params.sim_threads,
             decision_seed: 0,
         }
-    }
-
-    #[inline(always)]
-    pub fn set_num_sim_iters(&mut self, num_sim_iters: u64) {
-        self.num_sim_iters = num_sim_iters;
-    }
-
-    #[inline(always)]
-    pub fn set_allocator(&mut self, allocator: Allocator) {
-        self.allocator = allocator;
-    }
-
-    #[inline(always)]
-    pub fn set_stop_rule(&mut self, stop_rule: StopRule) {
-        self.stop_rule = stop_rule;
-    }
-
-    #[inline(always)]
-    pub fn set_stop_delta(&mut self, stop_delta: f64) {
-        self.stop_delta = stop_delta.clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON);
-    }
-
-    #[inline(always)]
-    pub fn set_observe(&mut self, observe: bool) {
-        self.observe = observe;
-    }
-
-    #[inline(always)]
-    pub fn set_sim_threads(&mut self, sim_threads: usize) {
-        self.sim_threads = sim_threads;
-    }
-
-    #[inline(always)]
-    pub fn set_win_pct_table(&mut self, table: Option<&'a win_pct::WinPctTable>) {
-        self.win_pct_table = table;
     }
 
     #[inline(always)]
@@ -217,11 +199,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         self.simmer.reseed(seed);
 
         self.decision_seed = seed;
-    }
-
-    #[inline(always)]
-    pub fn set_config(&mut self, config: simmer::SimmerConfig) {
-        self.simmer.set_config(config);
     }
 
     #[inline(always)]
