@@ -1,12 +1,29 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::{alphabet, display, error, fash, game_config, klv, kwg, movegen};
-
-const KWG_PATH: &str = "lexbin/CSW24.kwg";
-const KLV_PATH: &str = "lexbin/CSW24.klv2";
-const BASELINE_PATH: &str = "movegen-test-baseline.txt";
+use wolges::{alphabet, display, error, fash, game_config, klv, kwg, movegen, return_error};
 
 const LEXICON_LINES: usize = 2;
+
+static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// support "-" to mean stdout.
+fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
+    Ok(if filename == "-" {
+        USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(std::fs::File::create(filename)?)
+    })
+}
+
+// when using "-" as output filename, print things to stderr.
+fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
+    if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
+        Box::new(std::io::stderr()) as Box<dyn std::io::Write>
+    } else {
+        Box::new(std::io::stdout())
+    }
+}
 
 struct TestCase {
     fen: &'static str,
@@ -157,7 +174,7 @@ fn lexicon_line(what: &str, bytes: &[u8]) -> String {
     )
 }
 
-fn parse_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
+fn parse_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> error::Returns<Vec<u8>> {
     let reader = alphabet::AlphabetReader::new_for_racks(alphabet);
     let sb = rack_str.as_bytes();
     let mut rack = Vec::new();
@@ -167,16 +184,22 @@ fn parse_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
             rack.push(tile);
             ix = next_ix;
         } else {
-            panic!("unrecognized tile at position {ix} in rack {rack_str:?}");
+            return_error!(format!(
+                "unrecognized tile at position {ix} in rack {rack_str:?}"
+            ));
         }
     }
-    rack
+    Ok(rack)
 }
 
 fn main() -> error::Returns<()> {
     use std::fmt::Write;
-    let kwg_bytes = std::fs::read(KWG_PATH)?;
-    let klv_bytes = std::fs::read(KLV_PATH)?;
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.len() != 5 || (args[1] != "check" && args[1] != "write") {
+        return_error!("usage: movegen-test check|write kwg klv baseline".into());
+    }
+    let kwg_bytes = std::fs::read(&args[2])?;
+    let klv_bytes = std::fs::read(&args[3])?;
     let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
     let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv_bytes);
     let game_config = game_config::make_english_game_config();
@@ -186,9 +209,9 @@ fn main() -> error::Returns<()> {
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
 
-    let check_mode = std::env::args().nth(1).as_deref() == Some("--check");
+    let check_mode = args[1] == "check";
     let baseline = if check_mode {
-        Some(std::fs::read_to_string(BASELINE_PATH)?)
+        Some(std::fs::read_to_string(&args[4])?)
     } else {
         None
     };
@@ -201,7 +224,7 @@ fn main() -> error::Returns<()> {
 
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
         let board_tiles = fen_parser.parse(case.fen)?;
-        let rack = parse_rack(alphabet, case.rack);
+        let rack = parse_rack(alphabet, case.rack)?;
 
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles,
@@ -237,32 +260,37 @@ fn main() -> error::Returns<()> {
             )
             .unwrap();
         }
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "Case {case_idx}: {} moves, {elapsed:?}",
             move_generator.plays.len()
-        );
+        )?;
         total_moves += move_generator.plays.len();
     }
 
-    eprintln!("Total: {total_moves} moves, {total_elapsed:?}");
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "Total: {total_moves} moves, {total_elapsed:?}"
+    )?;
 
     if let Some(baseline) = &baseline {
         if output == *baseline {
-            eprintln!("PASS: output matches baseline");
+            writeln!(boxed_stdout_or_stderr(), "PASS: output matches baseline")?;
         } else {
             for (mine, theirs) in output.lines().zip(baseline.lines()).take(LEXICON_LINES) {
                 if mine != theirs {
-                    eprintln!("lexicon differs from the one the baseline was written with");
-                    eprintln!("  baseline: {theirs}");
-                    eprintln!("  this run: {mine}");
+                    writeln!(
+                        boxed_stdout_or_stderr(),
+                        "lexicon differs from the one the baseline was written with"
+                    )?;
+                    writeln!(boxed_stdout_or_stderr(), "  baseline: {theirs}")?;
+                    writeln!(boxed_stdout_or_stderr(), "  this run: {mine}")?;
                 }
             }
-            print!("{output}");
-            eprintln!("FAIL: output differs from baseline");
-            std::process::exit(1);
+            return_error!("output differs from baseline".into());
         }
     } else {
-        print!("{output}");
+        make_writer(&args[4])?.write_all(output.as_bytes())?;
     }
     Ok(())
 }
