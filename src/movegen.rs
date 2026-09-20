@@ -2609,11 +2609,6 @@ impl KurniaMoveGenerator {
         }
     }
 
-    #[inline(always)]
-    pub fn set_spell_once(&mut self, spell_once: bool) {
-        self.working_buffer.spell_once = spell_once;
-    }
-
     // call this before passing a different kwg.
     #[inline(always)]
     pub fn reset_for_another_kwg(&mut self) {
@@ -2839,6 +2834,33 @@ impl KurniaMoveGenerator {
         self.plays = found_moves.into_sorted_vec();
 
         working_buffer.multi_leaves = multi_leaves;
+    }
+
+    // The census sheet wants each WORD once, not each PLAY, so its descent
+    // takes a real tile before a blank. That is a different generator, not a
+    // setting: the placement path that reads a word source does not run it.
+    pub fn gen_census_sheet<
+        'a,
+        PlaceMovePredicate: FnMut(bool, i8, i8, &[u8], i32) -> bool,
+        AdjustLeaveValue: Fn(i32) -> i32,
+        EquityPredicate: FnMut(equity::Equity, &Play) -> bool,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        &mut self,
+        params: &'a GenMovesParams<'a, N, L>,
+        place_move_predicate: PlaceMovePredicate,
+        adjust_leave_value: AdjustLeaveValue,
+        equity_predicate: EquityPredicate,
+    ) {
+        self.working_buffer.spell_once = true;
+        self.gen_moves_filtered(
+            params,
+            place_move_predicate,
+            adjust_leave_value,
+            equity_predicate,
+        );
+        self.working_buffer.spell_once = false;
     }
 
     pub fn gen_moves_filtered<
