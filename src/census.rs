@@ -553,7 +553,7 @@ fn scatter_words(
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ApportionBoard<'a> {
     pub sheet: &'a [i32],
     pub leave: &'a [i32],
@@ -565,14 +565,14 @@ pub struct ApportionOut<'a> {
     pub den: &'a mut [f64],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ApportionMode {
     pub zeta: bool,
     pub null_leave: bool,
     pub scatter: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct OppDenialParams<'a> {
     pub oppdenial_rack: f64,
     pub marginal: &'a [f64],
@@ -1105,7 +1105,7 @@ pub fn best_equity_argmax_table(
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct KeptArgmax<'a> {
     pub idx: &'a [u32],
     pub size: &'a [u8],

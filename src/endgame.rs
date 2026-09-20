@@ -1323,7 +1323,7 @@ pub struct PegResult {
     pub committed: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum PegUnsupported {
     ExchangeWithoutForcedEnd,
 }
@@ -1339,7 +1339,7 @@ impl std::fmt::Display for PegUnsupported {
     }
 }
 
-#[derive(Clone, Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq)]
 struct BagExchangeKey {
     mover: u8,
     bag_tile: u8,
