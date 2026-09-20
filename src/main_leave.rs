@@ -592,13 +592,13 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
             }
             "-winpct" => {
                 let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let num_games = if args.len() > 4 {
-                    u64::from_str(&args[4])?
+                let num_games = if args.len() > 5 {
+                    u64::from_str(&args[5])?
                 } else {
                     1_000_000
                 };
-                let seed = if args.len() > 5 {
-                    Some(u64::from_str(&args[5])?)
+                let seed = if args.len() > 6 {
+                    Some(u64::from_str(&args[6])?)
                 } else {
                     None
                 };
@@ -613,7 +613,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         args3,
                     )?))
                 };
-                generate_winpct_table(make_game_config(), kwg, arc_klv, num_games, seed)?;
+                generate_winpct_table(make_game_config(), kwg, arc_klv, &args[4], num_games, seed)?;
                 Ok(true)
             }
             "-winpct-eval" => {
@@ -644,16 +644,11 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 Ok(true)
             }
             "-winpct-combine" => {
-                if args.len() < 4 {
-                    return Err(
-                        "english-winpct-combine needs an output and at least one input".into(),
-                    );
+                if args.len() != 4 {
+                    return Err("english-winpct-combine takes an input and an output".into());
                 }
-                let mut acc = win_pct::WinPctAccumulator::new();
-                for path in &args[3..] {
-                    acc.merge(&win_pct::WinPctAccumulator::from_csv(make_reader(path)?)?);
-                }
-                acc.to_csv(make_writer(&args[2])?)?;
+                let acc = win_pct::WinPctAccumulator::from_csv(make_reader(&args[2])?)?;
+                acc.to_csv(make_writer(&args[3])?)?;
                 Ok(true)
             }
             "-summarize" => {
@@ -790,9 +785,9 @@ fn main() -> error::Returns<()> {
     autoplay (not saved) and record prorated found best words (at the end)
     (run fewer number of games and use resummarize to merge to mitigate risks)
     seed is optional; prints auto-generated seed to stderr if not provided.
-  english-winpct CSW24.kwg leave.klv 1000000 [seed]
+  english-winpct CSW24.kwg leave.klv win_pct.csv 1000000 [seed]
     Hasty self-play, recording an empirical win% table (P(mover wins) by
-    lead and count-state (bag, my, opp)) as raw sparse csv to stdout.
+    lead and count-state (bag, my, opp)) as raw sparse csv to win_pct.csv.
     if leave is \"-\" or omitted, uses no leave.
     number of games is optional (default 1000000).
     seed is optional; prints auto-generated seed to stderr if not provided.
@@ -801,10 +796,9 @@ fn main() -> error::Returns<()> {
     better) against Hasty self-play outcomes; use a held-out seed.
     number of games is optional (default 1000000).
     seed is optional; prints auto-generated seed to stderr if not provided.
-  english-winpct-combine win_pct.csv win_pct1.csv win_pct2.csv [...]
-    merge several english-winpct raw tables into one by summing their
-    per-count-state histograms (counts add exactly, no rounding).
-    the first argument is the output (\"-\" = stdout); the rest are inputs.
+  english-winpct-combine concatenated_win_pcts.csv win_pct.csv
+    combine multiple english-winpct raw tables into one win_pct.csv by
+    summing their per-count-state histograms (counts add exactly, no rounding).
     run english-winpct on separate seeds/processes, then combine here.
   english-resummarize-playability concatenated_playabilities.csv playability.csv
     same as english-resummarize but sorts differently (by length first)
@@ -7208,6 +7202,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     arc_klv: std::sync::Arc<klv::Klv<L>>,
+    out_path: &str,
     num_games: u64,
     seed: Option<u64>,
 ) -> error::Returns<()> {
@@ -7270,7 +7265,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
 
     let acc = shared.into_inner().unwrap();
 
-    let mut out = std::io::BufWriter::new(make_writer("-")?);
+    let mut out = std::io::BufWriter::new(make_writer(out_path)?);
     acc.to_csv(&mut out)?;
     out.flush()?;
     writeln!(
