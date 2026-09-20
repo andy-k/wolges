@@ -59,7 +59,10 @@ fn claim_output_path(desired: &str) -> std::io::Result<String> {
             .open(&buf)
         {
             Ok(_) => {
-                eprintln!("warning: {desired} already exists; writing {buf} instead");
+                writeln!(
+                    boxed_stdout_or_stderr(),
+                    "warning: {desired} already exists; writing {buf} instead"
+                )?;
                 return Ok(buf);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1042,7 +1045,10 @@ fn generate_autoplay_logs<
         let path =
             std::env::var("WOLGES_WINPCT_TABLE").unwrap_or_else(|_| "win_pct.csv".to_string());
         let t = win_pct::WinPctTable::from_csv(&std::fs::read_to_string(&path)?)?;
-        eprintln!("autoplay: win%-objective from {path}");
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "autoplay: win%-objective from {path}"
+        )?;
         Some(t)
     } else {
         None
@@ -1061,11 +1067,12 @@ fn generate_autoplay_logs<
         census::fill_lattice_leaves(&lat, &mut leave, |tally| {
             arc_klv0.leave_value_from_tally(tally)
         });
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "autoplay: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} WOLGES_OPPDENIAL_EXACT={oppdenial_exact} \
              oppdenial_exact_pool_max={oppdenial_exact_pool_max} opponent-denial machinery on ({} lattice leaves)",
             lat.len(),
-        );
+        )?;
         Some((lat, add_table, leave))
     } else {
         None
@@ -1079,7 +1086,7 @@ fn generate_autoplay_logs<
             .collect::<Box<[String]>>(),
     );
     let seed = seed.unwrap_or_else(rand::random);
-    eprintln!("seed: {seed}");
+    writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = wolges_threads();
 
     let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
@@ -1113,7 +1120,8 @@ fn generate_autoplay_logs<
             full_v: full_v.as_slice(),
             min_keep: dynamic_min_keep,
         });
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
         dynamic_leaves_on as u8,
         if dynamic_leaves_on {
@@ -1121,12 +1129,12 @@ fn generate_autoplay_logs<
         } else {
             "off, static leaves"
         },
-    );
+    )?;
 
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let run_identifier = std::sync::Arc::new(format!("log-{}", run_stamp()));
-    eprintln!("logging to {run_identifier}");
+    writeln!(boxed_stdout_or_stderr(), "logging to {run_identifier}")?;
     let mut csv_log = if WRITE_LOGS {
         Some(csv::Writer::from_path(claim_output_path(&run_identifier)?)?)
     } else {
@@ -2079,18 +2087,17 @@ fn generate_autoplay_logs<
                                             .write_all(&batched_csv_game_buf)
                                             .unwrap();
                                         if mutex_guard.tick_periods.update(elapsed_time_secs) {
-                                            eprint!(
-                                                "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves)"
-                                            );
+                                            write!(boxed_stdout_or_stderr(),
+                                                "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves)").ok();
                                             if !mutex_guard.undersampling_comment.is_empty() {
-                                                eprint!("{}", mutex_guard.undersampling_comment);
+                                                write!(boxed_stdout_or_stderr(), "{}", mutex_guard.undersampling_comment).ok();
                                                 let num_todo = undersampling_remediation_countdown
                                                     .load(std::sync::atomic::Ordering::Relaxed);
                                                 if num_todo > 0 {
-                                                    eprint!(" (to do: {num_todo})");
+                                                    write!(boxed_stdout_or_stderr(), " (to do: {num_todo})").ok();
                                                 }
                                             }
-                                            eprintln!(" into {run_identifier}");
+                                            writeln!(boxed_stdout_or_stderr(), " into {run_identifier}").ok();
                                         }
                                     }
                                     batched_csv_log_buf.clear();
@@ -2165,7 +2172,7 @@ fn generate_autoplay_logs<
 
         for thread in threads {
             if let Err(e) = thread.join() {
-                eprintln!("{e:?}");
+                writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
             }
         }
     });
@@ -2184,11 +2191,12 @@ fn generate_autoplay_logs<
             total_sumsq += x.sumsq;
         }
 
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "{} records, {} unique racks",
             row_count,
             full_rack_map.len()
-        );
+        )?;
 
         let mut kv = full_rack_map.iter().collect::<Vec<_>>();
         kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
@@ -2233,11 +2241,12 @@ fn generate_autoplay_logs<
                 }
                 rare_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
             }
-            eprintln!(
+            writeln!(
+                boxed_stdout_or_stderr(),
                 "{} rare samples over {} unique subracks into summary-rare-{run_identifier}",
                 rare_subrack_map.values().fold(0u64, |a, x| a + x.count),
                 rare_subrack_map.len(),
-            );
+            )?;
         }
 
         if oppdenial_leave != 0.0 && mutex_guard.oppdenial_leave_boards > 0 {
@@ -2248,13 +2257,14 @@ fn generate_autoplay_logs<
         }
     }
 
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "After {} seconds, have logged {} games ({} moves) into {}",
         t0.elapsed().as_secs(),
         completed_games.load(std::sync::atomic::Ordering::Relaxed),
         completed_moves.load(std::sync::atomic::Ordering::Relaxed),
         run_identifier
-    );
+    )?;
 
     Ok(())
 }
@@ -2321,7 +2331,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let seed = seed.unwrap_or_else(rand::random);
-    eprintln!("seed: {seed}");
+    writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = wolges_threads();
 
     let run_identifier = format!("gilles-summary-{}", run_stamp());
@@ -2388,7 +2398,10 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         let path =
             std::env::var("WOLGES_WINPCT_TABLE").unwrap_or_else(|_| "win_pct.csv".to_string());
         let t = win_pct::WinPctTable::from_csv(&std::fs::read_to_string(&path)?)?;
-        eprintln!("gilles: win%-objective from {path}");
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "gilles: win%-objective from {path}"
+        )?;
         Some(t)
     } else {
         None
@@ -2406,11 +2419,12 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         census::fill_lattice_leaves(&lat, &mut leave, |tally| {
             arc_klv0.leave_value_from_tally(tally)
         });
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "gilles: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} WOLGES_OPPDENIAL_EXACT={oppdenial_exact} \
              oppdenial_exact_pool_max={oppdenial_exact_pool_max} opponent-denial machinery on ({} lattice leaves)",
             lat.len(),
-        );
+        )?;
         Some((lat, add_table, leave))
     } else {
         None
@@ -2446,7 +2460,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             full_v: full_v.as_slice(),
             min_keep: dynamic_min_keep,
         });
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
         dynamic_leaves_on as u8,
         if dynamic_leaves_on {
@@ -2454,10 +2469,11 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         } else {
             "off, static leaves"
         },
-    );
-    eprintln!(
+    )?;
+    writeln!(
+        boxed_stdout_or_stderr(),
         "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget} real_rack={real_rack_mode}"
-    );
+    )?;
 
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2619,11 +2635,10 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                 g.best_remaining = remaining;
                                 remediation_countdown
                                     .store(remaining as i64, std::sync::atomic::Ordering::Relaxed);
-                                eprintln!(
+                                writeln!(boxed_stdout_or_stderr(),
                                     "After {} seconds, remediation begins: {} racks below min_samples, {remaining} total deficit, into {run_identifier}",
                                     t0.elapsed().as_secs(),
-                                    g.undersampled_racks.len(),
-                                );
+                                    g.undersampled_racks.len(),).ok();
                                 remediation_state.store(2, std::sync::atomic::Ordering::Relaxed);
                             } else {
                                 while remediation_state.load(std::sync::atomic::Ordering::Relaxed)
@@ -2673,12 +2688,11 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     .store(remaining as i64, std::sync::atomic::Ordering::Relaxed);
                                 remediation_generation_id
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                eprintln!(
+                                writeln!(boxed_stdout_or_stderr(),
                                     "After {} seconds, remediation recompute: {} racks below min_samples, {remaining} deficit, {} samples, into {run_identifier}",
                                     t0.elapsed().as_secs(),
                                     g.undersampled_racks.len(),
-                                    completed_samples.load(std::sync::atomic::Ordering::Relaxed),
-                                );
+                                    completed_samples.load(std::sync::atomic::Ordering::Relaxed),).ok();
                             }
                             games_this_gen = 0;
                             thread_generation_id = remediation_generation_id
@@ -3236,11 +3250,10 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                     let elapsed = t0.elapsed().as_secs();
                     let mut tick = mutexed_tick.lock().unwrap();
                     if tick.update(elapsed) {
-                        eprintln!(
+                        writeln!(boxed_stdout_or_stderr(),
                             "After {elapsed} seconds, {} games, {} samples into {run_identifier}",
                             completed_games.load(std::sync::atomic::Ordering::Relaxed),
-                            completed_samples.load(std::sync::atomic::Ordering::Relaxed),
-                        );
+                            completed_samples.load(std::sync::atomic::Ordering::Relaxed),).ok();
                     }
                 }
 
@@ -3257,7 +3270,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         }
         for thread in threads {
             if let Err(e) = thread.join() {
-                eprintln!("{e:?}");
+                writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
             }
         }
     });
@@ -3265,10 +3278,11 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let g = mutexed.lock().unwrap();
     let map = &g.full_rack_map;
     if min_samples != 0 && !g.undersampled_racks.is_empty() {
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "gilles: {} racks still below min_samples after remediation (blocked tail)",
             g.undersampled_racks.len(),
-        );
+        )?;
     }
     let mut total_equity = 0.0;
     let mut row_count = 0u64;
@@ -3276,7 +3290,12 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         total_equity += v.equity;
         row_count += v.count;
     }
-    eprintln!("{} records, {} unique racks", row_count, map.len());
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "{} records, {} unique racks",
+        row_count,
+        map.len()
+    )?;
     let mut kv = map.iter().collect::<Vec<_>>();
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
     let mut csv_out = csv::Writer::from_path(claim_output_path(&run_identifier)?)?;
@@ -3289,12 +3308,13 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         }
         csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
     }
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "After {} seconds, {} games, {} samples into {run_identifier}",
         t0.elapsed().as_secs(),
         completed_games.load(std::sync::atomic::Ordering::Relaxed),
         completed_samples.load(std::sync::atomic::Ordering::Relaxed),
-    );
+    )?;
 
     if oppdenial_leave != 0.0 && g.oppdenial_leave_boards > 0 {
         write_oppdenial_leave_marginal_sidecar(
@@ -3886,10 +3906,11 @@ fn write_oppdenial_leave_marginal_sidecar(sum_marg: &[f64], boards: u64) -> erro
         w.serialize((t, s / boards))?;
     }
     w.flush()?;
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "wrote {} board-averaged oppdenial_leave marginals to {path}",
         sum_marg.len()
-    );
+    )?;
     Ok(())
 }
 
@@ -4254,10 +4275,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let pool_min = {
         let req = env_usize("WOLGES_POOL_MIN", min_pool);
         if req < min_pool {
-            eprintln!(
+            writeln!(
+                boxed_stdout_or_stderr(),
                 "census: raising pool_min {req} -> {min_pool} (a smaller unseen pool \
                  implies an empty bag = endgame, where the klv leave is unused)"
-            );
+            )?;
             min_pool
         } else {
             req
@@ -4277,7 +4299,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         let path =
             std::env::var("WOLGES_WINPCT_TABLE").unwrap_or_else(|_| "win_pct.csv".to_string());
         let t = win_pct::WinPctTable::from_csv(&std::fs::read_to_string(&path)?)?;
-        eprintln!("census: win%-objective from {path}");
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "census: win%-objective from {path}"
+        )?;
         Some(t)
     } else {
         None
@@ -4354,20 +4379,22 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
     let full_rack_start = lat.full_rack_start();
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "census: lattice {} leaves (letters {num_letters}, rack_size {rack_size}), \
          window [{low_tiles},{high_tiles}] of {num_tiles} tiles",
         lat.len(),
-    );
+    )?;
 
     let add_table = if full_rack {
         let t = std::time::Instant::now();
         let at = census::AddTable::new_with_threads(&lat, wolges_threads());
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "census: add-table {} rows x {num_letters} letters built in {:?}",
             lat.full_rack_start(),
             t.elapsed(),
-        );
+        )?;
         Some(at)
     } else {
         None
@@ -4400,10 +4427,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         for &t in tiles.iter().take(withhold_budget) {
             wt[t] = 1;
         }
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "census: withholding {} rarest tiles from the bag for rare-rack coverage",
             wt.iter().filter(|&&c| c > 0).count(),
-        );
+        )?;
         wt
     } else {
         Vec::new()
@@ -4421,10 +4449,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         (1.0 / withhold_frac).round().max(1.0) as usize
     };
     if !withhold_tally.is_empty() && withhold_period > 1 {
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "census: withhold fraction {:.3} -> 1 in {} boards (phase-balanced) is a withhold board",
-            withhold_frac, withhold_period,
-        );
+            withhold_frac,
+            withhold_period,
+        )?;
     }
     let seed = seed.unwrap_or_else(rand::random);
 
@@ -4465,14 +4495,18 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         }
         start_gen = num;
         census_run_epoch = rid;
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "census: resuming from {} (gen {num} done) -> starting gen {}",
             path.display(),
             num + 1
-        );
+        )?;
     } else {
         if resume {
-            eprintln!("census: resume requested but no census-gen-*.klv2 found; fresh start");
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "census: resume requested but no census-gen-*.klv2 found; fresh start"
+            )?;
         }
         census_run_epoch = run_stamp();
     }
@@ -4515,7 +4549,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         full_v: full_v.as_slice(),
         min_keep: dynamic_min_keep,
     });
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
         dynamic_leaves_on as u8,
         if dynamic_leaves_on {
@@ -4523,7 +4558,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         } else {
             "off, static leaves"
         },
-    );
+    )?;
 
     let lat_len = lat.len();
 
@@ -4576,7 +4611,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let sheet_cache: Vec<SheetCacheSlot> = (0..sheet_cache_len)
         .map(|_| std::sync::Mutex::new(None))
         .collect();
-    eprintln!("census: {num_threads} threads over {board_counts:?} boards/gen");
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "census: {num_threads} threads over {board_counts:?} boards/gen"
+    )?;
 
     std::thread::scope(|s| {
         for _ in 0..num_threads {
@@ -4709,12 +4747,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         &mut sheet,
                     );
                     if log_first {
-                        eprintln!(
+                        writeln!(boxed_stdout_or_stderr(),
                             "  step1 sheet: {} tiles in pool -> {} candidate plays (unstored) in {:?}",
                             movegen_rack.len(),
                             n_cand,
-                            ts.elapsed(),
-                        );
+                            ts.elapsed(),).ok();
                     }
 
                     if let Some(slot) = cache_slot {
@@ -4727,7 +4764,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     if !full_rack {
                         census::best_equity_table(&lat, &sheet, leave, &mut best);
                         if log_first {
-                            eprintln!("  step2 best_equity_table: {:?}", ts.elapsed());
+                            writeln!(boxed_stdout_or_stderr(), "  step2 best_equity_table: {:?}", ts.elapsed()).ok();
                         }
                     }
 
@@ -4793,17 +4830,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 } else {
                                     bad += 1;
                                     if bad <= 5 {
-                                        eprintln!(
+                                        writeln!(boxed_stdout_or_stderr(),
                                             "  census VERIFY mismatch rack {:?}: engine {} census {}",
-                                            verify_rack, engine_mp, census_mp,
-                                        );
+                                            verify_rack, engine_mp, census_mp,).ok();
                                     }
                                 }
                             }
                         }
-                        eprintln!(
-                            "census VERIFY: {ok} ok, {bad} mismatch (null-klv/engine invariant)"
-                        );
+                        writeln!(boxed_stdout_or_stderr(),
+                            "census VERIFY: {ok} ok, {bad} mismatch (null-klv/engine invariant)").ok();
                     }
 
 
@@ -4881,9 +4916,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 &mut oppdenial_exact_term,
                             );
                         } else if oppdenial_exact != 0.0 && log_first {
-                            eprintln!(
-                                "  oppdenial_exact: pool {pool} > {oppdenial_exact_pool_max}, skipping the term this board"
-                            );
+                            writeln!(boxed_stdout_or_stderr(),
+                                "  oppdenial_exact: pool {pool} > {oppdenial_exact_pool_max}, skipping the term this board").ok();
                         }
                         census::apportion_fused(
                             &lat,
@@ -4994,11 +5028,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         }
                     }
                     if log_first {
-                        eprintln!(
+                        writeln!(boxed_stdout_or_stderr(),
                             "  step3 {}: {:?}",
                             if full_rack { "full-rack" } else { "draw-average" },
-                            ts.elapsed(),
-                        );
+                            ts.elapsed(),).ok();
                     }
 
 
@@ -5023,14 +5056,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         }
                     }
                     *completed += 1;
-                    eprintln!(
+                    writeln!(boxed_stdout_or_stderr(),
                         "census: board {}/{} done ({}s), {} of {} leaves valued so far",
                         *completed,
                         cur_boards,
                         t0.elapsed().as_secs(),
                         *valued,
-                        globally_possible_count,
-                    );
+                        globally_possible_count,).ok();
                 };
 
 
@@ -5247,9 +5279,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                         };
                         if !reached {
-                            eprintln!(
-                                "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping"
-                            );
+                            writeln!(boxed_stdout_or_stderr(),
+                                "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping").ok();
                             continue;
                         }
                         } // end of the !reuse_board game replay
@@ -5363,18 +5394,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 };
                                 (frac, *comp)
                             };
-                            eprintln!(
+                            writeln!(boxed_stdout_or_stderr(),
                                 "census CI-stop check: {n_boards} boards, {:.1}% of leaves \
                                  within target {:.0} mp (need {:.1}%)",
                                 100.0 * frac,
                                 ci_target_mp,
-                                100.0 * ci_stop_frac,
-                            );
+                                100.0 * ci_stop_frac,).ok();
                             if frac >= ci_stop_frac {
                                 stop_now.store(true, std::sync::atomic::Ordering::Relaxed);
-                                eprintln!(
-                                    "census CI-stop: target met at {n_boards} boards; stopping."
-                                );
+                                writeln!(boxed_stdout_or_stderr(),
+                                    "census CI-stop: target met at {n_boards} boards; stopping.").ok();
                             }
                         }
                     }
@@ -5456,13 +5485,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                             }
                                         }
                                     }
-                                    eprintln!(
+                                    writeln!(boxed_stdout_or_stderr(),
                                         "census: gen {}/{} done ({} of {} leaves valued)",
                                         gen_idx + 1,
                                         gens,
                                         *valued,
-                                        lat_len,
-                                    );
+                                        lat_len,).ok();
                                     if gen_idx + 1 < gens {
 
                                         for idx in 0..lat_len {
@@ -5493,14 +5521,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                         true, // resume snapshots stay full
                                         &p,
                                     ) {
-                                        Ok(nk) => eprintln!(
-                                            "census: persisted gen {} -> {p} ({nk} leaves)",
-                                            gen_idx + 1
-                                        ),
-                                        Err(e) => eprintln!(
-                                            "census: gen {} klv2 persist failed: {e}",
-                                            gen_idx + 1
-                                        ),
+                                        Ok(nk) => { writeln!(boxed_stdout_or_stderr(),
+     "census: persisted gen {} -> {p} ({nk} leaves)",
+                                            gen_idx + 1).ok(); },
+                                        Err(e) => { writeln!(boxed_stdout_or_stderr(),
+     "census: gen {} klv2 persist failed: {e}",
+                                            gen_idx + 1).ok(); },
                                     }
                                 }
 
@@ -5565,20 +5591,23 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             }
         };
         let m = ci_halves.len();
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "census CI report (conf {:.3}, z {:.3}, {m} entries with n>=2, avg n {:.1}):",
             ci_conf,
             z,
             if m > 0 { sum_n as f64 / m as f64 } else { 0.0 },
-        );
-        eprintln!(
+        )?;
+        writeln!(
+            boxed_stdout_or_stderr(),
             "  per-entry CI half-width (mp): p50 {:.1}  p90 {:.1}  p99 {:.1}  max {:.1}",
             pctl(&ci_halves, 0.5),
             pctl(&ci_halves, 0.9),
             pctl(&ci_halves, 0.99),
             ci_halves.last().copied().unwrap_or(0.0),
-        );
-        eprintln!(
+        )?;
+        writeln!(
+            boxed_stdout_or_stderr(),
             "  {:.1}% of entries within target {:.0} mp at the current count; \
              boards to pin a fraction: p50 {:.0}  p90 {:.0}  p99 {:.0}",
             if m > 0 {
@@ -5590,7 +5619,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             pctl(&boards_needed, 0.5),
             pctl(&boards_needed, 0.9),
             pctl(&boards_needed, 0.99),
-        );
+        )?;
 
         if ci_report_level >= 2 && rack_summary {
             let mut varr = vec![-1.0f64; lat_len]; // -1 = never valued -> excluded
@@ -5627,15 +5656,20 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             leave_ci.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
             leave_scale.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
             let lm = leave_ci.len();
-            eprintln!("  leave-level CI ({lm} leaves, draw-ways-propagated):");
-            eprintln!(
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "  leave-level CI ({lm} leaves, draw-ways-propagated):"
+            )?;
+            writeln!(
+                boxed_stdout_or_stderr(),
                 "    half-width (mp): p50 {:.2}  p90 {:.2}  p99 {:.2}  max {:.2}",
                 pctl(&leave_ci, 0.5),
                 pctl(&leave_ci, 0.9),
                 pctl(&leave_ci, 0.99),
                 leave_ci.last().copied().unwrap_or(0.0),
-            );
-            eprintln!(
+            )?;
+            writeln!(
+                boxed_stdout_or_stderr(),
                 "    {:.1}% of leaves within target {:.0} mp; board-scale x_current to pin a \
                  fraction: p50 {:.3}  p90 {:.3}  p99 {:.3}",
                 if lm > 0 {
@@ -5647,7 +5681,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 pctl(&leave_scale, 0.5),
                 pctl(&leave_scale, 0.9),
                 pctl(&leave_scale, 0.99),
-            );
+            )?;
         }
     }
 
@@ -5719,10 +5753,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             nrows += 1;
         }
         sw.flush()?;
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "census: wrote autoplay-faithful summary ({nrows} full racks) to {summary_name} in {}s",
             t0.elapsed().as_secs(),
-        );
+        )?;
         return Ok(());
     }
     let baseline = value_mp(empty_rank);
@@ -5767,13 +5802,14 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         csv_out.serialize((leave, value))?;
     }
     csv_out.flush()?;
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "census: wrote {} leaves to {} in {}s (baseline {:.3} pts)",
         rows.len(),
         out_name,
         t0.elapsed().as_secs(),
         baseline / equity::SCALE as f64,
-    );
+    )?;
 
     let klv_name = claim_output_path(&format!("census-leaves-{census_run_epoch}.klv2"))?;
     let is_valued = |idx: usize| {
@@ -5784,7 +5820,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         }
     };
     let n_klv = write_census_klv2(&lat, &value_mp, baseline, &is_valued, emit_full, &klv_name)?;
-    eprintln!("census: wrote klv2 to {klv_name} ({n_klv} leaves)");
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "census: wrote klv2 to {klv_name} ({n_klv} leaves)"
+    )?;
     Ok(())
 }
 
@@ -6220,12 +6259,15 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let kwg = std::sync::Arc::new(kwg);
     let klv = std::sync::Arc::new(klv);
     let seed = seed.unwrap_or_else(rand::random);
-    eprintln!("seed: {seed}");
+    writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = wolges_threads();
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let run_identifier = std::sync::Arc::new(run_stamp());
-    eprintln!("run identifier is {run_identifier}");
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "run identifier is {run_identifier}"
+    )?;
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let logged_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -6468,9 +6510,8 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     mutex_guard.tick_periods.update(elapsed_time_secs)
                                 };
                                 if tick_changed {
-                                    eprintln!(
-                                        "After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}"
-                                    );
+                                    writeln!(boxed_stdout_or_stderr(),
+                                        "After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}").ok();
                                 }
                             }
                             break;
@@ -6500,7 +6541,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
         for thread in threads {
             if let Err(e) = thread.join() {
-                eprintln!("{e:?}");
+                writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
             }
         }
     });
@@ -6516,11 +6557,12 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             row_count += x.count;
         }
 
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "{} records, {} unique words",
             row_count,
             full_word_map.len()
-        );
+        )?;
 
         let mut kv = full_word_map.iter().collect::<Vec<_>>();
         kv.sort_unstable_by(|a, b| {
@@ -6543,13 +6585,14 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         }
     }
 
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "After {} seconds, have played {} games ({} moves) for {}",
         t0.elapsed().as_secs(),
         completed_games.load(std::sync::atomic::Ordering::Relaxed),
         completed_moves.load(std::sync::atomic::Ordering::Relaxed),
         run_identifier
-    );
+    )?;
 
     Ok(())
 }
@@ -6855,15 +6898,17 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
     let seed = seed.unwrap_or_else(rand::random);
     let num_threads = wolges_threads().max(1).min(num_games.max(1) as usize);
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "rollout: seed {seed}, {num_games} games, {num_threads} threads, lattice {lat_len} leaves"
-    );
+    )?;
 
     let cv = env_flag("WOLGES_ROLLOUT_CV", false);
     if cv {
-        eprintln!(
+        writeln!(
+            boxed_stdout_or_stderr(),
             "rollout: baseline-subtraction mode (credit margin - play equity, add prior back)"
-        );
+        )?;
     }
 
     let td_lambda = std::env::var("WOLGES_ROLLOUT_LAMBDA")
@@ -6871,7 +6916,10 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         .and_then(|s| s.parse::<f64>().ok())
         .filter(|l| (0.0..=1.0).contains(l));
     if let Some(l) = td_lambda {
-        eprintln!("rollout: next-turn-blend mode, strength={l} (forward return, census value)");
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "rollout: next-turn-blend mode, strength={l} (forward return, census value)"
+        )?;
     }
     let kwg = std::sync::Arc::new(kwg);
     let next_game = std::sync::atomic::AtomicU64::new(0);
@@ -7042,7 +7090,10 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(0.0);
     if shrink_k > 0.0 {
-        eprintln!("rollout: shrinking toward prior klv with K={shrink_k}");
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "rollout: shrinking toward prior klv with K={shrink_k}"
+        )?;
     }
     let out_name = claim_output_path(&format!("rollout-leaves-{}.csv", run_stamp()))?;
     let mut tally_buf = vec![0u8; num_letters];
@@ -7088,13 +7139,14 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         csv_out.serialize((leave, value))?;
     }
     csv_out.flush()?;
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "rollout: wrote {} leaves to {} in {}s (baseline {:.3} pts)",
         rows.len(),
         out_name,
         t0.elapsed().as_secs(),
         baseline / equity::SCALE as f64,
-    );
+    )?;
     Ok(())
 }
 
@@ -7165,7 +7217,10 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let game_config = std::sync::Arc::new(game_config);
     let seed = seed.unwrap_or_else(rand::random);
     let num_threads = wolges_threads().max(1).min(num_games.max(1) as usize);
-    eprintln!("winpct: seed {seed}, {num_games} games, {num_threads} threads");
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "winpct: seed {seed}, {num_games} games, {num_threads} threads"
+    )?;
     let kwg = std::sync::Arc::new(kwg);
     let next_game = std::sync::atomic::AtomicU64::new(0);
     let report_every = 10_000u64;
@@ -7207,7 +7262,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                         acc.record(bag, my, opp, lead, mover_final);
                     }
                     if (g + 1).is_multiple_of(report_every) {
-                        eprintln!("winpct: {} games", g + 1);
+                        writeln!(boxed_stdout_or_stderr(), "winpct: {} games", g + 1).ok();
                     }
                 }
                 shared.lock().unwrap().merge(&acc);
@@ -7220,7 +7275,11 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let mut out = std::io::BufWriter::new(make_writer("-")?);
     out.write_all(acc.to_csv().as_bytes())?;
     out.flush()?;
-    eprintln!("winpct: {num_games} games in {}s", t0.elapsed().as_secs());
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "winpct: {num_games} games in {}s",
+        t0.elapsed().as_secs()
+    )?;
     Ok(())
 }
 
@@ -7237,7 +7296,10 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let table = std::sync::Arc::new(table);
     let seed = seed.unwrap_or_else(rand::random);
     let num_threads = wolges_threads().max(1).min(num_games.max(1) as usize);
-    eprintln!("winpct-eval: seed {seed}, {num_games} games, {num_threads} threads");
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "winpct-eval: seed {seed}, {num_games} games, {num_threads} threads"
+    )?;
     let kwg = std::sync::Arc::new(kwg);
     let next_game = std::sync::atomic::AtomicU64::new(0);
 
@@ -7300,15 +7362,17 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
     let (bt, bs, n) = shared.into_inner().unwrap();
     let d = n.max(1) as f64;
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "winpct-eval: {n} samples, brier table={:.5} sigmoid={:.5} (lower better)",
         bt / d,
         bs / d
-    );
-    eprintln!(
+    )?;
+    writeln!(
+        boxed_stdout_or_stderr(),
         "winpct-eval: {num_games} games in {}s",
         t0.elapsed().as_secs()
-    );
+    )?;
     Ok(())
 }
 
@@ -7323,7 +7387,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let seed = seed.unwrap_or_else(rand::random);
-    eprintln!("seed: {seed}");
+    writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = wolges_threads();
     let completed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
@@ -7361,7 +7425,8 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             full_v: full_v.as_slice(),
             min_keep: dynamic_min_keep,
         });
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
         dynamic_leaves_on as u8,
         if dynamic_leaves_on {
@@ -7369,7 +7434,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         } else {
             "off, static leaves both sides"
         },
-    );
+    )?;
 
     std::thread::scope(|s| -> error::Returns<()> {
         let mut thread_handles = Vec::new();
@@ -7481,7 +7546,13 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     let secs = t0.elapsed().as_secs();
                     let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
                     if secs > prev {
-                        eprintln!("After {}s: {} pairs", secs, pair_idx + 1);
+                        writeln!(
+                            boxed_stdout_or_stderr(),
+                            "After {}s: {} pairs",
+                            secs,
+                            pair_idx + 1
+                        )
+                        .ok();
                     }
                 }
 
@@ -7567,7 +7638,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let seed = seed.unwrap_or_else(rand::random);
-    eprintln!("seed: {seed}");
+    writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = wolges_threads();
     let completed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
@@ -7599,7 +7670,8 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         Err(_) => None,
     };
     let winpct_table_ref = winpct_table.as_ref();
-    eprintln!(
+    writeln!(
+        boxed_stdout_or_stderr(),
         "WOLGES_SIM_ITERS={num_sim_iters} winpct_table={} P0.descale={} P0.alloc={} P0.stop={} P0.winprob={} P1.descale={} P1.alloc={} P1.stop={} P1.winprob={}",
         winpct_table_ref.is_some() as u8,
         config_p0.descale as u8,
@@ -7610,7 +7682,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         allocator_name(allocator_p1),
         stop_rule_name(stop_p1),
         win_prob_source_name(config_p1.win_prob_source),
-    );
+    )?;
 
     std::thread::scope(|s| -> error::Returns<()> {
         let mut thread_handles = Vec::new();
@@ -7761,7 +7833,13 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     let secs = t0.elapsed().as_secs();
                     let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
                     if secs > prev {
-                        eprintln!("After {}s: {} pairs", secs, pair_idx + 1);
+                        writeln!(
+                            boxed_stdout_or_stderr(),
+                            "After {}s: {} pairs",
+                            secs,
+                            pair_idx + 1
+                        )
+                        .ok();
                     }
                 }
 
