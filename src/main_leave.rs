@@ -639,7 +639,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                         args3,
                     )?))
                 };
-                let table = win_pct::WinPctTable::from_csv(&std::fs::read_to_string(&args[4])?)?;
+                let table = win_pct::WinPctTable::from_csv(make_reader(&args[4])?)?;
                 generate_winpct_eval(make_game_config(), kwg, arc_klv, table, num_games, seed)?;
                 Ok(true)
             }
@@ -651,11 +651,9 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 }
                 let mut acc = win_pct::WinPctAccumulator::new();
                 for path in &args[3..] {
-                    acc.merge(&win_pct::WinPctAccumulator::from_csv(
-                        &std::fs::read_to_string(path)?,
-                    )?);
+                    acc.merge(&win_pct::WinPctAccumulator::from_csv(make_reader(path)?)?);
                 }
-                make_writer(&args[2])?.write_all(acc.to_csv().as_bytes())?;
+                acc.to_csv(make_writer(&args[2])?)?;
                 Ok(true)
             }
             "-summarize" => {
@@ -1044,7 +1042,7 @@ fn generate_autoplay_logs<
     let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
         let path =
             std::env::var("WOLGES_WINPCT_TABLE").unwrap_or_else(|_| "win_pct.csv".to_string());
-        let t = win_pct::WinPctTable::from_csv(&std::fs::read_to_string(&path)?)?;
+        let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
         writeln!(
             boxed_stdout_or_stderr(),
             "autoplay: win%-objective from {path}"
@@ -2397,7 +2395,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
         let path =
             std::env::var("WOLGES_WINPCT_TABLE").unwrap_or_else(|_| "win_pct.csv".to_string());
-        let t = win_pct::WinPctTable::from_csv(&std::fs::read_to_string(&path)?)?;
+        let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
         writeln!(
             boxed_stdout_or_stderr(),
             "gilles: win%-objective from {path}"
@@ -4298,7 +4296,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
         let path =
             std::env::var("WOLGES_WINPCT_TABLE").unwrap_or_else(|_| "win_pct.csv".to_string());
-        let t = win_pct::WinPctTable::from_csv(&std::fs::read_to_string(&path)?)?;
+        let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
         writeln!(
             boxed_stdout_or_stderr(),
             "census: win%-objective from {path}"
@@ -7273,7 +7271,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let acc = shared.into_inner().unwrap();
 
     let mut out = std::io::BufWriter::new(make_writer("-")?);
-    out.write_all(acc.to_csv().as_bytes())?;
+    acc.to_csv(&mut out)?;
     out.flush()?;
     writeln!(
         boxed_stdout_or_stderr(),
@@ -7664,9 +7662,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
     let winpct_table: Option<win_pct::WinPctTable> = match std::env::var("WOLGES_SIM_WINPCT_TABLE")
     {
-        Ok(path) => Some(win_pct::WinPctTable::from_csv(&std::fs::read_to_string(
-            &path,
-        )?)?),
+        Ok(path) => Some(win_pct::WinPctTable::from_csv(make_reader(&path)?)?),
         Err(_) => None,
     };
     let winpct_table_ref = winpct_table.as_ref();
