@@ -1034,8 +1034,11 @@ fn generate_autoplay_logs<
     let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
 
     let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
-        let path =
-            std::env::var("WOLGES_WINPCT_TABLE").unwrap_or_else(|_| "win_pct.csv".to_string());
+        let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
+            wolges::return_error!(
+                "WOLGES_WINPCT is on, so WOLGES_WINPCT_TABLE must name the win% table".to_string()
+            )
+        };
         let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
         writeln!(
             boxed_stdout_or_stderr(),
@@ -2387,8 +2390,11 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
 
     let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
-        let path =
-            std::env::var("WOLGES_WINPCT_TABLE").unwrap_or_else(|_| "win_pct.csv".to_string());
+        let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
+            wolges::return_error!(
+                "WOLGES_WINPCT is on, so WOLGES_WINPCT_TABLE must name the win% table".to_string()
+            )
+        };
         let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
         writeln!(
             boxed_stdout_or_stderr(),
@@ -3884,13 +3890,17 @@ struct SpellPool<'a> {
     blank_cap: usize,
 }
 
-fn oppdenial_leave_marginal_path() -> String {
-    std::env::var("WOLGES_OPPDENIAL_LEAVE_MARGINAL")
-        .unwrap_or_else(|_| "oppdenial-leave-marginal.csv".to_string())
+fn oppdenial_leave_marginal_path() -> error::Returns<String> {
+    match std::env::var("WOLGES_OPPDENIAL_LEAVE_MARGINAL") {
+        Ok(path) => Ok(path),
+        Err(_) => wolges::return_error!(
+            "WOLGES_OPPDENIAL_LEAVE_MARGINAL must name the companion file".to_string()
+        ),
+    }
 }
 
 fn write_oppdenial_leave_marginal_sidecar(sum_marg: &[f64], boards: u64) -> error::Returns<()> {
-    let path = oppdenial_leave_marginal_path();
+    let path = oppdenial_leave_marginal_path()?;
     let mut w = csv::Writer::from_path(&path)?;
     w.serialize(("tile_index", "avg_marginal"))?;
     let boards = boards as f64;
@@ -4288,8 +4298,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     };
 
     let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
-        let path =
-            std::env::var("WOLGES_WINPCT_TABLE").unwrap_or_else(|_| "win_pct.csv".to_string());
+        let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
+            wolges::return_error!(
+                "WOLGES_WINPCT is on, so WOLGES_WINPCT_TABLE must name the win% table".to_string()
+            )
+        };
         let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
         writeln!(
             boxed_stdout_or_stderr(),
@@ -6195,7 +6208,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
 
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
     if oppdenial_leave != 0.0 {
-        let path = oppdenial_leave_marginal_path();
+        let path = oppdenial_leave_marginal_path()?;
         if std::path::Path::new(&path).exists() {
             let num_letters = game_config.alphabet().len() as usize;
             let avg_marginal = load_oppdenial_leave_marginal_sidecar(&path, num_letters)?;

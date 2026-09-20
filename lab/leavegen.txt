@@ -1663,7 +1663,7 @@ VALUING RACKS BY WIN% (WOLGES_WINPCT)
 With a table in hand, all three builders -- census, gilles, and autoplay -- can
 be switched from valuing a rack by its best play's points to valuing it by the
 win chance that best play implies. Setting WOLGES_WINPCT on (it reads the table
-from WOLGES_WINPCT_TABLE, default win_pct.csv) does this; off, the builders
+from WOLGES_WINPCT_TABLE, which must be set) does this; off, the builders
 record raw equity and the leave tables come out byte-for-byte unchanged.
 
 The remap works per board. At a board's count-state the table gives a curve
@@ -2023,9 +2023,9 @@ Shared across builders:
     per-letter opponent-denial term, folded into the finished table through a
     companion file; read by all three builders. 0.0 disables it. A recorded
     dead-end.
-  WOLGES_OPPDENIAL_LEAVE_MARGINAL (a file path; default
-    oppdenial-leave-marginal.csv) -- the companion per-letter file, written
-    only when WOLGES_OPPDENIAL_LEAVE is nonzero.
+  WOLGES_OPPDENIAL_LEAVE_MARGINAL (a file path; no default) -- the companion
+    per-letter file, written only when WOLGES_OPPDENIAL_LEAVE is nonzero, and
+    required whenever it is.
   WOLGES_OPPDENIAL_RACK (a decimal weight; default 0.0, off) -- the same
     per-letter drop folded into each drawn rack's recorded value instead of
     through a file. 0.0 disables it.
@@ -2036,8 +2036,8 @@ Shared across builders:
   WOLGES_WINPCT_BLEND (a decimal from 0.0 to 1.0; default 1.0) -- blend from
     pure points (0.0) to the pure win% remap (1.0); used only when
     WOLGES_WINPCT is 1.
-  WOLGES_WINPCT_TABLE (a file path; default win_pct.csv) -- the win% table;
-    used only when WOLGES_WINPCT is 1.
+  WOLGES_WINPCT_TABLE (a file path; no default) -- the win% table; required
+    when WOLGES_WINPCT is 1, which fails without it.
 
 Board sampling (gilles):
   It also reads the shared knobs above. Its own knobs:
