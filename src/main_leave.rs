@@ -5642,12 +5642,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 }
 
 #[inline]
-fn decompose_contribution(fv: &Cumulate, w: u64, per_rack: bool) -> (f64, u64) {
-    if per_rack {
-        (fv.equity / fv.count as f64 * w as f64, w)
-    } else {
-        (fv.equity * w as f64, fv.count * w)
-    }
+fn decompose_contribution(fv: &Cumulate, w: u64) -> (f64, u64) {
+    (fv.equity / fv.count as f64 * w as f64, w)
 }
 
 #[inline]
@@ -5659,7 +5655,6 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
 
-    let per_rack = env_flag("WOLGES_GENERATE_PER_RACK", true);
     let mut rack_tally = vec![0u8; game_config.alphabet().len() as usize];
     let mut exchange_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let mut rack_bytes = Vec::new();
@@ -5752,7 +5747,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
                         &subrack_tally,
                         word_prob.bag(),
                     );
-                    let (add_equity, add_count) = decompose_contribution(fv, w, per_rack);
+                    let (add_equity, add_count) = decompose_contribution(fv, w);
                     subrack_map
                         .entry(subrack_bytes.into())
                         .and_modify(|v| {
@@ -5884,7 +5879,6 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
                 let mut equity = 0.0f64;
                 let mut count = 0u64;
                 // combine distinct neighbors with the few samples of self.
-                // each rack is weighted only by sample count, not probability.
                 generate_neighbors(
                     &rack_tally,
                     0,
@@ -7871,11 +7865,7 @@ mod tests {
             sumsq: 0.0,
         };
 
-        let (eq, cnt) = decompose_contribution(&fv, 3, false);
-        assert!((eq - 30.0).abs() < 1e-9); // 10 * 3
-        assert_eq!(cnt, 6); // 2 * 3
-
-        let (eq, cnt) = decompose_contribution(&fv, 3, true);
+        let (eq, cnt) = decompose_contribution(&fv, 3);
         assert!((eq - 15.0).abs() < 1e-9); // (10/2) * 3
         assert_eq!(cnt, 3); // w only
     }

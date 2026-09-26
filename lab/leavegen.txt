@@ -606,14 +606,8 @@ leave, not one number per tile -- leaves remain non-additive either way. The
 two ways only differ in how much each rack is allowed to sway the leaves it
 feeds into.
 
-WOLGES_GENERATE_PER_RACK chooses between them. It defaults off, which is the
-per-occurrence weighting above and reproduces the earlier leaves byte for byte.
-Set it on for the per-rack weighting. With it on the leaves come out visibly
-different and sensibly shaped in the runs tried; whether that plays stronger is
-not something we can call here, only that per-rack is the more defensible of
-the two on the double-counting argument.
-
-New knobs: WOLGES_GENERATE_PER_RACK.
+leave generate weights per rack; the head-to-head that settled it is below,
+under THE PER-RACK DECOMPOSE BECOMES THE DEFAULT.
 
 
 THE EXACT PER-BOARD CENSUS
@@ -1294,10 +1288,9 @@ Measured at volume, full-rack forcing was worth turning on for the autoplay
 recipe by default. A bare autoplay run now forces each undersampled full rack,
 places racks board-tolerantly (it exports the full-rack-forcing and
 impossible-ok knobs), and covers every globally-possible rack at least once by
-defaulting each generation's min-samples to one. A sound forced run still
-passes WOLGES_GENERATE_PER_RACK=1 explicitly, since the per-rack decompose it
-leans on is opt-in. Passing --no-forcing reverts to plain natural-rack
-sampling; --gilles keeps its own board sampler and is never forced.
+defaulting each generation's min-samples to one. Passing --no-forcing reverts
+to plain natural-rack sampling; --gilles keeps its own board sampler and is
+never forced.
 
 On the per-rack decompose footing (each distinct rack weighted once, not once
 per occurrence), the forced autoplay table roughly ties board sampling.
@@ -1326,11 +1319,10 @@ summary about as often as the bag deals it, so weighting that sample again by
 its count squares the effect -- and it is exactly what let a force-covered rare
 rack pull hard on every short leave it shares with common racks. Per-rack has
 neither problem, because a rack's average enters once no matter how it got into
-the summary. It is the correct decompose, so it is now the default: a bare
-leave generate does the right thing with no environment variable set.
+the summary. It is the correct decompose, and the only one leave generate has.
 
-Measured on identical samples -- the same summary decomposed both ways, so
-nothing but the weighting differs -- the per-rack table beats the
+Measured on two three-generation lineages of the same recipe that differ only
+in the weighting, the per-rack table beats the
 per-occurrence table. leave compare reports 52.0648 for the per-rack table,
 confidence 100: per-rack wins by about 2.06 pp. That is a large, certain gap,
 and it settles a footing question left open earlier. The
@@ -1339,10 +1331,7 @@ board sampling ahead by about 2.1 pp -- was run on per-occurrence tables (the
 47.88 footing); much of that apparent gap between where the racks came from was
 the double-counting in the decompose, not a real difference in method. Under
 the per-rack default the self-play, board-sampling, and per-board census tables
-land much closer together. As with the earlier switch that made full-rack
-apportionment the census default, the safe and correct behavior should not need
-a flag; set WOLGES_GENERATE_PER_RACK=0 to opt back to per-occurrence, kept only
-for reproducing the older tables.
+land much closer together.
 
 
 A GENERATION-AWARE, CONFIG-DERIVED CENSUS
@@ -1969,12 +1958,6 @@ Every run:
   extension on a clash, so no run ever clobbers another's output.
 
 Decompose (leave generate):
-  WOLGES_GENERATE_PER_RACK (0 or 1; default 1) -- how the leave generate
-    decompose weights each rack; applies to any autoplay or board-sampling
-    summary:
-      1  weight each distinct rack once, by its draw-ways (per-rack)
-      0  also multiply by the rack's sampled count (per-occurrence), which
-         double-counts draw frequency
   WOLGES_GENERATE_SMOOTH_CI (a width in points; default 0.0, off) -- smooth a
     leave whose average is not pinned down, however many samples it has. With a
     width set, a leave is trusted only if its average sits inside an interval
