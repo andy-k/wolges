@@ -248,6 +248,22 @@ struct SimCompare {
     pairs: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(long, default_value_t = move_picker::DEFAULT_NUM_SIM_ITERS, help = "rollouts a move")]
+    iters: u64,
+    #[arg(long, default_value = "1", help = "rollout threads a seat")]
+    sim_threads: std::num::NonZeroUsize,
+    #[arg(
+        long,
+        value_name = "TABLE",
+        help = "seat p0 reads unfinished games' win chances from this win% table"
+    )]
+    p0_win_pct: Option<String>,
+    #[arg(
+        long,
+        value_name = "TABLE",
+        help = "seat p1 reads unfinished games' win chances from this win% table"
+    )]
+    p1_win_pct: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -503,7 +519,20 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimCompare(a) => {
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            sim_compare(game_config, kwg, klv, a.pairs, a.seed, threads)
+            sim_compare(
+                game_config,
+                kwg,
+                klv,
+                SimCompareParams {
+                    num_game_pairs: a.pairs,
+                    seed: a.seed,
+                    threads,
+                    num_sim_iters: a.iters,
+                    sim_threads: a.sim_threads.get(),
+                    p0_win_pct: a.p0_win_pct,
+                    p1_win_pct: a.p1_win_pct,
+                },
+            )
         }
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
@@ -3516,8 +3545,8 @@ const KLV_SEATS: SeatLabels = SeatLabels {
 };
 
 const SIM_CONFIG_SEATS: SeatLabels = SeatLabels {
-    p0: "p0 (WOLGES_SIM_P0_*)",
-    p1: "p1 (WOLGES_SIM_P1_*)",
+    p0: "p0 (--p0-*)",
+    p1: "p1 (--p1-*)",
 };
 
 struct GameStats {
@@ -4143,18 +4172,17 @@ fn sim_compare_seat_config(prefix: &str) -> simmer::SimmerConfig {
         config.descale = descale != 0;
     }
 
-    if let Some("table") = std::env::var(format!("{prefix}WINPROB")).ok().as_deref() {
-        config.win_prob_source = simmer::WinProbSource::Table;
-    }
     config
 }
 
-#[inline]
-fn win_prob_source_name(source: simmer::WinProbSource) -> &'static str {
-    match source {
-        simmer::WinProbSource::Sigmoid => "sigmoid",
-        simmer::WinProbSource::Table => "table",
-    }
+struct SimCompareParams {
+    num_game_pairs: u64,
+    seed: Option<u64>,
+    threads: usize,
+    num_sim_iters: u64,
+    sim_threads: usize,
+    p0_win_pct: Option<String>,
+    p1_win_pct: Option<String>,
 }
 
 #[inline]
@@ -4162,9 +4190,15 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     arc_klv: std::sync::Arc<klv::Klv<L>>,
-    num_game_pairs: u64,
-    seed: Option<u64>,
-    threads: usize,
+    SimCompareParams {
+        num_game_pairs,
+        seed,
+        threads,
+        num_sim_iters,
+        sim_threads,
+        p0_win_pct,
+        p1_win_pct,
+    }: SimCompareParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -4176,32 +4210,31 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let num_sim_iters = std::env::var("WOLGES_SIM_ITERS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(1_000);
-
-    let sim_driver_threads = std::env::var("WOLGES_SIM_DRIVER_THREADS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1);
-    let config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
-    let config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
-
-    let winpct_table: Option<win_pct::WinPctTable> = match std::env::var("WOLGES_SIM_WINPCT_TABLE")
-    {
-        Ok(path) => Some(win_pct::WinPctTable::from_csv(make_reader(&path)?)?),
-        Err(_) => None,
+    let winpct_p0 = match &p0_win_pct {
+        Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
+        None => None,
     };
-    let winpct_table_ref = winpct_table.as_ref();
+    let winpct_p1 = match &p1_win_pct {
+        Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
+        None => None,
+    };
+    let winpct_p0 = winpct_p0.as_ref();
+    let winpct_p1 = winpct_p1.as_ref();
+    let mut config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
+    let mut config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
+    if winpct_p0.is_some() {
+        config_p0.win_prob_source = simmer::WinProbSource::Table;
+    }
+    if winpct_p1.is_some() {
+        config_p1.win_prob_source = simmer::WinProbSource::Table;
+    }
     writeln!(
         boxed_stdout_or_stderr(),
-        "WOLGES_SIM_ITERS={num_sim_iters} winpct_table={} P0.descale={} P0.winprob={} P1.descale={} P1.winprob={}",
-        winpct_table_ref.is_some() as u8,
+        "sim-compare: {num_sim_iters} rollouts a move; p0 descale={} win%={}; p1 descale={} win%={}",
         config_p0.descale as u8,
-        win_prob_source_name(config_p0.win_prob_source),
+        p0_win_pct.as_deref().unwrap_or("sigmoid"),
         config_p1.descale as u8,
-        win_prob_source_name(config_p1.win_prob_source),
+        p1_win_pct.as_deref().unwrap_or("sigmoid"),
     )?;
 
     std::thread::scope(|s| -> error::Returns<()> {
@@ -4225,8 +4258,8 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     move_picker::SimmerParams {
                         num_sim_iters,
                         observe: false,
-                        sim_threads: sim_driver_threads,
-                        win_pct_table: winpct_table_ref,
+                        sim_threads,
+                        win_pct_table: winpct_p0,
                         config: config_p0,
                     },
                 ));
@@ -4237,8 +4270,8 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     move_picker::SimmerParams {
                         num_sim_iters,
                         observe: false,
-                        sim_threads: sim_driver_threads,
-                        win_pct_table: winpct_table_ref,
+                        sim_threads,
+                        win_pct_table: winpct_p1,
                         config: config_p1,
                     },
                 ));

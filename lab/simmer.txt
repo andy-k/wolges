@@ -53,12 +53,13 @@ lab/leavegen.txt's leave compare measures leave TABLES: each seat picks its
 move by one greedy look at the board with its own table. leave sim-compare is
 the simmer's counterpart: both seats share the same leave table, but each picks
 its move by running the full rollout instead of a single greedy look, and the
-two seats can each be configured differently. Every seat reads its own settings
-from WOLGES_SIM_P0_* and WOLGES_SIM_P1_* (today just DESCALE, on or off), and
-both share one fixed WOLGES_SIM_ITERS rollout budget per move. Giving both
-seats identical settings and expecting the result to land near 50% is a harness
-sanity check (an unbiased comparison should tie); giving them different
-settings measures which one plays better.
+two seats can each be configured differently. Every seat reads its own
+settings, WOLGES_SIM_P0_DESCALE and WOLGES_SIM_P1_DESCALE (on or off), and its
+own options, --p0-win-pct and --p1-win-pct (a win% table); both share one
+--iters rollout budget per move. Giving both seats identical settings and
+expecting the result to land near 50% is a harness sanity check (an unbiased
+comparison should tie); giving them different settings measures which one plays
+better.
 
 As in leave compare, each game pair starts from the same deal with the seats
 swapped, so first-move advantage cancels between the two halves of the pair.
@@ -154,9 +155,9 @@ to the sigmoid for any margin-and-tile-count combination the table never saw
 enough of to have an entry. The table is handed to the simmer by reference and
 defaults to none, so a caller that never asks for Table sees no change at all.
 
-leave sim-compare can give each seat its own source (WOLGES_SIM_P0_WINPROB /
-P1_WINPROB) sharing one table (WOLGES_SIM_WINPCT_TABLE), to weigh the sigmoid
-against the empirical table directly, seat against seat.
+leave sim-compare can give each seat its own table (--p0-win-pct /
+--p1-win-pct), or none for the sigmoid, to weigh the sigmoid against the
+empirical table directly, seat against seat.
 
 
 OPTIONAL DETERMINISTIC PARALLEL ROLLOUTS
@@ -187,5 +188,4 @@ eight threads now give byte-identical results.
 Gated off entirely for the single-threaded wasm build (which has no threads to
 split across) and off by default even where threads are available (one thread
 keeps the original single-stream behavior, byte-identical to before this knob
-existed); leave sim-compare exposes the thread count as
-WOLGES_SIM_DRIVER_THREADS.
+existed); leave sim-compare takes the thread count as --sim-threads.
