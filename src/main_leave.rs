@@ -724,26 +724,6 @@ fn wolges_apportion() -> error::Returns<Apportion> {
     }
 }
 
-#[derive(Clone, Copy)]
-enum CiReport {
-    Off,
-    Rack,
-    Leave,
-}
-
-#[inline]
-fn wolges_census_ci_report() -> error::Returns<CiReport> {
-    match std::env::var("WOLGES_CENSUS_CI_REPORT").ok().as_deref() {
-        None | Some("off") => Ok(CiReport::Off),
-        Some("rack") => Ok(CiReport::Rack),
-        Some("leave") => Ok(CiReport::Leave),
-        Some(other) => Err(format!(
-            "WOLGES_CENSUS_CI_REPORT must be off, rack, or leave, got {other:?}"
-        )
-        .into()),
-    }
-}
-
 struct SelfPlayParams {
     num_games: u64,
     min_samples: u64,
@@ -4092,32 +4072,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let opening_weight = env_usize("WOLGES_OPENING_WEIGHT", 1).max(1) as u64;
 
-    let ci_report_level = match wolges_census_ci_report()? {
-        CiReport::Off => 0usize,
-        CiReport::Rack => 1,
-        CiReport::Leave => 2,
-    };
-    let ci_conf = env_parse::<f64>("WOLGES_CENSUS_CI_CONF", 0.999);
-    let ci_conf = if ci_conf > 0.0 && ci_conf < 1.0 {
-        ci_conf
-    } else {
-        0.999
-    };
-
-    let ci_target_mp = env_usize("WOLGES_CENSUS_CI_TARGET", 500) as f64;
-
-    let ci_stop_frac = env_parse::<f64>("WOLGES_CENSUS_CI_STOP_FRAC", 0.0);
-    let ci_stop_frac = if ci_stop_frac > 0.0 && ci_stop_frac <= 1.0 {
-        ci_stop_frac
-    } else {
-        0.0
-    };
-    let ci_stop_every = env_usize("WOLGES_CENSUS_CI_STOP_EVERY", 64).max(1) as u64;
-
-    let ci_stop = ci_stop_frac > 0.0 && full_rack && rack_summary && !sgd && !multigen;
-
-    let ci_report = full_rack && (ci_report_level != 0 || ci_stop);
-
     let sheet_reuse = multigen && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
 
     let (live_after, sheet_cache_len) = census_sheet_reuse_plan(&board_counts);
@@ -4326,10 +4280,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     };
     let next_board = std::sync::atomic::AtomicU64::new(0);
 
-    let stop_now = std::sync::atomic::AtomicBool::new(false);
-
-    let ci_check_at = std::sync::atomic::AtomicU64::new(ci_stop_every);
-
     let shared = std::sync::Mutex::new((
         vec![0f64; lat_len],
         vec![0u64; lat_len],
@@ -4341,15 +4291,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             Vec::new()
         },
     ));
-
-    let ci_sumsq = std::sync::Mutex::new(if ci_report {
-        vec![0f64; lat_len]
-    } else {
-        Vec::new()
-    });
-
-    let ci_scratch: std::sync::Mutex<(Vec<f64>, Vec<f64>, Vec<f64>)> =
-        std::sync::Mutex::new((Vec::new(), Vec::new(), Vec::new()));
 
     let barrier = std::sync::Barrier::new(num_threads);
 
@@ -4790,11 +4731,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                     let mut g = shared.lock().unwrap();
                     let (sum, cnt, completed, valued, _ever) = &mut *g;
-                    let mut sq = if ci_report {
-                        Some(ci_sumsq.lock().unwrap())
-                    } else {
-                        None
-                    };
                     for idx in 0..lat_len {
                         let v = contrib[idx];
                         if v != census::UNPLAYABLE {
@@ -4803,9 +4739,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                             sum[idx] += v as f64;
                             cnt[idx] += 1;
-                            if let Some(sq) = sq.as_mut() {
-                                sq[idx] += (v as f64) * (v as f64);
-                            }
                         }
                     }
                     *completed += 1;
@@ -4838,9 +4771,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                         let null_leave = leave.iter().all(|&x| x == 0);
                         loop {
-                            if ci_stop && stop_now.load(std::sync::atomic::Ordering::Relaxed) {
-                                break;
-                            }
                             let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if b >= batch_end {
                                 break;
@@ -5070,96 +5000,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                         }
                     }
-
-                    if ci_stop {
-                        let completed = {
-                            let g = shared.lock().unwrap();
-                            g.2
-                        };
-
-                        let due = ci_check_at.load(std::sync::atomic::Ordering::Relaxed);
-                        if completed >= due
-                            && ci_check_at
-                                .compare_exchange(
-                                    due,
-                                    due + ci_stop_every,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                )
-                                .is_ok()
-                        {
-
-                            let (frac, n_boards) = {
-                                let g = shared.lock().unwrap();
-                                let sq = ci_sumsq.lock().unwrap();
-                                let mut scratch = ci_scratch.lock().unwrap();
-                                let (sum, cnt, comp, _, _) = &*g;
-                                let z = stats::NormalDistribution::reverse_ci(ci_conf);
-                                let (varr, den, w2v) = &mut *scratch;
-                                if varr.len() != lat_len {
-                                    *varr = vec![0.0f64; lat_len];
-                                    *den = vec![0.0f64; lat_len];
-                                    *w2v = vec![0.0f64; lat_len];
-                                }
-                                for v in varr[..full_rack_start].iter_mut() {
-                                    *v = -1.0;
-                                }
-                                for idx in full_rack_start..lat_len {
-                                    let n = cnt[idx];
-                                    varr[idx] = if n >= 2 {
-                                        let var = ((sq[idx] - sum[idx] * sum[idx] / n as f64)
-                                            / (n as f64 - 1.0))
-                                            .max(0.0);
-                                        var / n as f64
-                                    } else if n == 1 {
-                                        0.0
-                                    } else {
-                                        -1.0
-                                    };
-                                }
-                                for idx in 0..lat_len {
-                                    den[idx] = 0.0;
-                                    w2v[idx] = 0.0;
-                                }
-                                census::entering_leave_ci_fused(
-                                    &lat,
-                                    varr,
-                                    &base_freqs,
-                                    den,
-                                    w2v,
-                                );
-                                let mut total = 0usize;
-                                let mut under = 0usize;
-                                for idx in 0..full_rack_start {
-                                    if den[idx] > 0.0 {
-                                        total += 1;
-                                        let ci_half =
-                                            z * (w2v[idx] / (den[idx] * den[idx])).sqrt();
-                                        if ci_half <= ci_target_mp {
-                                            under += 1;
-                                        }
-                                    }
-                                }
-                                let frac = if total > 0 {
-                                    under as f64 / total as f64
-                                } else {
-                                    0.0
-                                };
-                                (frac, *comp)
-                            };
-                            writeln!(boxed_stdout_or_stderr(),
-                                "census CI-stop check: {n_boards} boards, {:.1}% of leaves \
-                                 within target {:.0} mp (need {:.1}%)",
-                                100.0 * frac,
-                                ci_target_mp,
-                                100.0 * ci_stop_frac,).ok();
-                            if frac >= ci_stop_frac {
-                                stop_now.store(true, std::sync::atomic::Ordering::Relaxed);
-                                writeln!(boxed_stdout_or_stderr(),
-                                    "census CI-stop: target met at {n_boards} boards; stopping.").ok();
-                            }
-                        }
-                    }
                     }
                     }
 
@@ -5308,135 +5148,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
     let leave_final = leave_lock.into_inner().unwrap();
-
-    if ci_report {
-        let sumsq = ci_sumsq.into_inner().unwrap();
-        let z = stats::NormalDistribution::reverse_ci(ci_conf);
-        let mut ci_halves = Vec::new();
-        let mut boards_needed = Vec::new();
-        let mut n_under = 0usize;
-        let mut sum_n = 0u64;
-
-        let report_lo = if rack_summary { full_rack_start } else { 0 };
-        for idx in report_lo..lat_len {
-            let n = accum_cnt[idx];
-            if n >= 2 {
-                let var = ((sumsq[idx] - accum_sum[idx] * accum_sum[idx] / n as f64)
-                    / (n as f64 - 1.0))
-                    .max(0.0);
-                let ci_half = z * (var / n as f64).sqrt();
-                if ci_half <= ci_target_mp {
-                    n_under += 1;
-                }
-
-                boards_needed.push(n as f64 * (ci_half / ci_target_mp.max(1.0)).powi(2));
-                ci_halves.push(ci_half);
-                sum_n += n;
-            }
-        }
-        ci_halves.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        boards_needed.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let pctl = |v: &[f64], p: f64| -> f64 {
-            if v.is_empty() {
-                0.0
-            } else {
-                v[(((v.len() - 1) as f64) * p) as usize]
-            }
-        };
-        let m = ci_halves.len();
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census CI report (conf {:.3}, z {:.3}, {m} entries with n>=2, avg n {:.1}):",
-            ci_conf,
-            z,
-            if m > 0 { sum_n as f64 / m as f64 } else { 0.0 },
-        )?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "  per-entry CI half-width (mp): p50 {:.1}  p90 {:.1}  p99 {:.1}  max {:.1}",
-            pctl(&ci_halves, 0.5),
-            pctl(&ci_halves, 0.9),
-            pctl(&ci_halves, 0.99),
-            ci_halves.last().copied().unwrap_or(0.0),
-        )?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "  {:.1}% of entries within target {:.0} mp at the current count; \
-             boards to pin a fraction: p50 {:.0}  p90 {:.0}  p99 {:.0}",
-            if m > 0 {
-                100.0 * n_under as f64 / m as f64
-            } else {
-                0.0
-            },
-            ci_target_mp,
-            pctl(&boards_needed, 0.5),
-            pctl(&boards_needed, 0.9),
-            pctl(&boards_needed, 0.99),
-        )?;
-
-        if ci_report_level >= 2 && rack_summary {
-            let mut varr = vec![-1.0f64; lat_len]; // -1 = never valued -> excluded
-            for idx in full_rack_start..lat_len {
-                let n = accum_cnt[idx];
-                varr[idx] = if n >= 2 {
-                    let var = ((sumsq[idx] - accum_sum[idx] * accum_sum[idx] / n as f64)
-                        / (n as f64 - 1.0))
-                        .max(0.0);
-                    var / n as f64
-                } else if n == 1 {
-                    0.0 // single sample: across-board variance unknown, treated as 0
-                } else {
-                    -1.0 // never valued
-                };
-            }
-            let mut den = vec![0.0f64; lat_len];
-            let mut w2v = vec![0.0f64; lat_len];
-            census::entering_leave_ci_fused(&lat, &varr, &base_freqs, &mut den, &mut w2v);
-            let mut leave_ci = Vec::new();
-            let mut leave_scale = Vec::new();
-            let mut leave_under = 0usize;
-            for idx in 0..full_rack_start {
-                if den[idx] > 0.0 {
-                    let ci_half = z * (w2v[idx] / (den[idx] * den[idx])).sqrt();
-                    if ci_half <= ci_target_mp {
-                        leave_under += 1;
-                    }
-                    leave_ci.push(ci_half);
-
-                    leave_scale.push((ci_half / ci_target_mp.max(1.0)).powi(2));
-                }
-            }
-            leave_ci.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-            leave_scale.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-            let lm = leave_ci.len();
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "  leave-level CI ({lm} leaves, draw-ways-propagated):"
-            )?;
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "    half-width (mp): p50 {:.2}  p90 {:.2}  p99 {:.2}  max {:.2}",
-                pctl(&leave_ci, 0.5),
-                pctl(&leave_ci, 0.9),
-                pctl(&leave_ci, 0.99),
-                leave_ci.last().copied().unwrap_or(0.0),
-            )?;
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "    {:.1}% of leaves within target {:.0} mp; board-scale x_current to pin a \
-                 fraction: p50 {:.3}  p90 {:.3}  p99 {:.3}",
-                if lm > 0 {
-                    100.0 * leave_under as f64 / lm as f64
-                } else {
-                    0.0
-                },
-                ci_target_mp,
-                pctl(&leave_scale, 0.5),
-                pctl(&leave_scale, 0.9),
-                pctl(&leave_scale, 0.99),
-            )?;
-        }
-    }
 
     let (ga_num, ga_den) = if global_apportion && !rack_summary {
         let mut vr = vec![census::UNPLAYABLE; lat_len];
