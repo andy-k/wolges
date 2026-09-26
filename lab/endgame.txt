@@ -49,14 +49,21 @@ regardless of whether today's search ever stops there.
 
 BATCH-SOLVING HARVESTED POSITIONS
 
-autoplay can now harvest the bag-empty positions it plays through into a file.
-An opt-in batch mode (--batch with that file's path) reads the harvested
-positions back, prunes each one's word list to what is reachable, solves each
-with solve() (silent and deterministic, from the previous entry), and prints
-only each line's index and its value -- nothing else, so a whole run's output
-can be hashed or diffed byte for byte. That makes it easy to bulk-time the
-solver over many real positions, or to catch an accidental value change in one
-pass. Without it, the existing hardcoded demo positions run exactly as before.
+autoplay can now harvest the bag-empty positions it plays through into a file
+(--harvest with the file's path). An opt-in batch mode (--batch with that
+file's path) reads the harvested positions back, prunes each one's word list to
+what is reachable, solves each with solve() (silent and deterministic, from the
+previous entry), and prints only each line's index and its value -- nothing
+else, so a whole run's output can be hashed or diffed byte for byte. That makes
+it easy to bulk-time the solver over many real positions, or to catch an
+accidental value change in one pass. Without it, the existing hardcoded demo
+positions run exactly as before. Both commands play the game their options
+give (the options lab/leavegen.txt lists), auto with the word graph and the
+leaves as its arguments and the batch mode with the word graph after its file,
+so a harvest of any two-player game is solved in that game:
+
+  cargo run --release --bin auto -- --harvest endgames.txt CSW24.kwg CSW24.klv2
+  cargo run --release --bin endgame -- --batch endgames.txt CSW24.kwg
 
 
 TWO SEARCH SPEEDUPS

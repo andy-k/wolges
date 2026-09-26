@@ -9,9 +9,30 @@ use wolges::{
     game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
 
+mod game_args;
+
 type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
 
+#[derive(clap::Parser)]
+struct Cli {
+    #[arg(long, help = "the word graph is a kbwg")]
+    kbwg: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "write each bag-empty position the games reach to FILE, as endgame --batch reads"
+    )]
+    harvest: Option<String>,
+    #[arg(help = "the word graph")]
+    kwg: String,
+    #[arg(help = "the leaves (- for none)")]
+    klv: String,
+    #[command(flatten)]
+    game: game_args::GameArgs,
+}
+
 fn main() -> error::Returns<()> {
+    let cli: Cli = clap::Parser::parse();
     if false {
         let mut rng = rand::rngs::ChaCha20Rng::from_seed(*b"the seed is an array of 32 bytes");
         println!("{:?}", rng.get_seed());
@@ -41,38 +62,46 @@ fn main() -> error::Returns<()> {
         return Ok(());
     }
 
-    let harvest: Option<HarvestWriter> = match std::env::var("WOLGES_ENDGAME_HARVEST") {
-        Ok(path) => Some(Arc::new(Mutex::new(BufWriter::new(File::create(path)?)))),
-        Err(_) => None,
+    let harvest: Option<HarvestWriter> = match cli.harvest {
+        Some(path) => Some(Arc::new(Mutex::new(BufWriter::new(File::create(path)?)))),
+        None => None,
     };
 
-    match 1 {
-        1 => do_it(
-            &kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
-            &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
-            &game_config::make_english_game_config(),
-            harvest,
-        ),
-        2 => do_it(
-            &kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kad")?),
-            &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
-            &game_config::make_jumbled_english_game_config(),
-            harvest,
-        ),
-        3 => do_it(
-            &kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.kbwg")?),
-            &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
-            &game_config::make_dutch_game_config(),
-            harvest,
-        ),
-        4 => do_it(
-            &kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.kbwg")?),
-            &klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/DSW25.klv2")?),
-            &game_config::make_dutch_game_config(),
-            harvest,
-        ),
-        _ => unimplemented!(),
+    let game_config = cli.game.make_game_config()?;
+    if game_config.num_players() != 2 {
+        wolges::return_error!("auto plays two seats, so it needs exactly 2 players".to_string());
     }
+    let klv = if cli.klv == "-" {
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+    } else {
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)
+    };
+    game_config.check_leaves(klv.leave_range())?;
+    let kwg_bytes = std::fs::read(&cli.kwg)?;
+    if cli.kbwg {
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+        do_it(&kwg, &klv, &game_config, harvest)
+    } else {
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+        do_it(&kwg, &klv, &game_config, harvest)
+    }
+}
+
+#[inline]
+fn refuse_a_wider_graph<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    game_config: &game_config::GameConfig,
+    kwg_path: &str,
+) -> error::Returns<()> {
+    let alphabet_len = game_config.alphabet().len();
+    if kwg.fits_alphabet(alphabet_len) {
+        return Ok(());
+    }
+    wolges::return_error!(format!(
+        "{kwg_path} has tiles past this game's {alphabet_len}",
+    ));
 }
 
 #[inline(always)]
