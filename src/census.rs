@@ -1227,90 +1227,7 @@ pub fn opp_me2_per_rack(
     .outer(0, rack_size, 0);
 }
 
-#[inline]
-pub fn entering_fused(
-    lat: &MultisetLattice,
-    best: &[i32],
-    unseen: &[u8],
-    num: &mut [i128],
-    den: &mut [i128],
-) {
-    let n = lat.num_letters();
-    let mut r = [0u8; MAX_LETTERS];
-
-    struct Ctx<'a> {
-        n: usize,
-        lat: &'a MultisetLattice,
-        unseen: &'a [u8],
-        nz: &'a [(usize, u8)],
-        num: &'a mut [i128],
-        den: &'a mut [i128],
-    }
-    impl Ctx<'_> {
-        fn apportion_rec(&mut self, i: usize, s_s: usize, within_s: u64, w: i128, we: i128) {
-            if i == 0 {
-                let sr = (self.lat.size_offset[s_s] + within_s) as usize;
-                // SAFETY: sr = size_offset[s_s]+within_s is the rank of a subrack S of a
-                // size<=rack_size rack, < lat.len(); num and den are the lat.len() i128
-                // buffers.
-                unsafe {
-                    *self.num.get_unchecked_mut(sr) += we;
-                    *self.den.get_unchecked_mut(sr) += w;
-                }
-                return;
-            }
-            let (t, cnt) = self.nz[i - 1];
-            let parts = self.n - 1 - t;
-            for cs in 0..=cnt {
-                if cs > self.unseen[t] {
-                    continue;
-                }
-                let cw = n_choose_k((self.unseen[t] - cs) as u64, (cnt - cs) as u64) as i128;
-                if cw == 0 {
-                    continue;
-                }
-                let mut dw = 0u64;
-                if t + 1 < self.n {
-                    let mut a = s_s + cs as usize;
-                    for _ in 0..cs {
-                        dw += self.lat.c(a + parts - 1, parts - 1);
-                        a -= 1;
-                    }
-                }
-                self.apportion_rec(i - 1, s_s + cs as usize, within_s + dw, w * cw, we * cw);
-            }
-        }
-    }
-    let lo = lat.full_rack_start();
-    let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
-    for ridx in lo..lat.len() {
-        // SAFETY: ridx ranges over lo..lat.len() (lo = full_rack_start()), so ridx <
-        // lat.len(); best is the lat.len() best_equity buffer.
-        let b = unsafe { *best.get_unchecked(ridx) };
-
-        if b == UNPLAYABLE {
-            continue;
-        }
-        lat.unrank_into(ridx, &mut r[..n]);
-        let mut m = 0;
-        for (t, &c) in r[..n].iter().enumerate() {
-            if c > 0 {
-                nz[m] = (t, c);
-                m += 1;
-            }
-        }
-        let mut ctx = Ctx {
-            n,
-            lat,
-            unseen,
-            nz: &nz[..m],
-            num: &mut *num,
-            den: &mut *den,
-        };
-        ctx.apportion_rec(m, 0, 0, 1, b as i128);
-    }
-}
-
+#[cfg(test)]
 #[inline]
 pub fn leave_value_by_draw(
     lat: &MultisetLattice,
@@ -1679,35 +1596,6 @@ mod tests {
 
         let f = leave_value_by_draw(&lat, &best, &unseen, &[1u8, 1u8]);
         assert_eq!(f, 6_000);
-    }
-
-    #[test]
-    #[inline]
-    fn entering_fused_matches_draw() {
-        let lat = MultisetLattice::new(3, 3);
-        let unseen = [4u8, 3u8, 2u8];
-        let mut best = vec![UNPLAYABLE; lat.len()];
-        for (idx, slot) in best.iter_mut().enumerate().skip(lat.full_rack_start()) {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
-            *slot = h.rem_euclid(20_000) - 5_000;
-        }
-        let mut num = vec![0i128; lat.len()];
-        let mut den = vec![0i128; lat.len()];
-        entering_fused(&lat, &best, &unseen, &mut num, &mut den);
-        for idx in 0..lat.len() {
-            let s = lat.tally(idx);
-            let size: usize = s.iter().map(|&c| c as usize).sum();
-            if size > lat.rack_size() {
-                continue;
-            }
-            let pull = leave_value_by_draw(&lat, &best, &unseen, &s);
-            let push = if den[idx] != 0 {
-                (num[idx] / den[idx]) as i32
-            } else {
-                UNPLAYABLE
-            };
-            assert_eq!(pull, push, "leave {idx} {s:?}: pull {pull} push {push}");
-        }
     }
 
     #[test]

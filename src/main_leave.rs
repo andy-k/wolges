@@ -707,23 +707,6 @@ fn env_flag(name: &str, default: bool) -> bool {
     env_parse::<u64>(name, default as u64) != 0
 }
 
-#[derive(Clone, Copy)]
-enum Apportion {
-    FullRack,
-    Entering,
-}
-
-#[inline]
-fn wolges_apportion() -> error::Returns<Apportion> {
-    match std::env::var("WOLGES_APPORTION").ok().as_deref() {
-        None | Some("full-rack") => Ok(Apportion::FullRack),
-        Some("entering") => Ok(Apportion::Entering),
-        Some(other) => {
-            Err(format!("WOLGES_APPORTION must be full-rack or entering, got {other:?}").into())
-        }
-    }
-}
-
 struct SelfPlayParams {
     num_games: u64,
     min_samples: u64,
@@ -756,11 +739,6 @@ fn generate_autoplay_logs<
     let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
 
     let full_rack_forcing = env_flag("WOLGES_AUTOPLAY_FULL_RACK_FORCING", false);
-
-    let entering = match wolges_apportion()? {
-        Apportion::Entering => true,
-        Apportion::FullRack => false,
-    };
 
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
 
@@ -1022,17 +1000,6 @@ fn generate_autoplay_logs<
                 let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
                 let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
                 let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-
-                let mut last_kept: Vec<Option<Vec<u8>>> = if SUMMARIZE && entering {
-                    vec![None; game_config.num_players() as usize]
-                } else {
-                    Vec::new()
-                };
-                let mut aft_rack_entering = if SUMMARIZE && entering {
-                    Vec::with_capacity(game_config.rack_size() as usize)
-                } else {
-                    Vec::new()
-                };
 
                 let mut thread_rare_subrack_map =
                     fash::MyHashMap::<bites::Bites, Cumulate>::default();
@@ -1340,9 +1307,6 @@ fn generate_autoplay_logs<
                     game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
                     game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                    if SUMMARIZE && entering {
-                        last_kept.iter_mut().for_each(|slot| *slot = None);
-                    }
                     loop {
                         num_moves += 1;
 
@@ -1690,45 +1654,7 @@ fn generate_autoplay_logs<
                         if SUMMARIZE && old_bag_len > 0 {
 
                             let rounded_equity = knob.apply(play.equity, &cur_rack_as_vec);
-                            if entering {
-
-                                if let Some(l) = &last_kept[old_turn as usize]
-                                    && !l.is_empty()
-                                {
-                                    pool_one(&mut thread_full_rack_map, &l[..], rounded_equity);
-                                }
-
-                                aft_rack_entering.clone_from(&cur_rack_as_vec);
-                                match &play.play {
-                                    movegen::Play::Exchange { tiles } => {
-                                        game_state::use_tiles(
-                                            &mut aft_rack_entering,
-                                            tiles.iter().copied(),
-                                        )
-                                        .unwrap();
-                                    }
-                                    movegen::Play::Place { word, .. } => {
-                                        game_state::use_tiles(
-                                            &mut aft_rack_entering,
-                                            word.iter().filter_map(|&tile| {
-                                                if tile != 0 {
-                                                    Some(tile & !((tile as i8) >> 7) as u8)
-                                                } else {
-                                                    None
-                                                }
-                                            }),
-                                        )
-                                        .unwrap();
-                                    }
-                                }
-                                aft_rack_entering.sort_unstable();
-                                match &mut last_kept[old_turn as usize] {
-                                    Some(v) => v.clone_from(&aft_rack_entering),
-                                    slot => *slot = Some(aft_rack_entering.clone()),
-                                }
-                            } else {
-                                pool_one(&mut thread_full_rack_map, &cur_rack_as_vec[..], rounded_equity);
-                            }
+                            pool_one(&mut thread_full_rack_map, &cur_rack_as_vec[..], rounded_equity);
                         }
 
                         if WRITE_LOGS {
@@ -4020,11 +3946,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let high_tiles = num_tiles.saturating_sub(pool_min);
     let verify = env_flag("WOLGES_CENSUS_VERIFY", false);
 
-    let full_rack = match wolges_apportion()? {
-        Apportion::FullRack => true,
-        Apportion::Entering => false,
-    };
-
     let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
         let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
             wolges::return_error!(
@@ -4042,8 +3963,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     };
 
     let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
-
-    let entering_push = env_flag("WOLGES_CENSUS_ENTERING_PUSH", false);
 
     let gens = board_counts.len();
 
@@ -4069,7 +3988,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         lat.len(),
     )?;
 
-    let add_table = if full_rack {
+    let add_table = {
         let t = std::time::Instant::now();
         let at = census::AddTable::new_with_threads(&lat, threads);
         writeln!(
@@ -4078,9 +3997,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             lat.full_rack_start(),
             t.elapsed(),
         )?;
-        Some(at)
-    } else {
-        None
+        at
     };
 
     let zeta_pool_min = env_usize("WOLGES_CENSUS_ZETA_POOL", 36);
@@ -4251,59 +4168,45 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                 let mut blank_deltas = Vec::<(u8, i32)>::new();
 
-                let mut best = if full_rack {
-                    Vec::new()
-                } else {
-                    vec![census::UNPLAYABLE; lat_len]
-                };
                 let mut contrib = vec![census::UNPLAYABLE; lat_len];
 
-                let mut num_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
-                let mut den_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
+                let mut num_board = vec![0f64; lat_len];
+                let mut den_board = vec![0f64; lat_len];
 
-                let mut maxsheet = if full_rack { vec![0i32; lat_len] } else { Vec::new() };
+                let mut maxsheet = vec![0i32; lat_len];
 
                 let opp_term = oppdenial_leave != 0.0 || oppdenial_rack != 0.0;
 
-                let mut oppdenial_leave_best = if full_rack
-                    && (opp_term || oppdenial_exact != 0.0 || winpct_table.is_some())
+                let mut oppdenial_leave_best = if opp_term
+                    || oppdenial_exact != 0.0
+                    || winpct_table.is_some()
                 {
                     vec![census::UNPLAYABLE; lat_len]
                 } else {
                     Vec::new()
                 };
-                let mut oppdenial_leave_marginal = if full_rack && opp_term {
+                let mut oppdenial_leave_marginal = if opp_term {
                     vec![0f64; num_letters]
                 } else {
                     Vec::new()
                 };
 
-                let mut oppdenial_exact_kept_idx = if full_rack && oppdenial_exact != 0.0 {
+                let mut oppdenial_exact_kept_idx = if oppdenial_exact != 0.0 {
                     vec![0u32; lat_len]
                 } else {
                     Vec::new()
                 };
-                let mut oppdenial_exact_kept_size = if full_rack && oppdenial_exact != 0.0 {
+                let mut oppdenial_exact_kept_size = if oppdenial_exact != 0.0 {
                     vec![0u8; lat_len]
                 } else {
                     Vec::new()
                 };
-                let mut oppdenial_exact_term = if full_rack && oppdenial_exact != 0.0 {
+                let mut oppdenial_exact_term = if oppdenial_exact != 0.0 {
                     vec![0f64; lat_len]
                 } else {
                     Vec::new()
                 };
 
-                let mut num_e = if !full_rack && entering_push {
-                    vec![0i128; lat_len]
-                } else {
-                    Vec::new()
-                };
-                let mut den_e = if !full_rack && entering_push {
-                    vec![0i128; lat_len]
-                } else {
-                    Vec::new()
-                };
                 let mut tally_buf = vec![0u8; num_letters];
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut unseen_pool = Vec::<u8>::new();
@@ -4378,15 +4281,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     } // end of the !reuse step-1 build branch
 
 
-                    let ts = std::time::Instant::now();
-                    if !full_rack {
-                        census::best_equity_table(&lat, &sheet, leave, &mut best);
-                        if log_first {
-                            writeln!(boxed_stdout_or_stderr(), "  step2 best_equity_table: {:?}", ts.elapsed()).ok();
-                        }
-                    }
-
-
                     if do_verify {
                         unseen_pool.clear();
                         for (t, &c) in unseen_tally.iter().enumerate() {
@@ -4430,19 +4324,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     * equity::SCALE as f64)
                                     .round()
                                     as i32;
-                                let census_mp = if full_rack {
-
-                                    tally_buf.iter_mut().for_each(|x| *x = 0);
-                                    for &t in &verify_rack {
-                                        tally_buf[t as usize] += 1;
-                                    }
-                                    census::naive_best_equity(
-                                        &lat, &sheet, leave, &tally_buf,
-                                    )
-                                    .0
-                                } else {
-                                    best[rr as usize]
-                                };
+                                tally_buf.iter_mut().for_each(|x| *x = 0);
+                                for &t in &verify_rack {
+                                    tally_buf[t as usize] += 1;
+                                }
+                                let census_mp =
+                                    census::naive_best_equity(&lat, &sheet, leave, &tally_buf).0;
                                 if engine_mp == census_mp {
                                     ok += 1;
                                 } else {
@@ -4461,155 +4348,130 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
 
                     let ts = std::time::Instant::now();
-                    if full_rack {
-                        num_board.iter_mut().for_each(|x| *x = 0.0);
-                        den_board.iter_mut().for_each(|x| *x = 0.0);
+                    num_board.iter_mut().for_each(|x| *x = 0.0);
+                    den_board.iter_mut().for_each(|x| *x = 0.0);
 
-                        let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                        if let Some(wp_table) = winpct_table.as_ref() {
+                    let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
+                    if let Some(wp_table) = winpct_table.as_ref() {
 
-                            census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                            let u: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                            let bag = u.saturating_sub(2 * rack_size);
-                            winpct_remap(
-                                wp_table,
-                                &mut oppdenial_leave_best,
-                                full_rack_start,
-                                bag,
-                                rack_size,
-                                rack_size,
-                                winpct_blend,
-                            );
-                            census::apportion_table(
+                        census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
+                        let u: usize = unseen_tally.iter().map(|&c| c as usize).sum();
+                        let bag = u.saturating_sub(2 * rack_size);
+                        winpct_remap(
+                            wp_table,
+                            &mut oppdenial_leave_best,
+                            full_rack_start,
+                            bag,
+                            rack_size,
+                            rack_size,
+                            winpct_blend,
+                        );
+                        census::apportion_table(
+                            &lat,
+                            &oppdenial_leave_best,
+                            &unseen_tally,
+                            &mut num_board,
+                            &mut den_board,
+                        );
+                    } else {
+
+                    let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
+                    if opp_term || oppdenial_exact_board {
+                        if oppdenial_exact_board {
+                            census::best_equity_argmax_table(
                                 &lat,
-                                &oppdenial_leave_best,
-                                &unseen_tally,
-                                &mut num_board,
-                                &mut den_board,
+                                &sheet,
+                                leave,
+                                &mut oppdenial_leave_best,
+                                &mut oppdenial_exact_kept_idx,
+                                &mut oppdenial_exact_kept_size,
                             );
                         } else {
-
-                        let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
-                        if opp_term || oppdenial_exact_board {
-                            if oppdenial_exact_board {
-                                census::best_equity_argmax_table(
-                                    &lat,
-                                    &sheet,
-                                    leave,
-                                    &mut oppdenial_leave_best,
-                                    &mut oppdenial_exact_kept_idx,
-                                    &mut oppdenial_exact_kept_size,
-                                );
-                            } else {
-                                census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                            }
+                            census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
                         }
-                        if opp_term {
-                            census::opp_denial_marginals(
-                                &lat,
-                                add_table.as_ref().unwrap(),
-                                &oppdenial_leave_best,
-                                &unseen_tally,
-                                &mut oppdenial_leave_marginal,
-                            );
-                        }
-                        if oppdenial_exact_board {
-
-                            oppdenial_exact_term.iter_mut().for_each(|x| *x = 0.0);
-                            census::opp_me2_per_rack(
-                                &lat,
-                                add_table.as_ref().unwrap(),
-                                &oppdenial_leave_best,
-                                &census::KeptArgmax {
-                                    idx: &oppdenial_exact_kept_idx,
-                                    size: &oppdenial_exact_kept_size,
-                                },
-                                &unseen_tally,
-                                oppdenial_exact_me2,
-                                &mut oppdenial_exact_term,
-                            );
-                        } else if oppdenial_exact != 0.0 && log_first {
-                            writeln!(boxed_stdout_or_stderr(),
-                                "  oppdenial_exact: pool {pool} > {oppdenial_exact_pool_max}, skipping the term this board").ok();
-                        }
-                        census::apportion_fused(
+                    }
+                    if opp_term {
+                        census::opp_denial_marginals(
                             &lat,
-                            add_table.as_ref().unwrap(),
-                            &census::ApportionBoard {
-                                sheet: &sheet,
-                                leave,
-                                unseen: &unseen_tally,
-                            },
-                            census::ApportionOut {
-                                num: &mut num_board,
-                                den: &mut den_board,
-                            },
-                            &mut maxsheet,
-                            census::ApportionMode {
-                                zeta: pool >= zeta_pool_min,
-                                null_leave,
-                                scatter,
-                            },
-                            &census::OppDenialParams {
-                                oppdenial_rack,
-                                marginal: if oppdenial_rack != 0.0 {
-                                    &oppdenial_leave_marginal
-                                } else {
-                                    &[]
-                                },
-                                oppdenial_exact: if oppdenial_exact_board { oppdenial_exact } else { 0.0 },
-                                oppdenial_exact_term: if oppdenial_exact_board {
-                                    &oppdenial_exact_term
-                                } else {
-                                    &[]
-                                },
-                            },
+                            &add_table,
+                            &oppdenial_leave_best,
+                            &unseen_tally,
+                            &mut oppdenial_leave_marginal,
                         );
-                        }
-                        for (idx, slot) in contrib.iter_mut().enumerate() {
-                            *slot = if den_board[idx] > 0.0 {
-                                let mut v = (num_board[idx] / den_board[idx]).round() as i32;
-                                if oppdenial_leave != 0.0 {
+                    }
+                    if oppdenial_exact_board {
 
-                                    lat.unrank_into(idx, &mut tally_buf);
-                                    let mut d = 0.0f64;
-                                    for (t, &c) in tally_buf.iter().enumerate() {
-                                        d += c as f64 * oppdenial_leave_marginal[t];
-                                    }
-                                    v += (oppdenial_leave * d).round() as i32;
+                        oppdenial_exact_term.iter_mut().for_each(|x| *x = 0.0);
+                        census::opp_me2_per_rack(
+                            &lat,
+                            &add_table,
+                            &oppdenial_leave_best,
+                            &census::KeptArgmax {
+                                idx: &oppdenial_exact_kept_idx,
+                                size: &oppdenial_exact_kept_size,
+                            },
+                            &unseen_tally,
+                            oppdenial_exact_me2,
+                            &mut oppdenial_exact_term,
+                        );
+                    } else if oppdenial_exact != 0.0 && log_first {
+                        writeln!(boxed_stdout_or_stderr(),
+                            "  oppdenial_exact: pool {pool} > {oppdenial_exact_pool_max}, skipping the term this board").ok();
+                    }
+                    census::apportion_fused(
+                        &lat,
+                        &add_table,
+                        &census::ApportionBoard {
+                            sheet: &sheet,
+                            leave,
+                            unseen: &unseen_tally,
+                        },
+                        census::ApportionOut {
+                            num: &mut num_board,
+                            den: &mut den_board,
+                        },
+                        &mut maxsheet,
+                        census::ApportionMode {
+                            zeta: pool >= zeta_pool_min,
+                            null_leave,
+                            scatter,
+                        },
+                        &census::OppDenialParams {
+                            oppdenial_rack,
+                            marginal: if oppdenial_rack != 0.0 {
+                                &oppdenial_leave_marginal
+                            } else {
+                                &[]
+                            },
+                            oppdenial_exact: if oppdenial_exact_board { oppdenial_exact } else { 0.0 },
+                            oppdenial_exact_term: if oppdenial_exact_board {
+                                &oppdenial_exact_term
+                            } else {
+                                &[]
+                            },
+                        },
+                    );
+                    }
+                    for (idx, slot) in contrib.iter_mut().enumerate() {
+                        *slot = if den_board[idx] > 0.0 {
+                            let mut v = (num_board[idx] / den_board[idx]).round() as i32;
+                            if oppdenial_leave != 0.0 {
+
+                                lat.unrank_into(idx, &mut tally_buf);
+                                let mut d = 0.0f64;
+                                for (t, &c) in tally_buf.iter().enumerate() {
+                                    d += c as f64 * oppdenial_leave_marginal[t];
                                 }
-                                v
-                            } else {
-                                census::UNPLAYABLE
-                            };
-                        }
-                    } else if entering_push {
-
-                        num_e.iter_mut().for_each(|x| *x = 0);
-                        den_e.iter_mut().for_each(|x| *x = 0);
-                        census::entering_fused(&lat, &best, &unseen_tally, &mut num_e, &mut den_e);
-                        for (idx, slot) in contrib.iter_mut().enumerate() {
-                            *slot = if den_e[idx] != 0 {
-                                (num_e[idx] / den_e[idx]) as i32
-                            } else {
-                                census::UNPLAYABLE
-                            };
-                        }
-                    } else {
-                        for (idx, slot) in contrib.iter_mut().enumerate() {
-                            lat.unrank_into(idx, &mut tally_buf);
-                            *slot = census::leave_value_by_draw(
-                                &lat,
-                                &best,
-                                &unseen_tally,
-                                &tally_buf,
-                            );
-                        }
+                                v += (oppdenial_leave * d).round() as i32;
+                            }
+                            v
+                        } else {
+                            census::UNPLAYABLE
+                        };
                     }
                     if log_first {
                         writeln!(boxed_stdout_or_stderr(),
-                            "  step3 {}: {:?}",
-                            if full_rack { "full-rack" } else { "draw-average" },
+                            "  step3 full-rack: {:?}",
                             ts.elapsed(),).ok();
                     }
 

@@ -634,28 +634,26 @@ play-and-keep split -- pins down what the answer must be, and the fast version
 that fills the whole catalog is checked against that reference in the tests, so
 the fast path is proven right before it is trusted.
 
-Third, it values each leave. You keep some tiles; the bag then draws the rest
-of your rack back up to a full rack. For every way that draw could come out,
-look up the best that completed rack can do, and average those -- weighting
-each possible draw by how many ways it can actually come out of the unseen
-tiles, so likely draws count more than unlikely ones (drawing without
-replacement: the kept tiles are themselves already gone from the pool, and the
-completion is drawn from what remains). That weighted average is the leave's
-value: the worth of walking into a turn holding exactly those tiles, given
-everything still unseen. A full-length leave -- the full rack kept, that is, a
-pass -- draws nothing and takes its own best-rack value straight through. A
-leave the board's unseen tiles cannot complete at all is left unvalued on that
-board.
+Third, it values each leave. Take every full rack the board could deal, find
+the best it can do, weight it by how likely that rack is to be drawn from the
+unseen tiles, and hand a share of that value to every subrack the rack contains
+-- so a leave's value is the total, over every full rack that contains it, of
+that rack's weighted value. Each subrack keeps a running numerator and
+denominator, and the leave is the numerator over the denominator. This is the
+complete attribution: every subrack of every rack is credited, including the
+heavy tiles a player rarely chooses to play but that still shape a rack's
+future. A full-length leave -- the full rack kept, that is, a pass -- is
+contained only in itself and takes its own best-rack value straight through. A
+leave that no rack the board can deal contains is left unvalued on that board.
 
-The result is exactly the worth of holding that leave, measured for every leave
-on the board rather than estimated from the racks that happened to come up.
-Each board contributes a running total and count per leave; after all the
-boards, every leave's average is taken, the whole table is shifted so the empty
-leave is worth zero (its value is the average best full-rack equity -- the
-natural baseline), and a (leave, value) row is written per leave. Rare
-holdings, which one board may not be able to complete, get covered by piling up
-boards: more boards mean less noise and more of the uncommon board situations
-reached.
+The result is measured exactly for every leave on the board rather than
+estimated from the racks that happened to come up. Each board contributes a
+running total and count per leave; after all the boards, every leave's average
+is taken, the whole table is shifted so the empty leave is worth zero (its
+value is the average best full-rack equity -- the natural baseline), and a
+(leave, value) row is written per leave. Rare holdings, which one board may not
+be able to complete, get covered by piling up boards: more boards mean less
+noise and more of the uncommon board situations reached.
 
 The table is written without the full-length leaves by default. Keeping a full
 rack (a pass) is almost never the best move mid-game, and the empty-bag endgame
@@ -747,43 +745,6 @@ the autoplay baseline, and by how much, is not something a fresh head-to-head
 settles at this point; the honest claim is the runtime one.
 
 New knobs: WOLGES_CENSUS_BLANK_CAP, WOLGES_CENSUS_VERIFY.
-
-
-TWO WAYS TO ATTRIBUTE A BOARD'S VALUE: ENTERING VS FULL-RACK
-
-There are two honest ways to turn a board's play values into leave values, and
-the census can do either. They are selected by a knob, WOLGES_APPORTION.
-(Autoplay reads the same knob for a related choice: whether to record the full
-rack it drew or only the leave carried into the turn.)
-
-Entering attribution values a leave by the worth of walking into a turn holding
-exactly that leave: average the best play of every full rack you could complete
-that leave to, weighted by the ways(R, S) draw count from before. This credits
-only the leave carried into the turn -- and it is exactly the value the census
-has been computing all along.
-
-Full-rack apportionment is the exhaustive analog of what the sampled board
-method already does. Take every full rack the board could deal, find the best
-it can do, weight it by how likely that rack is to be drawn, and hand a share
-of that value to every subrack the rack contains -- so a leave's value is the
-total, over every full rack that contains it, of that rack's weighted value.
-Each subrack keeps a running numerator and denominator, and the leave is the
-numerator over the denominator. The census does this over every rack on the
-board exactly, not by sampling. It is worth trying because it is the complete
-attribution: every subrack of every rack is credited, including the heavy tiles
-a player rarely chooses to play but that still shape a rack's future, rather
-than only the leave that happened to be carried in.
-
-Full-rack apportionment is the new alternative here, opt-in with
-WOLGES_APPORTION=full-rack; a plain census run still gives the entering value.
-Having both lets the two be compared head to head on identical boards. The
-verdict, measured on CSW24 in our own self-play, is that they come out
-essentially even: the entering table scored 50.0791 percent of games at one
-million game pairs (about 0.08 pp above an even split) and 50.0296 at ten
-million pairs (about 0.03 pp), a real but negligible edge for entering. So the
-choice between them is not about play strength.
-
-New knobs: WOLGES_APPORTION.
 
 
 CHOOSING BOARDS ACROSS THE GAME
@@ -1023,20 +984,6 @@ help: in a fresh head-to-head the full correction (1.0) beats it 50.13 to 49.87
 not a win. The knob stays at 1.0.
 
 New knobs: WOLGES_OPPDENIAL_EXACT_ME2, WOLGES_OPPDENIAL_LEAVE_MARGINAL.
-
-
-CHOOSING THE DEFAULT ATTRIBUTION
-
-Since the two attributions come out even on CSW24 -- entering held a negligible
-edge at ten million game pairs (50.0296, about 0.03 pp) -- the choice is
-settled on design grounds, not on play strength. Full-rack is the fuller, more
-natural attribution: it credits every subrack the census already computes, in
-one inline pass over the board, and it is what every run worth shipping
-selected by hand. The old default was entering, so a plain census run silently
-produced the narrower leaves, an easy mistake to walk into. The default is
-flipped: a plain run now gives full-rack, and entering becomes opt-in with
-WOLGES_APPORTION=entering. A plain run is byte-identical to an explicit
-WOLGES_APPORTION=full-rack run.
 
 
 FORCING FULL RARE RACKS
@@ -1525,10 +1472,6 @@ Every run:
   extension on a clash, so no run ever clobbers another's output.
 
 Shared across builders:
-  WOLGES_APPORTION (full-rack or entering; default full-rack) -- how a board's
-    value becomes leave values; read by the census and by autoplay's recording:
-      full-rack  credit every subrack of each rack (the complete attribution)
-      entering   credit only the leave carried into the turn
   WOLGES_IMPOSSIBLE_OK (0 or 1; default 1) -- whether to value a rack the board
     cannot currently deal; read by autoplay's forcing and board sampling's
     draw source:
