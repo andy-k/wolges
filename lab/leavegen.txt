@@ -788,6 +788,13 @@ resume index would run off the end of the specification and a worker would
 panic. It now stops with a clear error -- extend the specification -- instead
 of crashing. Fresh runs are unaffected.
 
+Each census run also writes its last generation as a summary,
+census-summary-<stamp>.csv, in the autoplay summary format: a totals row, then
+each full rack with the sum of its best-play equity over the boards that dealt
+it and the count of those boards. So separate census runs merge through leave
+resummarize, and a merged summary decomposes into leaves through leave
+generate, as a board-sampling or autoplay summary does.
+
 Finally, the census window's bounds -- the range of unseen-pool sizes it
 studies -- are derived from the game configuration rather than hand-picked for
 the English game, so they carry over to any tile-set. The low end is the
@@ -1126,8 +1133,8 @@ OUTPUT FILE NAMES
 
 Output files carry a run stamp -- the wall-clock time at 1/65536-second
 resolution, in hex -- shared by a census run's snapshots
-(census-gen-<stamp>-<gen>.klv2) and leaves, a board-sampling summary, a
-playability scan, and an autoplay pass's log, games, and summary, so a run's
+(census-gen-<stamp>-<gen>.klv2), summary and leaves, a board-sampling summary,
+a playability scan, and an autoplay pass's log, games, and summary, so a run's
 files stay grouped. Two runs started within the same 1/65536 second share a
 stamp; every file is created without overwriting an existing one, inserting a
 _1 (then _2) before the extension on a clash, so no run ever clobbers another's
