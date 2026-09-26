@@ -420,75 +420,6 @@ estimated.
 New knobs: WOLGES_GILLES_RESERVE, WOLGES_GILLES_RESERVE_BUDGET.
 
 
-COVERING RARE SUBRACKS IN AUTOPLAY
-
-The same rare-coverage question applies to the autoplay baseline, and autoplay
-already has a way to chase it: alongside the racks its games naturally deal, it
-can force extra samples of the rarely-seen ones. But folding those forced
-samples in correctly turns out to matter, and the naive way does real harm.
-
-Recall that leave generate apportions each rack's average score across all
-the smaller tile-groups you could keep from it, weighting by how drawable the
-extra tiles are. That apportioning is right for a rack the games actually
-dealt. It is wrong for a forced sample: a forced rack comes from a lopsided,
-unusual board picked precisely to reach a rare holding, so apportioning its
-score across all of its leaves would leak that oddness into the common leaves
-that share those smaller groups -- the very leaves that are already well
-measured. Done that way, forcing more samples makes the common leaves worse,
-which defeats the purpose of forcing at all.
-
-The fix keeps the two kinds of samples in two separate files. The normal
-summary holds the racks the games really dealt, apportioned across their leaves
-exactly as before; when nothing is forced this file is byte for byte what
-autoplay wrote before. A second, rare file holds the forced samples, and each
-one is credited only to the single leave it was forced for -- never apportioned
-anywhere else. The rare file is written only when something was actually
-forced.
-
-To make that work, two things that autoplay used to do one full rack at a time
-now happen one leave at a time: measuring how many samples each leave has, and
-topping up the short ones. Autoplay measures each leave's coverage by breaking
-the real racks down the same way leave generate will, adds in the rare
-samples gathered so far, and tops up whichever leaves are still short by
-completing each with filler tiles drawn from the board's still-unseen pool. The
-impossible-rack switch described earlier (WOLGES_IMPOSSIBLE_OK) decides what to
-do when a leave cannot occur on the current board. So the prize here is
-precisely the undersampled leaves -- the ones the games rarely produce -- not
-the mathematically least-likely racks; a common leave that simply happened to
-come up little gets topped up just as a genuinely rare one does.
-
-leave generate takes the rare file as one more optional argument after the
-leaves file:
-
-  cargo run --release --bin leave -- \
-    generate summary.csv leaves.csv [rare.csv]
-
-Its rows are already counted per leave, each carrying its own score total and
-sample count, so they are added straight into the same running totals
-leave generate keeps, skipping the apportioning a full rack goes through.
-They only ever name real leaves you keep, never the empty leave that all the
-others are measured against, so the empty-leave baseline never moves: the rare
-file can only fill in coverage, it cannot tilt the whole table. (The reader
-borrows each field in place rather than copying it, so it allocates nothing per
-row, matching how the main summary is read.) The genleaves.sh driver carries
-the rare file end to end: when autoplay forcing is on it writes the rare file
-beside the normal summary, hands it to the leave generate step, and adds it
-to the result archive; when forcing is off no rare file is made or passed, so
-the plain autoplay and board-sampling paths stay byte-identical to before.
-
-This is a correctness fix rather than a new lever: it is what makes forced
-rare-subrack coverage safe to add at all. Whether the added coverage then moves
-the table is the same question the remediation above answered -- covering the
-rare tail with measured data, rather than an estimate, does not by itself make
-a stronger table -- and here too the safe default is to leave forcing off
-unless you specifically want that tail measured. The claim that folding forced
-samples into the common pile makes the leaves measurably worse is the design
-rationale for the two-file split, and it is verifiable from the code:
-apportioning lopsided-board samples pollutes the shared common leaves. It is
-argued from that mechanism, not from an at-scale leave compare of folding-in
-versus the split.
-
-
 TWO WAYS TO WEIGHT A RACK IN THE DECOMPOSE
 
 The generate step values a leave by averaging the best-play values of all the
@@ -933,40 +864,31 @@ New knobs: WOLGES_OPPDENIAL_EXACT_ME2, WOLGES_OPPDENIAL_LEAVE_MARGINAL.
 FORCING FULL RARE RACKS
 
 Self-play almost never deals a rack full of rare tiles, so the leaves that
-depend on such racks are built from too few games. Autoplay already patches
-this by forcing: deliberately building and playing the cases that self-play
-starves, so their leaves rest on real plays rather than on nothing. Until now
-it forced at the level of undersampled subracks -- the shorter kept-tile
-combinations -- and kept them in a side list, apart from the main rack tally.
-It had to: under the per-occurrence decompose, dropping a full rare rack into
-the main tally would over-count every common subrack that rack happens to
-contain.
+depend on such racks are built from too few games. Autoplay patches this by
+forcing: deliberately building and playing the cases that self-play starves, so
+their leaves rest on real plays rather than on nothing.
 
-Full-rack forcing adds the other option -- force undersampled full racks in
-their entirety and record them in the main rack tally, exactly like a naturally
-drawn rack. Switched on (WOLGES_AUTOPLAY_FULL_RACK_FORCING, off by default),
-the remediation step walks the possible full racks, looks each up in the rack
-tally, and targets any seen fewer than the min-samples count. A rack that wants
-more copies of a tile than the whole bag holds is skipped -- it can never be
-completed, so forcing it would be wasted work. Paired with the
-WOLGES_IMPOSSIBLE_OK knob turned on, it will also force racks that this board
-cannot currently deal, building them with their tiles forced onto the board. A
-forced rack is built tile for tile and recorded keyed by the full rack, count
-one. Switched off, the old subrack-targeted path is byte-for-byte unchanged.
+Forcing works on whole racks. The remediation step walks the possible full
+racks, looks each up in the rack tally, and targets any seen fewer than the
+min-samples count, recording each forced rack in the main rack tally exactly
+like a naturally drawn one. A rack that wants more copies of a tile than the
+whole bag holds is skipped -- it can never be completed, so forcing it would be
+wasted work. Paired with the WOLGES_IMPOSSIBLE_OK knob turned on, it will also
+force racks that this board cannot currently deal, building them with their
+tiles forced onto the board. A forced rack is built tile for tile and recorded
+keyed by the full rack, count one.
 
 This is only sound alongside the per-rack decompose (the -generate weighting
 that counts each distinct rack once, weighted by the ways the bag could
 complete it, rather than once per occurrence). That weighting is what keeps a
-force-covered rack from inflating the common subracks it shares, which is the
-very over-counting the side-list subrack path was invented to avoid.
+force-covered rack from inflating the common subracks it shares.
 
 Measured at volume, full-rack forcing was worth turning on for the autoplay
 recipe by default. A bare autoplay run now forces each undersampled full rack,
-places racks board-tolerantly (it exports the full-rack-forcing and
-impossible-ok knobs), and covers every globally-possible rack at least once by
-defaulting each generation's min-samples to one. Passing --no-forcing reverts
-to plain natural-rack sampling; --gilles keeps its own board sampler and is
-never forced.
+places racks board-tolerantly (it exports the impossible-ok knob), and covers
+every globally-possible rack at least once by defaulting each generation's
+min-samples to one. Passing --no-forcing reverts to plain natural-rack
+sampling; --gilles keeps its own board sampler and is never forced.
 
 On the per-rack decompose footing (each distinct rack weighted once, not once
 per occurrence), the forced autoplay table roughly ties board sampling.
@@ -980,8 +902,6 @@ forcing is a small, sub-noise improvement in coverage, not a step change; it is
 kept on because a leave built on a real forced play is sounder than one left
 starved, and it costs nothing when the racks it targets are the ones self-play
 would have missed.
-
-New knobs: WOLGES_AUTOPLAY_FULL_RACK_FORCING.
 
 
 THE PER-RACK DECOMPOSE BECOMES THE DEFAULT
@@ -1444,14 +1364,7 @@ Census:
   It also reads the shared knobs above.
 
 Autoplay:
-  It also reads the shared knobs above. Its own knob:
-  WOLGES_AUTOPLAY_FULL_RACK_FORCING (0 or 1; default 0; the genleaves autoplay
-    recipe turns it on) -- how autoplay forces the rare tail; sound only
-    alongside the per-rack decompose. genleaves.sh's --no-forcing option turns
-    it back off:
-      1  force whole undersampled racks into the main rack tally, like a
-         natural sample
-      0  target undersampled subracks in a side list
+  It also reads the shared knobs above.
 
 Compare and dynamic leaves:
   WOLGES_COMPARE_PORCELAIN (0 or 1; default 0) -- leave compare's output;
