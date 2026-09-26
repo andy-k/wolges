@@ -4045,8 +4045,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let entering_push = env_flag("WOLGES_CENSUS_ENTERING_PUSH", false);
 
-    let per_game = env_flag("WOLGES_CENSUS_PER_GAME", false);
-
     let gens = board_counts.len();
 
     let max_boards = board_counts.iter().copied().max().unwrap_or(1).max(1);
@@ -4054,7 +4052,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let global_weights = full_rack && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
 
-    let sheet_reuse = multigen && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
+    let sheet_reuse = multigen && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
 
     let (live_after, sheet_cache_len) = census_sheet_reuse_plan(&board_counts);
 
@@ -4109,7 +4107,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
 
     let withhold_budget = env_usize("WOLGES_CENSUS_WITHHOLD", 0);
-    let withhold_tally: Vec<u8> = if withhold_budget > 0 && !per_game {
+    let withhold_tally: Vec<u8> = if withhold_budget > 0 {
         let mut tiles: Vec<usize> = (0..num_letters).filter(|&t| base_freqs[t] > 0).collect();
         tiles.sort_by_key(|&t| base_freqs[t]);
         let mut wt = vec![0u8; num_letters];
@@ -4275,14 +4273,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     ));
 
     let barrier = std::sync::Barrier::new(num_threads);
-
-    let pool_hist: Vec<std::sync::atomic::AtomicU64> = if per_game {
-        (0..=num_tiles)
-            .map(|_| std::sync::atomic::AtomicU64::new(0))
-            .collect()
-    } else {
-        Vec::new()
-    };
 
     let sheet_cache: Vec<SheetCacheSlot> = (0..sheet_cache_len)
         .map(|_| std::sync::Mutex::new(None))
@@ -4718,45 +4708,60 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         seed.wrapping_add(census_mix64(b)),
                     ));
 
-                    if per_game {
+                    let reuse_board = sheet_reuse && (b as usize) < prior_max_boards;
+                    if !reuse_board {
 
-                        use std::sync::atomic::Ordering::Relaxed;
-                        let goal = 1 + (pool_min..=pool_max)
-                            .map(|p| pool_hist[p].load(Relaxed))
-                            .min()
-                            .unwrap_or(0);
-                        let deepest = (pool_min..=pool_max)
-                            .find(|&p| pool_hist[p].load(Relaxed) < goal)
-                            .unwrap_or(pool_min);
-                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                        let mut logged = false;
+                    let target = if high_tiles <= low_tiles {
+                        low_tiles
+                    } else if num_buckets >= 2 {
+
+                        let span = high_tiles - low_tiles;
+                        let j = b as usize % num_buckets;
+                        low_tiles + (j * span + (num_buckets - 1) / 2) / (num_buckets - 1)
+                    } else {
+
+                        low_tiles + (b as usize % (high_tiles - low_tiles + 1))
+                    };
+
+                    let phase_buckets = if high_tiles <= low_tiles {
+                        1
+                    } else if num_buckets >= 2 {
+                        num_buckets
+                    } else {
+                        high_tiles - low_tiles + 1
+                    };
+                    let do_withhold = !withhold_tally.is_empty()
+                        && (b as usize / phase_buckets).is_multiple_of(withhold_period);
+                    let mut tries = 0u32;
+                    let reached = loop {
+                        if !do_withhold {
+                            game_state
+                                .reset_and_draw_tiles_double_ended(&game_config, &mut rng);
+                        } else {
+
+                            game_state.reset();
+                            game_state.bag.shuffle(&mut rng);
+                            for (t, &c) in withhold_tally.iter().enumerate() {
+                                for _ in 0..c {
+                                    game_state.bag.remove_tile(t as u8);
+                                }
+                            }
+                            let rsz = game_config.rack_size() as usize;
+                            let bag = &mut game_state.bag;
+                            let players = &mut game_state.players;
+                            for (i, player) in players.iter_mut().enumerate() {
+                                bag.replenish(&mut player.rack, rsz, i);
+                            }
+                        }
+                        let mut got = false;
                         loop {
                             let fill =
                                 game_state.board_tiles.iter().filter(|&&t| t != 0).count();
-                            let pool = num_tiles - fill;
-                            if pool < deepest {
-                                break; // no under-goal bucket remains below (and pool
+                            if fill >= target {
 
+                                got = fill <= high_tiles;
+                                break;
                             }
-                            if pool <= pool_max && pool_hist[pool].load(Relaxed) < goal {
-                                pool_hist[pool].fetch_add(1, Relaxed);
-
-                                let lf = b == 0 && !logged;
-                                logged |= lf;
-                                value_board(
-                                    &mut move_generator,
-                                    &game_state,
-                                    &mut rng,
-                                    &leave,
-                                    null_leave,
-                                    lf,
-                                    verify && lf,
-                                    None, // per-game path never reuses (sheet_reuse gates on !per_game)
-                                    false,
-                                    num_boards,
-                                );
-                            }
-
                             game_state.players[game_state.turn as usize]
                                 .rack
                                 .sort_unstable();
@@ -4787,132 +4792,42 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 game_state.check_game_ended(&game_config, &mut final_scores);
                             game_state.next_turn();
                             if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
-                                break; // game ended; this game is done.
+                                break; // game ended before the window; try a fresh game.
                             }
                         }
-                    } else {
-
-                        let reuse_board = sheet_reuse && (b as usize) < prior_max_boards;
-                        if !reuse_board {
-
-                        let target = if high_tiles <= low_tiles {
-                            low_tiles
-                        } else if num_buckets >= 2 {
-
-                            let span = high_tiles - low_tiles;
-                            let j = b as usize % num_buckets;
-                            low_tiles + (j * span + (num_buckets - 1) / 2) / (num_buckets - 1)
-                        } else {
-
-                            low_tiles + (b as usize % (high_tiles - low_tiles + 1))
-                        };
-
-                        let phase_buckets = if high_tiles <= low_tiles {
-                            1
-                        } else if num_buckets >= 2 {
-                            num_buckets
-                        } else {
-                            high_tiles - low_tiles + 1
-                        };
-                        let do_withhold = !withhold_tally.is_empty()
-                            && (b as usize / phase_buckets).is_multiple_of(withhold_period);
-                        let mut tries = 0u32;
-                        let reached = loop {
-                            if !do_withhold {
-                                game_state
-                                    .reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                            } else {
-
-                                game_state.reset();
-                                game_state.bag.shuffle(&mut rng);
-                                for (t, &c) in withhold_tally.iter().enumerate() {
-                                    for _ in 0..c {
-                                        game_state.bag.remove_tile(t as u8);
-                                    }
-                                }
-                                let rsz = game_config.rack_size() as usize;
-                                let bag = &mut game_state.bag;
-                                let players = &mut game_state.players;
-                                for (i, player) in players.iter_mut().enumerate() {
-                                    bag.replenish(&mut player.rack, rsz, i);
-                                }
-                            }
-                            let mut got = false;
-                            loop {
-                                let fill =
-                                    game_state.board_tiles.iter().filter(|&&t| t != 0).count();
-                                if fill >= target {
-
-                                    got = fill <= high_tiles;
-                                    break;
-                                }
-                                game_state.players[game_state.turn as usize]
-                                    .rack
-                                    .sort_unstable();
-                                let board_snapshot = &movegen::BoardSnapshot {
-                                    board_tiles: &game_state.board_tiles,
-                                    game_config: &game_config,
-                                    kwg: &kwg,
-                                    klv: if game_state.turn == 0 {
-                                        &arc_klv0
-                                    } else {
-                                        &arc_klv1
-                                    },
-                                };
-                                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                    board_snapshot,
-                                    rack: &game_state.current_player().rack,
-                                    max_gen: 1,
-                                    num_exchanges_by_this_player: game_state
-                                        .current_player()
-                                        .num_exchanges,
-                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                    dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
-                                });
-                                game_state
-                                    .play(&game_config, &mut rng, &move_generator.plays[0].play)
-                                    .unwrap();
-                                let ended =
-                                    game_state.check_game_ended(&game_config, &mut final_scores);
-                                game_state.next_turn();
-                                if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
-                                    break; // game ended before the window; try a fresh game.
-                                }
-                            }
-                            if got {
-                                break true;
-                            }
-                            tries += 1;
-                            if tries >= 1_000_000 {
-                                break false;
-                            }
-                        };
-                        if !reached {
-                            writeln!(boxed_stdout_or_stderr(),
-                                "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping").ok();
-                            continue;
+                        if got {
+                            break true;
                         }
-                        } // end of the !reuse_board game replay
-                        value_board(
-                            &mut move_generator,
-                            &game_state,
-                            &mut rng,
-                            &leave,
-                            null_leave,
-                            b == 0,
-                            verify && b == 0 && !reuse_board,
-
-                            if sheet_reuse
-                                && (reuse_board || (b as usize) < live_after[gen_idx])
-                            {
-                                Some(&sheet_cache[b as usize])
-                            } else {
-                                None
-                            },
-                            reuse_board,
-                            num_boards,
-                        );
+                        tries += 1;
+                        if tries >= 1_000_000 {
+                            break false;
+                        }
+                    };
+                    if !reached {
+                        writeln!(boxed_stdout_or_stderr(),
+                            "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping").ok();
+                        continue;
                     }
+                    } // end of the !reuse_board game replay
+                    value_board(
+                        &mut move_generator,
+                        &game_state,
+                        &mut rng,
+                        &leave,
+                        null_leave,
+                        b == 0,
+                        verify && b == 0 && !reuse_board,
+
+                        if sheet_reuse
+                            && (reuse_board || (b as usize) < live_after[gen_idx])
+                        {
+                            Some(&sheet_cache[b as usize])
+                        } else {
+                            None
+                        },
+                        reuse_board,
+                        num_boards,
+                    );
                     }
                     }
 
@@ -4952,9 +4867,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     *valued = 0;
                                     next_board
                                         .store(0, std::sync::atomic::Ordering::Relaxed);
-                                    for h in &pool_hist {
-                                        h.store(0, std::sync::atomic::Ordering::Relaxed);
-                                    }
                                 }
                             }
 

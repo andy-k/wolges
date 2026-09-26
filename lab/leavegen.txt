@@ -854,37 +854,7 @@ board size, so a normal English board and a larger variant are sampled at
 matching stages. It changes only how the sampling is spaced, not the leaves it
 settles on; left at its default (every fill level) the run is byte-identical.
 
-
-ONE REAL GAME PER WORKER (OPTIONAL)
-
-The default sampler plays a fresh game to one chosen fill, values that single
-board, and starts over -- independent draws, evenly spaced across the window.
-That even spacing does not match how much of a real game is actually spent at
-each fill. WOLGES_CENSUS_PER_GAME turns on another way: each worker
-greedy-plays one real game and values every board along it whose fill falls in
-the window -- consecutive positions from the same game -- stopping once the
-board fills past the window rather than playing the game out. The boards then
-follow the mix a real game actually visits, closer to what our own self-play
-sees, and each position is reused rather than replayed from scratch, so it is
-cheaper too. In this mode the board count counts games, and a game yields
-however many in-window boards it happens to pass through; the fill jumps
-several tiles per move, so a narrow window catches few positions -- open the
-window wide.
-
-Left as it is, this mode follows how often a game naturally sits at each pool
-size, so common fill levels pile up and rare ones stay thin. It can also aim
-for even coverage while still reusing one game's positions: a running tally,
-shared across workers, counts how many samples each pool size has so far, and
-each game samples only the positions that land on the sizes currently furthest
-behind, so the thin buckets catch up. It stops a game early once the board has
-filled past the lowest size still behind -- the pool only shrinks as tiles go
-down, so no later position can help. Because that shared tally is updated
-without locking, exactly which positions get sampled depends on how the workers
-interleave, so this even-coverage per-game path is not bit-for-bit repeatable;
-the leaves still settle to the same answer regardless. The plain
-reset-and-cycle mode remains the reproducible one.
-
-New knobs: WOLGES_CENSUS_BUCKETS, WOLGES_CENSUS_PER_GAME.
+New knobs: WOLGES_CENSUS_BUCKETS.
 
 
 THE BLANK MODEL: SPELL EACH WORD ONCE
@@ -1707,10 +1677,6 @@ Census:
       1  weight every rack by full-starting-bag draw odds, and value
          board-impossible racks too
       0  weight by this board's leftover pool
-  WOLGES_CENSUS_PER_GAME (0 or 1; default 0) -- how boards are chosen:
-      1  value every in-window board along one real game per worker (the board
-         count then counts games)
-      0  play a fresh game per board
   WOLGES_CENSUS_SCATTER (off, on, or auto; default auto) -- how the census
     finds each rack's best play; the values are identical, speed only:
       off   search each rack's play-and-keep splits
