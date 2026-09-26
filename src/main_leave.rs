@@ -3742,14 +3742,7 @@ impl GamePairStats {
             );
         }
 
-        let porcelain = std::env::var("WOLGES_COMPARE_PORCELAIN")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0)
-            != 0;
-        if porcelain {
-            self.all.print_porcelain();
-        }
+        self.all.print_porcelain();
     }
 }
 
@@ -4005,49 +3998,6 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0)
-        != 0;
-    let dynamic_min_keep = std::env::var("WOLGES_DYNAMIC_LEAVES_MIN_KEEP")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(2);
-
-    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> =
-        if dynamic_leaves_on {
-            let num_letters = game_config.alphabet().len() as usize;
-            let rack_size = game_config.rack_size() as usize;
-            let lat = census::MultisetLattice::new(num_letters, rack_size);
-            let add = census::AddTable::new_with_threads(&lat, num_threads);
-            let mut full_v = vec![0i32; lat.len()];
-            census::fill_lattice_leaves(&lat, &mut full_v, |tally| {
-                arc_klv0.leave_value_from_tally(tally)
-            });
-            Some((lat, add, full_v))
-        } else {
-            None
-        };
-    let dyn_ref = dyn_ctx
-        .as_ref()
-        .map(|(lat, add, full_v)| klv::DynamicLeavesRef {
-            lat,
-            add,
-            full_v: full_v.as_slice(),
-            min_keep: dynamic_min_keep,
-        });
-    writeln!(
-        boxed_stdout_or_stderr(),
-        "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
-        dynamic_leaves_on as u8,
-        if dynamic_leaves_on {
-            "dynamic leaves on for the klv0 (player 0) side"
-        } else {
-            "off, static leaves both sides"
-        },
-    )?;
-
     std::thread::scope(|s| -> error::Returns<()> {
         let mut thread_handles = Vec::new();
         for _ in 0..num_threads {
@@ -4109,7 +4059,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     .current_player()
                                     .num_exchanges,
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                dynamic_leaves: if is_klv0_side { dyn_ref } else { None },
+                                dynamic_leaves: None,
                             });
                             let play = &move_generator.plays[0].play;
                             if klv_swapped {
