@@ -1955,12 +1955,9 @@ fn generate_autoplay_logs<
 
         let mut total_equity = 0.0;
         let mut row_count = 0;
-
-        let mut total_sumsq = 0.0;
         for x in full_rack_map.values() {
             total_equity += x.equity;
             row_count += x.count;
-            total_sumsq += x.sumsq;
         }
 
         writeln!(
@@ -1983,20 +1980,6 @@ fn generate_autoplay_logs<
                 cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
             }
             csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
-        }
-
-        {
-            let mut sq_out = csv::Writer::from_path(claim_output_path(&format!(
-                "summary-sq-{run_identifier}"
-            ))?)?;
-            sq_out.serialize(("", total_sumsq, row_count))?;
-            for (k, fv) in kv.iter() {
-                cur_rack_ser.clear();
-                for &tile in k.iter() {
-                    cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
-                }
-                sq_out.serialize((&cur_rack_ser, fv.sumsq, fv.count))?;
-            }
         }
 
         let rare_subrack_map = &mutex_guard.rare_subrack_map;
@@ -2044,11 +2027,6 @@ fn generate_autoplay_logs<
 #[inline(always)]
 fn env_usize(name: &str, default: usize) -> usize {
     env_parse(name, default)
-}
-
-#[inline(always)]
-fn env_path(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|x| !x.is_empty())
 }
 
 #[derive(Clone, Copy)]
@@ -3002,19 +2980,15 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             };
                             let eq = rr_knob.apply(move_generator.plays[0].equity, &real_rack_buf)
                                 * w as f64;
-
-                            let sumsq_w = eq.powi(2) / w as f64;
                             thread_map
                                 .entry(real_rack_buf[..].into())
                                 .and_modify(|e| {
                                     e.equity += eq;
                                     e.count += w;
-                                    e.sumsq += sumsq_w;
                                 })
                                 .or_insert(Cumulate {
                                     equity: eq,
                                     count: w,
-                                    sumsq: sumsq_w,
                                 });
                             completed_samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -3122,24 +3096,17 @@ fn parse_rack(
 #[derive(Clone)]
 struct Cumulate {
     equity: f64,
-    sumsq: f64,
     count: u64,
 }
 
 #[inline]
 fn pool_one(map: &mut fash::MyHashMap<bites::Bites, Cumulate>, key: &[u8], equity: f64) {
-    let sumsq = equity.powi(2);
     map.entry(key.into())
         .and_modify(|v| {
             v.equity += equity;
-            v.sumsq += sumsq;
             v.count += 1;
         })
-        .or_insert_with(|| Cumulate {
-            equity,
-            sumsq,
-            count: 1,
-        });
+        .or_insert_with(|| Cumulate { equity, count: 1 });
 }
 
 #[inline]
@@ -3148,20 +3115,14 @@ fn pool_rare_one(
     key: &[u8],
     equity: f64,
     count: u64,
-    sumsq: f64,
 ) {
     subrack_map
         .entry(key.into())
         .and_modify(|v| {
             v.equity += equity;
-            v.sumsq += sumsq;
             v.count += count;
         })
-        .or_insert(Cumulate {
-            equity,
-            sumsq,
-            count,
-        });
+        .or_insert(Cumulate { equity, count });
 }
 
 struct GillesMutexed {
@@ -3183,7 +3144,6 @@ fn merge_rack_map(
             dst.entry(k)
                 .and_modify(|e| {
                     e.equity += v.equity;
-                    e.sumsq += v.sumsq;
                     e.count += v.count;
                 })
                 .or_insert(v);
@@ -3602,14 +3562,12 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
         let thing = Cumulate {
             equity: f64::from_str(&record[1])?,
             count: u64::from_str(&record[2])?,
-            sumsq: f64::NAN,
         };
         full_rack_map
             .entry(rack_bytes[..].into())
             .and_modify(|e| {
                 e.equity += thing.equity;
                 e.count += thing.count;
-                e.sumsq += thing.sumsq;
             })
             .or_insert(thing);
     }
@@ -5668,14 +5626,12 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         let thing = Cumulate {
             equity: f64::from_str(&record[1])?,
             count: u64::from_str(&record[2])?,
-            sumsq: f64::NAN,
         };
         full_rack_map
             .entry(rack_bytes[..].into())
             .and_modify(|e| {
                 e.equity += thing.equity;
                 e.count += thing.count;
-                e.sumsq += thing.sumsq;
             })
             .or_insert(thing);
     }
@@ -5685,49 +5641,12 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         .remove([][..].into())
         .ok_or("input file does not include totals line")?;
 
-    if let Some(fp) = env_path("WOLGES_GENERATE_SMOOTH_SQ") {
-        let mut sq_reader = csv::ReaderBuilder::new()
-            .has_headers(false)
-            .from_path(&fp)?;
-        let mut n_sq = 0u64;
-        let mut n_stale = 0u64;
-        for result in sq_reader.records() {
-            let record = result?;
-
-            if record[0].is_empty() {
-                continue;
-            }
-            parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
-            if let Some(e) = full_rack_map.get_mut(&rack_bytes[..]) {
-                if u64::from_str(&record[2])? == e.count {
-                    let v = f64::from_str(&record[1])?;
-
-                    e.sumsq = if e.sumsq.is_nan() { v } else { e.sumsq + v };
-                    n_sq += 1;
-                } else {
-                    n_stale += 1;
-                }
-            }
-        }
-        writeln!(
-            stdout_or_stderr,
-            "read {n_sq} sum-of-squares rows from {fp}{}",
-            if n_stale == 0 {
-                String::new()
-            } else {
-                format!(" ({n_stale} racks skipped: count disagrees with the summary)")
-            }
-        )?;
-    }
-
     let leave_size = game_config.rack_size() - 1 + IS_FULL_RACK as u8;
 
     // subrack_map[subrack] = sum(full_rack_map[subrack + completion]).
     let mut subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
 
     let mut subrack_support = fash::MyHashMap::<bites::Bites, u64>::default();
-
-    let mut subrack_raw = fash::MyHashMap::<bites::Bites, (f64, f64)>::default();
     {
         let word_prob = prob::WordProbability::new(game_config.alphabet());
         let mut full_rack_tally = vec![0u8; rack_tally.len()];
@@ -5757,16 +5676,9 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
                         .or_insert_with(|| Cumulate {
                             equity: add_equity,
                             count: add_count,
-                            sumsq: 0.0,
                         });
 
                     *subrack_support.entry(subrack_bytes.into()).or_insert(0u64) += fv.count;
-
-                    let e = subrack_raw
-                        .entry(subrack_bytes.into())
-                        .or_insert((0.0f64, 0.0f64));
-                    e.0 += fv.equity;
-                    e.1 += fv.sumsq;
                 },
                 rack_tally: &mut rack_tally,
                 min_len: 0,
@@ -5790,7 +5702,6 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     let Cumulate {
         equity: total_equity,
         count: row_count,
-        sumsq: _,
     } = subrack_map
         .remove([][..].into())
         .ok_or("empty-rack entry should not be missing")?;
@@ -5804,52 +5715,13 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
             }
             let equity = f64::from_str(&record[1])?;
             let count = u64::from_str(&record[2])?;
-
-            let sumsq = f64::NAN;
             parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
-            pool_rare_one(&mut subrack_map, &rack_bytes, equity, count, sumsq);
+            pool_rare_one(&mut subrack_map, &rack_bytes, equity, count);
             *subrack_support.entry(rack_bytes[..].into()).or_insert(0u64) += count;
-            let e = subrack_raw
-                .entry(rack_bytes[..].into())
-                .or_insert((0.0f64, 0.0f64));
-            e.0 += equity;
-            e.1 += sumsq;
         }
     }
 
     let smooth_min = env_usize("WOLGES_GENERATE_SMOOTH_MIN", 50) as u64;
-
-    let smooth_ci = env_parse::<f64>("WOLGES_GENERATE_SMOOTH_CI", 0.0);
-    let smooth_ci_conf = env_parse::<f64>("WOLGES_GENERATE_SMOOTH_CONF", 0.99);
-    let smooth_ci_conf = if smooth_ci_conf > 0.0 && smooth_ci_conf < 1.0 {
-        smooth_ci_conf
-    } else {
-        0.99
-    };
-    let smooth_ci_z = if smooth_ci > 0.0 {
-        stats::NormalDistribution::reverse_ci(smooth_ci_conf)
-    } else {
-        0.0
-    };
-
-    let well_sampled = |rack: &[u8], support: u64| -> bool {
-        if support < smooth_min {
-            return false;
-        }
-        if smooth_ci <= 0.0 {
-            return true;
-        }
-        match subrack_raw.get(rack) {
-            Some(&(sum, sumsq)) if support > 1 && sumsq.is_finite() => {
-                let n = support as f64;
-                let mean = sum / n;
-
-                let var = ((sumsq - n * mean.powi(2)) / (n - 1.0)).max(0.0);
-                smooth_ci_z * (var / n).sqrt() <= smooth_ci
-            }
-            _ => true,
-        }
-    };
     let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
     let mut alphabet_freqs = (0..game_config.alphabet().len())
         .map(|tile| game_config.alphabet().freq(tile))
@@ -5859,10 +5731,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     generate_exchanges(&mut ExchangeEnv {
         found_exchange_move: |rack_bytes: &[u8]| {
             let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
-                if well_sampled(
-                    rack_bytes,
-                    subrack_support.get(rack_bytes).copied().unwrap_or(0),
-                ) {
+                if subrack_support.get(rack_bytes).copied().unwrap_or(0) >= smooth_min {
                     v.equity / v.count as f64
                 } else {
                     // perform smoothing if there are too few samples.
@@ -5916,15 +5785,9 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         exchange_buffer: &mut exchange_buffer,
     });
     drop(neighbor_buffer);
-
-    let smooth_rule = if smooth_ci > 0.0 {
-        format!("support floor {smooth_min} or interval wider than {smooth_ci}")
-    } else {
-        format!("support floor {smooth_min}")
-    };
     writeln!(
         stdout_or_stderr,
-        "After {} seconds, have processed {} subracks and smoothed {} ({:.1}%, rule: {})",
+        "After {} seconds, have processed {} subracks and smoothed {} ({:.1}% below support floor {})",
         t0.elapsed().as_secs(),
         ev_map.len(),
         num_smoothed,
@@ -5933,7 +5796,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         } else {
             100.0 * num_smoothed as f64 / ev_map.len() as f64
         },
-        smooth_rule,
+        smooth_min,
     )?;
     {
         // make expected values relative to value of empty rack.
@@ -6281,7 +6144,6 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                         })
                                         .or_insert(Cumulate {
                                             equity: occurrence,
-                                            sumsq: f64::NAN,
                                             count: 1,
                                         });
                                 }
@@ -7787,20 +7649,18 @@ mod tests {
 
     #[test]
     #[inline]
-    fn pooling_keeps_value_square_and_count_together() {
+    fn pooling_keeps_value_and_count_together() {
         let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
         pool_one(&mut m, &b"\x01"[..], 3.0);
         pool_one(&mut m, &b"\x01"[..], 4.0);
         let a = m.get(&b"\x01"[..]).unwrap();
         assert_eq!(a.count, 2);
         assert!((a.equity - 7.0).abs() < 1e-9);
-
-        assert!((a.sumsq - 25.0).abs() < 1e-9);
     }
 
     #[test]
     #[inline]
-    fn merging_thread_maps_keeps_every_square() {
+    fn merging_thread_maps_keeps_every_sample() {
         let mut dst = fash::MyHashMap::<bites::Bites, Cumulate>::default();
         pool_one(&mut dst, &b"\x01"[..], 3.0);
         let mut src = fash::MyHashMap::<bites::Bites, Cumulate>::default();
@@ -7810,23 +7670,10 @@ mod tests {
         let a = dst.get(&b"\x01"[..]).unwrap();
         assert_eq!(a.count, 2);
         assert!((a.equity - 7.0).abs() < 1e-9);
-        assert!((a.sumsq - 25.0).abs() < 1e-9, "the merge dropped a square");
 
         let b = dst.get(&b"\x02"[..]).unwrap();
         assert_eq!(b.count, 1);
-        assert!((b.sumsq - 25.0).abs() < 1e-9);
         assert!(src.is_empty(), "merge_rack_map must drain the source");
-    }
-
-    #[test]
-    #[inline]
-    fn pooled_spread_cannot_undercut_its_mean() {
-        let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-        for v in [12.5f64, -3.0, 40.0, 0.0, 7.25] {
-            pool_one(&mut m, &b"\x01"[..], v);
-        }
-        let a = m.get(&b"\x01"[..]).unwrap();
-        assert!(a.sumsq >= a.equity.powi(2) / a.count as f64 - 1e-9);
     }
 
     #[test]
@@ -7862,7 +7709,6 @@ mod tests {
         let fv = Cumulate {
             equity: 10.0,
             count: 2,
-            sumsq: 0.0,
         };
 
         let (eq, cnt) = decompose_contribution(&fv, 3);
@@ -7879,14 +7725,11 @@ mod tests {
             Cumulate {
                 equity: 10.0,
                 count: 2,
-                sumsq: 50.0,
             },
         ); // full-rack A, sum10 n2
-        pool_rare_one(&mut m, &b"\x01"[..], 5.0, 3, 9.0); // rare A, sum5 n3
+        pool_rare_one(&mut m, &b"\x01"[..], 5.0, 3); // rare A, sum5 n3
         let a = m.get(&b"\x01"[..]).unwrap();
         assert_eq!(a.count, 5);
         assert!((a.equity - 15.0).abs() < 1e-9); // mean 15/5 = 3.0
-
-        assert!((a.sumsq - 59.0).abs() < 1e-9);
     }
 }
