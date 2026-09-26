@@ -1280,64 +1280,6 @@ recorded dead-end.
 New knobs: WOLGES_CENSUS_GLOBAL_WEIGHTS.
 
 
-A SELF-PLAY-SHAPED RACK SUMMARY
-
-The full-rack census and the self-play sampler build the same kind of table two
-different ways, and the one difference that remains is how each weights a rack.
-The census weights a full rack by the number of ways the pool can deal all of
-that rack's tiles at once and apportions that value onto every leave the rack
-contains. The self-play sampler logs each rack it draws once, and
-leave generate later weights each rack only by ways(R, S), the draw-ways of
-its missing tiles. WOLGES_CENSUS_RACK_SUMMARY (default off, byte-identical)
-pins that one difference down: it values each full rack once per board (its
-exact best play, with no full-rack draw weight), averages across boards, and
-then, instead of apportioning and writing a klv, writes the census result in
-exactly the file the self-play sampler produces -- a total row, then one row
-per rack of the rack, its total best-play value in points, and the number of
-boards. Feeding that to leave generate reproduces the self-play pipeline but
-with the exact per-board best in place of sampled racks, so whatever gap
-remains between the two tables is exactly this full-rack draw weighting.
-
-Coverage matches the forcing path from the start. With WOLGES_IMPOSSIBLE_OK on
-(the default) the rack summary stops restricting to drawable racks, builds each
-board's play sheet over the whole bag so a board-impossible rack still gets a
-real best play, and at the end drops only the racks impossible even from the
-full bag (needing more of a tile than exists, such as seven of the same rare
-tile), whose completions are zero and which leave generate would discard
-anyway. Set WOLGES_IMPOSSIBLE_OK=0 for drawable racks only.
-
-The rack summary is not the stronger table. In our own head-to-head against the
-default full-rack census leave compare reports 49.9842 at confidence 67.2 --
-a tie, if anything a hair behind. So the full-rack draw weighting the census
-does by default is not costing it anything; the two roads to a leave table
-arrive at the same quality. Kept opt-in.
-
-New knobs: WOLGES_CENSUS_RACK_SUMMARY.
-
-
-A SELF-ITERATING RACK SUMMARY
-
-The rack summary began as a single pass that had to hand its file to a separate
-leave generate step to turn per-rack values into per-leave values. The
-ordinary apportioning census already iterates on its own -- each pass sharpens
-the leaves, and the next pass re-values the racks under the sharper leaves
-until the leaves reproduce themselves when fed back in -- but the rack summary
-could not, because it handed the per-leave breakdown off to the external step.
-It now does that breakdown in-process, so it can run several passes by itself.
-An exact routine apportions each valued rack's average down onto every kept
-combination with the same completion weighting leave generate uses, centered so
-that keeping nothing is worth zero, and checked against a brute force by a unit
-test. At each generation boundary the rack-summary census builds its leaves
-this way, the next pass values racks under them, and the last pass writes the
-klv directly. A single-generation run still writes the summary file, so that
-path is unchanged. With WOLGES_IMPOSSIBLE_OK on the exhaustive census reaches
-every globally-possible leave, so a multi-pass run matches the full table the
-external leave generate would produce; without it, a sparse drawable-only run
-leaves the leaves it never reached at their prior value. As with the
-apportioning multi-pass, it never smooths or fills in leaves it did not
-measure.
-
-
 VALUING A PLAY BY ITS CHANCE OF WINNING
 
 Every method so far values a play by its equity -- the points it scores on the
@@ -1708,8 +1650,8 @@ Shared across builders:
       full-rack  credit every subrack of each rack (the complete attribution)
       entering   credit only the leave carried into the turn
   WOLGES_IMPOSSIBLE_OK (0 or 1; default 1) -- whether to value a rack the board
-    cannot currently deal; read by autoplay's forcing, board sampling's draw
-    source, and the rack-summary census:
+    cannot currently deal; read by autoplay's forcing and board sampling's
+    draw source:
       1  force the rack's tiles onto the board, so rare racks still get covered
       0  record only what the board could really deal
   WOLGES_OPPDENIAL_EXACT (a decimal weight; default 0.0, off) -- weight on the
@@ -1795,11 +1737,6 @@ Census:
       1  value every in-window board along one real game per worker (the board
          count then counts games)
       0  play a fresh game per board
-  WOLGES_CENSUS_RACK_SUMMARY (0 or 1; default 0) -- the output form; isolates
-    the full-rack draw weighting. Measured a tie:
-      1  value each full rack once per board and write the self-play summary
-         file
-      0  apportion and write a klv directly
   WOLGES_CENSUS_SCATTER (off, on, or auto; default auto) -- how the census
     finds each rack's best play; the values are identical, speed only:
       off   search each rack's play-and-keep splits

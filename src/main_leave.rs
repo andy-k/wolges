@@ -4056,14 +4056,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
     let sgd = !multigen && batch_size < board_counts[0];
 
-    let rack_summary = full_rack && !sgd && env_flag("WOLGES_CENSUS_RACK_SUMMARY", false);
-    let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
+    let global_apportion =
+        full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION", false);
 
-    let global_apportion = rack_summary
-        || (full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION", false));
-
-    let ga_drawable = (rack_summary && !impossible_ok)
-        || (global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE", false));
+    let ga_drawable =
+        global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE", false);
 
     let global_weights =
         full_rack && !global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
@@ -4407,7 +4404,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                     sheet.iter_mut().for_each(|v| *v = 0);
 
-                    let sheet_pool: &[u8] = if global_weights || (rack_summary && impossible_ok) {
+                    let sheet_pool: &[u8] = if global_weights {
                         &base_freqs
                     } else {
                         &unseen_tally
@@ -5005,45 +5002,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     let mut g = shared.lock().unwrap();
                                     let (sum, cnt, completed, valued, ever) = &mut *g;
                                     let mut lv = leave_lock.write().unwrap();
-                                    if rack_summary {
-
-                                        let mut rmean = vec![census::UNPLAYABLE; lat_len];
-                                        for idx in full_rack_start..lat_len {
-                                            if cnt[idx] > 0 {
-                                                rmean[idx] =
-                                                    (sum[idx] / cnt[idx] as f64).round() as i32;
-                                            }
-                                        }
-                                        let mut gnum = vec![0f64; lat_len];
-                                        let mut gden = vec![0f64; lat_len];
-                                        census::generate_fused(
-                                            &lat, &rmean, &base_freqs, &mut gnum, &mut gden,
-                                        );
-                                        let gbase = if gden[empty_rank] != 0.0 {
-                                            gnum[empty_rank] / gden[empty_rank]
-                                        } else {
-                                            0.0
-                                        };
-                                        for idx in 0..lat_len {
-                                            if gden[idx] != 0.0 {
-                                                ever[idx] = true;
-                                                lv[idx] = (gnum[idx] / gden[idx] - gbase).round()
-                                                    as i32;
-                                            }
-                                        }
+                                    let base = if cnt[empty_rank] > 0 {
+                                        sum[empty_rank] / cnt[empty_rank] as f64
                                     } else {
-                                        let base = if cnt[empty_rank] > 0 {
-                                            sum[empty_rank] / cnt[empty_rank] as f64
-                                        } else {
-                                            0.0
-                                        };
-                                        for idx in 0..lat_len {
-                                            if cnt[idx] > 0 {
-                                                ever[idx] = true;
-                                                lv[idx] = (sum[idx] / cnt[idx] as f64 - base)
-                                                    .round()
-                                                    as i32;
-                                            }
+                                        0.0
+                                    };
+                                    for idx in 0..lat_len {
+                                        if cnt[idx] > 0 {
+                                            ever[idx] = true;
+                                            lv[idx] = (sum[idx] / cnt[idx] as f64 - base)
+                                                .round()
+                                                as i32;
                                         }
                                     }
                                     writeln!(boxed_stdout_or_stderr(),
@@ -5117,7 +5086,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
     let leave_final = leave_lock.into_inner().unwrap();
 
-    let (ga_num, ga_den) = if global_apportion && !rack_summary {
+    let (ga_num, ga_den) = if global_apportion {
         let mut vr = vec![census::UNPLAYABLE; lat_len];
         for idx in full_rack_start..lat_len {
             if accum_cnt[idx] > 0 {
@@ -5147,51 +5116,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             0.0
         }
     };
-    if rack_summary && !multigen {
-        let summary_name = claim_output_path(&format!("census-summary-{census_run_epoch}.csv"))?;
-        let mut sw = csv::Writer::from_path(&summary_name)?;
-        let mut tally_buf = vec![0u8; num_letters];
-        let mut leave_ser = String::new();
-
-        let globally_possible = |idx: usize, tally: &mut [u8]| -> bool {
-            lat.unrank_into(idx, tally);
-            (0..num_letters).all(|t| tally[t] <= base_freqs[t])
-        };
-        let mut tot_e = 0f64;
-        let mut tot_c = 0u64;
-        for idx in full_rack_start..lat.len() {
-            if accum_cnt[idx] > 0 && globally_possible(idx, &mut tally_buf) {
-                tot_e += accum_sum[idx] / equity::SCALE as f64;
-                tot_c += accum_cnt[idx];
-            }
-        }
-        sw.serialize(("", tot_e, tot_c))?;
-        let mut nrows = 0usize;
-        for idx in full_rack_start..lat.len() {
-            if accum_cnt[idx] == 0 || !globally_possible(idx, &mut tally_buf) {
-                continue;
-            }
-            leave_ser.clear();
-            for (t, &c) in tally_buf.iter().enumerate() {
-                for _ in 0..c {
-                    leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
-                }
-            }
-            sw.serialize((
-                &leave_ser,
-                accum_sum[idx] / equity::SCALE as f64,
-                accum_cnt[idx],
-            ))?;
-            nrows += 1;
-        }
-        sw.flush()?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census: wrote autoplay-faithful summary ({nrows} full racks) to {summary_name} in {}s",
-            t0.elapsed().as_secs(),
-        )?;
-        return Ok(());
-    }
     let baseline = value_mp(empty_rank);
     let out_name = claim_output_path(&format!("census-leaves-{census_run_epoch}.csv"))?;
 
