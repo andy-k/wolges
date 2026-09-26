@@ -845,17 +845,6 @@ over an even mix of fill levels -- the same average as random targeting, but
 less noise. Each worker still seeds its own games, so the boards stay
 independent and the run stays reproducible.
 
-WOLGES_CENSUS_BUCKETS coarsens that cycle to a fixed number of evenly spaced
-levels instead of every single one -- for example eleven levels, roughly ten
-percent of the window apart. Coarser steps collect more boards per level, which
-is less noisy when the board count is low, and because the spacing is a
-fraction of the window it picks out the same stages of the game whatever the
-board size, so a normal English board and a larger variant are sampled at
-matching stages. It changes only how the sampling is spaced, not the leaves it
-settles on; left at its default (every fill level) the run is byte-identical.
-
-New knobs: WOLGES_CENSUS_BUCKETS.
-
 
 THE BLANK MODEL: SPELL EACH WORD ONCE
 
@@ -1633,9 +1622,6 @@ Census:
   default window). Its own knobs:
   WOLGES_CENSUS_BLANK_CAP (a whole number; default a full rack's worth) -- cap
     on blanks in the sheet's unseen pool, to measure the blank cost on its own.
-  WOLGES_CENSUS_BUCKETS (a whole number; default 0, every fill level) --
-    coarsen the fill-level cycle to this many evenly spaced levels; changes
-    only the spacing, not the leaves.
   WOLGES_CENSUS_GLOBAL_WEIGHTS (0 or 1; default 0) -- how racks are weighted.
     Measured a no-op:
       1  weight every rack by full-starting-bag draw odds, and value

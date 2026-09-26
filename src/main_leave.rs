@@ -4061,8 +4061,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let persist_gens = multigen && env_flag("WOLGES_CENSUS_PERSIST_GENS", true);
     let resume = multigen && env_flag("WOLGES_CENSUS_RESUME", false);
 
-    let num_buckets = env_usize("WOLGES_CENSUS_BUCKETS", 0);
-
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
     let full_rack_start = lat.full_rack_start();
@@ -4676,11 +4674,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                     let target = if high_tiles <= low_tiles {
                         low_tiles
-                    } else if num_buckets >= 2 {
-
-                        let span = high_tiles - low_tiles;
-                        let j = b as usize % num_buckets;
-                        low_tiles + (j * span + (num_buckets - 1) / 2) / (num_buckets - 1)
                     } else {
 
                         low_tiles + (b as usize % (high_tiles - low_tiles + 1))
