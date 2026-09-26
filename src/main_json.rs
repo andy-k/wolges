@@ -216,7 +216,6 @@ fn main() -> error::Returns<()> {
         &klv,
         move_picker::SimmerParams {
             num_sim_iters: move_picker::DEFAULT_NUM_SIM_ITERS,
-            allocator: move_picker::Allocator::RoundRobin,
             stop_rule: move_picker::StopRule::FixedCap,
             stop_delta: None,
             observe: false,

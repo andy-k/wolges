@@ -532,7 +532,6 @@ fn run<N: kwg::Node + Sync + Send>(
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
-                    allocator: move_picker::Allocator::RoundRobin,
                     stop_rule: move_picker::StopRule::FixedCap,
                     stop_delta: None,
                     observe: false,
@@ -598,7 +597,6 @@ fn run<N: kwg::Node + Sync + Send>(
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
-                    allocator: move_picker::Allocator::RoundRobin,
                     stop_rule: move_picker::StopRule::FixedCap,
                     stop_delta: None,
                     observe: false,
@@ -4164,22 +4162,6 @@ fn win_prob_source_name(source: simmer::WinProbSource) -> &'static str {
 }
 
 #[inline]
-fn sim_compare_allocator(prefix: &str) -> move_picker::Allocator {
-    match std::env::var(format!("{prefix}ALLOCATOR")).ok().as_deref() {
-        Some("adaptive") => move_picker::Allocator::Adaptive,
-        _ => move_picker::Allocator::RoundRobin,
-    }
-}
-
-#[inline]
-fn allocator_name(allocator: move_picker::Allocator) -> &'static str {
-    match allocator {
-        move_picker::Allocator::RoundRobin => "round-robin",
-        move_picker::Allocator::Adaptive => "adaptive",
-    }
-}
-
-#[inline]
 fn sim_compare_stop_rule(prefix: &str) -> move_picker::StopRule {
     match std::env::var(format!("{prefix}STOP")).ok().as_deref() {
         Some("confidence") => move_picker::StopRule::Confidence,
@@ -4232,8 +4214,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         .unwrap_or(1);
     let config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
     let config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
-    let allocator_p0 = sim_compare_allocator("WOLGES_SIM_P0_");
-    let allocator_p1 = sim_compare_allocator("WOLGES_SIM_P1_");
     let stop_p0 = sim_compare_stop_rule("WOLGES_SIM_P0_");
     let stop_p1 = sim_compare_stop_rule("WOLGES_SIM_P1_");
     let stop_delta_p0 = sim_compare_stop_delta("WOLGES_SIM_P0_");
@@ -4247,14 +4227,12 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let winpct_table_ref = winpct_table.as_ref();
     writeln!(
         boxed_stdout_or_stderr(),
-        "WOLGES_SIM_ITERS={num_sim_iters} winpct_table={} P0.descale={} P0.alloc={} P0.stop={} P0.winprob={} P1.descale={} P1.alloc={} P1.stop={} P1.winprob={}",
+        "WOLGES_SIM_ITERS={num_sim_iters} winpct_table={} P0.descale={} P0.stop={} P0.winprob={} P1.descale={} P1.stop={} P1.winprob={}",
         winpct_table_ref.is_some() as u8,
         config_p0.descale as u8,
-        allocator_name(allocator_p0),
         stop_rule_name(stop_p0),
         win_prob_source_name(config_p0.win_prob_source),
         config_p1.descale as u8,
-        allocator_name(allocator_p1),
         stop_rule_name(stop_p1),
         win_prob_source_name(config_p1.win_prob_source),
     )?;
@@ -4279,7 +4257,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     &arc_klv,
                     move_picker::SimmerParams {
                         num_sim_iters,
-                        allocator: allocator_p0,
                         stop_rule: stop_p0,
                         stop_delta: stop_delta_p0,
                         observe: false,
@@ -4294,7 +4271,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     &arc_klv,
                     move_picker::SimmerParams {
                         num_sim_iters,
-                        allocator: allocator_p1,
                         stop_rule: stop_p1,
                         stop_delta: stop_delta_p1,
                         observe: false,

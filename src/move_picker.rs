@@ -26,13 +26,6 @@ const PRUNE_CADENCE: u64 = 16;
 
 const DEFAULT_STOP_DELTA: f64 = 0.05;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Allocator {
-    RoundRobin,
-
-    Adaptive,
-}
-
 #[inline(always)]
 fn rollout_objective<N: kwg::Node, L: kwg::Node>(
     simmer: &mut simmer::Simmer,
@@ -138,7 +131,6 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     candidates: Vec<Candidate>,
     simmer: simmer::Simmer,
     num_sim_iters: u64,
-    allocator: Allocator,
     stop_rule: StopRule,
     stop_delta: f64,
     retired: Vec<Candidate>,
@@ -154,7 +146,6 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
 
 pub struct SimmerParams<'a> {
     pub num_sim_iters: u64,
-    pub allocator: Allocator,
     pub stop_rule: StopRule,
     pub stop_delta: Option<f64>,
     pub observe: bool,
@@ -177,7 +168,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             candidates: Vec::new(),
             simmer: simmer::Simmer::new(game_config, params.config),
             num_sim_iters: params.num_sim_iters,
-            allocator: params.allocator,
             stop_rule: params.stop_rule,
             stop_delta: params
                 .stop_delta
@@ -345,7 +335,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         count: u64,
     ) {
         #[cfg(not(target_family = "wasm"))]
-        if self.sim_threads > 1 && self.allocator == Allocator::RoundRobin {
+        if self.sim_threads > 1 {
             self.run_iterations_parallel(move_generator, budget, count);
             return;
         }
@@ -358,100 +348,21 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
             self.simmer.restore_prepared(&self.prepared_pristine);
             self.simmer.reseed(mix(self.decision_seed, sim_iter));
             self.simmer.prepare_iteration();
-            // until the first prune every candidate must gather samples, or the prune sees
-            // count-zero arms whose interval is NaN and empties the field.
-            let effective_allocator = if sim_iter <= PRUNE_CADENCE {
-                Allocator::RoundRobin
-            } else {
-                self.allocator
-            };
-            match effective_allocator {
-                Allocator::RoundRobin => {
-                    for candidate in candidates.iter_mut() {
-                        let (value, sim_spread, win_prob) = rollout_objective(
-                            &mut self.simmer,
-                            self.game_config,
-                            self.kwg,
-                            self.klv,
-                            &move_generator.plays[candidate.play_index].play,
-                            self.win_pct_table,
-                        );
-                        candidate.stats.update(value);
-                        if self.observe {
-                            candidate
-                                .equity_stats
-                                .update(simmer::spread_points(sim_spread));
-                            candidate.win_rate_stats.update(win_prob);
-                        }
-                    }
-                }
-                Allocator::Adaptive => {
-                    let leader_idx = candidates
-                        .iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
-                        .unwrap()
-                        .0;
-                    let leader_mean = candidates[leader_idx].stats.mean();
-                    let leader_var = candidates[leader_idx].stats.variance();
-                    let leader_n = candidates[leader_idx].stats.count();
-
-                    let mut challenger_idx = leader_idx;
-                    let mut best_gap = f64::INFINITY;
-                    for (i, candidate) in candidates.iter().enumerate() {
-                        if i == leader_idx {
-                            continue;
-                        }
-                        let n_c = candidate.stats.count();
-                        let gap = if n_c < 2.0 || leader_n < 2.0 {
-                            0.0
-                        } else {
-                            let denom =
-                                (leader_var / leader_n + candidate.stats.variance() / n_c).sqrt();
-                            if denom > 0.0 {
-                                (leader_mean - candidate.stats.mean()) / denom
-                            } else {
-                                0.0
-                            }
-                        };
-                        if gap < best_gap {
-                            best_gap = gap;
-                            challenger_idx = i;
-                        }
-                    }
-
-                    let floor_idx = candidates
-                        .iter()
-                        .enumerate()
-                        .min_by(|(_, a), (_, b)| a.stats.count().total_cmp(&b.stats.count()))
-                        .unwrap()
-                        .0;
-
-                    let mut to_sample = [leader_idx, challenger_idx, floor_idx];
-                    to_sample.sort_unstable();
-                    let mut prev = usize::MAX;
-                    for &idx in &to_sample {
-                        if idx == prev {
-                            continue;
-                        }
-                        prev = idx;
-                        let play_index = candidates[idx].play_index;
-                        let (value, sim_spread, win_prob) = rollout_objective(
-                            &mut self.simmer,
-                            self.game_config,
-                            self.kwg,
-                            self.klv,
-                            &move_generator.plays[play_index].play,
-                            self.win_pct_table,
-                        );
-                        candidates[idx].stats.update(value);
-                        if self.observe {
-                            candidates[idx]
-                                .equity_stats
-                                .update(simmer::spread_points(sim_spread));
-                            candidates[idx].win_rate_stats.update(win_prob);
-                        }
-                    }
+            for candidate in candidates.iter_mut() {
+                let (value, sim_spread, win_prob) = rollout_objective(
+                    &mut self.simmer,
+                    self.game_config,
+                    self.kwg,
+                    self.klv,
+                    &move_generator.plays[candidate.play_index].play,
+                    self.win_pct_table,
+                );
+                candidate.stats.update(value);
+                if self.observe {
+                    candidate
+                        .equity_stats
+                        .update(simmer::spread_points(sim_spread));
+                    candidate.win_rate_stats.update(win_prob);
                 }
             }
             if sim_iter % PRUNE_CADENCE == 0 {
