@@ -94,11 +94,7 @@ options:
                 under --gilles.
   --threads N   worker threads for every leave run (default: every core)
   --gilles      collect samples via gillesb board-sampling instead
-                of autoplay. :min_samples_per_rack now drives coverage: after the
-                mandatory games, remediation games direct their samples at racks
-                still seen fewer than that many times until every rack reaches it
-                (or no further progress is possible). :0 (or omitted) is pure
-                board sampling.
+                of autoplay. counts take no :min_samples_per_rack.
 EOF
   exit 2
 fi
@@ -145,6 +141,10 @@ while [ "${!i:-}" != "" ]; do
     exit 1
   fi
   if [ "${full_arg}" != "${before_colon}" ]; then
+    if [ "$gilles_mode" ]; then
+      echo "--gilles takes a plain game count, not ${full_arg}" >&2
+      exit 1
+    fi
     after_colon="${full_arg#*:}"
     if [ "${after_colon}" != "$[${after_colon} + 0]" ]; then
       echo "invalid number: ${after_colon}" >&2
@@ -201,7 +201,7 @@ while [ "${!i:-}" != "" ]; do
   leave_name="leaves"
 
   if [ "$gilles_mode" ]; then
-    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
+    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon"
     summary_file="$(ls -1td gilles-summary-* | head -1)"
     echo "$summary_file"
     mv -fv "$summary_file" "summary${num_processed}.csv"
