@@ -724,11 +724,6 @@ fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-#[inline(always)]
-fn env_flag(name: &str, default: bool) -> bool {
-    env_parse::<u64>(name, default as u64) != 0
-}
-
 struct SelfPlayParams {
     num_games: u64,
     min_samples: u64,
@@ -767,25 +762,7 @@ fn generate_autoplay_logs<
 
     let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
 
-    let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
-        let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
-            wolges::return_error!(
-                "WOLGES_WINPCT is on, so WOLGES_WINPCT_TABLE must name the win% table".to_string()
-            )
-        };
-        let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "autoplay: win%-objective from {path}"
-        )?;
-        Some(t)
-    } else {
-        None
-    };
-
-    let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
-    let opp_on = (oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0)
-        && winpct_table.is_none();
+    let opp_on = oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0;
 
     let opp_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> = if opp_on {
         let num_letters = game_config.alphabet().len() as usize;
@@ -946,7 +923,6 @@ fn generate_autoplay_logs<
                 std::sync::Arc::clone(&undersampling_remediation_generation_id);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             let opp_ctx = opp_ctx.as_ref();
-            let winpct_table = winpct_table.as_ref();
             threads.push(s.spawn(move || {
                 let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut game_id = String::with_capacity(8);
@@ -1319,15 +1295,7 @@ fn generate_autoplay_logs<
                         }
 
 
-                        let winpct_board = WinpctBoard::from_bag(
-                            winpct_table,
-                            old_bag_len,
-                            game_config.rack_size() as usize,
-                            winpct_blend,
-                        );
-
                         let knob = KnobFold {
-                            winpct_board: &winpct_board,
                             oppdenial_rack,
                             opp_marginal: &opp_marginal,
                             oppdenial_exact,
@@ -1806,25 +1774,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
     let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
 
-    let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
-        let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
-            wolges::return_error!(
-                "WOLGES_WINPCT is on, so WOLGES_WINPCT_TABLE must name the win% table".to_string()
-            )
-        };
-        let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "gilles: win%-objective from {path}"
-        )?;
-        Some(t)
-    } else {
-        None
-    };
-
-    let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
-    let opp_on = (oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0)
-        && winpct_table.is_none();
+    let opp_on = oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0;
 
     let opp_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> = if opp_on {
         let num_letters = game_config.alphabet().len() as usize;
@@ -1880,7 +1830,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             let mutexed_tick = std::sync::Arc::clone(&mutexed_tick);
             let run_identifier = run_identifier.clone();
             let opp_ctx = opp_ctx.as_ref();
-            let winpct_table = winpct_table.as_ref();
             threads.push(s.spawn(move || {
                 let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -1960,13 +1909,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             game_state.board_tiles.iter().filter(|&&t| t != 0).count();
 
                         let pool_count = (num_tiles as usize).saturating_sub(board_tiles_count);
-
-                        let winpct_board = WinpctBoard::new(
-                            winpct_table,
-                            pool_count,
-                            rack_size as usize,
-                            winpct_blend,
-                        );
 
                         if pool_count >= pool_min
                             && pool_count <= pool_max
@@ -2110,7 +2052,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                 }
 
                                 let knob = KnobFold {
-                                    winpct_board: &winpct_board,
                                     oppdenial_rack,
                                     opp_marginal: &opp_marginal,
                                     oppdenial_exact,
@@ -2672,7 +2613,6 @@ fn oppdenial_exact_fold(oppdenial_exact: f64, oppdenial_exact_term: &[f64], rank
 
 #[derive(Clone, Copy)]
 struct KnobFold<'a> {
-    winpct_board: &'a Option<WinpctBoard<'a>>,
     oppdenial_rack: f64,
     opp_marginal: &'a [f64],
     oppdenial_exact: f64,
@@ -2687,125 +2627,9 @@ impl KnobFold<'_> {
             Some(lat) => lat.rank_bytes(rack) as usize,
             None => usize::MAX,
         };
-        winpct_apply(self.winpct_board, base)
+        base.as_f64()
             + oppdenial_rack_fold(self.oppdenial_rack, self.opp_marginal, rack)
             + oppdenial_exact_fold(self.oppdenial_exact, self.oppdenial_exact_term, rank)
-    }
-}
-
-#[inline]
-fn winpct_remap(
-    table: &win_pct::WinPctTable,
-    best: &mut [i32],
-    full_rack_start: usize,
-    bag: usize,
-    my: usize,
-    opp: usize,
-    blend: f64,
-) {
-    let Some(inv_slope_mp) = winpct_inv_slope(table, bag, my, opp) else {
-        return;
-    };
-    for e in best[full_rack_start..].iter_mut() {
-        *e = winpct_g(table, *e, bag, my, opp, inv_slope_mp, blend);
-    }
-}
-
-#[inline]
-fn winpct_inv_slope(
-    table: &win_pct::WinPctTable,
-    bag: usize,
-    my: usize,
-    opp: usize,
-) -> Option<f64> {
-    let dd = 25i32; // slope measurement half-width (points)
-    let slope =
-        (table.get(dd, bag, my, opp) - table.get(-dd, bag, my, opp)) as f64 / (2.0 * dd as f64);
-    if slope <= 1e-6 {
-        None
-    } else {
-        Some(equity::SCALE as f64 / slope)
-    }
-}
-
-#[inline]
-fn winpct_g(
-    table: &win_pct::WinPctTable,
-    e_mp: i32,
-    bag: usize,
-    my: usize,
-    opp: usize,
-    inv_slope_mp: f64,
-    blend: f64,
-) -> i32 {
-    let e_pts = equity::descale_score(e_mp);
-    let wprob = table.get(e_pts, bag, my, opp) as f64;
-    let g_mp = (wprob - 0.5) * inv_slope_mp;
-    ((1.0 - blend) * e_mp as f64 + blend * g_mp).round() as i32
-}
-
-#[derive(Clone, Copy)]
-struct WinpctBoard<'a> {
-    table: &'a win_pct::WinPctTable,
-    bag: usize,
-    my: usize,
-    opp: usize,
-    inv_slope_mp: f64,
-    blend: f64,
-}
-
-impl WinpctBoard<'_> {
-    #[inline(always)]
-    fn new(
-        table: Option<&win_pct::WinPctTable>,
-        unseen: usize,
-        rack_size: usize,
-        blend: f64,
-    ) -> Option<WinpctBoard<'_>> {
-        WinpctBoard::from_bag(
-            table,
-            unseen.saturating_sub(2 * rack_size),
-            rack_size,
-            blend,
-        )
-    }
-
-    #[inline]
-    fn from_bag(
-        table: Option<&win_pct::WinPctTable>,
-        bag: usize,
-        rack_size: usize,
-        blend: f64,
-    ) -> Option<WinpctBoard<'_>> {
-        let table = table?;
-        let inv_slope_mp = winpct_inv_slope(table, bag, rack_size, rack_size)?;
-        Some(WinpctBoard {
-            table,
-            bag,
-            my: rack_size,
-            opp: rack_size,
-            inv_slope_mp,
-            blend,
-        })
-    }
-}
-
-#[inline]
-fn winpct_apply(wpb: &Option<WinpctBoard>, e: equity::Equity) -> f64 {
-    match wpb {
-        Some(w) => {
-            winpct_g(
-                w.table,
-                e.raw(),
-                w.bag,
-                w.my,
-                w.opp,
-                w.inv_slope_mp,
-                w.blend,
-            ) as f64
-                / equity::SCALE as f64
-        }
-        None => e.as_f64(),
     }
 }
 
@@ -2996,24 +2820,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
 
-    let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
-        let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
-            wolges::return_error!(
-                "WOLGES_WINPCT is on, so WOLGES_WINPCT_TABLE must name the win% table".to_string()
-            )
-        };
-        let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census: win%-objective from {path}"
-        )?;
-        Some(t)
-    } else {
-        None
-    };
-
-    let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
-
     let gens = board_counts.len();
 
     let max_boards = board_counts.iter().copied().max().unwrap_or(1).max(1);
@@ -3027,7 +2833,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
-    let full_rack_start = lat.full_rack_start();
     writeln!(
         boxed_stdout_or_stderr(),
         "census: lattice {} leaves (letters {num_letters}, rack_size {rack_size}), \
@@ -3169,10 +2974,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                 let opp_term = oppdenial_leave != 0.0 || oppdenial_rack != 0.0;
 
-                let mut oppdenial_leave_best = if opp_term
-                    || oppdenial_exact != 0.0
-                    || winpct_table.is_some()
-                {
+                let mut oppdenial_leave_best = if opp_term || oppdenial_exact != 0.0 {
                     vec![census::UNPLAYABLE; lat_len]
                 } else {
                     Vec::new()
@@ -3273,29 +3075,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     den_board.iter_mut().for_each(|x| *x = 0.0);
 
                     let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                    if let Some(wp_table) = winpct_table.as_ref() {
-
-                        census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                        let u: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                        let bag = u.saturating_sub(2 * rack_size);
-                        winpct_remap(
-                            wp_table,
-                            &mut oppdenial_leave_best,
-                            full_rack_start,
-                            bag,
-                            rack_size,
-                            rack_size,
-                            winpct_blend,
-                        );
-                        census::apportion_table(
-                            &lat,
-                            &oppdenial_leave_best,
-                            &unseen_tally,
-                            &mut num_board,
-                            &mut den_board,
-                        );
-                    } else {
-
                     let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
                     if opp_term || oppdenial_exact_board {
                         if oppdenial_exact_board {
@@ -3372,7 +3151,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             },
                         },
                     );
-                    }
                     for (idx, slot) in contrib.iter_mut().enumerate() {
                         *slot = if den_board[idx] > 0.0 {
                             let mut v = (num_board[idx] / den_board[idx]).round() as i32;
