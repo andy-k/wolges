@@ -849,21 +849,17 @@ every split and gives bit-for-bit the same values. It helps most on the
 big-pool boards that dominate the wall clock, and can cost a little on the
 smallest pools and on the very largest alphabets (where the table of possible
 racks is several times bigger, so the extra scattered writes outweigh the
-saving). So it is on by default only where it pays: WOLGES_CENSUS_SCATTER takes
-off, on, or auto, and auto (the default) turns it on for the common alphabets
-and the big pools and off elsewhere.
+saving). So it is on only where it pays: for the common alphabets and the big
+pools, and off elsewhere.
 
 The rest of the sheet-and-valuation speedups are byte-identical reshuffles: the
 two full-rack passes are fused into one (each rack visited once, dropping a
 large per-worker value table), only the racks the board can actually deal are
 built (a big win late in the game, when most racks are undrawable), and on a
 full bag the per-rack hand-out of value is replaced by a fixed-cost set of
-passes over the table (WOLGES_CENSUS_ZETA_POOL sets the unseen-pool size at
-which the build switches to that path, default thirty-six for English). None of
-these change the leaves; they are why the census can be both exact and fast,
-which is its selling point over sampling.
-
-New knobs: WOLGES_CENSUS_SCATTER, WOLGES_CENSUS_ZETA_POOL.
+passes over the table (the build switches to that path at an unseen pool of
+thirty-six tiles). None of these change the leaves; they are why the census can
+be both exact and fast, which is its selling point over sampling.
 
 
 CREDITING WHAT THE OPPONENT CANNOT DRAW
@@ -1542,19 +1538,10 @@ Census:
   default window). Its own knobs:
   WOLGES_CENSUS_BLANK_CAP (a whole number; default a full rack's worth) -- cap
     on blanks in the sheet's unseen pool, to measure the blank cost on its own.
-  WOLGES_CENSUS_SCATTER (off, on, or auto; default auto) -- how the census
-    finds each rack's best play; the values are identical, speed only:
-      off   search each rack's play-and-keep splits
-      on    scatter each playable word's score onto the racks that could play
-            it
-      auto  on for the common alphabets and big pools, off elsewhere
   WOLGES_CENSUS_VERIFY (0 or 1; default 0) -- whether to cross-check the census
     against the live move generator on the first board:
       1  run the cross-check
       0  skip it
-  WOLGES_CENSUS_ZETA_POOL (a whole number, a pool size; default 36 EN) --
-    unseen-pool size at or above which the full-rack hand-out uses fixed-cost
-    table passes; speed only.
   WOLGES_FULL (0 or 1; default 0) -- whether to keep the full-length leave rows
     (a value for the whole rack, not just a shorter leave); a full-length table
     is what dynamic leaves read:

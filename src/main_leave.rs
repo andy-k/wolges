@@ -3806,25 +3806,6 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
     n_cand
 }
 
-#[derive(Clone, Copy)]
-enum Scatter {
-    Off,
-    On,
-    Auto,
-}
-
-#[inline]
-fn wolges_census_scatter() -> error::Returns<Scatter> {
-    match std::env::var("WOLGES_CENSUS_SCATTER").ok().as_deref() {
-        None | Some("auto") => Ok(Scatter::Auto),
-        Some("off") => Ok(Scatter::Off),
-        Some("on") => Ok(Scatter::On),
-        Some(other) => {
-            Err(format!("WOLGES_CENSUS_SCATTER must be off, on, or auto, got {other:?}").into())
-        }
-    }
-}
-
 type SheetCacheSlot = std::sync::Mutex<Option<(Vec<i32>, Vec<u8>)>>;
 
 #[inline]
@@ -3969,13 +3950,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let max_boards = board_counts.iter().copied().max().unwrap_or(1).max(1);
     let multigen = gens > 1;
 
-    let sheet_reuse = multigen && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
+    let sheet_reuse = multigen;
 
     let (live_after, sheet_cache_len) = census_sheet_reuse_plan(&board_counts);
 
     let sheet_cache_len = if sheet_reuse { sheet_cache_len } else { 0 };
 
-    let persist_gens = multigen && env_flag("WOLGES_CENSUS_PERSIST_GENS", true);
     let resume = multigen && env_flag("WOLGES_CENSUS_RESUME", false);
 
     let lat = census::MultisetLattice::new(num_letters, rack_size);
@@ -4000,13 +3980,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         at
     };
 
-    let zeta_pool_min = env_usize("WOLGES_CENSUS_ZETA_POOL", 36);
+    let zeta_pool_min = 36;
 
-    let scatter = match wolges_census_scatter()? {
-        Scatter::Off => false,
-        Scatter::On => true,
-        Scatter::Auto => lat.len() <= 12_000_000,
-    };
+    let scatter = lat.len() <= 12_000_000;
 
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
 
@@ -4649,7 +4625,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 }
                             }
 
-                            if persist_gens {
+                            {
                                 let g = shared.lock().unwrap();
                                 let lv = leave_lock.read().unwrap();
                                 let desired =
@@ -4672,10 +4648,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 }
                             }
 
-                            if sheet_reuse {
-                                for slot in sheet_cache.iter().skip(live_after[gen_idx]) {
-                                    *slot.lock().unwrap() = None;
-                                }
+                            for slot in sheet_cache.iter().skip(live_after[gen_idx]) {
+                                *slot.lock().unwrap() = None;
                             }
                         }
                         barrier.wait();
