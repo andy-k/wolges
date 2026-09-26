@@ -4106,43 +4106,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
 
-    let withhold_budget = env_usize("WOLGES_CENSUS_WITHHOLD", 0);
-    let withhold_tally: Vec<u8> = if withhold_budget > 0 {
-        let mut tiles: Vec<usize> = (0..num_letters).filter(|&t| base_freqs[t] > 0).collect();
-        tiles.sort_by_key(|&t| base_freqs[t]);
-        let mut wt = vec![0u8; num_letters];
-        for &t in tiles.iter().take(withhold_budget) {
-            wt[t] = 1;
-        }
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census: withholding {} rarest tiles from the bag for rare-rack coverage",
-            wt.iter().filter(|&&c| c > 0).count(),
-        )?;
-        wt
-    } else {
-        Vec::new()
-    };
-
-    let withhold_frac = env_parse::<f64>("WOLGES_CENSUS_WITHHOLD_FRAC", 1.0);
-    let withhold_frac = if withhold_frac > 0.0 {
-        withhold_frac
-    } else {
-        1.0
-    };
-    let withhold_period = if withhold_frac >= 1.0 {
-        1
-    } else {
-        (1.0 / withhold_frac).round().max(1.0) as usize
-    };
-    if !withhold_tally.is_empty() && withhold_period > 1 {
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census: withhold fraction {:.3} -> 1 in {} boards (phase-balanced) is a withhold board",
-            withhold_frac,
-            withhold_period,
-        )?;
-    }
     let seed = seed.unwrap_or_else(rand::random);
 
     let mut leave_cur = vec![0i32; lat.len()];
@@ -4723,36 +4686,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         low_tiles + (b as usize % (high_tiles - low_tiles + 1))
                     };
 
-                    let phase_buckets = if high_tiles <= low_tiles {
-                        1
-                    } else if num_buckets >= 2 {
-                        num_buckets
-                    } else {
-                        high_tiles - low_tiles + 1
-                    };
-                    let do_withhold = !withhold_tally.is_empty()
-                        && (b as usize / phase_buckets).is_multiple_of(withhold_period);
                     let mut tries = 0u32;
                     let reached = loop {
-                        if !do_withhold {
-                            game_state
-                                .reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                        } else {
-
-                            game_state.reset();
-                            game_state.bag.shuffle(&mut rng);
-                            for (t, &c) in withhold_tally.iter().enumerate() {
-                                for _ in 0..c {
-                                    game_state.bag.remove_tile(t as u8);
-                                }
-                            }
-                            let rsz = game_config.rack_size() as usize;
-                            let bag = &mut game_state.bag;
-                            let players = &mut game_state.players;
-                            for (i, player) in players.iter_mut().enumerate() {
-                                bag.replenish(&mut player.rack, rsz, i);
-                            }
-                        }
+                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                         let mut got = false;
                         loop {
                             let fill =
