@@ -10,37 +10,19 @@ pub fn spread_points(millipoints: i32) -> f64 {
     millipoints as f64 / equity::SCALE as f64
 }
 
-// the simmer's win-probability model and its objective weights.
-#[derive(Clone, Copy)]
-pub struct SimmerConfig {
-    pub descale: bool,
-    pub w_no_out: f64,
-    pub w_out: f64,
-}
-
 #[inline(always)]
-pub fn win_prob_unfinished(final_spread: i32, num_unseen_tiles: usize, cfg: &SimmerConfig) -> f64 {
+pub fn win_prob_unfinished(final_spread: i32, num_unseen_tiles: usize) -> f64 {
     // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
     // (to adjust these, adjust the 30.0 and 0.9 consts below)
     let exp_width = -(30.0 + num_unseen_tiles as f64) / (1.0 / 0.9 - 1.0f64).ln();
-    let spread = if cfg.descale {
-        spread_points(final_spread)
-    } else {
-        final_spread as f64
-    };
-    1.0 / (1.0 + (-spread / exp_width).exp())
+    1.0 / (1.0 + (-spread_points(final_spread) / exp_width).exp())
 }
 
 // the per-candidate objective: the sim spread in points, plus the win probability
 // times its weightage.
 #[inline(always)]
-pub fn sim_objective(sim_spread: i32, win_prob: f64, weightage: f64, descale: bool) -> f64 {
-    let spread = if descale {
-        spread_points(sim_spread)
-    } else {
-        sim_spread as f64
-    };
-    spread + win_prob * weightage
+pub fn sim_objective(sim_spread: i32, win_prob: f64, weightage: f64) -> f64 {
+    spread_points(sim_spread) + win_prob * weightage
 }
 
 #[inline(always)]
@@ -84,12 +66,11 @@ pub struct Simmer {
     rack_tally: Box<[u8]>,
 
     rng: rand::rngs::ChaCha20Rng,
-    config: SimmerConfig,
 }
 
 impl Simmer {
     // The other methods must be called with the same game_config.
-    pub fn new(game_config: &game_config::GameConfig, config: SimmerConfig) -> Self {
+    pub fn new(game_config: &game_config::GameConfig) -> Self {
         Self {
             initial_game_state: game_state::GameState::new(game_config),
             initial_score_spread: 0,
@@ -107,7 +88,6 @@ impl Simmer {
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
 
             rng: rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
-            config,
         }
     }
 
@@ -118,7 +98,7 @@ impl Simmer {
 
     #[inline(always)]
     pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
-        let mut clone = Simmer::new(game_config, self.config);
+        let mut clone = Simmer::new(game_config);
         clone.prepare(
             game_config,
             &self.initial_game_state,
@@ -126,11 +106,6 @@ impl Simmer {
             self.wants_win_prob,
         );
         clone
-    }
-
-    #[inline(always)]
-    pub fn config(&self) -> &SimmerConfig {
-        &self.config
     }
 
     #[inline(always)]
@@ -159,18 +134,18 @@ impl Simmer {
                 num_unseen_tiles += player.rack.len();
             }
         }
-        let w_no_out = self.config.w_no_out;
-        let w_out = self.config.w_out;
+        const W_NO_OUT: f64 = 10.0;
+        const W_OUT: f64 = 10000.0;
         self.win_prob_weightage = if num_unseen_tiles <= self.num_tiles_that_matter {
             // possible to play out
-            w_out
+            W_OUT
         } else if num_unseen_tiles < 2 * self.num_tiles_that_matter {
-            w_out
+            W_OUT
                 + ((num_unseen_tiles - self.num_tiles_that_matter) as f64
                     / self.num_tiles_that_matter as f64)
-                    * (w_no_out - w_out)
+                    * (W_NO_OUT - W_OUT)
         } else {
-            w_no_out
+            W_NO_OUT
         };
         self.wants_win_prob = self.win_prob_weightage != 0.0 || report_win_prob;
     }
@@ -333,7 +308,7 @@ impl Simmer {
                     return win_prob as f64;
                 }
             }
-            win_prob_unfinished(final_spread, bag + racks_total, &self.config)
+            win_prob_unfinished(final_spread, bag + racks_total)
         }
     }
 
@@ -362,14 +337,7 @@ mod tests {
 
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00");
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
-        let mut simmer = Simmer::new(
-            &game_config,
-            SimmerConfig {
-                descale: true,
-                w_no_out: 10.0,
-                w_out: 10000.0,
-            },
-        );
+        let mut simmer = Simmer::new(&game_config);
         simmer.reseed(99);
         simmer.prepare(&game_config, &game_state, 0, false);
         simmer.prepare_iteration();
@@ -409,33 +377,20 @@ mod tests {
     #[test]
     #[inline]
     fn win_prob_unfinished_hits_sigmoid_prob_at_the_crafted_lead() {
-        let cfg = SimmerConfig {
-            descale: true,
-            w_no_out: 10.0,
-            w_out: 10000.0,
-        };
         let lead_points = 30.0 + 10.0;
         let lead_millipoints = (lead_points * equity::SCALE as f64) as i32;
-        assert!((win_prob_unfinished(lead_millipoints, 10, &cfg) - 0.9).abs() < 1e-9);
-        assert!((win_prob_unfinished(-lead_millipoints, 10, &cfg) - (1.0 - 0.9)).abs() < 1e-9);
-        assert_eq!(win_prob_unfinished(0, 10, &cfg), 0.5);
-
-        let raw = SimmerConfig {
-            descale: false,
-            ..cfg
-        };
-        assert!(win_prob_unfinished(lead_millipoints, 10, &raw) > 0.999);
+        assert!((win_prob_unfinished(lead_millipoints, 10) - 0.9).abs() < 1e-9);
+        assert!((win_prob_unfinished(-lead_millipoints, 10) - (1.0 - 0.9)).abs() < 1e-9);
+        assert_eq!(win_prob_unfinished(0, 10), 0.5);
     }
 
     #[test]
     #[inline]
     fn sim_objective_descales_spread_and_scales_win_prob() {
-        assert_eq!(sim_objective(30 * equity::SCALE, 0.0, 10.0, true), 30.0);
-        assert_eq!(sim_objective(0, 1.0, 10.0, true), 10.0);
-        assert_eq!(sim_objective(0, 1.0, 10000.0, true), 10000.0);
-        assert_eq!(sim_objective(0, 0.5, 10.0, true), 5.0);
-
-        assert_eq!(sim_objective(30 * equity::SCALE, 0.0, 10.0, false), 30000.0);
+        assert_eq!(sim_objective(30 * equity::SCALE, 0.0, 10.0), 30.0);
+        assert_eq!(sim_objective(0, 1.0, 10.0), 10.0);
+        assert_eq!(sim_objective(0, 1.0, 10000.0), 10000.0);
+        assert_eq!(sim_objective(0, 0.5, 10.0), 5.0);
     }
 
     #[test]
@@ -448,14 +403,7 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
         let opponent_draw = |seed: u64| -> Vec<u8> {
-            let mut simmer = Simmer::new(
-                &game_config,
-                SimmerConfig {
-                    descale: true,
-                    w_no_out: 10.0,
-                    w_out: 10000.0,
-                },
-            );
+            let mut simmer = Simmer::new(&game_config);
             simmer.prepare(&game_config, &game_state, 2, false);
             simmer.reseed(seed);
             simmer.prepare_iteration();
@@ -469,12 +417,12 @@ mod tests {
     }
 
     #[inline]
-    fn prepared_simmer(config: SimmerConfig) -> (Simmer, usize, usize, usize) {
+    fn prepared_simmer() -> (Simmer, usize, usize, usize) {
         let game_config = game_config::make_english_game_config();
         let mut game_state = game_state::GameState::new(&game_config);
         let mut deal_rng = rand::rngs::ChaCha20Rng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
-        let mut simmer = Simmer::new(&game_config, config);
+        let mut simmer = Simmer::new(&game_config);
         simmer.prepare(&game_config, &game_state, 2, false);
         let bag = simmer.game_state.bag.len();
         let turn = simmer.initial_game_state.turn as usize;
@@ -491,15 +439,10 @@ mod tests {
     #[test]
     #[inline]
     fn table_source_uses_table_where_sampled_else_sigmoid() {
-        let cfg = SimmerConfig {
-            descale: true,
-            w_no_out: 10.0,
-            w_out: 10000.0,
-        };
-        let (simmer, bag, my, opp) = prepared_simmer(cfg);
+        let (simmer, bag, my, opp) = prepared_simmer();
 
         let final_spread = 40 * equity::SCALE;
-        let sigmoid = win_prob_unfinished(final_spread, bag + my + opp, &cfg);
+        let sigmoid = win_prob_unfinished(final_spread, bag + my + opp);
         assert!(sigmoid < 0.99, "sigmoid {sigmoid} unexpectedly saturated");
 
         let mut acc = win_pct::WinPctAccumulator::new();

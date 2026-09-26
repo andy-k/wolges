@@ -2,7 +2,7 @@
 
 use wolges::{
     alphabet, bites, build, display, error, fash, game_config, game_state, klv, kwg, move_picker,
-    movegen, simmer,
+    movegen,
 };
 
 // most of this is copied from main_endgame.
@@ -253,11 +253,6 @@ fn main() -> error::Returns<()> {
             observe: true,
             sim_threads: 1,
             win_pct_table: None,
-            config: simmer::SimmerConfig {
-                descale: true,
-                w_no_out: 10.0,
-                w_out: 10000.0,
-            },
         },
     );
 

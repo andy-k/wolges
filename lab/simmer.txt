@@ -13,23 +13,20 @@ averaging, rather than computing it exactly.
 
 The core piece is a per-instance ChaCha20 random-number generator, reseed(seed)
 for a reproducible run (the same seed and settings replay the same draws no
-matter how many threads run them), and a SimmerConfig struct that collects the
-model's tunable numbers: whether spreads are read in whole points or raw
-millipoints (equity::SCALE = 1000; see lab/leavegen.txt), the win-probability
-weightage for a game that can or cannot be played out within the simmed plies,
-and the sigmoid consts described below. new() seeds from system entropy so an
-un-reseeded caller keeps its original non-reproducible behavior; only a caller
-that opts into reseed() gets a repeatable stream.
+matter how many threads run them). Spreads are read in whole points, not raw
+millipoints (equity::SCALE = 1000; see lab/leavegen.txt), before the
+win-probability sigmoid or the objective sees them. new() seeds from system
+entropy so an un-reseeded caller keeps its original non-reproducible behavior;
+only a caller that opts into reseed() gets a repeatable stream.
 
 Two small helpers are pulled out so every caller shares one definition. The
 unfinished-game win probability is a hand-tuned sigmoid of the score margin: a
-lead of (sigmoid_spread + tiles_left_unseen) points reads as sigmoid_prob (a
-config knob, default 90%), calibrated so a bigger lead is worth more confidence
-the further along the game is and less when many tiles remain unseen. The
-per-candidate objective a rollout reports is the spread (in points, unless the
-config's descale flag is off) plus the win probability scaled by its weightage
--- one function, sim_objective, used by both the interactive move picker and
-the batch harness, so they can never drift apart.
+lead of (30 + tiles_left_unseen) points reads as 90%, calibrated so a bigger
+lead is worth more confidence the further along the game is and less when many
+tiles remain unseen. The per-candidate objective a rollout reports is the
+spread in points plus the win probability scaled by its weightage -- one
+function, sim_objective, used by both the interactive move picker and the batch
+harness, so they can never drift apart.
 
 
 DROPPING THE ASYNC RUNTIME
@@ -53,13 +50,11 @@ lab/leavegen.txt's leave compare measures leave TABLES: each seat picks its
 move by one greedy look at the board with its own table. leave sim-compare is
 the simmer's counterpart: both seats share the same leave table, but each picks
 its move by running the full rollout instead of a single greedy look, and the
-two seats can each be configured differently. Every seat reads its own
-settings, WOLGES_SIM_P0_DESCALE and WOLGES_SIM_P1_DESCALE (on or off), and its
-own options, --p0-win-pct and --p1-win-pct (a win% table); both share one
---iters rollout budget per move. Giving both seats identical settings and
-expecting the result to land near 50% is a harness sanity check (an unbiased
-comparison should tie); giving them different settings measures which one plays
-better.
+two seats can each be configured differently. Every seat reads its own option,
+--p0-win-pct or --p1-win-pct (a win% table), and both share one --iters rollout
+budget per move. Giving both seats identical options and expecting the result
+to land near 50% is a harness sanity check (an unbiased comparison should tie);
+giving them different options measures which one plays better.
 
 As in leave compare, each game pair starts from the same deal with the seats
 swapped, so first-move advantage cancels between the two halves of the pair.

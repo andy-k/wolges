@@ -6,7 +6,7 @@ use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex};
 use wolges::{
     alphabet, bag, bites, build, display, equity, error, fash, game_config, game_state,
-    game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, simmer, stats,
+    game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
 
 type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
@@ -105,11 +105,6 @@ fn do_it<N: kwg::Node + Sync>(
             observe: false,
             sim_threads: 1,
             win_pct_table: None,
-            config: simmer::SimmerConfig {
-                descale: true,
-                w_no_out: 10.0,
-                w_out: 10000.0,
-            },
         },
     ));
     if true {

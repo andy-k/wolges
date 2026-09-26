@@ -3,7 +3,7 @@
 use rand::prelude::*;
 use wolges::{
     display, equity, error, game_config, game_state, kibitzer, klv, kwg, move_filter, move_picker,
-    movegen, play_scorer, simmer,
+    movegen, play_scorer,
 };
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -219,11 +219,6 @@ fn main() -> error::Returns<()> {
             observe: false,
             sim_threads: 1,
             win_pct_table: None,
-            config: simmer::SimmerConfig {
-                descale: true,
-                w_no_out: 10.0,
-                w_out: 10000.0,
-            },
         },
     ));
     game_state

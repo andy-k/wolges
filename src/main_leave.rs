@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
     alphabet, bites, build, census, display, equity, error, fash, game_config, game_state, klv,
-    kwg, move_filter, move_picker, movegen, play_scorer, prob, simmer, stats, win_pct,
+    kwg, move_filter, move_picker, movegen, play_scorer, prob, stats, win_pct,
 };
 
 mod game_args;
@@ -564,11 +564,6 @@ fn run<N: kwg::Node + Sync + Send>(
                     observe: false,
                     sim_threads: 1,
                     win_pct_table: None,
-                    config: simmer::SimmerConfig {
-                        descale: true,
-                        w_no_out: 10.0,
-                        w_out: 10000.0,
-                    },
                 },
             );
             driver.reseed(seed);
@@ -626,11 +621,6 @@ fn run<N: kwg::Node + Sync + Send>(
                     observe: false,
                     sim_threads: 1,
                     win_pct_table: None,
-                    config: simmer::SimmerConfig {
-                        descale: true,
-                        w_no_out: 10.0,
-                        w_out: 10000.0,
-                    },
                 },
             );
             driver.reseed(seed);
@@ -4155,23 +4145,6 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     })
 }
 
-#[inline]
-fn sim_compare_seat_config(prefix: &str) -> simmer::SimmerConfig {
-    let mut config = simmer::SimmerConfig {
-        descale: true,
-        w_no_out: 10.0,
-        w_out: 10000.0,
-    };
-    if let Some(descale) = std::env::var(format!("{prefix}DESCALE"))
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        config.descale = descale != 0;
-    }
-
-    config
-}
-
 struct SimCompareParams {
     num_game_pairs: u64,
     seed: Option<u64>,
@@ -4217,14 +4190,10 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     };
     let winpct_p0 = winpct_p0.as_ref();
     let winpct_p1 = winpct_p1.as_ref();
-    let config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
-    let config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
     writeln!(
         boxed_stdout_or_stderr(),
-        "sim-compare: {num_sim_iters} rollouts a move; p0 descale={} win%={}; p1 descale={} win%={}",
-        config_p0.descale as u8,
+        "sim-compare: {num_sim_iters} rollouts a move; p0 win%={}; p1 win%={}",
         p0_win_pct.as_deref().unwrap_or("sigmoid"),
-        config_p1.descale as u8,
         p1_win_pct.as_deref().unwrap_or("sigmoid"),
     )?;
 
@@ -4251,7 +4220,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         observe: false,
                         sim_threads,
                         win_pct_table: winpct_p0,
-                        config: config_p0,
                     },
                 ));
                 let mut driver_p1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
@@ -4263,7 +4231,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         observe: false,
                         sim_threads,
                         win_pct_table: winpct_p1,
-                        config: config_p1,
                     },
                 ));
                 let mut game_state = game_state::GameState::new(&game_config);

@@ -41,12 +41,7 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node>(
         0.0
     };
     let sim_spread = final_spread - simmer.initial_score_spread;
-    let objective = simmer::sim_objective(
-        sim_spread,
-        win_prob,
-        simmer.win_prob_weightage(),
-        simmer.config().descale,
-    );
+    let objective = simmer::sim_objective(sim_spread, win_prob, simmer.win_prob_weightage());
 
     (objective, sim_spread, win_prob)
 }
@@ -113,7 +108,6 @@ pub struct SimmerParams<'a> {
     pub observe: bool,
     pub sim_threads: usize,
     pub win_pct_table: Option<&'a win_pct::WinPctTable>,
-    pub config: simmer::SimmerConfig,
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
@@ -128,7 +122,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             kwg,
             klv,
             candidates: Vec::new(),
-            simmer: simmer::Simmer::new(game_config, params.config),
+            simmer: simmer::Simmer::new(game_config),
             num_sim_iters: params.num_sim_iters,
             retired: Vec::new(),
             iters_done: 0,
