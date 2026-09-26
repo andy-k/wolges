@@ -4056,14 +4056,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
     let sgd = !multigen && batch_size < board_counts[0];
 
-    let global_apportion =
-        full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION", false);
-
-    let ga_drawable =
-        global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE", false);
-
-    let global_weights =
-        full_rack && !global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
+    let global_weights = full_rack && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
 
     let sheet_reuse = multigen && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
 
@@ -4328,7 +4321,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let opp_term = oppdenial_leave != 0.0 || oppdenial_rack != 0.0;
 
                 let mut oppdenial_leave_best = if full_rack
-                    && (opp_term || oppdenial_exact != 0.0 || global_apportion || winpct_table.is_some())
+                    && (opp_term || oppdenial_exact != 0.0 || winpct_table.is_some())
                 {
                     vec![census::UNPLAYABLE; lat_len]
                 } else {
@@ -4528,7 +4521,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
 
                     let ts = std::time::Instant::now();
-                    if full_rack && !global_apportion {
+                    if full_rack {
                         num_board.iter_mut().for_each(|x| *x = 0.0);
                         den_board.iter_mut().for_each(|x| *x = 0.0);
 
@@ -4654,40 +4647,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             } else {
                                 census::UNPLAYABLE
                             };
-                        }
-                    } else if full_rack && global_apportion {
-
-                        census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                        if let Some(wp_table) = winpct_table.as_ref() {
-
-                            let u: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                            let bag = u.saturating_sub(2 * rack_size);
-                            winpct_remap(
-                                wp_table,
-                                &mut oppdenial_leave_best,
-                                full_rack_start,
-                                bag,
-                                rack_size,
-                                rack_size,
-                                winpct_blend,
-                            );
-                        }
-                        contrib.iter_mut().for_each(|x| *x = census::UNPLAYABLE);
-                        if ga_drawable {
-
-                            census::mark_drawable_best(
-                                &lat,
-                                add_table.as_ref().unwrap(),
-                                &oppdenial_leave_best,
-                                &unseen_tally,
-                                &mut contrib,
-                            );
-                        } else {
-
-                            contrib[full_rack_start..]
-                                .iter_mut()
-                                .zip(oppdenial_leave_best[full_rack_start..].iter())
-                                .for_each(|(slot, &b)| *slot = b);
                         }
                     } else if entering_push {
 
@@ -5086,30 +5045,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
     let leave_final = leave_lock.into_inner().unwrap();
 
-    let (ga_num, ga_den) = if global_apportion {
-        let mut vr = vec![census::UNPLAYABLE; lat_len];
-        for idx in full_rack_start..lat_len {
-            if accum_cnt[idx] > 0 {
-                vr[idx] = (accum_sum[idx] / accum_cnt[idx] as f64).round() as i32;
-            }
-        }
-        let mut gn = vec![0i128; lat_len];
-        let mut gd = vec![0i128; lat_len];
-        census::entering_fused(&lat, &vr, &base_freqs, &mut gn, &mut gd);
-        (gn, gd)
-    } else {
-        (Vec::new(), Vec::new())
-    };
-
     let value_mp = |idx: usize| -> f64 {
         if sgd || multigen {
             leave_final[idx] as f64
-        } else if global_apportion {
-            if ga_den[idx] != 0 {
-                (ga_num[idx] / ga_den[idx]) as f64
-            } else {
-                0.0
-            }
         } else if accum_cnt[idx] > 0 {
             accum_sum[idx] / accum_cnt[idx] as f64
         } else {
@@ -5130,8 +5068,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     for idx in 0..lat.len() {
         let valued = if sgd || multigen {
             ever[idx]
-        } else if global_apportion {
-            ga_den[idx] != 0
         } else {
             accum_cnt[idx] > 0
         };

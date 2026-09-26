@@ -1312,65 +1312,6 @@ pub fn entering_fused(
 }
 
 #[inline]
-pub fn mark_drawable_best(
-    lat: &MultisetLattice,
-    add: &AddTable,
-    best: &[i32],
-    unseen: &[u8],
-    out: &mut [i32],
-) {
-    let n = lat.num_letters();
-    let rack_size = lat.rack_size();
-    let mut suffix_cap = [0u32; MAX_LETTERS + 1];
-    for t in (0..n).rev() {
-        suffix_cap[t] = suffix_cap[t + 1] + (unseen[t] as u32).min(rack_size as u32);
-    }
-
-    struct Ctx<'a> {
-        n: usize,
-        unseen: &'a [u8],
-        suffix_cap: &'a [u32],
-        add: &'a AddTable,
-        best: &'a [i32],
-        out: &'a mut [i32],
-    }
-    impl Ctx<'_> {
-        fn rec(&mut self, t: usize, remaining: usize, idx: usize) {
-            if remaining == 0 {
-                // SAFETY: at remaining == 0, idx is a full-rack lattice index (built up one tile
-                // at a time via the add table), < lat.len(); best and out are both
-                // lat.len()-sized.
-                unsafe {
-                    *self.out.get_unchecked_mut(idx) = *self.best.get_unchecked(idx);
-                }
-                return;
-            }
-            if t == self.n || (self.suffix_cap[t] as usize) < remaining {
-                return;
-            }
-
-            self.rec(t + 1, remaining, idx);
-
-            let cap = (self.unseen[t] as usize).min(remaining);
-            let mut idx_c = idx;
-            for c in 1..=cap {
-                idx_c = self.add.add(idx_c, t);
-                self.rec(t + 1, remaining - c, idx_c);
-            }
-        }
-    }
-    Ctx {
-        n,
-        unseen,
-        suffix_cap: &suffix_cap,
-        add,
-        best,
-        out,
-    }
-    .rec(0, rack_size, 0);
-}
-
-#[inline]
 pub fn leave_value_by_draw(
     lat: &MultisetLattice,
     best: &[i32],
@@ -1849,29 +1790,6 @@ mod tests {
                 den[idx],
                 den_naive[idx]
             );
-        }
-    }
-
-    #[test]
-    #[inline]
-    fn mark_drawable_best_copies_drawable() {
-        let lat = MultisetLattice::new(3, 3);
-        let add = AddTable::new(&lat);
-        let unseen = [4u8, 1u8, 2u8];
-        let mut best = vec![UNPLAYABLE; lat.len()];
-        for (idx, slot) in best.iter_mut().enumerate().skip(lat.full_rack_start()) {
-            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
-            *slot = h.rem_euclid(20_000) - 5_000;
-        }
-        let mut out = vec![UNPLAYABLE; lat.len()];
-        mark_drawable_best(&lat, &add, &best, &unseen, &mut out);
-        let n = lat.num_letters();
-        for idx in 0..lat.len() {
-            let rk = lat.tally(idx);
-            let size: usize = rk.iter().map(|&c| c as usize).sum();
-            let drawable = size == lat.rack_size() && (0..n).all(|t| rk[t] <= unseen[t]);
-            let want = if drawable { best[idx] } else { UNPLAYABLE };
-            assert_eq!(out[idx], want, "mismatch at {idx}");
         }
     }
 
