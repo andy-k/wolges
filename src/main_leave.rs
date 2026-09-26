@@ -1896,26 +1896,6 @@ fn env_usize(name: &str, default: usize) -> usize {
     env_parse(name, default)
 }
 
-#[derive(Clone, Copy)]
-enum GillesRealRack {
-    Off,
-    AllTurns,
-    InWindow,
-}
-
-#[inline]
-fn wolges_gilles_real_rack() -> error::Returns<GillesRealRack> {
-    match std::env::var("WOLGES_GILLES_REAL_RACK").ok().as_deref() {
-        None | Some("off") => Ok(GillesRealRack::Off),
-        Some("all-turns") => Ok(GillesRealRack::AllTurns),
-        Some("in-window") => Ok(GillesRealRack::InWindow),
-        Some(other) => Err(format!(
-            "WOLGES_GILLES_REAL_RACK must be off, all-turns, or in-window, got {other:?}"
-        )
-        .into()),
-    }
-}
-
 #[inline]
 fn parse_board_counts(spec: &str) -> error::Returns<Vec<u64>> {
     let mut out = Vec::new();
@@ -1993,15 +1973,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let max_no_progress = env_usize("WOLGES_GILLES_MAX_NO_PROGRESS", 2) as u32;
     let force_recompute_games = env_usize("WOLGES_GILLES_FORCE_RECOMPUTE_GAMES", 2000) as u64;
 
-    let (real_rack_enabled, real_rack_in_window_only, real_rack_mode) =
-        match wolges_gilles_real_rack()? {
-            GillesRealRack::Off => (false, false, "off"),
-            GillesRealRack::AllTurns => (true, false, "all-turns"),
-            GillesRealRack::InWindow => (true, true, "in-window"),
-        };
-
-    let real_rack_weight = env_usize("WOLGES_GILLES_REAL_RACK_WEIGHT", 1) as u64;
-
     let reserve_enabled = env_flag("WOLGES_GILLES_RESERVE", false);
     let reserve_budget = env_usize(
         "WOLGES_GILLES_RESERVE_BUDGET",
@@ -2060,7 +2031,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
     writeln!(
         boxed_stdout_or_stderr(),
-        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget} real_rack={real_rack_mode}"
+        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget}"
     )?;
 
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2134,7 +2105,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
                 let mut local_undersampled = fash::MyHashSet::<bites::Bites>::default();
                 let mut reserved_tally = vec![0u8; num_letters];
-                let mut real_rack_buf = Vec::<u8>::with_capacity(rack_size as usize);
 
                 let mut opp_sheet: Vec<i32> = Vec::new();
                 let mut opp_best: Vec<i32> = Vec::new();
@@ -2686,87 +2656,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                         }
 
 
-                        let real_rack_here = real_rack_enabled
-                            && !game_state.bag.is_empty()
-                            && (!real_rack_in_window_only
-                                || (pool_count >= pool_min && pool_count <= pool_max));
-                        let mut rr_oppdenial_exact_active = false;
-                        if real_rack_here
-                            && let Some((lat, add, leave)) = opp_ctx
-                        {
-
-                            unseen_tally.clone_from_slice(&base_freqs);
-                            for &t in game_state.board_tiles.iter() {
-                                if t != 0 {
-                                    let base = t & !((t as i8) >> 7) as u8;
-                                    unseen_tally[base as usize] =
-                                        unseen_tally[base as usize].saturating_sub(1);
-                                }
-                            }
-                            opp_sheet.iter_mut().for_each(|v| *v = 0);
-                            let num_blanks_eff =
-                                (unseen_tally[0] as usize).min(rack_size as usize);
-                            build_sheet_spell_once(
-                                &mut move_generator,
-                                &game_state.board_tiles,
-                                SpellTables {
-                                    game_config: &game_config,
-                                    kwg: &kwg,
-                                    klv: &arc_klv0,
-                                    lat,
-                                },
-                                SpellPool {
-                                    unseen_tally: &unseen_tally,
-                                    num_blanks_eff,
-                                    rack_size: rack_size as usize,
-                                },
-                                &mut opp_movegen_rack,
-                                &mut opp_blank_deltas,
-                                &mut opp_sheet,
-                            );
-                            let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                            let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
-                            if oppdenial_exact_board {
-                                census::best_equity_argmax_table(
-                                    lat,
-                                    &opp_sheet,
-                                    leave,
-                                    &mut opp_best,
-                                    &mut oppdenial_exact_kept_idx,
-                                    &mut oppdenial_exact_kept_size,
-                                );
-                            } else {
-                                census::best_equity_table(lat, &opp_sheet, leave, &mut opp_best);
-                            }
-
-                            if oppdenial_leave != 0.0 || oppdenial_rack != 0.0 {
-                                census::opp_denial_marginals(
-                                    lat,
-                                    add,
-                                    &opp_best,
-                                    &unseen_tally,
-                                    &mut opp_marginal,
-                                );
-                            }
-                            if oppdenial_exact_board {
-                                oppdenial_exact_term.iter_mut().for_each(|x| *x = 0.0);
-                                census::opp_me2_per_rack(
-                                    lat,
-                                    add,
-                                    &opp_best,
-                                    &census::KeptArgmax {
-                                        idx: &oppdenial_exact_kept_idx,
-                                        size: &oppdenial_exact_kept_size,
-                                    },
-                                    &unseen_tally,
-                                    oppdenial_exact_me2,
-                                    &mut oppdenial_exact_term,
-                                );
-                            }
-                            rr_oppdenial_exact_active = oppdenial_exact_board;
-                        }
-
-
                         let board_snapshot = movegen::BoardSnapshot {
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
@@ -2786,37 +2675,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             dynamic_leaves: None,
                         });
 
-                        if real_rack_here {
-                            let w = real_rack_weight;
-                            real_rack_buf.clone_from(&game_state.current_player().rack);
-                            real_rack_buf.sort_unstable();
-
-                            let rr_knob = KnobFold {
-                                winpct_board: &winpct_board,
-                                oppdenial_rack,
-                                opp_marginal: &opp_marginal,
-                                oppdenial_exact,
-                                oppdenial_exact_term: &oppdenial_exact_term,
-                                oppdenial_exact_lat: if rr_oppdenial_exact_active {
-                                    opp_ctx.map(|(lat, _, _)| lat)
-                                } else {
-                                    None
-                                },
-                            };
-                            let eq = rr_knob.apply(move_generator.plays[0].equity, &real_rack_buf)
-                                * w as f64;
-                            thread_map
-                                .entry(real_rack_buf[..].into())
-                                .and_modify(|e| {
-                                    e.equity += eq;
-                                    e.count += w;
-                                })
-                                .or_insert(Cumulate {
-                                    equity: eq,
-                                    count: w,
-                                });
-                            completed_samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
                         let play = &move_generator.plays[0];
                         game_state.play(&game_config, &mut rng, &play.play).unwrap();
                         let game_ended =
