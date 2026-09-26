@@ -744,8 +744,6 @@ margin. Whether its exact per-board values play stronger than board sampling or
 the autoplay baseline, and by how much, is not something a fresh head-to-head
 settles at this point; the honest claim is the runtime one.
 
-New knobs: WOLGES_CENSUS_BLANK_CAP, WOLGES_CENSUS_VERIFY.
-
 
 CHOOSING BOARDS ACROSS THE GAME
 
@@ -1536,12 +1534,6 @@ Census:
   It also reads the shared knobs above and the board window WOLGES_POOL_MIN /
   WOLGES_POOL_MAX (listed under board sampling, but with the census's own
   default window). Its own knobs:
-  WOLGES_CENSUS_BLANK_CAP (a whole number; default a full rack's worth) -- cap
-    on blanks in the sheet's unseen pool, to measure the blank cost on its own.
-  WOLGES_CENSUS_VERIFY (0 or 1; default 0) -- whether to cross-check the census
-    against the live move generator on the first board:
-      1  run the cross-check
-      0  skip it
   WOLGES_FULL (0 or 1; default 0) -- whether to keep the full-length leave rows
     (a value for the whole rack, not just a shorter leave); a full-length table
     is what dynamic leaves read:

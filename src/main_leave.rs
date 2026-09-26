@@ -1362,7 +1362,6 @@ fn generate_autoplay_logs<
                                     unseen_tally: &opp_unseen,
                                     num_blanks_eff,
                                     rack_size: game_config.rack_size() as usize,
-                                    blank_cap: game_config.rack_size() as usize,
                                 },
                                 &mut opp_movegen_rack,
                                 &mut opp_blank_deltas,
@@ -2508,7 +2507,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                             unseen_tally: &unseen_tally,
                                             num_blanks_eff,
                                             rack_size: rack_size as usize,
-                                            blank_cap: rack_size as usize,
                                         },
                                         &mut opp_movegen_rack,
                                         &mut opp_blank_deltas,
@@ -2780,7 +2778,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     unseen_tally: &unseen_tally,
                                     num_blanks_eff,
                                     rack_size: rack_size as usize,
-                                    blank_cap: rack_size as usize,
                                 },
                                 &mut opp_movegen_rack,
                                 &mut opp_blank_deltas,
@@ -3525,7 +3522,6 @@ struct SpellPool<'a> {
     unseen_tally: &'a [u8],
     num_blanks_eff: usize,
     rack_size: usize,
-    blank_cap: usize,
 }
 
 #[inline]
@@ -3754,12 +3750,10 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         unseen_tally,
         num_blanks_eff,
         rack_size,
-        blank_cap,
     } = pool;
     movegen_rack.clear();
     for (t, &c) in unseen_tally.iter().enumerate() {
-        let cap = if t == 0 { blank_cap } else { rack_size };
-        for _ in 0..(c as usize).min(cap) {
+        for _ in 0..(c as usize).min(rack_size) {
             movegen_rack.push(t as u8);
         }
     }
@@ -3922,10 +3916,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             req
         }
     };
-    let blank_cap = env_usize("WOLGES_CENSUS_BLANK_CAP", rack_size);
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
-    let verify = env_flag("WOLGES_CENSUS_VERIFY", false);
 
     let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
         let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
@@ -4185,19 +4177,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                 let mut tally_buf = vec![0u8; num_letters];
                 let mut unseen_tally = vec![0u8; num_letters];
-                let mut unseen_pool = Vec::<u8>::new();
                 let mut movegen_rack = Vec::<u8>::new();
-                let mut verify_rack = Vec::<u8>::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
 
 
                 let mut value_board = |move_generator: &mut movegen::KurniaMoveGenerator,
                                        game_state: &game_state::GameState,
-                                       rng: &mut rand::rngs::ChaCha20Rng,
                                        leave: &[i32],
                                        null_leave: bool,
                                        log_first: bool,
-                                       do_verify: bool,
                                        cache_slot: Option<&SheetCacheSlot>,
                                        reuse: bool,
                                        cur_boards: u64| {
@@ -4221,7 +4209,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                     sheet.iter_mut().for_each(|v| *v = 0);
 
-                    let num_blanks_eff = (unseen_tally[0] as usize).min(blank_cap);
+                    let num_blanks_eff = (unseen_tally[0] as usize).min(rack_size);
                     let ts = std::time::Instant::now();
 
                     let n_cand = build_sheet_spell_once(
@@ -4237,7 +4225,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             unseen_tally: &unseen_tally,
                             num_blanks_eff,
                             rack_size,
-                            blank_cap,
                         },
                         &mut movegen_rack,
                         &mut blank_deltas,
@@ -4255,72 +4242,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         *slot.lock().unwrap() = Some((sheet.clone(), unseen_tally.clone()));
                     }
                     } // end of the !reuse step-1 build branch
-
-
-                    if do_verify {
-                        unseen_pool.clear();
-                        for (t, &c) in unseen_tally.iter().enumerate() {
-                            for _ in 0..c {
-                                unseen_pool.push(t as u8);
-                            }
-                        }
-                        let mut ok = 0u32;
-                        let mut bad = 0u32;
-                        if unseen_pool.len() >= rack_size {
-                            for _ in 0..32 {
-
-                                for i in 0..rack_size {
-                                    let j = rng.random_range(i..unseen_pool.len());
-                                    unseen_pool.swap(i, j);
-                                }
-                                verify_rack.clear();
-                                verify_rack.extend_from_slice(&unseen_pool[..rack_size]);
-                                verify_rack.sort_unstable();
-                                let rr = lat.rank_bytes(&verify_rack);
-                                if rr == !0 {
-                                    continue;
-                                }
-                                let board_snapshot = &movegen::BoardSnapshot {
-                                    board_tiles: &game_state.board_tiles,
-                                    game_config: &game_config,
-                                    kwg: &kwg,
-                                    klv: &arc_klv0,
-                                };
-                                move_generator.gen_moves_unfiltered(
-                                    &movegen::GenMovesParams {
-                                        board_snapshot,
-                                        rack: &verify_rack,
-                                        max_gen: 1,
-                                        num_exchanges_by_this_player: 0,
-                                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                        dynamic_leaves: None,
-                                    },
-                                );
-                                let engine_mp = (move_generator.plays[0].equity.as_f64()
-                                    * equity::SCALE as f64)
-                                    .round()
-                                    as i32;
-                                tally_buf.iter_mut().for_each(|x| *x = 0);
-                                for &t in &verify_rack {
-                                    tally_buf[t as usize] += 1;
-                                }
-                                let census_mp =
-                                    census::naive_best_equity(&lat, &sheet, leave, &tally_buf).0;
-                                if engine_mp == census_mp {
-                                    ok += 1;
-                                } else {
-                                    bad += 1;
-                                    if bad <= 5 {
-                                        writeln!(boxed_stdout_or_stderr(),
-                                            "  census VERIFY mismatch rack {:?}: engine {} census {}",
-                                            verify_rack, engine_mp, census_mp,).ok();
-                                    }
-                                }
-                            }
-                        }
-                        writeln!(boxed_stdout_or_stderr(),
-                            "census VERIFY: {ok} ok, {bad} mismatch (null-klv/engine invariant)").ok();
-                    }
 
 
                     let ts = std::time::Instant::now();
@@ -4567,11 +4488,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     value_board(
                         &mut move_generator,
                         &game_state,
-                        &mut rng,
                         &leave,
                         null_leave,
                         b == 0,
-                        verify && b == 0 && !reuse_board,
 
                         if sheet_reuse
                             && (reuse_board || (b as usize) < live_after[gen_idx])
