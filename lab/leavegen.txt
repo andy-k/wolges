@@ -297,11 +297,7 @@ The rules of thumb -- when to snapshot, how big a group to draw, how many
 groups to try, how far apart to snapshot -- are GillesB's. The group size and
 the snapshot window scale with the game's tile count so they fit any variant;
 for the classic English game they reduce to his values (snapshot at 25 to 75
-tiles left, a group of 13 tiles, 7-tile racks). Each is exposed as a knob, but
-the defaults are those published values.
-
-New knobs: WOLGES_GILLES_DRAWS, WOLGES_GILLES_GROUP, WOLGES_GILLES_STRIDE,
-WOLGES_POOL_MAX, WOLGES_POOL_MIN.
+tiles left, a group of 13 tiles, 7-tile racks).
 
 
 HOW THE METHODS COMPARE
@@ -1159,8 +1155,7 @@ manufactures rare racks by snapshotting midgame boards.
 
     ./genleaves.sh --gilles english english 2000000 2000000 2000000
 
-Its snapshot heuristics are the WOLGES_POOL_* and WOLGES_GILLES_* knobs. The
-genleaves.sh arguments are explained under RUNNING GENLEAVES.SH below.
+The genleaves.sh arguments are explained under RUNNING GENLEAVES.SH below.
 
 Self-play autoplay -- wolges's original baseline. It plays games and learns
 from the racks held.
@@ -1243,17 +1238,7 @@ Shared across builders:
     when WOLGES_WINPCT is 1, which fails without it.
 
 Board sampling (gilles):
-  It also reads the shared knobs above. Its own knobs:
-  WOLGES_GILLES_DRAWS (a whole number; default 10) -- random groups drawn per
-    snapshot before keeping the least likely one.
-  WOLGES_GILLES_GROUP (a whole number of tiles; default two rack-sizes minus
-    one, 13 EN) -- worst-group size drawn per snapshot.
-  WOLGES_GILLES_STRIDE (a whole number; default 3) -- turns between snapshots.
-  WOLGES_POOL_MAX (a whole number of tiles; default the tile count minus
-    WOLGES_POOL_MIN, 75 EN) -- high edge of the snapshot window.
-  WOLGES_POOL_MIN (a whole number of tiles; default a quarter of the tile
-    count, 25 EN) -- low edge of the snapshot window, counted in tiles not yet
-    on the board.
+  It also reads the shared knobs above.
 
 Census:
   It also reads the shared knobs above.

@@ -1791,18 +1791,11 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         (0..alphabet.len()).map(|t| alphabet.freq(t) as u32).sum()
     };
 
-    let pool_min = env_usize("WOLGES_POOL_MIN", (num_tiles / 4) as usize);
-    let pool_max = env_usize(
-        "WOLGES_POOL_MAX",
-        (num_tiles as usize).saturating_sub(pool_min),
-    );
-    let group_size = env_usize(
-        "WOLGES_GILLES_GROUP",
-        (2 * rack_size as usize).saturating_sub(1),
-    )
-    .max(rack_size as usize);
-    let num_draws = env_usize("WOLGES_GILLES_DRAWS", 10);
-    let turn_stride = env_usize("WOLGES_GILLES_STRIDE", 3) as u32;
+    let pool_min = (num_tiles / 4) as usize;
+    let pool_max = (num_tiles as usize).saturating_sub(pool_min);
+    let group_size = (2 * rack_size as usize).saturating_sub(1);
+    let num_draws = 10;
+    let turn_stride = 3u32;
 
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
 
