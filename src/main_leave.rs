@@ -4068,10 +4068,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let global_weights =
         full_rack && !global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
 
-    let opening_samples = rack_summary && env_flag("WOLGES_OPENING_SAMPLES", false);
-
-    let opening_weight = env_usize("WOLGES_OPENING_WEIGHT", 1).max(1) as u64;
-
     let sheet_reuse = multigen && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
 
     let (live_after, sheet_cache_len) = census_sheet_reuse_plan(&board_counts);
@@ -4379,8 +4375,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut movegen_rack = Vec::<u8>::new();
                 let mut verify_rack = Vec::<u8>::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
-
-                let mut open_buf = Vec::<(u32, i32)>::new();
 
 
                 let mut value_board = |move_generator: &mut movegen::KurniaMoveGenerator,
@@ -4899,10 +4893,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 }
                             }
                             let mut got = false;
-                            if opening_samples {
-
-                                open_buf.clear();
-                            }
                             loop {
                                 let fill =
                                     game_state.board_tiles.iter().filter(|&&t| t != 0).count();
@@ -4934,15 +4924,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                     dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
                                 });
-                                if opening_samples
-                                    && game_state.current_player().rack.len() == rack_size
-                                {
-
-                                    let rank = lat.rank_bytes(&game_state.current_player().rack);
-                                    if rank != !0 {
-                                        open_buf.push((rank, move_generator.plays[0].equity.raw()));
-                                    }
-                                }
                                 game_state
                                     .play(&game_config, &mut rng, &move_generator.plays[0].play)
                                     .unwrap();
@@ -4986,19 +4967,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             reuse_board,
                             num_boards,
                         );
-                        if opening_samples && !open_buf.is_empty() {
-
-                            let mut g = shared.lock().unwrap();
-                            let (sum, cnt, _completed, valued, _ever) = &mut *g;
-                            for &(rank, milli) in &open_buf {
-                                let idx = rank as usize;
-                                if cnt[idx] == 0 {
-                                    *valued += 1;
-                                }
-                                sum[idx] += milli as f64 * opening_weight as f64;
-                                cnt[idx] += opening_weight;
-                            }
-                        }
                     }
                     }
                     }
