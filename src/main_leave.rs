@@ -4052,10 +4052,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let max_boards = board_counts.iter().copied().max().unwrap_or(1).max(1);
     let multigen = gens > 1;
 
-    let batch_size = (env_usize("WOLGES_CENSUS_BATCH", board_counts[0] as usize) as u64).max(1);
-    let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
-    let sgd = !multigen && batch_size < board_counts[0];
-
     let global_weights = full_rack && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
 
     let sheet_reuse = multigen && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
@@ -4271,7 +4267,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         vec![0u64; lat_len],
         0u64,
         0u64,
-        if sgd || multigen {
+        if multigen {
             vec![false; lat_len]
         } else {
             Vec::new()
@@ -4702,7 +4698,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 };
 
 
-                let mut batch_start = 0u64;
                 let mut gen_idx = start_gen;
 
                 let mut num_boards = board_counts[gen_idx];
@@ -4710,19 +4705,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut prior_max_boards = 0usize;
                 loop {
 
-                    let batch_end = if sgd {
-                        (batch_start + batch_size).min(num_boards)
-                    } else {
-                        num_boards
-                    };
-
                     {
                         let leave = leave_lock.read().unwrap();
 
                         let null_leave = leave.iter().all(|&x| x == 0);
                         loop {
                             let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if b >= batch_end {
+                            if b >= num_boards {
                                 break;
                             }
                     let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
@@ -4927,116 +4916,87 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
                     }
 
-                    if sgd {
+                    if multigen {
                         if barrier.wait().is_leader() {
-                            let mut g = shared.lock().unwrap();
-                            let (sum, cnt, _completed, _valued, ever) = &mut *g;
-                            let mut lv = leave_lock.write().unwrap();
-                            let base = if cnt[empty_rank] > 0 {
-                                sum[empty_rank] / cnt[empty_rank] as f64
-                            } else {
-                                0.0
-                            };
-                            for idx in 0..lat_len {
-                                if cnt[idx] > 0 {
-                                    ever[idx] = true;
-                                    let centered = sum[idx] / cnt[idx] as f64 - base;
-                                    lv[idx] = ((1.0 - alpha) * lv[idx] as f64 + alpha * centered)
-                                        .round() as i32;
+
+                            {
+                                let mut g = shared.lock().unwrap();
+                                let (sum, cnt, completed, valued, ever) = &mut *g;
+                                let mut lv = leave_lock.write().unwrap();
+                                let base = if cnt[empty_rank] > 0 {
+                                    sum[empty_rank] / cnt[empty_rank] as f64
+                                } else {
+                                    0.0
+                                };
+                                for idx in 0..lat_len {
+                                    if cnt[idx] > 0 {
+                                        ever[idx] = true;
+                                        lv[idx] = (sum[idx] / cnt[idx] as f64 - base)
+                                            .round()
+                                            as i32;
+                                    }
                                 }
-                                sum[idx] = 0.0;
-                                cnt[idx] = 0;
+                                writeln!(boxed_stdout_or_stderr(),
+                                    "census: gen {}/{} done ({} of {} leaves valued)",
+                                    gen_idx + 1,
+                                    gens,
+                                    *valued,
+                                    lat_len,).ok();
+                                if gen_idx + 1 < gens {
+
+                                    for idx in 0..lat_len {
+                                        sum[idx] = 0.0;
+                                        cnt[idx] = 0;
+                                    }
+                                    *completed = 0;
+                                    *valued = 0;
+                                    next_board
+                                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                                    for h in &pool_hist {
+                                        h.store(0, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
                             }
-                            next_board.store(batch_end, std::sync::atomic::Ordering::Relaxed);
+
+                            if persist_gens {
+                                let g = shared.lock().unwrap();
+                                let lv = leave_lock.read().unwrap();
+                                let desired =
+                                    format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
+                                let p = claim_output_path(&desired).unwrap_or(desired);
+                                match write_census_klv2(
+                                    &lat,
+                                    &|i| lv[i] as f64,
+                                    0.0,
+                                    &|i| g.4[i],
+                                    true, // resume snapshots stay full
+                                    &p,
+                                ) {
+                                    Ok(nk) => { writeln!(boxed_stdout_or_stderr(),
+     "census: persisted gen {} -> {p} ({nk} leaves)",
+                                        gen_idx + 1).ok(); },
+                                    Err(e) => { writeln!(boxed_stdout_or_stderr(),
+     "census: gen {} klv2 persist failed: {e}",
+                                        gen_idx + 1).ok(); },
+                                }
+                            }
+
+                            if sheet_reuse {
+                                for slot in sheet_cache.iter().skip(live_after[gen_idx]) {
+                                    *slot.lock().unwrap() = None;
+                                }
+                            }
                         }
                         barrier.wait();
-                    }
-                    batch_start = batch_end;
-                    if batch_start >= num_boards {
+                        if gen_idx + 1 < gens {
 
-                        if multigen {
-                            if barrier.wait().is_leader() {
-
-                                {
-                                    let mut g = shared.lock().unwrap();
-                                    let (sum, cnt, completed, valued, ever) = &mut *g;
-                                    let mut lv = leave_lock.write().unwrap();
-                                    let base = if cnt[empty_rank] > 0 {
-                                        sum[empty_rank] / cnt[empty_rank] as f64
-                                    } else {
-                                        0.0
-                                    };
-                                    for idx in 0..lat_len {
-                                        if cnt[idx] > 0 {
-                                            ever[idx] = true;
-                                            lv[idx] = (sum[idx] / cnt[idx] as f64 - base)
-                                                .round()
-                                                as i32;
-                                        }
-                                    }
-                                    writeln!(boxed_stdout_or_stderr(),
-                                        "census: gen {}/{} done ({} of {} leaves valued)",
-                                        gen_idx + 1,
-                                        gens,
-                                        *valued,
-                                        lat_len,).ok();
-                                    if gen_idx + 1 < gens {
-
-                                        for idx in 0..lat_len {
-                                            sum[idx] = 0.0;
-                                            cnt[idx] = 0;
-                                        }
-                                        *completed = 0;
-                                        *valued = 0;
-                                        next_board
-                                            .store(0, std::sync::atomic::Ordering::Relaxed);
-                                        for h in &pool_hist {
-                                            h.store(0, std::sync::atomic::Ordering::Relaxed);
-                                        }
-                                    }
-                                }
-
-                                if persist_gens {
-                                    let g = shared.lock().unwrap();
-                                    let lv = leave_lock.read().unwrap();
-                                    let desired =
-                                        format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
-                                    let p = claim_output_path(&desired).unwrap_or(desired);
-                                    match write_census_klv2(
-                                        &lat,
-                                        &|i| lv[i] as f64,
-                                        0.0,
-                                        &|i| g.4[i],
-                                        true, // resume snapshots stay full
-                                        &p,
-                                    ) {
-                                        Ok(nk) => { writeln!(boxed_stdout_or_stderr(),
-     "census: persisted gen {} -> {p} ({nk} leaves)",
-                                            gen_idx + 1).ok(); },
-                                        Err(e) => { writeln!(boxed_stdout_or_stderr(),
-     "census: gen {} klv2 persist failed: {e}",
-                                            gen_idx + 1).ok(); },
-                                    }
-                                }
-
-                                if sheet_reuse {
-                                    for slot in sheet_cache.iter().skip(live_after[gen_idx]) {
-                                        *slot.lock().unwrap() = None;
-                                    }
-                                }
-                            }
-                            barrier.wait();
-                            if gen_idx + 1 < gens {
-
-                                prior_max_boards = prior_max_boards.max(num_boards as usize);
-                                gen_idx += 1;
-                                num_boards = board_counts[gen_idx];
-                                batch_start = 0;
-                                continue;
-                            }
+                            prior_max_boards = prior_max_boards.max(num_boards as usize);
+                            gen_idx += 1;
+                            num_boards = board_counts[gen_idx];
+                            continue;
                         }
-                        break;
                     }
+                    break;
                 }
             });
         }
@@ -5046,7 +5006,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let leave_final = leave_lock.into_inner().unwrap();
 
     let value_mp = |idx: usize| -> f64 {
-        if sgd || multigen {
+        if multigen {
             leave_final[idx] as f64
         } else if accum_cnt[idx] > 0 {
             accum_sum[idx] / accum_cnt[idx] as f64
@@ -5066,7 +5026,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
     for idx in 0..lat.len() {
-        let valued = if sgd || multigen {
+        let valued = if multigen {
             ever[idx]
         } else {
             accum_cnt[idx] > 0
@@ -5105,7 +5065,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let klv_name = claim_output_path(&format!("census-leaves-{census_run_epoch}.klv2"))?;
     let is_valued = |idx: usize| {
-        if sgd || multigen {
+        if multigen {
             ever[idx]
         } else {
             accum_cnt[idx] > 0

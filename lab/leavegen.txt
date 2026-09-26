@@ -884,27 +884,7 @@ interleave, so this even-coverage per-game path is not bit-for-bit repeatable;
 the leaves still settle to the same answer regardless. The plain
 reset-and-cycle mode remains the reproducible one.
 
-
-UPDATING THE LEAVES AS THE RUN GOES
-
-Normally the census values a whole run of boards and only then produces the
-leaves; to improve them you run the whole thing again with those leaves fed
-back in, until they reproduce themselves (the leaves that come out match the
-leaves that went in). WOLGES_CENSUS_BATCH adds a way to improve them during a
-single run. It sets how many boards form a batch (the default is all of them --
-one batch, exactly the plain behavior). With a smaller batch, the workers value
-a batch using the current leaves, and then, at a gathering point, the leaves
-are nudged part of the way toward what that batch found before the next batch
-starts. WOLGES_CENSUS_ALPHA is how far -- half by default, so the leaves move
-halfway toward each batch's findings. Because every batch after the first
-values its boards with already-improved leaves, a run settles on the same final
-leaves in far fewer boards than re-running whole passes does. With fixed batch
-boundaries the update combines the same way whichever worker applies it, so
-this stays reproducible in the reset-and-cycle mode. Left at the default it is
-byte-identical.
-
-New knobs: WOLGES_CENSUS_ALPHA, WOLGES_CENSUS_BATCH, WOLGES_CENSUS_BUCKETS,
-WOLGES_CENSUS_PER_GAME.
+New knobs: WOLGES_CENSUS_BUCKETS, WOLGES_CENSUS_PER_GAME.
 
 
 THE BLANK MODEL: SPELL EACH WORD ONCE
@@ -1717,12 +1697,6 @@ Census:
   It also reads the shared knobs above and the board window WOLGES_POOL_MIN /
   WOLGES_POOL_MAX (listed under board sampling, but with the census's own
   default window). Its own knobs:
-  WOLGES_CENSUS_ALPHA (a decimal from 0 to 1; default 0.5) -- how far the
-    leaves move toward each batch's findings; meaningful only with a batch
-    smaller than the run.
-  WOLGES_CENSUS_BATCH (a whole number of boards; default all boards, one batch)
-    -- boards per online-update batch; a smaller batch nudges the leaves toward
-    each batch's findings mid-run.
   WOLGES_CENSUS_BLANK_CAP (a whole number; default a full rack's worth) -- cap
     on blanks in the sheet's unseen pool, to measure the blank cost on its own.
   WOLGES_CENSUS_BUCKETS (a whole number; default 0, every fill level) --
