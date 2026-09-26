@@ -5721,7 +5721,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         }
     }
 
-    let smooth_min = env_usize("WOLGES_GENERATE_SMOOTH_MIN", 50) as u64;
+    let smooth_min = 50;
     let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
     let mut alphabet_freqs = (0..game_config.alphabet().len())
         .map(|tile| game_config.alphabet().freq(tile))

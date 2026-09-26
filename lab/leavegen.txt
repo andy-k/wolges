@@ -229,16 +229,9 @@ truthful. A knob whose every setting is either identical or worse is not a
 choice, it is a way to make a mistake, so the variant and genleaves.sh's
 --smooth / --no-smooth flags are retired.
 
-What is left is which leaves count as too thin, and that is worth tuning: see
-WOLGES_GENERATE_SMOOTH_MIN below. Setting the
-floor to 0 keeps every average that was actually measured, however few samples
-stand behind it, and leaves only the racks nothing was ever dealt for to borrow
-a value. That is close to what the retired variant did, but it is not the same
-thing: that one sent every unmeasured leave to the fallback instead, which
-averages the subracks one tile shorter rather than the neighbors one tile
-swapped, so the two disagree on the roughly two leaves in five a small run
-never deals at all. Neither is "no invented values" -- there is no such option,
-because a leave no game dealt has nothing to report.
+What is left is which leaves count as too thin: leave generate smooths a leave
+backed by fewer than 50 samples. A floor of 0 played level with 50 wherever the
+two were raced, and 50 is the floor that beat no smoothing above.
 
 (An older reading of this section had the two as a tie, at about 49.99 and 57
 percent confidence. That was measured when smoothing still leaned on the
@@ -247,7 +240,7 @@ it needed it; it describes a rule nothing builds with today.)
 
 A leave is smoothed only when it is genuinely thin. The generator counts the
 sampled racks behind a leave -- its support -- and borrows from the neighbors
-only when that count falls short of WOLGES_GENERATE_SMOOTH_MIN, 50 by default.
+only when that count falls short of 50.
 Support counts samples actually taken, not how often the leave can be drawn, so
 a leave the games covered well keeps its own average however common it is. The
 earlier rule compared the leave's draw-weighted count against the cube root of
@@ -256,8 +249,6 @@ five even when every one was well covered, pulling them toward their neighbors
 for no reason. The generate step prints how many leaves it smoothed and what
 share of the table that was, so a run that smooths nearly everything is now
 visible rather than silent.
-
-New knobs: WOLGES_GENERATE_SMOOTH_MIN.
 
 
 FORCING HARD-TO-DRAW RACKS
@@ -1941,16 +1932,6 @@ Every run:
   started within the same 1/65536 second share a stamp; every file is created
   without overwriting an existing one, inserting a _1 (then _2) before the
   extension on a clash, so no run ever clobbers another's output.
-
-Decompose (leave generate):
-  WOLGES_GENERATE_SMOOTH_MIN (a whole number of samples; default 50) -- how
-    much support a leave needs before its own average is trusted. A leave with
-    fewer sampled racks behind it than this is smoothed: its value is borrowed
-    from its one-tile-swap neighbors. Support counts samples taken, not how
-    often the leave can be drawn, so a well-covered leave is never smoothed
-    however common it is. Raise it to smooth more of the thin tail; set it to 0
-    to keep every measured average and leave only the racks nothing was dealt
-    for to borrow one.
 
 Shared across builders:
   WOLGES_APPORTION (full-rack or entering; default full-rack) -- how a board's
