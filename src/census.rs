@@ -412,7 +412,10 @@ pub struct AddTable {
 impl AddTable {
     #[inline(always)]
     pub fn new(lat: &MultisetLattice) -> Self {
-        Self::new_with_threads(lat, num_cpus::get())
+        Self::new_with_threads(
+            lat,
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
+        )
     }
 
     #[inline(always)]

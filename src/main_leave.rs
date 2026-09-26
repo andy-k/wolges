@@ -896,7 +896,8 @@ fn main() -> error::Returns<()> {
     }
     let threads = cli
         .threads
-        .map_or_else(num_cpus::get, std::num::NonZeroUsize::get);
+        .or_else(|| std::thread::available_parallelism().ok())
+        .map_or(1, std::num::NonZeroUsize::get);
     if cli.kbwg {
         run::<kwg::Node24>(cli.task, game_config, threads)?;
     } else {
