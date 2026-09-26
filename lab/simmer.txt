@@ -69,35 +69,6 @@ deterministic function of the seed alone: replaying the same seed at any thread
 count reproduces the same numbers exactly.
 
 
-STOPPING EARLY ONCE THE LEADER IS CLEARLY BEST
-
-Left alone, the picker always spends its whole iteration budget (short of
-pruning down to a single survivor). On a lopsided position that keeps rolling
-out long after the answer is obvious; on a close one the fixed budget may not
-be enough to be sure at all. The confidence stop adds a second way to finish a
-decision: at every prune boundary, if the leader's lower confidence bound
-already clears every other survivor's upper confidence bound, stop right there
--- the remaining budget becomes a safety cap rather than a requirement.
-
-Comparing one leader against every other survivor, and repeating the check at
-every prune, means a plain single 95%-confidence threshold would let the chance
-of picking the wrong leader compound over all those repeated comparisons. The
-stop corrects for the number of arms with a union bound (the rule that the
-chance of ANY of several unlikely events happening is at most the sum of their
-individual chances): the Gaussian tail bound P(Z > z) is at most exp(-z^2 / 2),
-so splitting an overall error budget of delta evenly across the (num_survivors
-- 1) comparisons and solving for z gives z = sqrt(2 * ln((num_survivors - 1) /
-delta)). This correction is for the number of candidates being compared, not
-for how many times the stop is re-checked as rollouts accumulate; the fixed
-iteration cap is what bounds that repeated peeking.
-
-It is opt-in: StopRule::FixedCap (the default) always runs the full budget,
-unchanged; StopRule::Confidence, set via set_stop_rule with set_stop_delta for
-the target overall error, stops early once separated. Wired into
-leave sim-compare per seat as WOLGES_SIM_P0_STOP / P1_STOP and
-WOLGES_SIM_P0_STOP_DELTA / P1_STOP_DELTA.
-
-
 A MUTABLE WORKING SET FOR STUDY SESSIONS
 
 Everything so far runs one decision start to finish. A study session (a human
@@ -130,22 +101,18 @@ across the round trip.
 
 LOOKING IN ON A DECISION WITHOUT DISTURBING IT
 
-The confidence stop and the ability to resume a decision in pieces already let
-a study session spread one decision's rollouts over several calls. What was
-still missing was a way to check on a decision between those calls without
-changing anything. best_so_far reports the current leader's play index (the
-candidate with the highest running mean right now); is_decided reports whether
-the confidence stop would fire at this instant, at the currently configured
-target. Both are read-only -- calling them runs no rollouts and changes no
+The ability to resume a decision in pieces already lets a study session spread
+one decision's rollouts over several calls. What was still missing was a way to
+check on a decision between those calls without changing anything. best_so_far
+reports the current leader's play index (the candidate with the highest running
+mean right now); it is read-only -- calling it runs no rollouts and changes no
 state.
 
-Together with set_num_sim_iters (the per-decision rollout cap) and
-set_stop_delta (the confidence stop's target error, described above), a caller
-now has everything it needs to budget one decision from the outside: cap the
-work, set how sure the stop must be, then between resume calls poll best_so_far
-and is_decided to pause, look at the current leader, and decide whether to keep
-going or stop -- instead of only being able to run the whole budget blind or
-abandon the decision outright.
+Together with the per-decision rollout cap, a caller has what it needs to
+budget one decision from the outside: cap the work, then between resume calls
+poll best_so_far to look at the current leader and decide whether to keep going
+or stop -- instead of only being able to run the whole budget blind or abandon
+the decision outright.
 
 
 ONE ENGINE, NOT TWO: FOLDING THE OBSERVABLE STUDY LOOP IN

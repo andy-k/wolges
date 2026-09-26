@@ -24,8 +24,6 @@ fn mix(decision_seed: u64, sim_iter: u64) -> u64 {
 
 const PRUNE_CADENCE: u64 = 16;
 
-const DEFAULT_STOP_DELTA: f64 = 0.05;
-
 #[inline(always)]
 fn rollout_objective<N: kwg::Node, L: kwg::Node>(
     simmer: &mut simmer::Simmer,
@@ -51,38 +49,6 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node>(
     );
 
     (objective, sim_spread, win_prob)
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum StopRule {
-    FixedCap,
-
-    Confidence,
-}
-
-#[inline(always)]
-fn fwer_z(num_survivors: usize, delta: f64) -> f64 {
-    (2.0 * ((num_survivors - 1) as f64 / delta).ln()).sqrt()
-}
-
-#[inline(always)]
-fn leader_is_separated(candidates: &[Candidate], delta: f64) -> bool {
-    let num_survivors = candidates.len();
-    if num_survivors < 2 {
-        return true;
-    }
-    let z = fwer_z(num_survivors, delta);
-    let leader_idx = candidates
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
-        .unwrap()
-        .0;
-    let leader_low = candidates[leader_idx].stats.ci_max(-z);
-    candidates
-        .iter()
-        .enumerate()
-        .all(|(i, candidate)| i == leader_idx || leader_low >= candidate.stats.ci_max(z))
 }
 
 #[inline(always)]
@@ -131,8 +97,6 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     candidates: Vec<Candidate>,
     simmer: simmer::Simmer,
     num_sim_iters: u64,
-    stop_rule: StopRule,
-    stop_delta: f64,
     retired: Vec<Candidate>,
     iters_done: u64,
     next_stream_id: u64,
@@ -146,8 +110,6 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
 
 pub struct SimmerParams<'a> {
     pub num_sim_iters: u64,
-    pub stop_rule: StopRule,
-    pub stop_delta: Option<f64>,
     pub observe: bool,
     pub sim_threads: usize,
     pub win_pct_table: Option<&'a win_pct::WinPctTable>,
@@ -168,11 +130,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             candidates: Vec::new(),
             simmer: simmer::Simmer::new(game_config, params.config),
             num_sim_iters: params.num_sim_iters,
-            stop_rule: params.stop_rule,
-            stop_delta: params
-                .stop_delta
-                .unwrap_or(DEFAULT_STOP_DELTA)
-                .clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON),
             retired: Vec::new(),
             iters_done: 0,
             next_stream_id: 0,
@@ -290,11 +247,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     pub fn best_so_far(&self) -> usize {
         top_candidate_play_index_by_mean(&self.candidates)
     }
-
-    #[inline(always)]
-    pub fn is_decided(&self) -> bool {
-        leader_is_separated(&self.candidates, self.stop_delta)
-    }
 }
 
 #[inline(always)]
@@ -381,12 +333,6 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                     1 + 2 * prune_periods_remaining as usize,
                 );
                 if candidates.len() < 2 {
-                    break;
-                }
-
-                if self.stop_rule == StopRule::Confidence
-                    && leader_is_separated(&candidates, self.stop_delta)
-                {
                     break;
                 }
             }
@@ -525,11 +471,6 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                 if candidates.len() < 2 {
                     break;
                 }
-                if self.stop_rule == StopRule::Confidence
-                    && leader_is_separated(&candidates, self.stop_delta)
-                {
-                    break;
-                }
             }
         }
         self.candidates = candidates;
@@ -625,34 +566,6 @@ mod tests {
             equity_stats: stats::Stats::new(),
             win_rate_stats: stats::Stats::new(),
         }
-    }
-
-    #[test]
-    #[inline]
-    fn fwer_z_matches_the_gaussian_union_bound() {
-        let expected = (2.0 * (1.0f64 / 0.05).ln()).sqrt();
-        assert!((fwer_z(2, 0.05) - expected).abs() < 1e-12);
-
-        assert!(fwer_z(100, 0.05) > fwer_z(2, 0.05));
-    }
-
-    #[test]
-    #[inline]
-    fn leader_is_separated_only_when_the_field_is_cleared() {
-        let separated = vec![
-            candidate_from(0, &[19.0, 21.0].repeat(50)),
-            candidate_from(1, &[9.0, 11.0].repeat(50)),
-        ];
-        assert!(leader_is_separated(&separated, 0.05));
-
-        let overlapping = vec![
-            candidate_from(0, &[9.1, 11.1].repeat(50)),
-            candidate_from(1, &[9.0, 11.0].repeat(50)),
-        ];
-        assert!(!leader_is_separated(&overlapping, 0.05));
-
-        let one = vec![candidate_from(0, &[10.0, 10.0])];
-        assert!(leader_is_separated(&one, 0.05));
     }
 
     #[test]

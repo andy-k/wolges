@@ -250,8 +250,6 @@ fn main() -> error::Returns<()> {
         &klv,
         move_picker::SimmerParams {
             num_sim_iters: 10000,
-            stop_rule: move_picker::StopRule::FixedCap,
-            stop_delta: None,
             observe: true,
             sim_threads: 1,
             win_pct_table: None,

@@ -532,8 +532,6 @@ fn run<N: kwg::Node + Sync + Send>(
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
-                    stop_rule: move_picker::StopRule::FixedCap,
-                    stop_delta: None,
                     observe: false,
                     sim_threads: 1,
                     win_pct_table: None,
@@ -597,8 +595,6 @@ fn run<N: kwg::Node + Sync + Send>(
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
-                    stop_rule: move_picker::StopRule::FixedCap,
-                    stop_delta: None,
                     observe: false,
                     sim_threads: 1,
                     win_pct_table: None,
@@ -4162,29 +4158,6 @@ fn win_prob_source_name(source: simmer::WinProbSource) -> &'static str {
 }
 
 #[inline]
-fn sim_compare_stop_rule(prefix: &str) -> move_picker::StopRule {
-    match std::env::var(format!("{prefix}STOP")).ok().as_deref() {
-        Some("confidence") => move_picker::StopRule::Confidence,
-        _ => move_picker::StopRule::FixedCap,
-    }
-}
-
-#[inline]
-fn sim_compare_stop_delta(prefix: &str) -> Option<f64> {
-    std::env::var(format!("{prefix}STOP_DELTA"))
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-}
-
-#[inline]
-fn stop_rule_name(stop_rule: move_picker::StopRule) -> &'static str {
-    match stop_rule {
-        move_picker::StopRule::FixedCap => "fixed-cap",
-        move_picker::StopRule::Confidence => "confidence",
-    }
-}
-
-#[inline]
 fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
@@ -4214,10 +4187,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         .unwrap_or(1);
     let config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
     let config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
-    let stop_p0 = sim_compare_stop_rule("WOLGES_SIM_P0_");
-    let stop_p1 = sim_compare_stop_rule("WOLGES_SIM_P1_");
-    let stop_delta_p0 = sim_compare_stop_delta("WOLGES_SIM_P0_");
-    let stop_delta_p1 = sim_compare_stop_delta("WOLGES_SIM_P1_");
 
     let winpct_table: Option<win_pct::WinPctTable> = match std::env::var("WOLGES_SIM_WINPCT_TABLE")
     {
@@ -4227,13 +4196,11 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let winpct_table_ref = winpct_table.as_ref();
     writeln!(
         boxed_stdout_or_stderr(),
-        "WOLGES_SIM_ITERS={num_sim_iters} winpct_table={} P0.descale={} P0.stop={} P0.winprob={} P1.descale={} P1.stop={} P1.winprob={}",
+        "WOLGES_SIM_ITERS={num_sim_iters} winpct_table={} P0.descale={} P0.winprob={} P1.descale={} P1.winprob={}",
         winpct_table_ref.is_some() as u8,
         config_p0.descale as u8,
-        stop_rule_name(stop_p0),
         win_prob_source_name(config_p0.win_prob_source),
         config_p1.descale as u8,
-        stop_rule_name(stop_p1),
         win_prob_source_name(config_p1.win_prob_source),
     )?;
 
@@ -4257,8 +4224,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     &arc_klv,
                     move_picker::SimmerParams {
                         num_sim_iters,
-                        stop_rule: stop_p0,
-                        stop_delta: stop_delta_p0,
                         observe: false,
                         sim_threads: sim_driver_threads,
                         win_pct_table: winpct_table_ref,
@@ -4271,8 +4236,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     &arc_klv,
                     move_picker::SimmerParams {
                         num_sim_iters,
-                        stop_rule: stop_p1,
-                        stop_delta: stop_delta_p1,
                         observe: false,
                         sim_threads: sim_driver_threads,
                         win_pct_table: winpct_table_ref,
