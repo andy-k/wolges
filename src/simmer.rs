@@ -10,21 +10,12 @@ pub fn spread_points(millipoints: i32) -> f64 {
     millipoints as f64 / equity::SCALE as f64
 }
 
-// where the unfinished-game win probability comes from: the sigmoid, or an
-// empirical table that falls back to the sigmoid for anything it never sampled.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum WinProbSource {
-    Sigmoid,
-    Table,
-}
-
 // the simmer's win-probability model and its objective weights.
 #[derive(Clone, Copy)]
 pub struct SimmerConfig {
     pub descale: bool,
     pub w_no_out: f64,
     pub w_out: f64,
-    pub win_prob_source: WinProbSource,
 }
 
 #[inline(always)]
@@ -331,9 +322,7 @@ impl Simmer {
                 .map(|player| player.rack.len())
                 .sum::<usize>();
 
-            if self.config.win_prob_source == WinProbSource::Table
-                && let Some(table) = table
-            {
+            if let Some(table) = table {
                 let my = self.game_state.players[self.initial_game_state.turn as usize]
                     .rack
                     .len();
@@ -379,7 +368,6 @@ mod tests {
                 descale: true,
                 w_no_out: 10.0,
                 w_out: 10000.0,
-                win_prob_source: WinProbSource::Sigmoid,
             },
         );
         simmer.reseed(99);
@@ -425,7 +413,6 @@ mod tests {
             descale: true,
             w_no_out: 10.0,
             w_out: 10000.0,
-            win_prob_source: WinProbSource::Sigmoid,
         };
         let lead_points = 30.0 + 10.0;
         let lead_millipoints = (lead_points * equity::SCALE as f64) as i32;
@@ -467,7 +454,6 @@ mod tests {
                     descale: true,
                     w_no_out: 10.0,
                     w_out: 10000.0,
-                    win_prob_source: WinProbSource::Sigmoid,
                 },
             );
             simmer.prepare(&game_config, &game_state, 2, false);
@@ -509,7 +495,6 @@ mod tests {
             descale: true,
             w_no_out: 10.0,
             w_out: 10000.0,
-            win_prob_source: WinProbSource::Table,
         };
         let (simmer, bag, my, opp) = prepared_simmer(cfg);
 
@@ -535,26 +520,5 @@ mod tests {
             fell_back, sigmoid,
             "absent key should fall back to the sigmoid"
         );
-    }
-
-    #[test]
-    #[inline]
-    fn sigmoid_source_ignores_table() {
-        let cfg = SimmerConfig {
-            descale: true,
-            w_no_out: 10.0,
-            w_out: 10000.0,
-            win_prob_source: WinProbSource::Sigmoid,
-        };
-        let (simmer, bag, my, opp) = prepared_simmer(cfg);
-        let final_spread = 40 * equity::SCALE;
-
-        let mut acc = win_pct::WinPctAccumulator::new();
-        for &v in &[-5, 5] {
-            acc.record(bag, my, opp, 0, v);
-        }
-        let table = acc.finalize();
-        let got = simmer.compute_win_prob(false, final_spread, Some(&table));
-        assert_eq!(got, win_prob_unfinished(final_spread, bag + my + opp, &cfg));
     }
 }

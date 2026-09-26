@@ -109,7 +109,6 @@ fn do_it<N: kwg::Node + Sync>(
                 descale: true,
                 w_no_out: 10.0,
                 w_out: 10000.0,
-                win_prob_source: simmer::WinProbSource::Sigmoid,
             },
         },
     ));

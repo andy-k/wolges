@@ -148,12 +148,11 @@ games have already been recorded, an empirical table of P(win | margin, tiles
 left), built from counting how those recorded games actually turned out, may be
 better calibrated than a hand-tuned formula.
 
-WinProbSource picks which one a config uses: Sigmoid (the default, unchanged)
-always uses the formula; Table looks the terminal position up in a WinPctTable,
-by margin and by how many tiles are left in the bag and racks, and falls back
-to the sigmoid for any margin-and-tile-count combination the table never saw
-enough of to have an entry. The table is handed to the simmer by reference and
-defaults to none, so a caller that never asks for Table sees no change at all.
+Given a table, the simmer looks the terminal position up in it, by margin and
+by how many tiles are left in the bag and racks, and falls back to the sigmoid
+for any margin-and-tile-count combination the table never saw enough of to have
+an entry. The table is handed to the simmer by reference and defaults to none,
+so a caller without one uses the sigmoid alone, unchanged.
 
 leave sim-compare can give each seat its own table (--p0-win-pct /
 --p1-win-pct), or none for the sigmoid, to weigh the sigmoid against the

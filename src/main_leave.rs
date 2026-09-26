@@ -568,7 +568,6 @@ fn run<N: kwg::Node + Sync + Send>(
                         descale: true,
                         w_no_out: 10.0,
                         w_out: 10000.0,
-                        win_prob_source: simmer::WinProbSource::Sigmoid,
                     },
                 },
             );
@@ -631,7 +630,6 @@ fn run<N: kwg::Node + Sync + Send>(
                         descale: true,
                         w_no_out: 10.0,
                         w_out: 10000.0,
-                        win_prob_source: simmer::WinProbSource::Sigmoid,
                     },
                 },
             );
@@ -4163,7 +4161,6 @@ fn sim_compare_seat_config(prefix: &str) -> simmer::SimmerConfig {
         descale: true,
         w_no_out: 10.0,
         w_out: 10000.0,
-        win_prob_source: simmer::WinProbSource::Sigmoid,
     };
     if let Some(descale) = std::env::var(format!("{prefix}DESCALE"))
         .ok()
@@ -4220,14 +4217,8 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     };
     let winpct_p0 = winpct_p0.as_ref();
     let winpct_p1 = winpct_p1.as_ref();
-    let mut config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
-    let mut config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
-    if winpct_p0.is_some() {
-        config_p0.win_prob_source = simmer::WinProbSource::Table;
-    }
-    if winpct_p1.is_some() {
-        config_p1.win_prob_source = simmer::WinProbSource::Table;
-    }
+    let config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
+    let config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
     writeln!(
         boxed_stdout_or_stderr(),
         "sim-compare: {num_sim_iters} rollouts a move; p0 descale={} win%={}; p1 descale={} win%={}",
