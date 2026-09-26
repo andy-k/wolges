@@ -121,13 +121,14 @@ had to be kept in step by hand, and any future change to the real engine (a new
 allocator, a new stop rule) would need to be re-implemented in the terminal
 copy to actually show up there.
 
-The engine itself now has an opt-in observe mode. run_iterations already
-computes each rollout's spread and win probability on the way to the objective
-described earlier; with observe on, it also feeds those two numbers into
-per-candidate running equity and win-rate statistics, and a leaderboard method
-ranks every candidate -- active or retired -- by mean. With observe off, the
-default, none of that extra bookkeeping runs, and ordinary batch play is
-byte-identical to before.
+The engine itself now has an opt-in observe mode, chosen when the engine's type
+is written (a compile-time parameter), so a batch caller's rollout loop carries
+no check for it. run_iterations already computes each rollout's spread and win
+probability on the way to the objective described earlier; with observe on, it
+also feeds those two numbers into per-candidate running equity and win-rate
+statistics, and a leaderboard method ranks every candidate -- active or retired
+-- by mean. With observe off, the default, none of that extra bookkeeping runs,
+and ordinary batch play is byte-identical to before.
 
 The terminal driver is now a thin shell: build one engine with observe on, run
 the rollout budget through the same begin_decision / resume calls a study

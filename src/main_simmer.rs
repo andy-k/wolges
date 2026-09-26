@@ -244,13 +244,12 @@ fn main() -> error::Returns<()> {
         dynamic_leaves: None,
     });
 
-    let mut driver = move_picker::Simmer::new(
+    let mut driver = move_picker::Simmer::<_, _, true>::new(
         &game_config,
         &smaller_kwg,
         &klv,
         move_picker::SimmerParams {
             num_sim_iters: 10000,
-            observe: true,
             sim_threads: 1,
             win_pct_table: None,
         },

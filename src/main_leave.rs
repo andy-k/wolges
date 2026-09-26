@@ -555,13 +555,12 @@ fn run<N: kwg::Node + Sync + Send>(
                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
             });
-            let mut driver = move_picker::Simmer::new(
+            let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
-                    observe: false,
                     sim_threads: 1,
                     win_pct_table: None,
                 },
@@ -612,13 +611,12 @@ fn run<N: kwg::Node + Sync + Send>(
                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
             });
-            let mut driver = move_picker::Simmer::new(
+            let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
-                    observe: false,
                     sim_threads: 1,
                     win_pct_table: None,
                 },
@@ -4217,7 +4215,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     &arc_klv,
                     move_picker::SimmerParams {
                         num_sim_iters,
-                        observe: false,
                         sim_threads,
                         win_pct_table: winpct_p0,
                     },
@@ -4228,7 +4225,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     &arc_klv,
                     move_picker::SimmerParams {
                         num_sim_iters,
-                        observe: false,
                         sim_threads,
                         win_pct_table: winpct_p1,
                     },

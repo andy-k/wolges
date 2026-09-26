@@ -102,7 +102,6 @@ fn do_it<N: kwg::Node + Sync>(
         klv,
         move_picker::SimmerParams {
             num_sim_iters: move_picker::DEFAULT_NUM_SIM_ITERS,
-            observe: false,
             sim_threads: 1,
             win_pct_table: None,
         },

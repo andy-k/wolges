@@ -85,7 +85,7 @@ fn limit_surviving_candidates(
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
-pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
+pub struct Simmer<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool = false> {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
     klv: &'a klv::Klv<L>,
@@ -95,7 +95,6 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
     retired: Vec<Candidate>,
     iters_done: u64,
     next_stream_id: u64,
-    observe: bool,
     win_pct_table: Option<&'a win_pct::WinPctTable>,
     #[cfg(not(target_family = "wasm"))]
     sim_threads: usize,
@@ -105,12 +104,11 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
 
 pub struct SimmerParams<'a> {
     pub num_sim_iters: u64,
-    pub observe: bool,
     pub sim_threads: usize,
     pub win_pct_table: Option<&'a win_pct::WinPctTable>,
 }
 
-impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
+impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSERVE> {
     pub fn new(
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
@@ -127,7 +125,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             retired: Vec::new(),
             iters_done: 0,
             next_stream_id: 0,
-            observe: params.observe,
             win_pct_table: params.win_pct_table,
             #[cfg(not(target_family = "wasm"))]
             sim_threads: params.sim_threads,
@@ -272,7 +269,7 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Simmer(Simmer<'a, N, L>),
 }
 
-impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
+impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync, const OBSERVE: bool> Simmer<'a, N, L, OBSERVE> {
     #[inline]
     fn run_iterations(
         &mut self,
@@ -304,7 +301,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                     self.win_pct_table,
                 );
                 candidate.stats.update(value);
-                if self.observe {
+                if OBSERVE {
                     candidate
                         .equity_stats
                         .update(simmer::spread_points(sim_spread));
@@ -351,7 +348,6 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         const Z: f64 = 1.96; // 95% confidence interval
         let num_threads = self.sim_threads;
         let decision_seed = self.decision_seed;
-        let observe = self.observe;
         let game_config = self.game_config;
         let kwg = self.kwg;
         let klv = self.klv;
@@ -390,7 +386,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                         let mut objective = Vec::with_capacity(span * num_candidates);
                         let mut equity = Vec::new();
                         let mut win_rate = Vec::new();
-                        if observe {
+                        if OBSERVE {
                             equity.reserve(span * num_candidates);
                             win_rate.reserve(span * num_candidates);
                         }
@@ -409,7 +405,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                                     win_pct_table,
                                 );
                                 objective.push(value);
-                                if observe {
+                                if OBSERVE {
                                     equity.push(simmer::spread_points(sim_spread));
                                     win_rate.push(win_prob);
                                 }
@@ -426,13 +422,13 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
             let mut block_objective: Vec<f64> = Vec::with_capacity(block_len * num_candidates);
             let mut block_equity: Vec<f64> = Vec::new();
             let mut block_win_rate: Vec<f64> = Vec::new();
-            if observe {
+            if OBSERVE {
                 block_equity.reserve(block_len * num_candidates);
                 block_win_rate.reserve(block_len * num_candidates);
             }
             for (objective, equity, win_rate) in thread_rows {
                 block_objective.extend(objective);
-                if observe {
+                if OBSERVE {
                     block_equity.extend(equity);
                     block_win_rate.extend(win_rate);
                 }
@@ -441,7 +437,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                 for iteration in 0..block_len {
                     let k = iteration * num_candidates + candidate_index;
                     candidate.stats.update(block_objective[k]);
-                    if observe {
+                    if OBSERVE {
                         candidate.equity_stats.update(block_equity[k]);
                         candidate.win_rate_stats.update(block_win_rate[k]);
                     }
@@ -479,7 +475,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         iters: u64,
     ) {
         self.simmer
-            .prepare(self.game_config, game_state, 2, self.observe);
+            .prepare(self.game_config, game_state, 2, OBSERVE);
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
         self.candidates = self.take_candidates(move_generator.plays.len());
