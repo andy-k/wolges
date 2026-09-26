@@ -9,6 +9,8 @@ use wolges::{
     kwg, move_filter, move_picker, movegen, play_scorer, prob, simmer, stats, win_pct,
 };
 
+mod game_args;
+
 static BASE62: &[u8; 62] = b"\
 0123456789\
 ABCDEFGHIJKLMNOPQRSTUVWXYZ\
@@ -118,901 +120,571 @@ fn refuse_a_wider_graph<N: kwg::Node>(
 }
 
 #[inline]
-fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
-    args: &[String],
-    language_name: &str,
-    make_game_config: GameConfigMaker,
-) -> error::Returns<bool> {
-    // dutch-big-autoplay
-    if args[1]
-        .strip_prefix(language_name)
-        .is_some_and(|x| x.starts_with("-big"))
-        && do_lang_kwg::<_, kwg::Node24>(args, &format!("{language_name}-big"), &make_game_config)?
-    {
-        return Ok(true);
-    }
-    do_lang_kwg::<_, kwg::Node22>(args, language_name, &make_game_config)
+fn read_kwg<N: kwg::Node>(
+    game_config: &game_config::GameConfig,
+    path: &str,
+) -> error::Returns<kwg::Kwg<N>> {
+    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(path)?)?);
+    refuse_a_wider_graph(&kwg, game_config, path)?;
+    Ok(kwg)
 }
 
 #[inline]
-fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + Sync + Send>(
-    args: &[String],
-    language_name: &str,
-    make_game_config: GameConfigMaker,
-) -> error::Returns<bool> {
-    match args[1].strip_prefix(language_name) {
-        Some(args1_suffix) => match args1_suffix {
-            "-autoplay" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let args4 = if args.len() > 4 { &args[4] } else { "-" };
-                let num_games = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1_000_000
-                };
-                let min_samples_per_rack = if args.len() > 6 {
-                    u64::from_str(&args[6])?
-                } else {
-                    0
-                };
-                let seed = if args.len() > 7 {
-                    Some(u64::from_str(&args[7])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                let arc_klv1 = if args3 == args4 {
-                    std::sync::Arc::clone(&arc_klv0)
-                } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args4,
-                    )?))
-                };
-                generate_autoplay_logs::<true, false, _, _>(
-                    make_game_config(),
-                    kwg,
-                    arc_klv0,
-                    arc_klv1,
-                    num_games,
-                    min_samples_per_rack,
-                    seed,
-                )?;
-                Ok(true)
-            }
-            "-autoplay-summarize" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let args4 = if args.len() > 4 { &args[4] } else { "-" };
-                let num_games = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1_000_000
-                };
-                let min_samples_per_rack = if args.len() > 6 {
-                    u64::from_str(&args[6])?
-                } else {
-                    0
-                };
-                let seed = if args.len() > 7 {
-                    Some(u64::from_str(&args[7])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                let arc_klv1 = if args3 == args4 {
-                    std::sync::Arc::clone(&arc_klv0)
-                } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args4,
-                    )?))
-                };
-                generate_autoplay_logs::<true, true, _, _>(
-                    make_game_config(),
-                    kwg,
-                    arc_klv0,
-                    arc_klv1,
-                    num_games,
-                    min_samples_per_rack,
-                    seed,
-                )?;
-                Ok(true)
-            }
-            "-autoplay-summarize-only" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let args4 = if args.len() > 4 { &args[4] } else { "-" };
-                let num_games = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1_000_000
-                };
-                let min_samples_per_rack = if args.len() > 6 {
-                    u64::from_str(&args[6])?
-                } else {
-                    0
-                };
-                let seed = if args.len() > 7 {
-                    Some(u64::from_str(&args[7])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                let arc_klv1 = if args3 == args4 {
-                    std::sync::Arc::clone(&arc_klv0)
-                } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args4,
-                    )?))
-                };
-                generate_autoplay_logs::<false, true, _, _>(
-                    make_game_config(),
-                    kwg,
-                    arc_klv0,
-                    arc_klv1,
-                    num_games,
-                    min_samples_per_rack,
-                    seed,
-                )?;
-                Ok(true)
-            }
-            "-gilles" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let args4 = if args.len() > 4 { &args[4] } else { "-" };
-                let num_games = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1_000_000
-                };
-                let min_samples = if args.len() > 6 {
-                    u64::from_str(&args[6])?
-                } else {
-                    0
-                };
-                let seed = if args.len() > 7 {
-                    Some(u64::from_str(&args[7])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                let arc_klv1 = if args3 == args4 {
-                    std::sync::Arc::clone(&arc_klv0)
-                } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args4,
-                    )?))
-                };
-                generate_gilles_summary(
-                    make_game_config(),
-                    kwg,
-                    arc_klv0,
-                    arc_klv1,
-                    num_games,
-                    min_samples,
-                    seed,
-                )?;
-                Ok(true)
-            }
-            "-census" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let args4 = if args.len() > 4 { &args[4] } else { "-" };
-                let board_counts = if args.len() > 5 {
-                    parse_board_counts(&args[5])?
-                } else {
-                    vec![500]
-                };
-                let seed = if args.len() > 6 {
-                    Some(u64::from_str(&args[6])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                let arc_klv1 = if args3 == args4 {
-                    std::sync::Arc::clone(&arc_klv0)
-                } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args4,
-                    )?))
-                };
-                generate_census_leaves(
-                    make_game_config(),
-                    kwg,
-                    arc_klv0,
-                    arc_klv1,
-                    board_counts,
-                    seed,
-                )?;
-                Ok(true)
-            }
-            "-compare" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let args4 = if args.len() > 4 { &args[4] } else { "-" };
-                let num_game_pairs = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    10_000
-                };
-                let seed = if args.len() > 6 {
-                    Some(u64::from_str(&args[6])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let arc_klv0 = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                let arc_klv1 = if args3 == args4 {
-                    std::sync::Arc::clone(&arc_klv0)
-                } else if args4 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args4,
-                    )?))
-                };
-                compare_leaves(
-                    make_game_config(),
-                    kwg,
-                    arc_klv0,
-                    arc_klv1,
-                    num_game_pairs,
-                    seed,
-                )?;
-                Ok(true)
-            }
-            "-sim-compare" => {
-                let arc_klv = if args.len() > 3 && args[3] != "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        &args[3],
-                    )?))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                };
-                let num_game_pairs = if args.len() > 4 {
-                    u64::from_str(&args[4])?
-                } else {
-                    1_000
-                };
-                let seed = if args.len() > 5 {
-                    Some(u64::from_str(&args[5])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                sim_compare(make_game_config(), kwg, arc_klv, num_game_pairs, seed)?;
-                Ok(true)
-            }
-            "-sim-study-check" => {
-                let klv = if args.len() > 3 && args[3] != "-" {
-                    klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args[3])?)
-                } else {
-                    klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
-                };
-                let iters = if args.len() > 4 {
-                    u64::from_str(&args[4])?
-                } else {
-                    64
-                };
-                let seed = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let game_config = make_game_config();
-                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
-                let mut game_state = game_state::GameState::new(&game_config);
-                game_state.reset_and_draw_tiles(&game_config, &mut rng);
-                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                    board_snapshot: &movegen::BoardSnapshot {
-                        board_tiles: &game_state.board_tiles,
-                        game_config: &game_config,
-                        kwg: &kwg,
-                        klv: &klv,
-                    },
-                    rack: &game_state.current_player().rack,
-                    max_gen: 100,
-                    num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                    dynamic_leaves: None,
-                });
-                let mut driver = move_picker::Simmer::new(
-                    &game_config,
-                    &kwg,
-                    &klv,
-                    move_picker::SimmerParams {
-                        num_sim_iters: iters,
-                        allocator: move_picker::Allocator::RoundRobin,
-                        stop_rule: move_picker::StopRule::FixedCap,
-                        stop_delta: None,
-                        observe: false,
-                        sim_threads: 1,
-                        win_pct_table: None,
-                        config: simmer::SimmerConfig {
-                            descale: true,
-                            w_no_out: 10.0,
-                            w_out: 10000.0,
-                            win_prob_source: simmer::WinProbSource::Sigmoid,
-                        },
-                    },
-                );
-                driver.reseed(seed);
-                driver.begin_decision(&move_generator, &game_state, iters);
-                let one_shot = driver.leader_summary();
-                driver.reseed(seed);
-                let half = iters / 2;
-                driver.begin_decision(&move_generator, &game_state, half);
-                driver.resume(&move_generator, iters - half);
-                let split = driver.leader_summary();
-                println!(
-                    "one_shot leader play_index={} mean={} count={}",
-                    one_shot.0, one_shot.1, one_shot.2,
-                );
-                println!(
-                    "split    leader play_index={} mean={} count={}",
-                    split.0, split.1, split.2,
-                );
-                if one_shot == split {
-                    println!("SIM_RESUME_OK");
-                    Ok(true)
-                } else {
-                    wolges::return_error!(
-                        "resume mismatch: split decision differs from one-shot".to_string()
-                    )
-                }
-            }
-            "-sim-mutate-check" => {
-                let klv = if args.len() > 3 && args[3] != "-" {
-                    klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args[3])?)
-                } else {
-                    klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
-                };
-                let iters = if args.len() > 4 {
-                    u64::from_str(&args[4])?
-                } else {
-                    96
-                };
-                let seed = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let game_config = make_game_config();
-                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
-                let mut game_state = game_state::GameState::new(&game_config);
-                game_state.reset_and_draw_tiles(&game_config, &mut rng);
-                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                    board_snapshot: &movegen::BoardSnapshot {
-                        board_tiles: &game_state.board_tiles,
-                        game_config: &game_config,
-                        kwg: &kwg,
-                        klv: &klv,
-                    },
-                    rack: &game_state.current_player().rack,
-                    max_gen: 100,
-                    num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                    dynamic_leaves: None,
-                });
-                let mut driver = move_picker::Simmer::new(
-                    &game_config,
-                    &kwg,
-                    &klv,
-                    move_picker::SimmerParams {
-                        num_sim_iters: iters,
-                        allocator: move_picker::Allocator::RoundRobin,
-                        stop_rule: move_picker::StopRule::FixedCap,
-                        stop_delta: None,
-                        observe: false,
-                        sim_threads: 1,
-                        win_pct_table: None,
-                        config: simmer::SimmerConfig {
-                            descale: true,
-                            w_no_out: 10.0,
-                            w_out: 10000.0,
-                            win_prob_source: simmer::WinProbSource::Sigmoid,
-                        },
-                    },
-                );
-                driver.reseed(seed);
-                driver.begin_decision(&move_generator, &game_state, iters);
-                let retired_id = driver.retired_stream_ids().next();
-                match retired_id {
-                    None => wolges::return_error!(
-                        "no candidates were pruned; raise the iteration budget".to_string()
-                    ),
-                    Some(id) => {
-                        let before = driver.stream_count(id).unwrap();
-                        let readmitted = driver.readmit_with_history(id);
-                        driver.resume(&move_generator, iters);
-                        let after = driver.stream_count(id).unwrap();
-                        println!("readmit stream {id}: count before={before} after={after}");
-                        if readmitted && after >= before {
-                            println!("SIM_MUTATE_OK");
-                            Ok(true)
-                        } else {
-                            wolges::return_error!(
-                                "readmit dropped history: count reset".to_string()
-                            )
-                        }
-                    }
-                }
-            }
-            "-rollout" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let num_games = if args.len() > 4 {
-                    u64::from_str(&args[4])?
-                } else {
-                    10_000
-                };
-                let seed = if args.len() > 5 {
-                    Some(u64::from_str(&args[5])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let arc_klv = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                generate_rollout_leaves(make_game_config(), kwg, arc_klv, num_games, seed)?;
-                Ok(true)
-            }
-            "-winpct" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let num_games = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1_000_000
-                };
-                let seed = if args.len() > 6 {
-                    Some(u64::from_str(&args[6])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let arc_klv = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                generate_winpct_table(make_game_config(), kwg, arc_klv, &args[4], num_games, seed)?;
-                Ok(true)
-            }
-            "-winpct-eval" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let num_games = if args.len() > 5 {
-                    u64::from_str(&args[5])?
-                } else {
-                    1_000_000
-                };
-                let seed = if args.len() > 6 {
-                    Some(u64::from_str(&args[6])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let arc_klv = if args3 == "-" {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
-                        klv::EMPTY_KLV_BYTES,
-                    ))
-                } else {
-                    std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(
-                        args3,
-                    )?))
-                };
-                let table = win_pct::WinPctTable::from_csv(make_reader(&args[4])?)?;
-                generate_winpct_eval(make_game_config(), kwg, arc_klv, table, num_games, seed)?;
-                Ok(true)
-            }
-            "-winpct-combine" => {
-                if args.len() != 4 {
-                    return Err("english-winpct-combine takes an input and an output".into());
-                }
-                let acc = win_pct::WinPctAccumulator::from_csv(make_reader(&args[2])?)?;
-                acc.to_csv(make_writer(&args[3])?)?;
-                Ok(true)
-            }
-            "-summarize" => {
-                generate_summary(
-                    make_game_config(),
-                    make_reader(&args[2])?,
-                    csv::Writer::from_writer(make_writer(&args[3])?),
-                )?;
-                Ok(true)
-            }
-            "-resummarize" => {
-                resummarize_summaries::<'a', _, _>(
-                    make_game_config(),
-                    csv::ReaderBuilder::new()
-                        .has_headers(false)
-                        .from_reader(make_reader(&args[2])?),
-                    csv::Writer::from_writer(make_writer(&args[3])?),
-                )?;
-                Ok(true)
-            }
-            "-resummarize-playability" => {
-                resummarize_summaries::<'p', _, _>(
-                    make_game_config(),
-                    csv::ReaderBuilder::new()
-                        .has_headers(false)
-                        .from_reader(make_reader(&args[2])?),
-                    csv::Writer::from_writer(make_writer(&args[3])?),
-                )?;
-                Ok(true)
-            }
-            "-resummarize-playability-all" => {
-                resummarize_summaries::<'P', _, _>(
-                    make_game_config(),
-                    csv::ReaderBuilder::new()
-                        .has_headers(false)
-                        .from_reader(make_reader(&args[2])?),
-                    csv::Writer::from_writer(make_writer(&args[3])?),
-                )?;
-                Ok(true)
-            }
-            "-generate" => {
-                generate_leaves::<_, _, false>(
-                    make_game_config(),
-                    csv::ReaderBuilder::new()
-                        .has_headers(false)
-                        .from_reader(make_reader(&args[2])?),
-                    csv::Writer::from_writer(make_writer(&args[3])?),
-                    args.get(4).map(|x| x.as_str()),
-                )?;
-                Ok(true)
-            }
-            "-generate-full" => {
-                generate_leaves::<_, _, true>(
-                    make_game_config(),
-                    csv::ReaderBuilder::new()
-                        .has_headers(false)
-                        .from_reader(make_reader(&args[2])?),
-                    csv::Writer::from_writer(make_writer(&args[3])?),
-                    args.get(4).map(|x| x.as_str()),
-                )?;
-                Ok(true)
-            }
-            "-playability" => {
-                let args3 = if args.len() > 3 { &args[3] } else { "-" };
-                let num_games = if args.len() > 4 {
-                    u64::from_str(&args[4])?
-                } else {
-                    1_000_000
-                };
-                let seed = if args.len() > 5 {
-                    Some(u64::from_str(&args[5])?)
-                } else {
-                    None
-                };
-                let kwg =
-                    kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
-                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
-                let klv = if args3 == "-" {
-                    klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
-                } else {
-                    klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(args3)?)
-                };
-                discover_playability(make_game_config(), kwg, klv, num_games, seed)?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        },
-        None => Ok(false),
+fn read_klv(
+    game_config: &game_config::GameConfig,
+    path: &str,
+) -> error::Returns<klv::Klv<kwg::Node22>> {
+    let klv = if path == "-" {
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+    } else {
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(path)?)
+    };
+    game_config.check_leaves(klv.leave_range())?;
+    Ok(klv)
+}
+
+type KlvPair = (
+    std::sync::Arc<klv::Klv<kwg::Node22>>,
+    std::sync::Arc<klv::Klv<kwg::Node22>>,
+);
+
+#[inline]
+fn read_klv_pair(
+    game_config: &game_config::GameConfig,
+    path0: &str,
+    path1: &str,
+) -> error::Returns<KlvPair> {
+    let klv0 = std::sync::Arc::new(read_klv(game_config, path0)?);
+    let klv1 = if path1 == path0 {
+        std::sync::Arc::clone(&klv0)
+    } else {
+        std::sync::Arc::new(read_klv(game_config, path1)?)
+    };
+    Ok((klv0, klv1))
+}
+
+#[derive(clap::Args)]
+struct SelfPlay {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "player 1's leaves (- for none)")]
+    leave0: String,
+    #[arg(default_value = "-", help = "player 2's leaves (- for none)")]
+    leave1: String,
+    #[arg(default_value_t = 1_000_000)]
+    games: u64,
+    #[arg(
+        default_value_t = 0,
+        help = "keep playing until every rack has this many samples (summarizing tasks only)"
+    )]
+    min_samples: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+}
+
+#[derive(clap::Args)]
+struct Census {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "player 1's leaves (- for none)")]
+    leave0: String,
+    #[arg(default_value = "-", help = "player 2's leaves (- for none)")]
+    leave1: String,
+    #[arg(
+        default_value = "500",
+        help = "boards per generation, such as 3x256,2048"
+    )]
+    boards: String,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+}
+
+#[derive(clap::Args)]
+struct Compare {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "player 1's leaves (- for none)")]
+    klv0: String,
+    #[arg(default_value = "-", help = "player 2's leaves (- for none)")]
+    klv1: String,
+    #[arg(default_value_t = 10_000)]
+    pairs: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+}
+
+#[derive(clap::Args)]
+struct SimCompare {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(default_value_t = 1_000)]
+    pairs: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+}
+
+#[derive(clap::Args)]
+struct SimStudyCheck {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(default_value_t = 64)]
+    iters: u64,
+    #[arg(default_value_t = 1)]
+    seed: u64,
+}
+
+#[derive(clap::Args)]
+struct SimMutateCheck {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(default_value_t = 96)]
+    iters: u64,
+    #[arg(default_value_t = 1)]
+    seed: u64,
+}
+
+#[derive(clap::Args)]
+struct Rollout {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "the leaves (- for none)")]
+    leave: String,
+    #[arg(default_value_t = 10_000)]
+    games: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+}
+
+#[derive(clap::Args)]
+struct Winpct {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves both players use (- for none)")]
+    leave: String,
+    #[arg(help = "the raw sparse csv to write (- for stdout)")]
+    out: String,
+    #[arg(default_value_t = 1_000_000)]
+    games: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+}
+
+#[derive(clap::Args)]
+struct WinpctEval {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves both players use (- for none)")]
+    leave: String,
+    #[arg(help = "the win% table to score")]
+    table: String,
+    #[arg(default_value_t = 1_000_000)]
+    games: u64,
+    #[arg(help = "prints the one it picks if omitted; use a held-out seed")]
+    seed: Option<u64>,
+}
+
+#[derive(clap::Args)]
+struct InOut {
+    input: String,
+    output: String,
+}
+
+#[derive(clap::Args)]
+struct Generate {
+    summary: String,
+    leaves: String,
+    #[arg(help = "adds direct coverage for undersampled subracks")]
+    rare: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct Playability {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "the leaves (- for none)")]
+    leave: String,
+    #[arg(default_value_t = 1_000_000)]
+    games: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+}
+
+#[derive(clap::Subcommand)]
+enum Task {
+    #[command(about = "autoplay games, logging to a pair of csv")]
+    Autoplay(SelfPlay),
+    #[command(about = "autoplay and also save the summary")]
+    AutoplaySummarize(SelfPlay),
+    #[command(about = "autoplay and save only the summary")]
+    AutoplaySummarizeOnly(SelfPlay),
+    #[command(about = "GillesB board sampling, summarized as autoplay-summarize does")]
+    Gilles(SelfPlay),
+    #[command(about = "census leave generation")]
+    Census(Census),
+    #[command(about = "play game pairs to compare two sets of leaves")]
+    Compare(Compare),
+    #[command(about = "play game pairs where both seats choose moves by the simmer")]
+    SimCompare(SimCompare),
+    #[command(about = "check that a resumed decision matches the same decision run in one call")]
+    SimStudyCheck(SimStudyCheck),
+    #[command(about = "check that readmitting a retired candidate keeps its statistics")]
+    SimMutateCheck(SimMutateCheck),
+    #[command(about = "rollout leave generation")]
+    Rollout(Rollout),
+    #[command(about = "record an empirical win% table from Hasty self-play")]
+    Winpct(Winpct),
+    #[command(about = "score a win% table and the simmer's sigmoid by Brier (lower is better)")]
+    WinpctEval(WinpctEval),
+    #[command(about = "combine winpct raw tables by summing their histograms")]
+    WinpctCombine(InOut),
+    #[command(about = "summarize a log")]
+    Summarize(InOut),
+    #[command(about = "combine summaries into one and recompute totals")]
+    Resummarize(InOut),
+    #[command(about = "resummarize, sorted by length first")]
+    ResummarizePlayability(InOut),
+    #[command(about = "resummarize, sorted by playability first")]
+    ResummarizePlayabilityAll(InOut),
+    #[command(about = "generate leaves up to rack_size - 1")]
+    Generate(Generate),
+    #[command(about = "generate leaves up to rack_size")]
+    GenerateFull(Generate),
+    #[command(about = "autoplay and record prorated found best words")]
+    Playability(Playability),
+}
+
+impl Task {
+    // the tasks that play two seats against each other
+    #[inline]
+    fn needs_two_players(&self) -> bool {
+        matches!(
+            self,
+            Task::Compare(_) | Task::SimCompare(_) | Task::Winpct(_) | Task::WinpctEval(_)
+        )
     }
 }
 
 // leave = listing extrapolated accumulated values empirically
-
-fn main() -> error::Returns<()> {
-    let args = std::env::args().collect::<Vec<_>>();
-    if args.len() <= 1 {
-        println!(
-            "args:
-  english-autoplay CSW24.kwg leave0.klv leave1.klv 1000000 0 [seed]
-    autoplay 1000000 games, logs to a pair of csv.
-    (changing output filenames needs recompile.)
-    if leave is \"-\" or omitted, uses no leave.
-    number of games is optional.
-    min samples per rack is optional, but must be 0 for non-summarize.
-    seed is optional; prints auto-generated seed to stderr if not provided.
-  english-autoplay-summarize CSW24.kwg leave0.klv leave1.klv 1000000 0 [seed]
-    same as english-autoplay and also save summary file.
-  english-autoplay-summarize-only CSW24.kwg leave0.klv leave1.klv 1000000 0 [seed]
-    same as english-autoplay-summarize but do not save the log files.
-  english-gilles CSW24.kwg leave0.klv leave1.klv 1000000 [min_samples] [seed]
-    GillesB board-sampling leave generation. plays greedy (leave-modified)
-    games, snapshots boards, samples worst racks, records best-play equity.
-    writes a gilles-summary-* csv in the same format as autoplay-summarize,
-    so it merges via -resummarize and decomposes via -generate.
-    parameters scale with the game config (works on any variant).
-    min_samples is optional (default 0 = pure board sampling); when nonzero,
-    remediation games keep playing after the first 1000000 and direct their
-    samples at racks still seen fewer than min_samples times, growing the worst
-    group as needed, until every rack reaches min_samples or no further progress
-    is possible. tune via WOLGES_GILLES_* env vars.
-    seed is optional; prints auto-generated seed to stderr if not provided.
-  english-summarize logfile summary.csv
-    summarize logfile into summary.csv
-  english-resummarize concatenated_summaries.csv summary.csv
-    combine multiple summaries into one summary.csv and recompute totals
-  english-generate summary.csv leaves.csv [rare.csv]
-    generate leaves up to rack_size - 1
-  english-generate-full summary.csv leaves.csv [rare.csv]
-    generate leaves up to rack_size
-    a leave too thinly sampled to trust borrows its value from its
-    one-tile-swap neighbors; tune which those are via
-    WOLGES_GENERATE_SMOOTH_MIN / _CI
-    [rare.csv] on any -generate adds direct coverage for undersampled subracks
-  english-playability CSW24.kwg leave.klv 1000000 [seed]
-    autoplay (not saved) and record prorated found best words (at the end)
-    (run fewer number of games and use resummarize to merge to mitigate risks)
-    seed is optional; prints auto-generated seed to stderr if not provided.
-  english-winpct CSW24.kwg leave.klv win_pct.csv 1000000 [seed]
-    Hasty self-play, recording an empirical win% table (P(mover wins) by
-    lead and count-state (bag, my, opp)) as raw sparse csv to win_pct.csv.
-    if leave is \"-\" or omitted, uses no leave.
-    number of games is optional (default 1000000).
-    seed is optional; prints auto-generated seed to stderr if not provided.
-  english-winpct-eval CSW24.kwg leave.klv table.csv 1000000 [seed]
-    score a win% table and the simmer win_prob sigmoid by Brier (lower is
-    better) against Hasty self-play outcomes; use a held-out seed.
-    number of games is optional (default 1000000).
-    seed is optional; prints auto-generated seed to stderr if not provided.
-  english-winpct-combine concatenated_win_pcts.csv win_pct.csv
-    combine multiple english-winpct raw tables into one win_pct.csv by
-    summing their per-count-state histograms (counts add exactly, no rounding).
-    run english-winpct on separate seeds/processes, then combine here.
-  english-resummarize-playability concatenated_playabilities.csv playability.csv
-    same as english-resummarize but sorts differently (by length first)
-  english-resummarize-playability-all concat_playabilities.csv playability.csv
-    same as english-resummarize but sorts differently (by playability first)
-  english-compare CSW24.kwg klv0.klv2 klv1.klv2 10000 [seed]
-    play game pairs to compare two sets of leaves.
-    p0 uses klv0, p1 uses klv1 for move selection (static play, max=1).
-    reports wins/losses/draws, score stats, divergent games, and
-    confidence that one set of leaves is better.
-    if klv is \"-\" or omitted, uses no leave.
-    number of game pairs is optional (default 10000).
-    seed is optional; prints auto-generated seed to stderr if not provided.
-  english-sim-compare CSW24.kwg leaves.klv2 1000 [seed]
-    play game pairs where both seats choose moves by the 2-ply simmer,
-    each seat configured by WOLGES_SIM_P0_* / WOLGES_SIM_P1_* (and a shared
-    WOLGES_SIM_ITERS budget), to A/B simmer configurations.
-    each pair: same tile draw, alternating starting player.
-  english-sim-study-check CSW24.kwg leaves.klv2 64 [seed]
-    self-check that a resumed decision (begin_decision then resume) matches
-    the same decision run in one call; prints SIM_RESUME_OK on success.
-  english-sim-mutate-check CSW24.kwg leaves.klv2 96 [seed]
-    self-check that readmitting a retired candidate keeps its statistics;
-    prints SIM_MUTATE_OK on success.
-  (english can also be catalan, dutch, french, german, norwegian, polish,
-    slovene, spanish, swedish, super-english, super-catalan)
-  (add -big after language, such as dutch-big-autoplay, to use kbwg)
-  jumbled-english-autoplay CSW24.kad leave0.klv leave1.klv 1000
-    (all also take jumbled- prefix, including jumbled-super-;
-    note that jumbled autoplay requires .kad instead of .kwg)
-input/output files can be \"-\" (not advisable for binary files).
-for english-autoplay only the kwg can come from \"-\".
+#[derive(clap::Parser)]
+#[command(
+    about = "leave = listing extrapolated accumulated values empirically",
+    after_help = "input/output files can be \"-\" (not advisable for binary files).
+for autoplay only the kwg can come from \"-\".
 when low disk space, note that in bash:
-  english-autoplay ... 1000
-  english-summarize log1 summary1.csv
-  english-autoplay ... 1000
-  english-summarize log2 summary2.csv
-  english-resummarize <( cat summary1.csv summary2.csv ) summary.csv
-  english-generate summary.csv leaves.csv
+  leave autoplay ... 1000
+  leave summarize log1 summary1.csv
+  leave autoplay ... 1000
+  leave summarize log2 summary2.csv
+  leave resummarize <( cat summary1.csv summary2.csv ) summary.csv
+  leave generate summary.csv leaves.csv
     is the same as
-  english-autoplay ... 1000
-  english-summarize log1 summary1.csv
-  english-autoplay ... 1000
-  english-summarize log2 summary2.csv
-  english-generate <( cat summary1.csv summary2.csv ) leaves.csv
+  leave autoplay ... 1000
+  leave summarize log1 summary1.csv
+  leave autoplay ... 1000
+  leave summarize log2 summary2.csv
+  leave generate <( cat summary1.csv summary2.csv ) leaves.csv
     which is the same as
-  english-autoplay ... 1000
-  english-autoplay ... 1000
-  english-summarize <( cat log1 log2 ) summary.csv
-  english-generate summary.csv leaves.csv
+  leave autoplay ... 1000
+  leave autoplay ... 1000
+  leave summarize <( cat log1 log2 ) summary.csv
+  leave generate summary.csv leaves.csv
     but it becomes possible to remove log1 to free up disk space for log2.
     using resummarize also allows removing summary1.csv earlier."
-        );
-        Ok(())
-    } else {
-        let t0 = std::time::Instant::now();
-        if do_lang(&args, "english", game_config::make_english_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-english",
-                game_config::make_jumbled_english_game_config,
-            )?
-            || do_lang(
-                &args,
-                "super-english",
-                game_config::make_super_english_game_config,
-            )?
-            || do_lang(
-                &args,
-                "jumbled-super-english",
-                game_config::make_jumbled_super_english_game_config,
-            )?
-            || do_lang(&args, "catalan", game_config::make_catalan_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-catalan",
-                game_config::make_jumbled_catalan_game_config,
-            )?
-            || do_lang(
-                &args,
-                "super-catalan",
-                game_config::make_super_catalan_game_config,
-            )?
-            || do_lang(
-                &args,
-                "jumbled-super-catalan",
-                game_config::make_jumbled_super_catalan_game_config,
-            )?
-            || do_lang(&args, "dutch", game_config::make_dutch_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-dutch",
-                game_config::make_jumbled_dutch_game_config,
-            )?
-            || do_lang(&args, "french", game_config::make_french_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-french",
-                game_config::make_jumbled_french_game_config,
-            )?
-            || do_lang(&args, "german", game_config::make_german_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-german",
-                game_config::make_jumbled_german_game_config,
-            )?
-            || do_lang(&args, "norwegian", game_config::make_norwegian_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-norwegian",
-                game_config::make_jumbled_norwegian_game_config,
-            )?
-            || do_lang(&args, "polish", game_config::make_polish_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-polish",
-                game_config::make_jumbled_polish_game_config,
-            )?
-            || do_lang(&args, "slovene", game_config::make_slovene_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-slovene",
-                game_config::make_jumbled_slovene_game_config,
-            )?
-            || do_lang(&args, "spanish", game_config::make_spanish_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-spanish",
-                game_config::make_jumbled_spanish_game_config,
-            )?
-            || do_lang(&args, "swedish", game_config::make_swedish_game_config)?
-            || do_lang(
-                &args,
-                "jumbled-swedish",
-                game_config::make_jumbled_swedish_game_config,
-            )?
-        {
-        } else {
-            return Err("invalid argument".into());
+)]
+struct Cli {
+    #[arg(long, help = "the word graph is a kbwg")]
+    kbwg: bool,
+    #[command(subcommand)]
+    task: Task,
+    #[command(flatten)]
+    game: game_args::GameArgs,
+}
+
+#[inline]
+fn run<N: kwg::Node + Sync + Send>(
+    task: Task,
+    game_config: game_config::GameConfig,
+) -> error::Returns<()> {
+    match task {
+        Task::Autoplay(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
+            generate_autoplay_logs::<true, false, _, _>(
+                game_config,
+                kwg,
+                klv0,
+                klv1,
+                a.games,
+                a.min_samples,
+                a.seed,
+            )
         }
-        writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
-        Ok(())
+        Task::AutoplaySummarize(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
+            generate_autoplay_logs::<true, true, _, _>(
+                game_config,
+                kwg,
+                klv0,
+                klv1,
+                a.games,
+                a.min_samples,
+                a.seed,
+            )
+        }
+        Task::AutoplaySummarizeOnly(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
+            generate_autoplay_logs::<false, true, _, _>(
+                game_config,
+                kwg,
+                klv0,
+                klv1,
+                a.games,
+                a.min_samples,
+                a.seed,
+            )
+        }
+        Task::Gilles(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
+            generate_gilles_summary(game_config, kwg, klv0, klv1, a.games, a.min_samples, a.seed)
+        }
+        Task::Census(a) => {
+            let board_counts = parse_board_counts(&a.boards)?;
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
+            generate_census_leaves(game_config, kwg, klv0, klv1, board_counts, a.seed)
+        }
+        Task::Compare(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
+            compare_leaves(game_config, kwg, klv0, klv1, a.pairs, a.seed)
+        }
+        Task::SimCompare(a) => {
+            let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            sim_compare(game_config, kwg, klv, a.pairs, a.seed)
+        }
+        Task::SimStudyCheck(a) => {
+            let klv = read_klv(&game_config, &a.klv)?;
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let (iters, seed) = (a.iters, a.seed);
+            let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+            let mut game_state = game_state::GameState::new(&game_config);
+            game_state.reset_and_draw_tiles(&game_config, &mut rng);
+            let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    klv: &klv,
+                },
+                rack: &game_state.current_player().rack,
+                max_gen: 100,
+                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            let mut driver = move_picker::Simmer::new(
+                &game_config,
+                &kwg,
+                &klv,
+                move_picker::SimmerParams {
+                    num_sim_iters: iters,
+                    allocator: move_picker::Allocator::RoundRobin,
+                    stop_rule: move_picker::StopRule::FixedCap,
+                    stop_delta: None,
+                    observe: false,
+                    sim_threads: 1,
+                    win_pct_table: None,
+                    config: simmer::SimmerConfig {
+                        descale: true,
+                        w_no_out: 10.0,
+                        w_out: 10000.0,
+                        win_prob_source: simmer::WinProbSource::Sigmoid,
+                    },
+                },
+            );
+            driver.reseed(seed);
+            driver.begin_decision(&move_generator, &game_state, iters);
+            let one_shot = driver.leader_summary();
+            driver.reseed(seed);
+            let half = iters / 2;
+            driver.begin_decision(&move_generator, &game_state, half);
+            driver.resume(&move_generator, iters - half);
+            let split = driver.leader_summary();
+            println!(
+                "one_shot leader play_index={} mean={} count={}",
+                one_shot.0, one_shot.1, one_shot.2,
+            );
+            println!(
+                "split    leader play_index={} mean={} count={}",
+                split.0, split.1, split.2,
+            );
+            if one_shot == split {
+                println!("SIM_RESUME_OK");
+                Ok(())
+            } else {
+                wolges::return_error!(
+                    "resume mismatch: split decision differs from one-shot".to_string()
+                )
+            }
+        }
+        Task::SimMutateCheck(a) => {
+            let klv = read_klv(&game_config, &a.klv)?;
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let (iters, seed) = (a.iters, a.seed);
+            let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+            let mut game_state = game_state::GameState::new(&game_config);
+            game_state.reset_and_draw_tiles(&game_config, &mut rng);
+            let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                board_snapshot: &movegen::BoardSnapshot {
+                    board_tiles: &game_state.board_tiles,
+                    game_config: &game_config,
+                    kwg: &kwg,
+                    klv: &klv,
+                },
+                rack: &game_state.current_player().rack,
+                max_gen: 100,
+                num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            let mut driver = move_picker::Simmer::new(
+                &game_config,
+                &kwg,
+                &klv,
+                move_picker::SimmerParams {
+                    num_sim_iters: iters,
+                    allocator: move_picker::Allocator::RoundRobin,
+                    stop_rule: move_picker::StopRule::FixedCap,
+                    stop_delta: None,
+                    observe: false,
+                    sim_threads: 1,
+                    win_pct_table: None,
+                    config: simmer::SimmerConfig {
+                        descale: true,
+                        w_no_out: 10.0,
+                        w_out: 10000.0,
+                        win_prob_source: simmer::WinProbSource::Sigmoid,
+                    },
+                },
+            );
+            driver.reseed(seed);
+            driver.begin_decision(&move_generator, &game_state, iters);
+            let retired_id = driver.retired_stream_ids().next();
+            match retired_id {
+                None => wolges::return_error!(
+                    "no candidates were pruned; raise the iteration budget".to_string()
+                ),
+                Some(id) => {
+                    let before = driver.stream_count(id).unwrap();
+                    let readmitted = driver.readmit_with_history(id);
+                    driver.resume(&move_generator, iters);
+                    let after = driver.stream_count(id).unwrap();
+                    println!("readmit stream {id}: count before={before} after={after}");
+                    if readmitted && after >= before {
+                        println!("SIM_MUTATE_OK");
+                        Ok(())
+                    } else {
+                        wolges::return_error!("readmit dropped history: count reset".to_string())
+                    }
+                }
+            }
+        }
+        Task::Rollout(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
+            generate_rollout_leaves(game_config, kwg, klv, a.games, a.seed)
+        }
+        Task::Winpct(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
+            generate_winpct_table(game_config, kwg, klv, &a.out, a.games, a.seed)
+        }
+        Task::WinpctEval(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
+            let table = win_pct::WinPctTable::from_csv(make_reader(&a.table)?)?;
+            generate_winpct_eval(game_config, kwg, klv, table, a.games, a.seed)
+        }
+        Task::WinpctCombine(a) => {
+            let acc = win_pct::WinPctAccumulator::from_csv(make_reader(&a.input)?)?;
+            acc.to_csv(make_writer(&a.output)?)
+        }
+        Task::Summarize(a) => generate_summary(
+            game_config,
+            make_reader(&a.input)?,
+            csv::Writer::from_writer(make_writer(&a.output)?),
+        ),
+        Task::Resummarize(a) => resummarize_summaries::<'a', _, _>(
+            game_config,
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(make_reader(&a.input)?),
+            csv::Writer::from_writer(make_writer(&a.output)?),
+        ),
+        Task::ResummarizePlayability(a) => resummarize_summaries::<'p', _, _>(
+            game_config,
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(make_reader(&a.input)?),
+            csv::Writer::from_writer(make_writer(&a.output)?),
+        ),
+        Task::ResummarizePlayabilityAll(a) => resummarize_summaries::<'P', _, _>(
+            game_config,
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(make_reader(&a.input)?),
+            csv::Writer::from_writer(make_writer(&a.output)?),
+        ),
+        Task::Generate(a) => generate_leaves::<_, _, false>(
+            game_config,
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(make_reader(&a.summary)?),
+            csv::Writer::from_writer(make_writer(&a.leaves)?),
+            a.rare.as_deref(),
+        ),
+        Task::GenerateFull(a) => generate_leaves::<_, _, true>(
+            game_config,
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(make_reader(&a.summary)?),
+            csv::Writer::from_writer(make_writer(&a.leaves)?),
+            a.rare.as_deref(),
+        ),
+        Task::Playability(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = read_klv(&game_config, &a.leave)?;
+            discover_playability(game_config, kwg, klv, a.games, a.seed)
+        }
     }
+}
+
+fn main() -> error::Returns<()> {
+    let cli: Cli = clap::Parser::parse();
+    let t0 = std::time::Instant::now();
+    let game_config = cli.game.make_game_config()?;
+    if cli.task.needs_two_players() && game_config.num_players() != 2 {
+        wolges::return_error!("this task needs exactly 2 players".to_string());
+    }
+    if cli.kbwg {
+        run::<kwg::Node24>(cli.task, game_config)?;
+    } else {
+        run::<kwg::Node22>(cli.task, game_config)?;
+    }
+    writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
+    Ok(())
 }
 
 #[inline]

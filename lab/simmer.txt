@@ -49,8 +49,8 @@ runtime at all. Picking a move is now a plain synchronous function call.
 
 MEASURING THE SIMMER: A TWO-SEAT COMPARE
 
-lab/leavegen.txt's english-compare measures leave TABLES: each seat picks its
-move by one greedy look at the board with its own table. english-sim-compare is
+lab/leavegen.txt's leave compare measures leave TABLES: each seat picks its
+move by one greedy look at the board with its own table. leave sim-compare is
 the simmer's counterpart: both seats share the same leave table, but each picks
 its move by running the full rollout instead of a single greedy look, and the
 two seats can each be configured differently. Every seat reads its own settings
@@ -60,7 +60,7 @@ seats identical settings and expecting the result to land near 50% is a harness
 sanity check (an unbiased comparison should tie); giving them different
 settings measures which one plays better.
 
-As in english-compare, each game pair starts from the same deal with the seats
+As in leave compare, each game pair starts from the same deal with the seats
 swapped, so first-move advantage cancels between the two halves of the pair.
 Each seat's simmer is reseeded before every single move from a mix of the run's
 seed, the pair number, the game number, and the turn number, so the whole run
@@ -93,7 +93,7 @@ This changes only WHICH candidates get rolled out between prunes; the prune
 rule itself (drop anyone the leader's confidence interval has already cleared)
 is unchanged. It is opt-in: Allocator::RoundRobin stays the default (byte-
 identical to before), Allocator::Adaptive is set via set_allocator and wired
-into english-sim-compare per seat as WOLGES_SIM_P0_ALLOCATOR / P1_ALLOCATOR, so
+into leave sim-compare per seat as WOLGES_SIM_P0_ALLOCATOR / P1_ALLOCATOR, so
 the two can be measured against each other.
 
 
@@ -122,7 +122,7 @@ iteration cap is what bounds that repeated peeking.
 It is opt-in: StopRule::FixedCap (the default) always runs the full budget,
 unchanged; StopRule::Confidence, set via set_stop_rule with set_stop_delta for
 the target overall error, stops early once separated. Wired into
-english-sim-compare per seat as WOLGES_SIM_P0_STOP / P1_STOP and
+leave sim-compare per seat as WOLGES_SIM_P0_STOP / P1_STOP and
 WOLGES_SIM_P0_STOP_DELTA / P1_STOP_DELTA.
 
 
@@ -151,7 +151,7 @@ Readmitting a retired candidate is exactly as safe as any other candidate in
 the working set -- there is nothing special to isolate.
 
 None of this touches ordinary batch play: pick_a_move never calls these
-operations, so its output is unchanged. english-sim-mutate-check is a headless
+operations, so its output is unchanged. leave sim-mutate-check is a headless
 self-check confirming a readmitted candidate really does keep its statistics
 across the round trip.
 
@@ -215,7 +215,7 @@ to the sigmoid for any margin-and-tile-count combination the table never saw
 enough of to have an entry. The table is handed to the simmer by reference and
 defaults to none, so a caller that never asks for Table sees no change at all.
 
-english-sim-compare can give each seat its own source (WOLGES_SIM_P0_WINPROB /
+leave sim-compare can give each seat its own source (WOLGES_SIM_P0_WINPROB /
 P1_WINPROB) sharing one table (WOLGES_SIM_WINPCT_TABLE), to weigh the sigmoid
 against the empirical table directly, seat against seat.
 
@@ -248,5 +248,5 @@ eight threads now give byte-identical results.
 Gated off entirely for the single-threaded wasm build (which has no threads to
 split across) and off by default even where threads are available (one thread
 keeps the original single-stream behavior, byte-identical to before this knob
-existed); english-sim-compare exposes the thread count as
+existed); leave sim-compare exposes the thread count as
 WOLGES_SIM_DRIVER_THREADS.
