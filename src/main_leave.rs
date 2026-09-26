@@ -400,6 +400,8 @@ when low disk space, note that in bash:
 struct Cli {
     #[arg(long, help = "the word graph is a kbwg")]
     kbwg: bool,
+    #[arg(long, help = "worker threads [default: every core]")]
+    threads: Option<std::num::NonZeroUsize>,
     #[command(subcommand)]
     task: Task,
     #[command(flatten)]
@@ -410,6 +412,7 @@ struct Cli {
 fn run<N: kwg::Node + Sync + Send>(
     task: Task,
     game_config: game_config::GameConfig,
+    threads: usize,
 ) -> error::Returns<()> {
     match task {
         Task::Autoplay(a) => {
@@ -420,9 +423,12 @@ fn run<N: kwg::Node + Sync + Send>(
                 kwg,
                 klv0,
                 klv1,
-                a.games,
-                a.min_samples,
-                a.seed,
+                SelfPlayParams {
+                    num_games: a.games,
+                    min_samples: a.min_samples,
+                    seed: a.seed,
+                    threads,
+                },
             )
         }
         Task::AutoplaySummarize(a) => {
@@ -433,9 +439,12 @@ fn run<N: kwg::Node + Sync + Send>(
                 kwg,
                 klv0,
                 klv1,
-                a.games,
-                a.min_samples,
-                a.seed,
+                SelfPlayParams {
+                    num_games: a.games,
+                    min_samples: a.min_samples,
+                    seed: a.seed,
+                    threads,
+                },
             )
         }
         Task::AutoplaySummarizeOnly(a) => {
@@ -446,31 +455,45 @@ fn run<N: kwg::Node + Sync + Send>(
                 kwg,
                 klv0,
                 klv1,
-                a.games,
-                a.min_samples,
-                a.seed,
+                SelfPlayParams {
+                    num_games: a.games,
+                    min_samples: a.min_samples,
+                    seed: a.seed,
+                    threads,
+                },
             )
         }
         Task::Gilles(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
-            generate_gilles_summary(game_config, kwg, klv0, klv1, a.games, a.min_samples, a.seed)
+            generate_gilles_summary(
+                game_config,
+                kwg,
+                klv0,
+                klv1,
+                SelfPlayParams {
+                    num_games: a.games,
+                    min_samples: a.min_samples,
+                    seed: a.seed,
+                    threads,
+                },
+            )
         }
         Task::Census(a) => {
             let board_counts = parse_board_counts(&a.boards)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
-            generate_census_leaves(game_config, kwg, klv0, klv1, board_counts, a.seed)
+            generate_census_leaves(game_config, kwg, klv0, klv1, board_counts, a.seed, threads)
         }
         Task::Compare(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
-            compare_leaves(game_config, kwg, klv0, klv1, a.pairs, a.seed)
+            compare_leaves(game_config, kwg, klv0, klv1, a.pairs, a.seed, threads)
         }
         Task::SimCompare(a) => {
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            sim_compare(game_config, kwg, klv, a.pairs, a.seed)
+            sim_compare(game_config, kwg, klv, a.pairs, a.seed, threads)
         }
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
@@ -604,18 +627,18 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::Rollout(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
-            generate_rollout_leaves(game_config, kwg, klv, a.games, a.seed)
+            generate_rollout_leaves(game_config, kwg, klv, a.games, a.seed, threads)
         }
         Task::Winpct(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
-            generate_winpct_table(game_config, kwg, klv, &a.out, a.games, a.seed)
+            generate_winpct_table(game_config, kwg, klv, &a.out, a.games, a.seed, threads)
         }
         Task::WinpctEval(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
             let table = win_pct::WinPctTable::from_csv(make_reader(&a.table)?)?;
-            generate_winpct_eval(game_config, kwg, klv, table, a.games, a.seed)
+            generate_winpct_eval(game_config, kwg, klv, table, a.games, a.seed, threads)
         }
         Task::WinpctCombine(a) => {
             let acc = win_pct::WinPctAccumulator::from_csv(make_reader(&a.input)?)?;
@@ -666,7 +689,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::Playability(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.leave)?;
-            discover_playability(game_config, kwg, klv, a.games, a.seed)
+            discover_playability(game_config, kwg, klv, a.games, a.seed, threads)
         }
     }
 }
@@ -678,10 +701,13 @@ fn main() -> error::Returns<()> {
     if cli.task.needs_two_players() && game_config.num_players() != 2 {
         wolges::return_error!("this task needs exactly 2 players".to_string());
     }
+    let threads = cli
+        .threads
+        .map_or_else(num_cpus::get, std::num::NonZeroUsize::get);
     if cli.kbwg {
-        run::<kwg::Node24>(cli.task, game_config)?;
+        run::<kwg::Node24>(cli.task, game_config, threads)?;
     } else {
-        run::<kwg::Node22>(cli.task, game_config)?;
+        run::<kwg::Node22>(cli.task, game_config, threads)?;
     }
     writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
     Ok(())
@@ -698,14 +724,6 @@ fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
 #[inline(always)]
 fn env_flag(name: &str, default: bool) -> bool {
     env_parse::<u64>(name, default as u64) != 0
-}
-
-#[inline]
-fn wolges_threads() -> usize {
-    std::env::var("WOLGES_THREADS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(num_cpus::get)
 }
 
 #[derive(Clone, Copy)]
@@ -745,6 +763,13 @@ fn wolges_census_ci_report() -> error::Returns<CiReport> {
     }
 }
 
+struct SelfPlayParams {
+    num_games: u64,
+    min_samples: u64,
+    seed: Option<u64>,
+    threads: usize,
+}
+
 #[inline]
 fn generate_autoplay_logs<
     const WRITE_LOGS: bool,
@@ -756,9 +781,12 @@ fn generate_autoplay_logs<
     kwg: kwg::Kwg<N>,
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
-    num_games: u64,
-    min_samples_per_rack: u64,
-    seed: Option<u64>,
+    SelfPlayParams {
+        num_games,
+        min_samples: min_samples_per_rack,
+        seed,
+        threads,
+    }: SelfPlayParams,
 ) -> error::Returns<()> {
     if !SUMMARIZE && min_samples_per_rack != 0 {
         return Err("min_samples_per_rack requires summarize".into());
@@ -831,7 +859,7 @@ fn generate_autoplay_logs<
     );
     let seed = seed.unwrap_or_else(rand::random);
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
-    let num_threads = wolges_threads();
+    let num_threads = threads;
 
     let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
         .ok()
@@ -2073,15 +2101,18 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     kwg: kwg::Kwg<N>,
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
-    num_games: u64,
-    min_samples: u64,
-    seed: Option<u64>,
+    SelfPlayParams {
+        num_games,
+        min_samples,
+        seed,
+        threads,
+    }: SelfPlayParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let seed = seed.unwrap_or_else(rand::random);
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
-    let num_threads = wolges_threads();
+    let num_threads = threads;
 
     let run_identifier = format!("gilles-summary-{}", run_stamp());
 
@@ -4040,6 +4071,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
     board_counts: Vec<u64>,
     seed: Option<u64>,
+    threads: usize,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let alphabet = game_config.alphabet();
@@ -4170,7 +4202,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let add_table = if full_rack {
         let t = std::time::Instant::now();
-        let at = census::AddTable::new_with_threads(&lat, wolges_threads());
+        let at = census::AddTable::new_with_threads(&lat, threads);
         writeln!(
             boxed_stdout_or_stderr(),
             "census: add-table {} rows x {num_letters} letters built in {:?}",
@@ -4304,7 +4336,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let leave_lock = std::sync::RwLock::new(leave_cur);
 
-    let num_threads = wolges_threads().max(1).min(max_boards as usize);
+    let num_threads = threads.max(1).min(max_boards as usize);
 
     let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
         .ok()
@@ -6039,13 +6071,14 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     klv: klv::Klv<L>,
     num_games: u64,
     seed: Option<u64>,
+    threads: usize,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let klv = std::sync::Arc::new(klv);
     let seed = seed.unwrap_or_else(rand::random);
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
-    let num_threads = wolges_threads();
+    let num_threads = threads;
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let run_identifier = std::sync::Arc::new(run_stamp());
@@ -6703,6 +6736,7 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     arc_klv: std::sync::Arc<klv::Klv<L>>,
     num_games: u64,
     seed: Option<u64>,
+    threads: usize,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
@@ -6714,7 +6748,7 @@ fn generate_rollout_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
     let seed = seed.unwrap_or_else(rand::random);
-    let num_threads = wolges_threads().max(1).min(num_games.max(1) as usize);
+    let num_threads = threads.max(1).min(num_games.max(1) as usize);
     writeln!(
         boxed_stdout_or_stderr(),
         "rollout: seed {seed}, {num_games} games, {num_threads} threads, lattice {lat_len} leaves"
@@ -7032,11 +7066,12 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     out_path: &str,
     num_games: u64,
     seed: Option<u64>,
+    threads: usize,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
     let seed = seed.unwrap_or_else(rand::random);
-    let num_threads = wolges_threads().max(1).min(num_games.max(1) as usize);
+    let num_threads = threads.max(1).min(num_games.max(1) as usize);
     writeln!(
         boxed_stdout_or_stderr(),
         "winpct: seed {seed}, {num_games} games, {num_threads} threads"
@@ -7111,12 +7146,13 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     table: win_pct::WinPctTable,
     num_games: u64,
     seed: Option<u64>,
+    threads: usize,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
     let table = std::sync::Arc::new(table);
     let seed = seed.unwrap_or_else(rand::random);
-    let num_threads = wolges_threads().max(1).min(num_games.max(1) as usize);
+    let num_threads = threads.max(1).min(num_games.max(1) as usize);
     writeln!(
         boxed_stdout_or_stderr(),
         "winpct-eval: seed {seed}, {num_games} games, {num_threads} threads"
@@ -7205,12 +7241,13 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
     num_game_pairs: u64,
     seed: Option<u64>,
+    threads: usize,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let seed = seed.unwrap_or_else(rand::random);
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
-    let num_threads = wolges_threads();
+    let num_threads = threads;
     let claimed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let finished_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
@@ -7470,12 +7507,13 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     arc_klv: std::sync::Arc<klv::Klv<L>>,
     num_game_pairs: u64,
     seed: Option<u64>,
+    threads: usize,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let seed = seed.unwrap_or_else(rand::random);
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
-    let num_threads = wolges_threads();
+    let num_threads = threads;
     let claimed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let finished_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
