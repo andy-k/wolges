@@ -658,9 +658,7 @@ noise and more of the uncommon board situations reached.
 The table is written without the full-length leaves by default. Keeping a full
 rack (a pass) is almost never the best move mid-game, and the empty-bag endgame
 is scored with its own penalty rather than from the leave table, so dropping
-those rows gives a smaller, play-identical file; WOLGES_FULL=1 keeps them.
-
-New knobs: WOLGES_FULL.
+those rows gives a smaller, play-identical file; --full keeps them.
 
 
 EXCHANGING, AND WHY GOOD LEAVES FAN OUT
@@ -1077,12 +1075,12 @@ on uneven specifications; the leaves are identical, because each board seeds
 its own randomness from its own slot, so the result never depends on how many
 threads happened to run.
 
-A census can also resume from per-generation snapshot files, picking up at the
-generation after the last one saved. If the specification given on resume asks
-for fewer generations than the snapshots already on disk, the resume index
-would run off the end of the specification and a worker would panic. It now
-stops with a clear error -- extend the specification or remove the snapshots --
-instead of crashing. Fresh runs are unaffected.
+A census can also resume from a per-generation snapshot file (--resume),
+picking up at the generation after the one it saved. If the specification given
+on resume holds no more generations than the snapshot has already done, the
+resume index would run off the end of the specification and a worker would
+panic. It now stops with a clear error -- extend the specification -- instead
+of crashing. Fresh runs are unaffected.
 
 Finally, the census window's bounds -- the range of unseen-pool sizes it
 studies --
@@ -1405,8 +1403,8 @@ counts are measured on this English word list, not universal constants, so a
 different tile set wants its own sweep rather than these numbers taken on
 faith.
 
-WOLGES_POOL_* shift the board window; for dynamic leaves add WOLGES_FULL=1 to
-keep the full-length values.
+WOLGES_POOL_* shift the board window; for dynamic leaves add --full to keep
+the full-length values.
 
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
@@ -1533,12 +1531,7 @@ Board sampling (gilles):
 Census:
   It also reads the shared knobs above and the board window WOLGES_POOL_MIN /
   WOLGES_POOL_MAX (listed under board sampling, but with the census's own
-  default window). Its own knobs:
-  WOLGES_FULL (0 or 1; default 0) -- whether to keep the full-length leave rows
-    (a value for the whole rack, not just a shorter leave); a full-length table
-    is what dynamic leaves read:
-      1  also write the full-length values
-      0  drop them, giving a smaller, play-identical file
+  default window).
 
 Autoplay:
   It also reads the shared knobs above. Its own knob:

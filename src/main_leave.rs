@@ -197,6 +197,17 @@ struct Census {
     boards: String,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(
+        long,
+        value_name = "SNAPSHOT",
+        help = "continue from this census-gen-<stamp>-<generation>.klv2"
+    )]
+    resume: Option<String>,
+    #[arg(
+        long,
+        help = "also write the full-length leaves (what dynamic leaves read)"
+    )]
+    full: bool,
 }
 
 #[derive(clap::Args)]
@@ -469,7 +480,19 @@ fn run<N: kwg::Node + Sync + Send>(
             let board_counts = parse_board_counts(&a.boards)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
-            generate_census_leaves(game_config, kwg, klv0, klv1, board_counts, a.seed, threads)
+            generate_census_leaves(
+                game_config,
+                kwg,
+                klv0,
+                klv1,
+                CensusParams {
+                    board_counts,
+                    seed: a.seed,
+                    threads,
+                    resume: a.resume,
+                    full: a.full,
+                },
+            )
         }
         Task::Compare(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -3883,15 +3906,27 @@ fn write_census_klv2(
     Ok(leave_values.len())
 }
 
+struct CensusParams {
+    board_counts: Vec<u64>,
+    seed: Option<u64>,
+    threads: usize,
+    resume: Option<String>,
+    full: bool,
+}
+
 #[inline]
 fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
-    board_counts: Vec<u64>,
-    seed: Option<u64>,
-    threads: usize,
+    CensusParams {
+        board_counts,
+        seed,
+        threads,
+        resume,
+        full,
+    }: CensusParams,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let alphabet = game_config.alphabet();
@@ -3948,8 +3983,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let sheet_cache_len = if sheet_reuse { sheet_cache_len } else { 0 };
 
-    let resume = multigen && env_flag("WOLGES_CENSUS_RESUME", false);
-
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
     let full_rack_start = lat.full_rack_start();
@@ -3996,57 +4029,42 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         *slot = arc_klv0.leave_value_from_tally(&tally_buf);
     }
 
-    let mut start_gen = 0usize;
-    let census_run_epoch;
-    let mut resumed: Option<(String, usize, std::path::PathBuf)> = None;
-    if resume && let Ok(rd) = std::fs::read_dir(".") {
-        for e in rd.flatten() {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if let Some((rid, gg)) = name
-                .strip_prefix("census-gen-")
-                .and_then(|r| r.strip_suffix(".klv2"))
-                .and_then(|r| r.split_once('-'))
-                && u64::from_str_radix(rid, 16).is_ok()
-                && let Ok(gg) = gg.parse::<usize>()
-                && resumed
-                    .as_ref()
-                    .is_none_or(|(br, bg, _)| (gg, rid) > (*bg, br.as_str()))
-            {
-                resumed = Some((rid.to_owned(), gg, e.path()));
-            }
-        }
-    }
-    if let Some((rid, num, path)) = resumed {
+    let (start_gen, census_run_epoch) = if let Some(path) = resume {
+        let name = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some((rid, num)) = name
+            .strip_prefix("census-gen-")
+            .and_then(|r| r.strip_suffix(".klv2"))
+            .and_then(|r| r.split_once('-'))
+            .filter(|(rid, _)| u64::from_str_radix(rid, 16).is_ok())
+            .and_then(|(rid, gg)| Some((rid.to_owned(), gg.parse::<usize>().ok()?)))
+        else {
+            wolges::return_error!(format!(
+                "--resume wants a census-gen-<stamp>-<generation>.klv2 snapshot, got {path}"
+            ))
+        };
         let bytes = std::fs::read(&path)?;
         let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes);
         for (idx, slot) in leave_cur.iter_mut().enumerate() {
             lat.unrank_into(idx, &mut tally_buf);
             *slot = resume_klv.leave_value_from_tally(&tally_buf);
         }
-        start_gen = num;
-        census_run_epoch = rid;
         writeln!(
             boxed_stdout_or_stderr(),
-            "census: resuming from {} (gen {num} done) -> starting gen {}",
-            path.display(),
+            "census: resuming from {path} (gen {num} done) -> starting gen {}",
             num + 1
         )?;
+        (num, rid)
     } else {
-        if resume {
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "census: resume requested but no census-gen-*.klv2 found; fresh start"
-            )?;
-        }
-        census_run_epoch = run_stamp();
-    }
+        (0, run_stamp())
+    };
 
     if start_gen >= gens {
         return Err(format!(
             "census resume: {start_gen} generation(s) already completed but the \
-             spec has only {gens}; extend the board-count spec or remove \
-             census-gen-*.klv2"
+             spec has only {gens}; extend the board-count spec"
         )
         .into());
     }
@@ -4601,8 +4619,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let baseline = value_mp(empty_rank);
     let out_name = claim_output_path(&format!("census-leaves-{census_run_epoch}.csv"))?;
 
-    let emit_full = env_flag("WOLGES_FULL", false);
-    let max_keep = if emit_full {
+    let max_keep = if full {
         rack_size
     } else {
         rack_size.saturating_sub(1)
@@ -4655,7 +4672,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             accum_cnt[idx] > 0
         }
     };
-    let n_klv = write_census_klv2(&lat, &value_mp, baseline, &is_valued, emit_full, &klv_name)?;
+    let n_klv = write_census_klv2(&lat, &value_mp, baseline, &is_valued, full, &klv_name)?;
     writeln!(
         boxed_stdout_or_stderr(),
         "census: wrote klv2 to {klv_name} ({n_klv} leaves)"
