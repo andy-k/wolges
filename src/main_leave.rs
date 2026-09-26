@@ -3935,22 +3935,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let num_tiles: usize = (0..alphabet.len()).map(|t| alphabet.freq(t) as usize).sum();
     let racks_tiles = game_config.num_players() as usize * rack_size;
 
-    let pool_max = env_usize("WOLGES_POOL_MAX", num_tiles.saturating_sub(racks_tiles));
-
-    let min_pool = racks_tiles + 1;
-    let pool_min = {
-        let req = env_usize("WOLGES_POOL_MIN", min_pool);
-        if req < min_pool {
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "census: raising pool_min {req} -> {min_pool} (a smaller unseen pool \
-                 implies an empty bag = endgame, where the klv leave is unused)"
-            )?;
-            min_pool
-        } else {
-            req
-        }
-    };
+    let pool_max = num_tiles.saturating_sub(racks_tiles);
+    let pool_min = racks_tiles + 1;
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
 

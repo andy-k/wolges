@@ -775,10 +775,7 @@ English game two full seven-tile racks hold fourteen tiles, so the pool window
 is floored at fifteen -- one more than fourteen. (Stated the other way, that is
 a board no fuller than eighty-five of a hundred tiles down; at eighty-six the
 bag is empty.) These figures come from the game's own tile count and rack size,
-not hardcoded, so the guard holds for any variant. A window setting that would
-push past the floor is raised back to it with a warning rather than quietly
-producing endgame-polluted leaves; the normal window is well inside the floor,
-so a usual run is unchanged.
+not hardcoded, so the guard holds for any variant.
 
 One subtlety: a single move can lay down several tiles at once, so a game
 played toward a target fill can overshoot it by up to a rackful. Capping the
@@ -1083,20 +1080,16 @@ panic. It now stops with a clear error -- extend the specification -- instead
 of crashing. Fresh runs are unaffected.
 
 Finally, the census window's bounds -- the range of unseen-pool sizes it
-studies --
-are derived from the game configuration rather than hand-picked for the English
-game, so they carry over to any tile-set. The low end is the endgame floor
-established earlier: one more than the tiles both players hold at once, the
-smallest pool that still leaves a non-empty bag (below it the bag is empty and
-the leave table is not consulted). The high end is the tile count minus the
-tiles both players hold (boards with at least that many tiles already played).
-For the classic two-player English game this widens the default window from an
-unseen pool of 21 to 28 tiles out to 15 to 86. The method actually supports
-every board but the all-empty one; the default stops short of the near-empty
-opening boards because the value of leaves there is unsettled. WOLGES_POOL_MIN
-and WOLGES_POOL_MAX still override, and a too-small WOLGES_POOL_MIN is raised
-to the floor with a warning rather than silently valuing endgame boards whose
-leaves are never used.
+studies -- are derived from the game configuration rather than hand-picked for
+the English game, so they carry over to any tile-set. The low end is the
+endgame floor established earlier: one more than the tiles both players hold at
+once, the smallest pool that still leaves a non-empty bag (below it the bag is
+empty and the leave table is not consulted). The high end is the tile count
+minus the tiles both players hold (boards with at least that many tiles already
+played). For the classic two-player English game this widens the default window
+from an unseen pool of 21 to 28 tiles out to 15 to 86. The method actually
+supports every board but the all-empty one; the default stops short of the
+near-empty opening boards because the value of leaves there is unsettled.
 
 
 VALUING A PLAY BY ITS CHANCE OF WINNING
@@ -1403,8 +1396,7 @@ counts are measured on this English word list, not universal constants, so a
 different tile set wants its own sweep rather than these numbers taken on
 faith.
 
-WOLGES_POOL_* shift the board window; for dynamic leaves add --full to keep
-the full-length values.
+For dynamic leaves add --full to keep the full-length values.
 
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
@@ -1525,13 +1517,10 @@ Board sampling (gilles):
     WOLGES_POOL_MIN, 75 EN) -- high edge of the snapshot window.
   WOLGES_POOL_MIN (a whole number of tiles; default a quarter of the tile
     count, 25 EN) -- low edge of the snapshot window, counted in tiles not yet
-    on the board. The census reads the same variable with its own default
-    window.
+    on the board.
 
 Census:
-  It also reads the shared knobs above and the board window WOLGES_POOL_MIN /
-  WOLGES_POOL_MAX (listed under board sampling, but with the census's own
-  default window).
+  It also reads the shared knobs above.
 
 Autoplay:
   It also reads the shared knobs above. Its own knob:
