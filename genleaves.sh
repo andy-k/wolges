@@ -49,7 +49,6 @@ done
 forcing_on=""
 if [ -z "$gilles_mode" ] && [ -z "$no_forcing_mode" ]; then
   forcing_on=1
-  export WOLGES_IMPOSSIBLE_OK=1
 fi
 
 if [ "$#" -lt 3 ]; then

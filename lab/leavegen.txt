@@ -254,15 +254,10 @@ FORCING HARD-TO-DRAW RACKS
 
 Self-play rarely deals a rack full of rare tiles, so the leaves that lean on
 such racks are built from too few games. To cover them, autoplay can force a
-hard-to-draw rack onto a board and value its best play there.
-WOLGES_IMPOSSIBLE_OK controls what happens when a forced rack needs a tile the
-board has already used up: on (the default) values the rack anyway -- its tiles
-forced onto the board, since the move generator plays it whether or not the bag
-still holds those tiles -- so the rare rack still gets covered; off records
-only what the board could really deal, at the cost of a per-sample possibility
-check.
-
-New knobs: WOLGES_IMPOSSIBLE_OK.
+hard-to-draw rack onto a board and value its best play there. When a forced
+rack needs a tile the board has already used up, it is valued anyway -- its
+tiles forced onto the board, since the move generator plays it whether or not
+the bag still holds those tiles -- so the rare rack still gets covered.
 
 
 WORKER THREADS
@@ -283,17 +278,15 @@ and 75 of the 100 tiles -- never the empty opening board, and never the endgame
 once the bag is empty (with an empty bag no tiles are drawn, so the leave table
 is not consulted there).
 
-At each snapshot it draws several random groups of tiles -- by default from the
-whole starting bag -- keeps the least likely group, meaning the rarest,
+At each snapshot it draws several random groups of tiles -- from the whole
+starting bag -- keeps the least likely group, meaning the rarest,
 hardest-to-draw combination, and then forms every full rack that can be made
 from that group, valuing each rack's best play on that board. Drawing from the
 whole bag lets a group include rares this board has already used up; such a
 rack is then valued with its tiles forced onto the board, since the move
-generator plays it whether or not the bag still holds those tiles. (The
-WOLGES_IMPOSSIBLE_OK knob introduced above switches the draw source to this
-board's leftover pool.) Forming every rack from one chosen group yields a
-dense, related batch of racks per board at once, which is what makes it
-efficient.
+generator plays it whether or not the bag still holds those tiles. Forming
+every rack from one chosen group yields a dense, related batch of racks per
+board at once, which is what makes it efficient.
 
 The output is exactly the autoplay summary format -- a totals row, then rack,
 equity-sum, count rows -- so a board-sampling run and an autoplay run merge
@@ -788,10 +781,9 @@ racks, looks each up in the rack tally, and targets any seen fewer than the
 min-samples count, recording each forced rack in the main rack tally exactly
 like a naturally drawn one. A rack that wants more copies of a tile than the
 whole bag holds is skipped -- it can never be completed, so forcing it would be
-wasted work. Paired with the WOLGES_IMPOSSIBLE_OK knob turned on, it will also
-force racks that this board cannot currently deal, building them with their
-tiles forced onto the board. A forced rack is built tile for tile and recorded
-keyed by the full rack, count one.
+wasted work. It also forces racks that this board cannot currently deal,
+building them with their tiles forced onto the board. A forced rack is built
+tile for tile and recorded keyed by the full rack, count one.
 
 This is only sound alongside the per-rack decompose (the -generate weighting
 that counts each distinct rack once, weighted by the ways the bag could
@@ -800,10 +792,10 @@ force-covered rack from inflating the common subracks it shares.
 
 Measured at volume, full-rack forcing was worth turning on for the autoplay
 recipe by default. A bare autoplay run now forces each undersampled full rack,
-places racks board-tolerantly (it exports the impossible-ok knob), and covers
-every globally-possible rack at least once by defaulting each generation's
-min-samples to one. Passing --no-forcing reverts to plain natural-rack
-sampling; --gilles keeps its own board sampler and is never forced.
+places racks board-tolerantly, and covers every globally-possible rack at least
+once by defaulting each generation's min-samples to one. Passing --no-forcing
+reverts to plain natural-rack sampling; --gilles keeps its own board sampler
+and is never forced.
 
 On the per-rack decompose footing (each distinct rack weighted once, not once
 per occurrence), the forced autoplay table roughly ties board sampling.
@@ -1220,11 +1212,6 @@ Every run:
   extension on a clash, so no run ever clobbers another's output.
 
 Shared across builders:
-  WOLGES_IMPOSSIBLE_OK (0 or 1; default 1) -- whether to value a rack the board
-    cannot currently deal; read by autoplay's forcing and board sampling's
-    draw source:
-      1  force the rack's tiles onto the board, so rare racks still get covered
-      0  record only what the board could really deal
   WOLGES_OPPDENIAL_EXACT (a decimal weight; default 0.0, off) -- weight on the
     exact joint opponent correction folded into each drawn rack's value. 0.0
     disables it.

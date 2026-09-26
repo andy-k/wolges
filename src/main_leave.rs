@@ -758,8 +758,6 @@ fn generate_autoplay_logs<
         return Err("min_samples_per_rack requires summarize".into());
     }
 
-    let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
-
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
 
     let oppdenial_rack = env_parse::<f64>("WOLGES_OPPDENIAL_RACK", 0.0);
@@ -984,11 +982,6 @@ fn generate_autoplay_logs<
                     (0..game_config.alphabet().len())
                         .map(|tile| game_config.alphabet().freq(tile))
                         .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
-                let mut unseen_tally = if SUMMARIZE && min_samples_per_rack != 0 {
-                    vec![0u8; game_config.alphabet().len() as usize]
                 } else {
                     Vec::new()
                 };
@@ -1351,62 +1344,37 @@ fn generate_autoplay_logs<
                             let chosen_undersampled_thread_rack_index =
                                 rng.random_range(0..undersampled_thread_racks.len());
 
+                            sample_rack_buf.clear();
+                            sample_rack_buf.extend_from_slice(
+                                &undersampled_thread_racks[chosen_undersampled_thread_rack_index],
+                            );
 
-                            unseen_tally.clone_from_slice(&alphabet_freqs);
-                            for &tile in game_state.board_tiles.iter() {
-                                if tile != 0 {
-                                    let base = tile & !((tile as i8) >> 7) as u8;
-                                    unseen_tally[base as usize] =
-                                        unseen_tally[base as usize].saturating_sub(1);
-                                }
-                            }
+                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot,
+                                rack: &sample_rack_buf,
+                                max_gen: 1,
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            });
+                            let play = &move_generator.plays[0];
 
-                            let mut s_possible = true;
-                            for &tile in undersampled_thread_racks
-                                [chosen_undersampled_thread_rack_index]
-                                .iter()
+                            let rounded_equity = knob.apply(play.equity, &sample_rack_buf);
+                            pool_one(&mut thread_full_rack_map, &sample_rack_buf[..], rounded_equity);
+                            undersampled_thread_racks
+                                .swap_remove(chosen_undersampled_thread_rack_index);
+                            if undersampling_remediation_countdown
+                                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                                <= 0
                             {
-                                if unseen_tally[tile as usize] > 0 {
-                                    unseen_tally[tile as usize] -= 1;
-                                } else {
-                                    s_possible = false;
-                                }
-                            }
 
+                                undersampling_remediation_countdown
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                            if s_possible || impossible_ok {
-                                sample_rack_buf.clear();
-                                sample_rack_buf.extend_from_slice(
-                                    &undersampled_thread_racks[chosen_undersampled_thread_rack_index],
-                                );
-
-                                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                    board_snapshot,
-                                    rack: &sample_rack_buf,
-                                    max_gen: 1,
-                                    num_exchanges_by_this_player: game_state
-                                        .current_player()
-                                        .num_exchanges,
-                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                    dynamic_leaves: None,
-                                });
-                                let play = &move_generator.plays[0];
-
-                                let rounded_equity = knob.apply(play.equity, &sample_rack_buf);
-                                pool_one(&mut thread_full_rack_map, &sample_rack_buf[..], rounded_equity);
-                                undersampled_thread_racks
-                                    .swap_remove(chosen_undersampled_thread_rack_index);
-                                if undersampling_remediation_countdown
-                                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
-                                    <= 0
-                                {
-
-                                    undersampling_remediation_countdown
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                                    undersampling_remediation_generation_id
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
+                                undersampling_remediation_generation_id
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             }
 
                             let current_undersampling_remediation_generation_id =
@@ -1930,7 +1898,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                     .map(|t| alphabet.freq(t))
                     .collect::<Vec<u8>>();
 
-                let impossible = env_flag("WOLGES_IMPOSSIBLE_OK", true);
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut cand_tally = vec![0u8; num_letters];
                 let mut best_group_tally = vec![0u8; num_letters];
@@ -2024,11 +1991,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                 }
                             }
 
-                            let group_src: &[u8] = if impossible {
-                                &base_freqs
-                            } else {
-                                &unseen_tally
-                            };
+                            let group_src: &[u8] = &base_freqs;
                             let num_unseen = group_src.iter().map(|&c| c as usize).sum::<usize>();
                             if num_unseen >= group_size {
                                 unseen_pool.clear();
