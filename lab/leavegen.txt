@@ -20,7 +20,7 @@ it may hold.
 TL;DR -- IF YOU JUST WANT A GOOD TABLE
 
 Run this. The census works out every leave's value exactly, one board at a
-time, and needs no environment variables:
+time:
 
   cargo run --release --bin leave -- census CSW24.kwg - - 3x256,2048
 
@@ -987,19 +987,13 @@ Options, each written before the configs:
   --full        also write the full-length leaves (what dynamic leaves read)
 
 
-ENVIRONMENT KNOBS
+OUTPUT FILE NAMES
 
-A bare run already does the right thing; these are for experiments, tuning, or
-reproduction. Each shows its type and default in parentheses; a knob with a
-fixed set of values lists what each one does. EN is the classic two-player
-English game.
-
-Every run:
-  Output files carry a run stamp -- the wall-clock time at 1/65536-second
-  resolution, in hex -- shared by a census run's snapshots
-  (census-gen-<stamp>-<gen>.klv2), its summary and leaves, a board-sampling
-  summary, a playability scan, and an autoplay pass's log, games, and
-  summaries, so a run's files stay grouped. Two runs
-  started within the same 1/65536 second share a stamp; every file is created
-  without overwriting an existing one, inserting a _1 (then _2) before the
-  extension on a clash, so no run ever clobbers another's output.
+Output files carry a run stamp -- the wall-clock time at 1/65536-second
+resolution, in hex -- shared by a census run's snapshots
+(census-gen-<stamp>-<gen>.klv2) and leaves, a board-sampling summary, a
+playability scan, and an autoplay pass's log, games, and summary, so a run's
+files stay grouped. Two runs started within the same 1/65536 second share a
+stamp; every file is created without overwriting an existing one, inserting a
+_1 (then _2) before the extension on a clash, so no run ever clobbers another's
+output.

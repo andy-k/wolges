@@ -182,5 +182,5 @@ eight threads now give byte-identical results.
 
 Gated off entirely for the single-threaded wasm build (which has no threads to
 split across) and off by default even where threads are available (one thread
-keeps the original single-stream behavior, byte-identical to before this knob
-existed); leave sim-compare takes the thread count as --sim-threads.
+keeps the original single-stream behavior, byte-identical to before parallel
+rollouts existed); leave sim-compare takes the thread count as --sim-threads.
