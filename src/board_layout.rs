@@ -1254,7 +1254,13 @@ pub fn make_board_layout_from(
 ) -> error::Returns<BoardLayout> {
     match make_board_layout_by_name(name_or_path) {
         Some(board_layout) => Ok(board_layout),
-        None => BoardLayout::new_static_from_text(&read_file(name_or_path)?),
+        None => {
+            let text = read_file(name_or_path).map_err(|e| {
+                format!("{name_or_path:?} is not a bundled board or a readable file: {e}")
+            })?;
+            Ok(BoardLayout::new_static_from_text(&text)
+                .map_err(|e| format!("{name_or_path}: {e}"))?)
+        }
     }
 }
 
@@ -1394,6 +1400,7 @@ mod tests {
         let read_file = |path: &str| -> error::Returns<String> {
             match path {
                 "tiny.txt" => Ok("star 0 1\n|- |\n| '|\n".into()),
+                "starless.txt" => Ok("|- |\n| '|\n".into()),
                 _ => Err(format!("no file {path}").into()),
             }
         };
@@ -1408,6 +1415,18 @@ mod tests {
                 .cols,
             2
         );
-        assert!(make_board_layout_from("round", &read_file).is_err());
+        let unread = make_board_layout_from("round", &read_file)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            unread.starts_with("\"round\" is not a bundled board"),
+            "{unread}"
+        );
+        let unparsed = make_board_layout_from("starless.txt", &read_file)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(unparsed.starts_with("starless.txt: "), "{unparsed}");
     }
 }

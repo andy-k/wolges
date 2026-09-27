@@ -822,9 +822,18 @@ impl Options<'_> {
     ) -> error::Returns<GameConfig> {
         let GameConfig::Static(preset) = match make_game_config_by_name(self.preset) {
             Some(game_config) => game_config,
-            None => GameConfig::new_static_from_text(&read_file(self.preset)?, &|path| {
-                read_file(&next_to(self.preset, path))
-            })?,
+            None => {
+                let text = read_file(self.preset).map_err(|e| {
+                    format!(
+                        "{:?} is not a bundled preset or a readable file: {e}",
+                        self.preset
+                    )
+                })?;
+                GameConfig::new_static_from_text(&text, &|path| {
+                    read_file(&next_to(self.preset, path))
+                })
+                .map_err(|e| format!("{}: {e}", self.preset))?
+            }
         };
         let rack_size = self.rack_size.unwrap_or(preset.rack_size);
         let game_config = GameConfig::Static(StaticGameConfig {
@@ -1370,7 +1379,15 @@ mod tests {
             exchange_limit: None,
             exchanges: None,
         };
-        assert!(unknown.make_game_config(&no_files).is_err());
+        let unread = unknown
+            .make_game_config(&no_files)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            unread.starts_with("\"chess\" is not a bundled preset"),
+            "{unread}"
+        );
         let preset_text = preset_text_of("english", "standard", &make_spanish_game_config());
         let files = |path: &str| -> error::Returns<String> {
             match path {
@@ -1404,10 +1421,13 @@ mod tests {
         let preset_text = preset_text_of("tiles.txt", "board.txt", &make_english_game_config());
         let tiles = "?\t?\t2\t0\t0\t0\t0\nA\ta\t98\t1\t1\t0\t0\n";
         let board = "star 1 1\n|# #|\n|   |\n|#-#|\n";
+        let broken_text = preset_text_of("tiles.txt", "nowhere.txt", &make_english_game_config());
         let is = |path: &str, file: &str| std::path::Path::new(path) == std::path::Path::new(file);
         let files = |path: &str| -> error::Returns<String> {
             if is(path, "games/small.txt") {
                 Ok(preset_text.clone())
+            } else if is(path, "games/broken.txt") {
+                Ok(broken_text.clone())
             } else if is(path, "games/tiles.txt") {
                 Ok(tiles.to_string())
             } else if is(path, "games/board.txt") {
@@ -1445,6 +1465,33 @@ mod tests {
             exchange_limit: None,
             exchanges: None,
         };
-        assert!(board_named_here.make_game_config(&files).is_err());
+        let unread = board_named_here
+            .make_game_config(&files)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            unread.starts_with("\"board.txt\" is not a bundled board"),
+            "{unread}"
+        );
+        let broken = Options {
+            preset: "games/broken.txt",
+            tiles: None,
+            board: None,
+            rack_size: None,
+            jumbled: false,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: None,
+        };
+        let unread = broken.make_game_config(&files).err().unwrap().to_string();
+        assert!(unread.starts_with("games/broken.txt: \""), "{unread}");
+        assert!(
+            unread.contains("nowhere.txt\" is not a bundled board"),
+            "{unread}"
+        );
     }
 }
