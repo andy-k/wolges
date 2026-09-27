@@ -743,22 +743,35 @@ pub fn make_game_config_by_name(name: &str) -> Option<GameConfig> {
         .map(|(_, make)| make())
 }
 
+// a number from a game's text, or an error saying what it was read for.
+#[inline]
+fn number<T: FromStr>(what: &str, value: &str) -> error::Returns<T>
+where
+    T::Err: std::fmt::Display,
+{
+    T::from_str(value).map_err(|e| error::new(format!("{what} {value:?}: {e}")).into())
+}
+
 #[inline]
 pub fn parse_num_played_bonus(s: &str, rack_size: u8) -> error::Returns<[i16; 256]> {
     let mut bonuses = Vec::new();
     if s != "none" {
         for entry in s.split(',') {
-            let (num_played, bonus) = entry
-                .split_once(':')
-                .ok_or("a bonus is tiles:points, as in 7:50")?;
-            let num_played = u8::from_str(num_played)?;
+            let Some((num_played, bonus)) = entry.split_once(':') else {
+                return_error!(format!(
+                    "a bonus is tiles:points, as in 7:50, not {entry:?}"
+                ));
+            };
+            let num_played = number::<u8>("a bonus's tiles", num_played)?;
             if !(1..=rack_size).contains(&num_played) {
-                return Err(format!("a rack of {rack_size} cannot play {num_played} tiles").into());
+                return_error!(format!(
+                    "a rack of {rack_size} cannot play {num_played} tiles"
+                ));
             }
             if bonuses.iter().any(|&(n, _)| n == num_played) {
-                return Err(format!("the bonus for {num_played} tiles is given twice").into());
+                return_error!(format!("the bonus for {num_played} tiles is given twice"));
             }
-            bonuses.push((num_played, i16::from_str(bonus)?));
+            bonuses.push((num_played, number("a bonus's points", bonus)?));
         }
     }
     Ok(make_num_played_bonus(&bonuses))
@@ -771,7 +784,7 @@ fn take<'a>(
 ) -> error::Returns<&'a str> {
     values
         .remove(key)
-        .ok_or_else(|| format!("{key} is missing").into())
+        .ok_or_else(|| error::new(format!("{key} is missing")).into())
 }
 
 #[inline]
@@ -779,7 +792,7 @@ fn yes_no(value: &str) -> error::Returns<bool> {
     match value {
         "yes" => Ok(true),
         "no" => Ok(false),
-        _ => Err(format!("{value:?} is not yes or no").into()),
+        _ => Err(error::new(format!("{value:?} is not yes or no")).into()),
     }
 }
 
@@ -787,7 +800,7 @@ fn yes_no(value: &str) -> error::Returns<bool> {
 fn parse_exchanges(value: &str) -> error::Returns<i16> {
     match value {
         "unlimited" => Ok(i16::MAX),
-        exchanges => Ok(i16::from_str(exchanges)?),
+        exchanges => number("the exchanges", exchanges),
     }
 }
 
@@ -824,15 +837,15 @@ impl Options<'_> {
             Some(game_config) => game_config,
             None => {
                 let text = read_file(self.preset).map_err(|e| {
-                    format!(
+                    error::new(format!(
                         "{:?} is not a bundled preset or a readable file: {e}",
                         self.preset
-                    )
+                    ))
                 })?;
                 GameConfig::new_static_from_text(&text, &|path| {
                     read_file(&next_to(self.preset, path))
                 })
-                .map_err(|e| format!("{}: {e}", self.preset))?
+                .map_err(|e| error::new(format!("{}: {e}", self.preset)))?
             }
         };
         let rack_size = self.rack_size.unwrap_or(preset.rack_size);
@@ -894,39 +907,38 @@ impl GameConfig {
             if line.trim().is_empty() || line.starts_with('#') {
                 continue;
             }
-            let (key, value) = line
-                .trim_end()
-                .split_once(' ')
-                .ok_or_else(|| format!("{line:?} is not a key and a value"))?;
+            let Some((key, value)) = line.trim_end().split_once(' ') else {
+                return_error!(format!("{line:?} is not a key and a value"));
+            };
             if values.insert(key, value.trim_start()).is_some() {
-                return Err(format!("{key} is given twice").into());
+                return_error!(format!("{key} is given twice"));
             }
         }
         let alphabet = alphabet::make_alphabet_from(take(&mut values, "tiles")?, read_file)?;
         let board_layout =
             board_layout::make_board_layout_from(take(&mut values, "board")?, read_file)?;
-        let rack_size = u8::from_str(take(&mut values, "rack-size")?)?;
+        let rack_size = number("rack-size", take(&mut values, "rack-size")?)?;
         let game_config = Self::Static(StaticGameConfig {
             game_rules: match take(&mut values, "rules")? {
                 "classic" => GameRules::Classic,
                 "jumbled" => GameRules::Jumbled,
-                rules => return Err(format!("{rules:?} is not classic or jumbled").into()),
+                rules => return_error!(format!("{rules:?} is not classic or jumbled")),
             },
             alphabet,
             board_layout,
             rack_size,
             num_played_bonus: parse_num_played_bonus(take(&mut values, "bingo-bonus")?, rack_size)?,
-            num_players: u8::from_str(take(&mut values, "players")?)?,
-            num_passes_to_end: u8::from_str(take(&mut values, "passes-to-end")?)?,
+            num_players: number("players", take(&mut values, "players")?)?,
+            num_passes_to_end: number("passes-to-end", take(&mut values, "passes-to-end")?)?,
             challenges_are_passes: yes_no(take(&mut values, "challenges-are-passes")?)?,
-            num_zeros_to_end: u8::from_str(take(&mut values, "zeros-to-end")?)?,
+            num_zeros_to_end: number("zeros-to-end", take(&mut values, "zeros-to-end")?)?,
             zeros_can_end_empty_board: yes_no(take(&mut values, "zeros-can-end-empty-board")?)?,
             exchanges_are_zeros: yes_no(take(&mut values, "exchanges-are-zeros")?)?,
             exchanges_allowed_per_player: parse_exchanges(take(&mut values, "exchanges")?)?,
-            exchange_tile_limit: i16::from_str(take(&mut values, "exchange-limit")?)?,
+            exchange_tile_limit: number("exchange-limit", take(&mut values, "exchange-limit")?)?,
         });
         if let Some(key) = values.keys().next() {
-            return Err(format!("{key} is not a preset key").into());
+            return_error!(format!("{key} is not a preset key"));
         }
         game_config.check_parts()?;
         game_config.check_scores()?;
@@ -940,16 +952,15 @@ impl GameConfig {
             || self.exchanges_allowed_per_player() < 0
             || self.exchange_tile_limit() < 1
         {
-            return Err("a game has a rack, a player and an exchange limit of 1 or more".into());
+            return_error!("a game has a rack, a player and an exchange limit of 1 or more".into());
         }
         if let Some(num_played) = (self.rack_size()..=u8::MAX)
             .find(|&n| n > self.rack_size() && self.num_played_bonus(n) != 0)
         {
-            return Err(format!(
+            return_error!(format!(
                 "a bonus for {num_played} tiles is more than a rack of {} holds",
                 self.rack_size()
-            )
-            .into());
+            ));
         }
         Ok(())
     }
@@ -1021,9 +1032,9 @@ impl GameConfig {
     pub fn check_scores(&self) -> error::Returns<()> {
         let most = self.most_one_play_can_score();
         if most.saturating_mul(equity::SCALE as u128) > i32::MAX as u128 {
-            return Err(
-                format!("one play here can score {most} points, past what a score holds").into(),
-            );
+            return_error!(format!(
+                "one play here can score {most} points, past what a score holds"
+            ));
         }
         Ok(())
     }
@@ -1044,10 +1055,9 @@ impl GameConfig {
         if most + (max_leave as i128).max(play_out) > i32::MAX as i128
             || -most + (min_leave as i128).min(-penalty) < i32::MIN as i128
         {
-            return Err(format!(
+            return_error!(format!(
                 "leaves from {min_leave} to {max_leave} millipoints can take an equity past what it holds"
-            )
-            .into());
+            ));
         }
         Ok(())
     }
@@ -1263,6 +1273,29 @@ mod tests {
         let no_bonus = good.replace("bingo-bonus 7:50\n", "bingo-bonus none\n");
         let read = GameConfig::new_static_from_text(&no_bonus, &no_files).unwrap();
         assert_eq!(read.num_played_bonus(7), 0);
+    }
+
+    #[test]
+    #[inline]
+    fn a_game_file_error_says_where_in_plain_text() {
+        let good = preset_text_of("english", "standard", &make_english_game_config());
+        let seven = good.replace("rack-size 7\n", "rack-size seven\n");
+        let e = GameConfig::new_static_from_text(&seven, &no_files)
+            .err()
+            .unwrap();
+        assert_eq!(
+            e.to_string(),
+            "rack-size \"seven\": invalid digit found in string"
+        );
+        assert_eq!(format!("{e:?}"), e.to_string());
+        let bonus = good.replace("bingo-bonus 7:50\n", "bingo-bonus 7\n");
+        let e = GameConfig::new_static_from_text(&bonus, &no_files)
+            .err()
+            .unwrap();
+        assert_eq!(
+            e.to_string(),
+            "a bonus is tiles:points, as in 7:50, not \"7\""
+        );
     }
 
     #[test]

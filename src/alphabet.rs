@@ -425,12 +425,12 @@ pub fn make_alphabet_from(
         Some(alphabet) => Ok(alphabet),
         None => {
             let text = read_file(name_or_path).map_err(|e| {
-                format!("{name_or_path:?} is not bundled tiles or a readable file: {e}")
+                error::new(format!(
+                    "{name_or_path:?} is not bundled tiles or a readable file: {e}"
+                ))
             })?;
-            Ok(
-                Alphabet::new_static_from_text(&text)
-                    .map_err(|e| format!("{name_or_path}: {e}"))?,
-            )
+            Ok(Alphabet::new_static_from_text(&text)
+                .map_err(|e| error::new(format!("{name_or_path}: {e}")))?)
         }
     }
 }
