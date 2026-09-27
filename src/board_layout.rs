@@ -1226,6 +1226,21 @@ pub fn make_super_board_layout() -> BoardLayout {
     })
 }
 
+pub type MakeBoardLayout = fn() -> BoardLayout;
+
+pub const BOARD_LAYOUTS: &[(&str, MakeBoardLayout)] = &[
+    ("standard", make_standard_board_layout),
+    ("super", make_super_board_layout),
+];
+
+#[inline]
+pub fn make_board_layout_by_name(name: &str) -> Option<BoardLayout> {
+    BOARD_LAYOUTS
+        .iter()
+        .find(|(this_name, _)| *this_name == name)
+        .map(|(_, make)| make())
+}
+
 #[cfg(test)]
 #[inline]
 pub fn make_test_board_layout(
@@ -1303,6 +1318,22 @@ mod tests {
             let read = BoardLayout::new_static_from_text(&text_of(&board_layout)).unwrap();
             assert!(same_layout(&read, &board_layout));
         }
+    }
+
+    #[test]
+    #[inline]
+    fn every_bundled_board_is_found_by_its_name() {
+        for (i, (name, make)) in BOARD_LAYOUTS.iter().enumerate() {
+            assert!(
+                i == 0 || BOARD_LAYOUTS[i - 1].0 < *name,
+                "{name} is out of order"
+            );
+            assert!(
+                same_layout(&make_board_layout_by_name(name).unwrap(), &make()),
+                "{name}"
+            );
+        }
+        assert!(make_board_layout_by_name("round").is_none());
     }
 
     #[test]
