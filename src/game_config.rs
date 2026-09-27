@@ -791,6 +791,15 @@ fn parse_exchanges(value: &str) -> error::Returns<i16> {
     }
 }
 
+// a path in a preset file is relative to the preset file.
+#[inline]
+fn next_to(file: &str, path: &str) -> String {
+    match std::path::Path::new(file).parent() {
+        Some(dir) => dir.join(path).to_string_lossy().into_owned(),
+        None => path.to_owned(),
+    }
+}
+
 pub struct Options<'a> {
     pub preset: &'a str,
     pub tiles: Option<&'a str>,
@@ -813,7 +822,9 @@ impl Options<'_> {
     ) -> error::Returns<GameConfig> {
         let GameConfig::Static(preset) = match make_game_config_by_name(self.preset) {
             Some(game_config) => game_config,
-            None => GameConfig::new_static_from_text(&read_file(self.preset)?, read_file)?,
+            None => GameConfig::new_static_from_text(&read_file(self.preset)?, &|path| {
+                read_file(&next_to(self.preset, path))
+            })?,
         };
         let rack_size = self.rack_size.unwrap_or(preset.rack_size);
         let game_config = GameConfig::Static(StaticGameConfig {
@@ -1375,5 +1386,55 @@ mod tests {
         assert_eq!(gc.exchanges_allowed_per_player(), i16::MAX);
         assert!(gc.challenges_are_passes());
         assert_eq!(gc.alphabet().num_tiles(), 100);
+    }
+
+    #[test]
+    #[inline]
+    fn a_preset_file_reads_its_parts_next_to_it() {
+        let preset_text = preset_text_of("tiles.txt", "board.txt", &make_english_game_config());
+        let tiles = "?\t?\t2\t0\t0\t0\t0\nA\ta\t98\t1\t1\t0\t0\n";
+        let board = "star 1 1\n|# #|\n|   |\n|#-#|\n";
+        let is = |path: &str, file: &str| std::path::Path::new(path) == std::path::Path::new(file);
+        let files = |path: &str| -> error::Returns<String> {
+            if is(path, "games/small.txt") {
+                Ok(preset_text.clone())
+            } else if is(path, "games/tiles.txt") {
+                Ok(tiles.to_string())
+            } else if is(path, "games/board.txt") {
+                Ok(board.to_string())
+            } else {
+                no_files(path)
+            }
+        };
+        let in_a_folder = Options {
+            preset: "games/small.txt",
+            tiles: None,
+            board: None,
+            rack_size: None,
+            jumbled: false,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: None,
+        };
+        let gc = in_a_folder.make_game_config(&files).unwrap();
+        assert_eq!(gc.alphabet().num_tiles(), 100);
+        assert_eq!(gc.board_layout().dim().rows, 3);
+        let board_named_here = Options {
+            preset: "games/small.txt",
+            tiles: None,
+            board: Some("board.txt"),
+            rack_size: None,
+            jumbled: false,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: None,
+        };
+        assert!(board_named_here.make_game_config(&files).is_err());
     }
 }
