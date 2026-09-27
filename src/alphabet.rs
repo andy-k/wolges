@@ -327,7 +327,7 @@ pub fn make_hex_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/hex.txt")
 }
 
-// http://hkcrosswordclub.com/?cat=14
+// https://web.archive.org/web/20220207074935/http://hkcrosswordclub.com/?cat=14
 #[inline(always)]
 pub fn make_hong_kong_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/hong_kong_english.txt")
