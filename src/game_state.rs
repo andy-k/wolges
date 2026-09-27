@@ -109,13 +109,13 @@ impl GameState {
     }
 
     #[inline(always)]
-    pub fn reset_and_draw_tiles(
+    pub fn reset_and_draw_tiles<R: Rng + ?Sized>(
         &mut self,
         game_config: &game_config::GameConfig,
-        mut rng: &mut dyn Rng,
+        rng: &mut R,
     ) {
         self.reset();
-        self.bag.shuffle(&mut rng);
+        self.bag.shuffle(rng);
         for player in self.players.iter_mut() {
             self.bag
                 .replenish_back(&mut player.rack, game_config.rack_size() as usize);
@@ -123,13 +123,13 @@ impl GameState {
     }
 
     #[inline(always)]
-    pub fn reset_and_draw_tiles_double_ended(
+    pub fn reset_and_draw_tiles_double_ended<R: Rng + ?Sized>(
         &mut self,
         game_config: &game_config::GameConfig,
-        mut rng: &mut dyn Rng,
+        rng: &mut R,
     ) {
         self.reset();
-        self.bag.shuffle(&mut rng);
+        self.bag.shuffle(rng);
         for (i, player) in self.players.iter_mut().enumerate() {
             self.bag
                 .replenish(&mut player.rack, game_config.rack_size() as usize, i);
@@ -174,10 +174,10 @@ impl GameState {
     }
 
     #[inline(always)]
-    pub fn play(
+    pub fn play<R: Rng + ?Sized>(
         &mut self,
         game_config: &game_config::GameConfig,
-        mut rng: &mut dyn Rng,
+        rng: &mut R,
         play: &movegen::Play,
     ) -> error::Returns<()> {
         let current_player = &mut self.players[self.turn as usize];
@@ -193,7 +193,7 @@ impl GameState {
                         game_config.rack_size() as usize,
                         self.turn as usize,
                     );
-                    self.bag.put_back(&mut rng, tiles);
+                    self.bag.put_back(rng, tiles);
                     self.pass_turns = 0;
                     current_player.num_exchanges += 1;
                     if game_config.exchanges_are_zeros() {
