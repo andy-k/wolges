@@ -1149,3 +1149,23 @@ pub fn make_super_board_layout() -> BoardLayout {
         ..Default::default()
     })
 }
+
+#[cfg(test)]
+#[inline]
+pub fn make_test_board_layout(
+    premiums: Box<[Premium]>,
+    dim: matrix::Dim,
+    star_row: i8,
+    star_col: i8,
+) -> BoardLayout {
+    BoardLayout::new_static(StaticBoardLayout {
+        premiums,
+        dim,
+        star_row,
+        star_col,
+        transposed_premiums: Box::new([]),
+        danger_star_across: Box::new([]),
+        danger_star_down: Box::new([]),
+        is_symmetric: false,
+    })
+}

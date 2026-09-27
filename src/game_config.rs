@@ -297,6 +297,25 @@ pub fn make_exchange_unsolvable_test_game_config() -> GameConfig {
     })
 }
 
+#[cfg(test)]
+#[inline]
+pub fn make_board_test_game_config(board_layout: board_layout::BoardLayout) -> GameConfig {
+    GameConfig::Static(StaticGameConfig {
+        game_rules: GameRules::Classic,
+        alphabet: alphabet::make_english_alphabet(),
+        board_layout,
+        rack_size: 7,
+        num_players: 2,
+        num_passes_to_end: 0,
+        challenges_are_passes: false,
+        num_zeros_to_end: 6,
+        zeros_can_end_empty_board: true,
+        exchanges_are_zeros: true,
+        exchanges_allowed_per_player: i16::MAX,
+        exchange_tile_limit: 7,
+    })
+}
+
 #[inline]
 pub fn make_jumbled_english_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {

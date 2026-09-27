@@ -3082,8 +3082,8 @@ fn kurnia_gen_place_moves_iter<
     let num_max_played = max_rack_size.min(working_buffer.num_tiles_on_rack);
 
     let area = (dim.rows as isize * dim.cols as isize) as usize;
-    let mut dirty_rows = 0u32;
-    let mut dirty_cols = 0u32;
+    let mut dirty_rows = 0u128;
+    let mut dirty_cols = 0u128;
     for (idx, (&cur, &prev)) in board_snapshot.board_tiles[..area]
         .iter()
         .zip(working_buffer.prev_board_tiles[..area].iter())
@@ -3657,7 +3657,7 @@ fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::N
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{alphabet, bites, build, display, game_config, klv, kwg};
+    use crate::{alphabet, bites, board_layout, build, display, game_config, klv, kwg};
 
     static TEST_WORDS: &[&str] = &[
         "AS", "AT", "EAST", "EAT", "EATS", "ETA", "ETAS", "SAT", "SEA", "SEAT", "SEATS", "SET",
@@ -4122,5 +4122,181 @@ mod tests {
                 plays(&mut KurniaMoveGenerator::new(&gc), board_tiles)
             );
         }
+    }
+
+    #[inline]
+    fn uneven_premium(row: i8, col: i8) -> board_layout::Premium {
+        let (row, col) = (row as i32, col as i32);
+        let (word_multiplier, tile_multiplier) = if (row * 7 + col * 3) % 19 == 0 {
+            (3, 1)
+        } else if (row * 5 + col * 11) % 13 == 0 {
+            (2, 1)
+        } else if (row + col * 2) % 7 == 0 {
+            (1, 3)
+        } else if (row * 3 + col) % 5 == 0 {
+            (1, 2)
+        } else {
+            (1, 1)
+        };
+        board_layout::Premium {
+            word_multiplier,
+            tile_multiplier,
+        }
+    }
+
+    #[inline]
+    fn uneven_game_config(
+        rows: i8,
+        cols: i8,
+        star_row: i8,
+        star_col: i8,
+        transposed: bool,
+    ) -> game_config::GameConfig {
+        let mut premiums = Vec::with_capacity((rows as isize * cols as isize) as usize);
+        for row in 0..rows {
+            for col in 0..cols {
+                premiums.push(if transposed {
+                    uneven_premium(col, row)
+                } else {
+                    uneven_premium(row, col)
+                });
+            }
+        }
+        game_config::make_board_test_game_config(board_layout::make_test_board_layout(
+            premiums.into_boxed_slice(),
+            matrix::Dim { rows, cols },
+            star_row,
+            star_col,
+        ))
+    }
+
+    #[inline]
+    fn place_plays(
+        move_generator: &mut KurniaMoveGenerator,
+        board_snapshot: &BoardSnapshot<'_, kwg::Node22, kwg::Node22>,
+        rack: &[u8],
+        transposed: bool,
+    ) -> Vec<(bool, i8, i8, Vec<u8>, i32)> {
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot,
+            rack,
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let mut out = move_generator
+            .plays
+            .iter()
+            .filter_map(|p| match &p.play {
+                Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    score,
+                } => Some((*down != transposed, *lane, *idx, word.to_vec(), *score)),
+                Play::Exchange { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        out.sort_unstable();
+        out
+    }
+
+    #[inline]
+    fn a_reused_generator_agrees_on_an_uneven_board(
+        rows: i8,
+        cols: i8,
+        star_row: i8,
+        star_col: i8,
+        tiles: &[(i8, i8)],
+    ) {
+        let gc = uneven_game_config(rows, cols, star_row, star_col, false);
+        let transposed_gc = uneven_game_config(cols, rows, star_col, star_row, true);
+        let kwg = test_kwg(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let rack = parse_test_rack(gc.alphabet(), "AEST");
+        let area = (rows as isize * cols as isize) as usize;
+        let mut board_tiles = vec![0u8; area];
+        let mut transposed_board_tiles = vec![0u8; area];
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        let mut transposed_move_generator = KurniaMoveGenerator::new(&transposed_gc);
+        let mut lanes_played = [vec![false; rows as usize], vec![false; cols as usize]];
+        for step in 0..tiles.len() + 2 {
+            if step == tiles.len() + 1 {
+                board_tiles.fill(0);
+                transposed_board_tiles.fill(0);
+            } else if step > 0 {
+                let (row, col) = tiles[step - 1];
+                let tile = rack[(step - 1) % rack.len()];
+                board_tiles[gc.board_layout().dim().at_row_col(row, col)] = tile;
+                transposed_board_tiles[transposed_gc.board_layout().dim().at_row_col(col, row)] =
+                    tile;
+            }
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                klv: &klv,
+            };
+            let transposed_board_snapshot = BoardSnapshot {
+                board_tiles: &transposed_board_tiles,
+                game_config: &transposed_gc,
+                kwg: &kwg,
+                klv: &klv,
+            };
+            let fresh = place_plays(
+                &mut KurniaMoveGenerator::new(&gc),
+                &board_snapshot,
+                &rack,
+                false,
+            );
+            assert!(!fresh.is_empty(), "nothing to play at step {step}");
+            assert_eq!(
+                place_plays(&mut move_generator, &board_snapshot, &rack, false),
+                fresh,
+                "reused at step {step}"
+            );
+            assert_eq!(
+                place_plays(
+                    &mut KurniaMoveGenerator::new(&transposed_gc),
+                    &transposed_board_snapshot,
+                    &rack,
+                    true
+                ),
+                fresh,
+                "transposed at step {step}"
+            );
+            assert_eq!(
+                place_plays(
+                    &mut transposed_move_generator,
+                    &transposed_board_snapshot,
+                    &rack,
+                    true
+                ),
+                fresh,
+                "transposed and reused at step {step}"
+            );
+            for (down, lane, ..) in &fresh {
+                lanes_played[*down as usize][*lane as usize] = true;
+            }
+        }
+        assert!(
+            lanes_played[0].iter().all(|&x| x),
+            "a row never had a play across"
+        );
+        assert!(
+            lanes_played[1].iter().all(|&x| x),
+            "a column never had a play down"
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn a_long_narrow_board_agrees_with_its_transpose() {
+        let tiles = (0..100)
+            .map(|row| (row, ((row as i32 * 7 + 3) % 20) as i8))
+            .collect::<Vec<_>>();
+        a_reused_generator_agrees_on_an_uneven_board(100, 20, 66, 9, &tiles);
     }
 }
