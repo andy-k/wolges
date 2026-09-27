@@ -156,7 +156,7 @@ done
 autoplay_subcommand="autoplay-summarize"
 gilles_subcommand="gilles"
 generate_subcommand="generate"
-buildlex_subcommand="${buildlex_param}-klv2"
+buildlex_subcommand="klv2"
 klv_ext="klv2"
 if [ ! "$logs_mode" ]; then
   autoplay_subcommand="${autoplay_subcommand}-only"
@@ -165,7 +165,7 @@ if [ "$full_mode" ]; then
   generate_subcommand="${generate_subcommand}-full"
 fi
 if [ "$klv1_mode" ]; then
-  buildlex_subcommand="${buildlex_param}-klv"
+  buildlex_subcommand="klv"
   klv_ext="klv"
 fi
 
@@ -212,7 +212,7 @@ while [ "${!i:-}" != "" ]; do
   fi
   last_leave="${leave_name}$[num_processed + 1]"
   time cargo run --release --bin leave -- "${leave_options[@]}" ${threads:+--threads "$threads"} "$effective_generate_subcommand" "summary${num_processed}.csv" "${last_leave}.csv"
-  time cargo run --release --bin buildlex -- "$buildlex_subcommand" "$last_leave".{csv,"$klv_ext"}
+  time cargo run --release --bin buildlex -- --tiles "$buildlex_param" "$buildlex_subcommand" "$last_leave".{csv,"$klv_ext"}
   zip -9v result.zip "summary${num_processed}.csv" "$last_leave".{csv,"$klv_ext"}
   last_leave="${last_leave}.${klv_ext}"
   let num_processed=num_processed+1

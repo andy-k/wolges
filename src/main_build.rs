@@ -249,70 +249,67 @@ fn read_to_string(reader: &mut Box<dyn std::io::Read>) -> Result<String, std::io
 }
 
 #[inline]
-fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
+fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
     args: &[String],
-    language_name: &str,
     make_alphabet: AlphabetMaker,
 ) -> error::Returns<bool> {
-    match args[1].strip_prefix(language_name) {
-        Some(mut args1_suffix) => {
+    match args.get(1).map(String::as_str) {
+        Some(mut task) => {
             let build_order;
-            if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-reordered") {
+            if let Some(rest) = task.strip_prefix("reordered-") {
                 build_order = build::BuildOrder::Reordered;
-                args1_suffix = args1_suffix_suffix;
+                task = rest;
             } else {
                 build_order = build::BuildOrder::Sorted;
             }
             let build_layout;
-            if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-magpiemerged") {
+            if let Some(rest) = task.strip_prefix("magpiemerged-") {
                 build_layout = build::BuildLayout::MagpieMerged;
-                args1_suffix = args1_suffix_suffix;
-            } else if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-magpie") {
+                task = rest;
+            } else if let Some(rest) = task.strip_prefix("magpie-") {
                 build_layout = build::BuildLayout::Magpie;
-                args1_suffix = args1_suffix_suffix;
-            } else if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-legacy") {
+                task = rest;
+            } else if let Some(rest) = task.strip_prefix("legacy-") {
                 build_layout = build::BuildLayout::Legacy;
-                args1_suffix = args1_suffix_suffix;
-            } else if let Some(args1_suffix_suffix) = args1_suffix.strip_prefix("-experimental") {
+                task = rest;
+            } else if let Some(rest) = task.strip_prefix("experimental-") {
                 build_layout = build::BuildLayout::Experimental;
-                args1_suffix = args1_suffix_suffix;
+                task = rest;
             } else {
                 build_layout = build::BuildLayout::Wolges;
             }
             if let build::BuildOrder::Reordered = build_order {
-                match args1_suffix {
-                    "-kwg" | "-kbwg" | "-kwg-dawg" | "-kbwg-dawg" | "-kwg-score"
-                    | "-kbwg-score" | "-kwg-score-dawg" | "-kbwg-score-dawg" => {}
+                match task {
+                    "kwg" | "kbwg" | "kwg-dawg" | "kbwg-dawg" | "kwg-score" | "kbwg-score"
+                    | "kwg-score-dawg" | "kbwg-score-dawg" => {}
                     _ => wolges::return_error!(format!("{} cannot be reordered", args[1])),
                 }
             }
-            match args1_suffix {
-                "-klv" => {
+            match task {
+                "klv" => {
                     make_writer(&args[3])?.write_all(&build_leaves_scaled_i16(
                         &mut make_reader(&args[2])?,
-                        make_alphabet(),
+                        make_alphabet()?,
                         build_layout,
                         256.0,
                     )?)?;
                     Ok(true)
                 }
-                "-klv2" => {
-                    let alphabet = make_alphabet();
+                "klv2" => {
+                    let alphabet = make_alphabet()?;
                     make_writer(&args[3])?.write_all(&write_leaves_f32(
                         read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?,
                         build_layout,
                     )?)?;
                     Ok(true)
                 }
-                "-blend" => {
+                "blend" => {
                     if args.len() < 6 {
-                        return Err(
-                            "english-blend needs two klv files, a weight, and an output".into()
-                        );
+                        return Err("blend needs two klv files, a weight, and an output".into());
                     }
                     let weight = f64::from_str(&args[4])?;
                     if !weight.is_finite() {
-                        return Err("english-blend needs a finite weight".into());
+                        return Err("blend needs a finite weight".into());
                     }
                     let leaves_a =
                         klv::read_leaves_alloc::<kwg::Node22>(&std::fs::read(&args[2])?)?;
@@ -354,22 +351,22 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                         .write_all(&write_leaves_f32(leaves_map, build_layout)?)?;
                     Ok(true)
                 }
-                "-klv16" => {
+                "klv16" => {
                     make_writer(&args[3])?.write_all(&build_leaves_scaled_i16(
                         &mut make_reader(&args[2])?,
-                        make_alphabet(),
+                        make_alphabet()?,
                         build_layout,
                         8.0,
                     )?)?;
                     Ok(true)
                 }
-                "-kwg" | "-kbwg" | "-kwg-dawg" | "-kbwg-dawg" | "-kwg-alpha" | "-kbwg-alpha"
-                | "-kwg-score" | "-kbwg-score" | "-kwg-score-dawg" | "-kbwg-score-dawg"
-                | "-kwg-score-alpha" | "-kbwg-score-alpha" => {
-                    let score = args1_suffix.contains("score");
-                    let alpha = args1_suffix.contains("alpha");
-                    let big = args1_suffix.starts_with("-kbwg");
-                    let alph = make_alphabet();
+                "kwg" | "kbwg" | "kwg-dawg" | "kbwg-dawg" | "kwg-alpha" | "kbwg-alpha"
+                | "kwg-score" | "kbwg-score" | "kwg-score-dawg" | "kbwg-score-dawg"
+                | "kwg-score-alpha" | "kbwg-score-alpha" => {
+                    let score = task.contains("score");
+                    let alpha = task.contains("alpha");
+                    let big = task.starts_with("kbwg");
+                    let alph = make_alphabet()?;
                     let alphabet_reader = if score {
                         alphabet::AlphabetReader::new_for_word_scores(&alph)
                     } else {
@@ -384,12 +381,11 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     } else {
                         words
                     };
-                    let build_content =
-                        if args1_suffix.contains("dawg") || args1_suffix.contains("alpha") {
-                            build::BuildContent::DawgOnly
-                        } else {
-                            build::BuildContent::Gaddawg
-                        };
+                    let build_content = if task.contains("dawg") || task.contains("alpha") {
+                        build::BuildContent::DawgOnly
+                    } else {
+                        build::BuildContent::Gaddawg
+                    };
                     let built = if big {
                         build::build_big(build_content, build_layout, build_order, &words)?
                     } else {
@@ -398,8 +394,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     make_writer(&args[3])?.write_all(&built)?;
                     Ok(true)
                 }
-                "-macondo" => {
-                    let alphabet = make_alphabet();
+                "macondo" => {
+                    let alphabet = make_alphabet()?;
                     let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args[2])?);
                     refuse_a_wider_graph(&kwg, &alphabet, &args[2])?;
                     make_writer(&args[4])?.write_all(&lexport::to_macondo(
@@ -416,16 +412,16 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     ))?;
                     Ok(true)
                 }
-                "-lxd" => {
-                    let alphabet = make_alphabet();
+                "lxd" => {
+                    let alphabet = make_alphabet()?;
                     let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args[2])?);
                     refuse_a_wider_graph(&kwg, &alphabet, &args[2])?;
                     make_writer(&args[5])?
                         .write_all(&lexport::to_lxd(&kwg, &alphabet, &args[3], &args[4])?)?;
                     Ok(true)
                 }
-                "-sort-words" => {
-                    let alphabet = make_alphabet();
+                "sort-words" => {
+                    let alphabet = make_alphabet()?;
                     // allow "?" for more flexibility.
                     let words = &read_machine_words(
                         &alphabet::AlphabetReader::new_for_racks(&alphabet),
@@ -441,8 +437,8 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     make_writer(&args[3])?.write_all(ret.as_bytes())?;
                     Ok(true)
                 }
-                "-sort-words-len" => {
-                    let alphabet = make_alphabet();
+                "sort-words-len" => {
+                    let alphabet = make_alphabet()?;
                     // allow "?" for more flexibility.
                     let words = &read_machine_words_sorted_by_length(
                         &alphabet::AlphabetReader::new_for_racks(&alphabet),
@@ -458,29 +454,26 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     make_writer(&args[3])?.write_all(ret.as_bytes())?;
                     Ok(true)
                 }
-                "-sort-leaves"
-                | "-sort-leaves-len"
-                | "-sort-leaves-val"
-                | "-sort-leaves-lenval" => {
-                    let alphabet = make_alphabet();
+                "sort-leaves" | "sort-leaves-len" | "sort-leaves-val" | "sort-leaves-lenval" => {
+                    let alphabet = make_alphabet()?;
                     let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
                         .drain()
                         .collect::<Box<_>>();
-                    match args1_suffix {
-                        "-sort-leaves" => {
+                    match task {
+                        "sort-leaves" => {
                             leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                         }
-                        "-sort-leaves-len" => {
+                        "sort-leaves-len" => {
                             leaves.sort_unstable_by(|a, b| {
                                 a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0))
                             });
                         }
-                        "-sort-leaves-val" => {
+                        "sort-leaves-val" => {
                             leaves.sort_unstable_by(|a, b| {
                                 b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0))
                             });
                         }
-                        "-sort-leaves-lenval" => {
+                        "sort-leaves-lenval" => {
                             leaves.sort_unstable_by(|a, b| {
                                 a.0.len()
                                     .cmp(&b.0.len())
@@ -507,117 +500,94 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     }
 }
 
-fn main() -> error::Returns<()> {
-    let args = std::env::args().collect::<Vec<_>>();
-    if args.len() <= 1 {
-        println!(
-            "args:
+#[derive(clap::Parser)]
+#[command(
+    about = "build word graphs and leave tables",
+    arg_required_else_help = true,
+    after_help = "tasks:
   auto
     just to test
-  english-klv CSW24.csv CSW24.klv
+  klv CSW24.csv CSW24.klv
     generate klv file (deprecated?)
-  english-klv2 CSW24.csv CSW24.klv2
+  klv2 CSW24.csv CSW24.klv2
     generate klv2 file (preferred)
-  english-blend CSW24a.klv2 CSW24b.klv2 0.5 CSW24.klv2
+  blend CSW24a.klv2 CSW24b.klv2 0.5 CSW24.klv2
     blend two leave tables into one klv2. the weight says how much of
     the second table to take: 0 is the first table alone, 1 the second.
     a leave only one table lists keeps that table's value.
-  english-klv16 CSW24.csv CSW24.klv16
+  klv16 CSW24.csv CSW24.klv16
     generate klv16 file (magpie-retro)
-  english-kwg CSW24.txt CSW24.kwg
+  kwg CSW24.txt CSW24.kwg
     generate kwg file containing gaddawg (supports 4M nodes)
-  english-kbwg CSW24.txt CSW24.kbwg
+  kbwg CSW24.txt CSW24.kbwg
     generate kbwg file containing gaddawg (big variant supports 16M nodes)
-  english-macondo CSW24.kwg CSW24 CSW24.dawg CSW24.gaddag
+  macondo CSW24.kwg CSW24 CSW24.dawg CSW24.gaddag
     read kwg file, with lexicon name save macondo dawg/gaddag
-  english-lxd CSW24.kwg \"CSW24 something\" \"17 June 2021\" UKNA.lxd
+  lxd CSW24.kwg \"CSW24 something\" \"17 June 2021\" UKNA.lxd
     read kwg file, with title and date, save lxd
-  english-kwg-alpha CSW24.txt CSW24.kad
+  kwg-alpha CSW24.txt CSW24.kad
     generate kad file containing alpha dawg
-  english-kwg-dawg CSW24.txt outfile.dwg
+  kwg-dawg CSW24.txt outfile.dwg
     generate dawg-only file
-  english-kwg-score CSW24.txt CSW24.kwg
-  english-kwg-score-alpha CSW24.txt CSW24.kad
-  english-kwg-score-dawg CSW24.txt outfile.dwg
+  kwg-score CSW24.txt CSW24.kwg
+  kwg-score-alpha CSW24.txt CSW24.kad
+  kwg-score-dawg CSW24.txt outfile.dwg
     same as above but with representative same-score tiles
   (kbwg-alpha, kbwg-dawg, kbwg-score, kbwg-score-alpha, kbwg-score-dawg
     also exist but produce a different format not widely supported by readers)
-  english-sort-words in.txt out.txt
-  english-sort-words-len in.txt out.txt
+  sort-words in.txt out.txt
+  sort-words-len in.txt out.txt
     rewrite words uniq/sorted by alpha/len
-  english-sort-leaves in.csv out.csv
-  english-sort-leaves-len in.csv out.csv
-  english-sort-leaves-val in.csv out.csv
-  english-sort-leaves-lenval in.csv out.csv
+  sort-leaves in.csv out.csv
+  sort-leaves-len in.csv out.csv
+  sort-leaves-val in.csv out.csv
+  sort-leaves-lenval in.csv out.csv
     rewrite word,f32_leaves sorted by alpha/len/value/both
-  (english-... can also be english-magpie-... for bigger magpie-style kwg,
-    english-magpiemerged-... for magpie ordering with wolges merging,
-    english-experimental-... for experimental,
-    english-legacy-... for legacy (which is the former default),
+  (a task can also be magpie-... for bigger magpie-style kwg,
+    magpiemerged-... for magpie ordering with wolges merging,
+    experimental-... for experimental,
+    legacy-... for legacy (which is the former default),
     this is applicable for kwg, kwg-anything, klv/klv2)
-  (english-reordered-... makes a smaller kwg by putting each node's children in
+  (reordered-... makes a smaller kwg by putting each node's children in
     whatever order shares the most nodes, instead of in tile order. only for kwg,
     kbwg, kwg-dawg, kwg-score and kwg-score-dawg: an alpha dawg and a klv are
-    both walked in tile order. can be combined, as english-reordered-magpie-kwg)
-  (english can also be catalan, dutch, french, german, norwegian, polish,
-    slovene, spanish, swedish, decimal, hex, super-english, super-catalan,
-    hong-kong-english)
-  (english can also be custom, with an extra alphabet file argument:
-    custom-kwg alphabet.txt words.txt out.kwg)
+    both walked in tile order. can be combined, as reordered-magpie-kwg)
+  (the tiles are english unless --tiles gives other bundled tiles, such as
+    french, super-english or hex, or a file in the form of src/alphabets/*.txt,
+    as in --tiles french kwg words.txt out.kwg)
 input/output files can be \"-\" (not advisable for binary files)"
-        );
-        Ok(())
-    } else if args[1] == "auto" {
-        old_main()?;
-        Ok(())
-    } else {
-        let t0 = std::time::Instant::now();
-        if do_lang(&args, "english", alphabet::make_english_alphabet)?
-            || do_lang(&args, "catalan", alphabet::make_catalan_alphabet)?
-            || do_lang(&args, "dutch", alphabet::make_dutch_alphabet)?
-            || do_lang(&args, "french", alphabet::make_french_alphabet)?
-            || do_lang(&args, "german", alphabet::make_german_alphabet)?
-            || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet)?
-            || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
-            || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
-            || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
-            || do_lang(&args, "swedish", alphabet::make_swedish_alphabet)?
-            || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
-            || do_lang(&args, "hex", alphabet::make_hex_alphabet)?
-            || do_lang(
-                &args,
-                "super-english",
-                alphabet::make_super_english_alphabet,
-            )?
-            || do_lang(
-                &args,
-                "super-catalan",
-                alphabet::make_super_catalan_alphabet,
-            )?
-            || do_lang(
-                &args,
-                "hong-kong-english",
-                alphabet::make_hong_kong_english_alphabet,
-            )?
-        {
-        } else if args[1].starts_with("custom-") {
-            if args.len() < 3 {
-                return Err("need alphabet file".into());
-            }
-            let alph_text = std::fs::read_to_string(&args[2])?;
-            let mut shifted_args = vec![args[0].clone(), args[1].clone()];
-            shifted_args.extend_from_slice(&args[3..]);
-            if !do_lang(&shifted_args, "custom", || {
-                alphabet::Alphabet::new_static_from_text(&alph_text).unwrap()
-            })? {
-                return Err("invalid argument".into());
-            }
-        } else {
-            return Err("invalid argument".into());
-        }
-        writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
-        Ok(())
+)]
+struct Cli {
+    #[arg(
+        long,
+        value_name = "NAME|FILE",
+        default_value = "english",
+        help = "bundled tiles or an alphabet file"
+    )]
+    tiles: String,
+    #[arg(help = "what to do, from the list below")]
+    task: String,
+    #[arg(allow_negative_numbers = true, help = "the task's files and values")]
+    args: Vec<String>,
+}
+
+fn main() -> error::Returns<()> {
+    let cli: Cli = clap::Parser::parse();
+    if cli.task == "auto" {
+        return old_main();
     }
+    let t0 = std::time::Instant::now();
+    // the command line without its options, as do_task reads it
+    let mut args = vec![std::env::args().next().unwrap_or_default(), cli.task];
+    args.extend(cli.args);
+    let done = do_task(&args, || {
+        alphabet::make_alphabet_from(&cli.tiles, &|path| Ok(std::fs::read_to_string(path)?))
+    })?;
+    if !done {
+        return Err("invalid argument".into());
+    }
+    writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
+    Ok(())
 }
 
 #[inline]
