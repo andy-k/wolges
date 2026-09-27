@@ -358,6 +358,7 @@ impl WorkingBuffer {
         let board_layout = board_snapshot.game_config.board_layout();
         let dim = board_layout.dim();
         let area = (dim.rows as isize * dim.cols as isize) as usize;
+        let was_empty = self.num_tiles_on_board == 0;
 
         if self.prev_board_tiles[..area] != board_snapshot.board_tiles[..area] {
             let premiums = board_layout.premiums();
@@ -401,6 +402,10 @@ impl WorkingBuffer {
                 .iter()
                 .filter(|&t| *t != 0)
                 .count() as u16;
+        }
+        if was_empty || self.num_tiles_on_board == 0 {
+            self.prev_board_tiles
+                [dim.at_row_col(board_layout.star_row(), board_layout.star_col())] = 0xff;
         }
         self.num_tiles_in_bag = alphabet.num_tiles() as i16
             - (self.num_tiles_on_board as i16
@@ -4071,5 +4076,51 @@ mod tests {
         assert_eq!(plays(&mut move_generator), fresh);
         move_generator.gen_remaining_words(&empty_snapshot, |_| {});
         assert_eq!(plays(&mut move_generator), fresh);
+    }
+
+    #[test]
+    #[inline]
+    fn a_generation_after_an_empty_board_matches_a_fresh_one() {
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let empty = fen_parser
+            .parse("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15")
+            .unwrap()
+            .to_vec();
+        let off_the_star = fen_parser
+            .parse("15/15/15/15/15/15/15/15/15/15/15/SEAT11/15/15/15")
+            .unwrap()
+            .to_vec();
+        let rack = parse_test_rack(gc.alphabet(), "AEST");
+        let plays = |move_generator: &mut KurniaMoveGenerator, board_tiles: &[u8]| {
+            let board_snapshot = BoardSnapshot {
+                board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                klv: &klv,
+            };
+            move_generator.gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            move_generator
+                .plays
+                .iter()
+                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+                .collect::<Vec<_>>()
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        for board_tiles in [&empty, &off_the_star, &empty, &empty, &off_the_star] {
+            assert_eq!(
+                plays(&mut move_generator, board_tiles),
+                plays(&mut KurniaMoveGenerator::new(&gc), board_tiles)
+            );
+        }
     }
 }
