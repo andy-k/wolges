@@ -922,6 +922,30 @@ impl GameConfig {
         }
         Ok(())
     }
+
+    #[inline]
+    pub fn check_leaves(&self, (min_leave, max_leave): (i32, i32)) -> error::Returns<()> {
+        let scale = equity::SCALE as i128;
+        let most = self.most_one_play_can_score().min(i32::MAX as u128) as i128 * scale;
+        let alphabet = self.alphabet();
+        let score = |tile| alphabet.score(tile).unsigned_abs() as i128;
+        let total_face = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile) as i128 * score(tile))
+            .sum::<i128>();
+        let rack_face =
+            self.rack_size() as i128 * (0..alphabet.len()).map(score).max().unwrap_or(0);
+        let play_out = 2 * scale * total_face;
+        let penalty = equity::ENDGAME_PENALTY_BASE as i128 + 2 * scale * rack_face;
+        if most + (max_leave as i128).max(play_out) > i32::MAX as i128
+            || -most + (min_leave as i128).min(-penalty) < i32::MIN as i128
+        {
+            return Err(format!(
+                "leaves from {min_leave} to {max_leave} millipoints can take an equity past what it holds"
+            )
+            .into());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1142,6 +1166,9 @@ mod tests {
         for (name, make) in GAME_CONFIGS {
             let gc = make();
             assert!(gc.check_scores().is_ok(), "{name}");
+            assert!(gc.check_leaves((-100_000, 100_000)).is_ok(), "{name}");
+            assert!(gc.check_leaves((i32::MIN, 0)).is_err(), "{name}");
+            assert!(gc.check_leaves((0, i32::MAX)).is_err(), "{name}");
         }
         let quadruple_words = format!(
             "star 63 63\n{}",

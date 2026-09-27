@@ -57,6 +57,13 @@ impl<L: kwg::Node> Klv<L> {
         self.leaves[leave_idx as usize]
     }
 
+    #[inline]
+    pub fn leave_range(&self) -> (i32, i32) {
+        self.leaves
+            .iter()
+            .fold((0, 0), |(lo, hi), &leave| (lo.min(leave), hi.max(leave)))
+    }
+
     #[inline(always)]
     pub fn count(&self, i: i32) -> u32 {
         self.counts[i as usize]
@@ -677,5 +684,18 @@ mod tests {
             census::dynamic_leave_value(&lat, &add, &full_v, &[0u8, 0, 0], empty_ridx, 3),
             census::UNPLAYABLE,
         );
+    }
+
+    #[test]
+    #[inline]
+    fn a_klv_knows_its_lowest_and_highest_leave() {
+        let empty = Klv::<kwg::Node22>::from_bytes_alloc(EMPTY_KLV_BYTES);
+        assert_eq!(empty.leave_range(), (0, 0));
+        let klv = Klv::<kwg::Node22> {
+            kwg: empty.kwg,
+            counts: empty.counts,
+            leaves: Box::new([-2_500, 700, 12_345, -9]),
+        };
+        assert_eq!(klv.leave_range(), (-2_500, 12_345));
     }
 }
