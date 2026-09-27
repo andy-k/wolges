@@ -1375,7 +1375,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         }
         {
             // this part is only relevant if rack has at least two tiles, but passing that is too expensive.
-            let leftmost = leftmost + (leftmost > 0) as i8; // shadowing
+            let leftmost = leftmost + (leftmost > 0 && leftmost < rightmost) as i8; // shadowing
             for anchor in (leftmost..rightmost).rev() {
                 let cross_set_bits = env.params.cross_set_strip[anchor as usize].bits;
                 if cross_set_bits != 0 {
@@ -4298,5 +4298,14 @@ mod tests {
             .map(|row| (row, ((row as i32 * 7 + 3) % 20) as i8))
             .collect::<Vec<_>>();
         a_reused_generator_agrees_on_an_uneven_board(100, 20, 66, 9, &tiles);
+    }
+
+    #[test]
+    #[inline]
+    fn the_widest_board_agrees_with_its_transpose() {
+        let tiles = (0..127)
+            .map(|row| (row, ((row as i32 * 45 + 7) % 127) as i8))
+            .collect::<Vec<_>>();
+        a_reused_generator_agrees_on_an_uneven_board(127, 127, 70, 90, &tiles);
     }
 }
