@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, board_layout, error};
+use super::{alphabet, board_layout, equity, error};
 use std::str::FromStr;
 
 pub enum GameRules {
@@ -845,7 +845,82 @@ impl GameConfig {
         {
             return Err("a game has a rack, a player and an exchange limit of 1 or more".into());
         }
+        game_config.check_scores()?;
         Ok(game_config)
+    }
+
+    #[inline]
+    pub fn most_one_play_can_score(&self) -> u128 {
+        let board_layout = self.board_layout();
+        let dim = board_layout.dim();
+        let premiums = board_layout.premiums();
+        let alphabet = self.alphabet();
+        let rack_size = self.rack_size() as u128;
+        let tile_score = (0..alphabet.len())
+            .map(|tile| alphabet.score(tile).unsigned_abs() as u128)
+            .max()
+            .unwrap_or(0);
+        let tile_multiplier = premiums
+            .iter()
+            .map(|premium| premium.tile_multiplier.max(1) as u128)
+            .max()
+            .unwrap_or(1);
+        let word_multiplier = premiums
+            .iter()
+            .map(|premium| premium.word_multiplier.max(1) as u128)
+            .max()
+            .unwrap_or(1);
+        let mut lane_word_multiplier = 1u128;
+        for down in [false, true] {
+            let (lanes, len) = if down {
+                (dim.cols, dim.rows)
+            } else {
+                (dim.rows, dim.cols)
+            };
+            for lane in 0..lanes {
+                let mut multipliers = (0..len)
+                    .map(|i| {
+                        let idx = if down {
+                            dim.at_row_col(i, lane)
+                        } else {
+                            dim.at_row_col(lane, i)
+                        };
+                        premiums[idx].word_multiplier.max(1) as u128
+                    })
+                    .collect::<Vec<_>>();
+                multipliers.sort_unstable_by(|a, b| b.cmp(a));
+                lane_word_multiplier = lane_word_multiplier.max(
+                    multipliers
+                        .iter()
+                        .take(self.rack_size() as usize)
+                        .fold(1u128, |product, &m| product.saturating_mul(m)),
+                );
+            }
+        }
+        let face = dim.rows.max(dim.cols) as u128 * tile_score
+            + rack_size * tile_score * (tile_multiplier - 1);
+        let bonus = (0..=u8::MAX)
+            .map(|num_played| self.num_played_bonus(num_played).unsigned_abs() as u128)
+            .max()
+            .unwrap_or(0);
+        face.saturating_mul(lane_word_multiplier)
+            .saturating_add(
+                rack_size
+                    .saturating_mul(face)
+                    .saturating_mul(word_multiplier),
+            )
+            .saturating_add(bonus)
+    }
+
+    #[inline]
+    pub fn check_scores(&self) -> error::Returns<()> {
+        let most = self.most_one_play_can_score();
+        if most.saturating_mul(equity::SCALE as u128) > i32::MAX as u128 {
+            return Err(
+                format!("one play here can score {most} points, past what a score holds").into(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -1059,5 +1134,28 @@ mod tests {
         let no_bonus = good.replace("bingo-bonus 7:50\n", "bingo-bonus none\n");
         let read = GameConfig::new_static_from_text(&no_bonus, &no_files).unwrap();
         assert_eq!(read.num_played_bonus(7), 0);
+    }
+
+    #[test]
+    #[inline]
+    fn a_game_one_play_of_which_could_overflow_a_score_is_refused() {
+        for (name, make) in GAME_CONFIGS {
+            let gc = make();
+            assert!(gc.check_scores().is_ok(), "{name}");
+        }
+        let quadruple_words = format!(
+            "star 63 63\n{}",
+            format!("|{}|\n", "~".repeat(127)).repeat(127)
+        );
+        let files = |path: &str| -> error::Returns<String> {
+            match path {
+                "board.txt" => Ok(quadruple_words.clone()),
+                _ => no_files(path),
+            }
+        };
+        let text = preset_text_of("english", "board.txt", &make_english_game_config());
+        assert!(GameConfig::new_static_from_text(&text, &files).is_err());
+        let text = preset_text_of("english", "super", &make_english_game_config());
+        assert!(GameConfig::new_static_from_text(&text, &files).is_ok());
     }
 }
