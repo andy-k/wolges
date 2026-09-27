@@ -12,7 +12,7 @@ use wolges::{
 mod game_args;
 
 type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
-type GameRng = rand::rngs::ChaCha20Rng;
+type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
 
 #[derive(clap::Parser)]
 struct Cli {

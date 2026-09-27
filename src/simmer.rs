@@ -60,10 +60,20 @@ impl CopyState for rand::rngs::ChaCha20Rng {
     }
 }
 
+impl CopyState for rand_xoshiro::Xoshiro256PlusPlus {
+    #[inline(always)]
+    fn copy_state(&self) -> Self {
+        self.clone()
+    }
+}
+
+// the generator a simmer draws with unless it is given another.
+pub type DefaultRng = rand_xoshiro::Xoshiro256PlusPlus;
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at KurniaMoveGenerator.)
 // This is not enforced.
-pub struct Simmer<R = rand::rngs::ChaCha20Rng> {
+pub struct Simmer<R = DefaultRng> {
     initial_game_state: game_state::GameState,
     pub initial_score_spread: i32,
     num_sim_plies: usize,
@@ -86,7 +96,7 @@ impl Simmer {
     pub fn new(game_config: &game_config::GameConfig) -> Self {
         Self::with_rng(
             game_config,
-            rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
+            DefaultRng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
         )
     }
 }
@@ -357,7 +367,7 @@ mod tests {
     fn exchanging_rollout_leaves_shared_rng_untouched() {
         let game_config = game_config::make_english_game_config();
         let mut game_state = game_state::GameState::new(&game_config);
-        let mut deal_rng = rand::rngs::ChaCha20Rng::seed_from_u64(3);
+        let mut deal_rng = DefaultRng::seed_from_u64(3);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00");
@@ -373,20 +383,20 @@ mod tests {
             tiles: [exchanged][..].into(),
         };
 
-        let shared_state = simmer.rng.serialize_state();
+        let shared_state = simmer.rng.clone();
 
         simmer.simulate(&game_config, &kwg, &klv, &candidate);
         let rack_after_first = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();
 
-        assert_eq!(simmer.rng.serialize_state(), shared_state);
+        assert_eq!(simmer.rng, shared_state);
 
         simmer.simulate(&game_config, &kwg, &klv, &candidate);
         let rack_after_second = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();
-        assert_eq!(simmer.rng.serialize_state(), shared_state);
+        assert_eq!(simmer.rng, shared_state);
         assert_eq!(rack_after_first, rack_after_second);
     }
 
@@ -424,7 +434,7 @@ mod tests {
         let game_config = game_config::make_english_game_config();
         let mut game_state = game_state::GameState::new(&game_config);
 
-        let mut deal_rng = rand::rngs::ChaCha20Rng::seed_from_u64(1);
+        let mut deal_rng = DefaultRng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
         let opponent_draw = |seed: u64| -> Vec<u8> {
@@ -445,7 +455,7 @@ mod tests {
     fn prepared_simmer() -> (Simmer, usize, usize, usize) {
         let game_config = game_config::make_english_game_config();
         let mut game_state = game_state::GameState::new(&game_config);
-        let mut deal_rng = rand::rngs::ChaCha20Rng::seed_from_u64(1);
+        let mut deal_rng = DefaultRng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         let mut simmer = Simmer::new(&game_config);
         simmer.prepare(&game_config, &game_state, 2, false);
