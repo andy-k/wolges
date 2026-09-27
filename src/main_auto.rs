@@ -506,7 +506,10 @@ fn do_it<N: kwg::Node + Sync>(
             let adjustment = game_config.time_adjustment(clock_ms);
             if adjustment != 0 {
                 println!("Player {} adjustment {}", i + 1, adjustment);
-                final_scores[i] += equity::scale_score(adjustment as i32);
+                final_scores[i] = i32::try_from(adjustment * i64::from(equity::SCALE))
+                    .ok()
+                    .and_then(|scaled| final_scores[i].checked_add(scaled))
+                    .ok_or("the time adjustment overflows the final score")?;
                 has_time_adjustment = true;
             }
         }
