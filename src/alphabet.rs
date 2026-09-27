@@ -415,6 +415,18 @@ pub fn make_alphabet_by_name(name: &str) -> Option<Alphabet> {
         .map(|(_, make)| make())
 }
 
+// a bundled alphabet by its name, else the text read_file returns for it.
+#[inline]
+pub fn make_alphabet_from(
+    name_or_path: &str,
+    read_file: &impl Fn(&str) -> error::Returns<String>,
+) -> error::Returns<Alphabet> {
+    match make_alphabet_by_name(name_or_path) {
+        Some(alphabet) => Ok(alphabet),
+        None => Alphabet::new_static_from_text(&read_file(name_or_path)?),
+    }
+}
+
 pub struct AlphabetReader {
     supported_tiles: Box<[(u8, bites::Bites)]>,
     by_first_byte: [Option<(usize, usize)>; 256],
@@ -657,5 +669,20 @@ mod tests {
             assert_eq!(alphabet.num_tiles(), make().num_tiles(), "{name}");
         }
         assert!(make_alphabet_by_name("klingon").is_none());
+    }
+
+    #[test]
+    #[inline]
+    fn an_alphabet_is_a_name_or_else_a_file() {
+        let read_file = |path: &str| -> error::Returns<String> {
+            match path {
+                "few.txt" => Ok(tiles_text(5, 3)),
+                _ => Err(format!("no file {path}").into()),
+            }
+        };
+        let english = make_alphabet_from("english", &read_file).unwrap();
+        assert_eq!(english.len(), make_english_alphabet().len());
+        assert_eq!(make_alphabet_from("few.txt", &read_file).unwrap().len(), 5);
+        assert!(make_alphabet_from("klingon", &read_file).is_err());
     }
 }

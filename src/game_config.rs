@@ -791,28 +791,6 @@ fn parse_exchanges(value: &str) -> error::Returns<i16> {
     }
 }
 
-#[inline]
-fn make_alphabet_from(
-    value: &str,
-    read_file: &impl Fn(&str) -> error::Returns<String>,
-) -> error::Returns<alphabet::Alphabet> {
-    match alphabet::make_alphabet_by_name(value) {
-        Some(alphabet) => Ok(alphabet),
-        None => alphabet::Alphabet::new_static_from_text(&read_file(value)?),
-    }
-}
-
-#[inline]
-fn make_board_layout_from(
-    value: &str,
-    read_file: &impl Fn(&str) -> error::Returns<String>,
-) -> error::Returns<board_layout::BoardLayout> {
-    match board_layout::make_board_layout_by_name(value) {
-        Some(board_layout) => Ok(board_layout),
-        None => board_layout::BoardLayout::new_static_from_text(&read_file(value)?),
-    }
-}
-
 pub struct Options<'a> {
     pub preset: &'a str,
     pub tiles: Option<&'a str>,
@@ -845,11 +823,11 @@ impl Options<'_> {
                 preset.game_rules
             },
             alphabet: match self.tiles {
-                Some(tiles) => make_alphabet_from(tiles, read_file)?,
+                Some(tiles) => alphabet::make_alphabet_from(tiles, read_file)?,
                 None => preset.alphabet,
             },
             board_layout: match self.board {
-                Some(board) => make_board_layout_from(board, read_file)?,
+                Some(board) => board_layout::make_board_layout_from(board, read_file)?,
                 None => preset.board_layout,
             },
             rack_size,
@@ -894,8 +872,9 @@ impl GameConfig {
                 return Err(format!("{key} is given twice").into());
             }
         }
-        let alphabet = make_alphabet_from(take(&mut values, "tiles")?, read_file)?;
-        let board_layout = make_board_layout_from(take(&mut values, "board")?, read_file)?;
+        let alphabet = alphabet::make_alphabet_from(take(&mut values, "tiles")?, read_file)?;
+        let board_layout =
+            board_layout::make_board_layout_from(take(&mut values, "board")?, read_file)?;
         let rack_size = u8::from_str(take(&mut values, "rack-size")?)?;
         let game_config = Self::Static(StaticGameConfig {
             game_rules: match take(&mut values, "rules")? {
