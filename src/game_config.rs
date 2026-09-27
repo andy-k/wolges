@@ -716,6 +716,32 @@ pub fn make_jumbled_swedish_game_config() -> GameConfig {
     })
 }
 
+pub type MakeGameConfig = fn() -> GameConfig;
+
+pub const GAME_CONFIGS: &[(&str, MakeGameConfig)] = &[
+    ("catalan", make_catalan_game_config),
+    ("dutch", make_dutch_game_config),
+    ("english", make_english_game_config),
+    ("french", make_french_game_config),
+    ("german", make_german_game_config),
+    ("hong-kong-english", make_hong_kong_english_game_config),
+    ("norwegian", make_norwegian_game_config),
+    ("polish", make_polish_game_config),
+    ("slovene", make_slovene_game_config),
+    ("spanish", make_spanish_game_config),
+    ("super-catalan", make_super_catalan_game_config),
+    ("super-english", make_super_english_game_config),
+    ("swedish", make_swedish_game_config),
+];
+
+#[inline]
+pub fn make_game_config_by_name(name: &str) -> Option<GameConfig> {
+    GAME_CONFIGS
+        .iter()
+        .find(|(this_name, _)| *this_name == name)
+        .map(|(_, make)| make())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,5 +771,24 @@ mod tests {
                 assert_eq!(gc.num_played_bonus(num_played), bonus, "{num_played}");
             }
         }
+    }
+
+    #[test]
+    #[inline]
+    fn every_bundled_game_is_found_by_its_name() {
+        for (i, (name, make)) in GAME_CONFIGS.iter().enumerate() {
+            assert!(
+                i == 0 || GAME_CONFIGS[i - 1].0 < *name,
+                "{name} is out of order"
+            );
+            let gc = make_game_config_by_name(name).unwrap();
+            assert_eq!(gc.rack_size(), make().rack_size(), "{name}");
+            assert_eq!(
+                gc.alphabet().num_tiles(),
+                make().alphabet().num_tiles(),
+                "{name}"
+            );
+        }
+        assert!(make_game_config_by_name("klingon").is_none());
     }
 }
