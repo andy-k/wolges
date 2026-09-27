@@ -783,6 +783,98 @@ fn yes_no(value: &str) -> error::Returns<bool> {
     }
 }
 
+#[inline]
+fn parse_exchanges(value: &str) -> error::Returns<i16> {
+    match value {
+        "unlimited" => Ok(i16::MAX),
+        exchanges => Ok(i16::from_str(exchanges)?),
+    }
+}
+
+#[inline]
+fn make_alphabet_from(
+    value: &str,
+    read_file: &impl Fn(&str) -> error::Returns<String>,
+) -> error::Returns<alphabet::Alphabet> {
+    match alphabet::make_alphabet_by_name(value) {
+        Some(alphabet) => Ok(alphabet),
+        None => alphabet::Alphabet::new_static_from_text(&read_file(value)?),
+    }
+}
+
+#[inline]
+fn make_board_layout_from(
+    value: &str,
+    read_file: &impl Fn(&str) -> error::Returns<String>,
+) -> error::Returns<board_layout::BoardLayout> {
+    match board_layout::make_board_layout_by_name(value) {
+        Some(board_layout) => Ok(board_layout),
+        None => board_layout::BoardLayout::new_static_from_text(&read_file(value)?),
+    }
+}
+
+pub struct Options<'a> {
+    pub preset: &'a str,
+    pub tiles: Option<&'a str>,
+    pub board: Option<&'a str>,
+    pub rack_size: Option<u8>,
+    pub jumbled: bool,
+    pub players: Option<u8>,
+    pub bingo_bonus: Option<&'a str>,
+    pub zeros_to_end: Option<u8>,
+    pub passes_to_end: Option<u8>,
+    pub exchange_limit: Option<i16>,
+    pub exchanges: Option<&'a str>,
+}
+
+impl Options<'_> {
+    #[inline]
+    pub fn make_game_config(
+        &self,
+        read_file: &impl Fn(&str) -> error::Returns<String>,
+    ) -> error::Returns<GameConfig> {
+        let GameConfig::Static(preset) = match make_game_config_by_name(self.preset) {
+            Some(game_config) => game_config,
+            None => GameConfig::new_static_from_text(&read_file(self.preset)?, read_file)?,
+        };
+        let rack_size = self.rack_size.unwrap_or(preset.rack_size);
+        let game_config = GameConfig::Static(StaticGameConfig {
+            game_rules: if self.jumbled {
+                GameRules::Jumbled
+            } else {
+                preset.game_rules
+            },
+            alphabet: match self.tiles {
+                Some(tiles) => make_alphabet_from(tiles, read_file)?,
+                None => preset.alphabet,
+            },
+            board_layout: match self.board {
+                Some(board) => make_board_layout_from(board, read_file)?,
+                None => preset.board_layout,
+            },
+            rack_size,
+            num_played_bonus: match self.bingo_bonus {
+                Some(bingo_bonus) => parse_num_played_bonus(bingo_bonus, rack_size)?,
+                None => preset.num_played_bonus,
+            },
+            num_players: self.players.unwrap_or(preset.num_players),
+            num_passes_to_end: self.passes_to_end.unwrap_or(preset.num_passes_to_end),
+            challenges_are_passes: preset.challenges_are_passes,
+            num_zeros_to_end: self.zeros_to_end.unwrap_or(preset.num_zeros_to_end),
+            zeros_can_end_empty_board: preset.zeros_can_end_empty_board,
+            exchanges_are_zeros: preset.exchanges_are_zeros,
+            exchanges_allowed_per_player: match self.exchanges {
+                Some(exchanges) => parse_exchanges(exchanges)?,
+                None => preset.exchanges_allowed_per_player,
+            },
+            exchange_tile_limit: self.exchange_limit.unwrap_or(preset.exchange_tile_limit),
+        });
+        game_config.check_parts()?;
+        game_config.check_scores()?;
+        Ok(game_config)
+    }
+}
+
 impl GameConfig {
     #[inline]
     pub fn new_static_from_text(
@@ -802,16 +894,8 @@ impl GameConfig {
                 return Err(format!("{key} is given twice").into());
             }
         }
-        let tiles = take(&mut values, "tiles")?;
-        let alphabet = match alphabet::make_alphabet_by_name(tiles) {
-            Some(alphabet) => alphabet,
-            None => alphabet::Alphabet::new_static_from_text(&read_file(tiles)?)?,
-        };
-        let board = take(&mut values, "board")?;
-        let board_layout = match board_layout::make_board_layout_by_name(board) {
-            Some(board_layout) => board_layout,
-            None => board_layout::BoardLayout::new_static_from_text(&read_file(board)?)?,
-        };
+        let alphabet = make_alphabet_from(take(&mut values, "tiles")?, read_file)?;
+        let board_layout = make_board_layout_from(take(&mut values, "board")?, read_file)?;
         let rack_size = u8::from_str(take(&mut values, "rack-size")?)?;
         let game_config = Self::Static(StaticGameConfig {
             game_rules: match take(&mut values, "rules")? {
@@ -829,24 +913,36 @@ impl GameConfig {
             num_zeros_to_end: u8::from_str(take(&mut values, "zeros-to-end")?)?,
             zeros_can_end_empty_board: yes_no(take(&mut values, "zeros-can-end-empty-board")?)?,
             exchanges_are_zeros: yes_no(take(&mut values, "exchanges-are-zeros")?)?,
-            exchanges_allowed_per_player: match take(&mut values, "exchanges")? {
-                "unlimited" => i16::MAX,
-                exchanges => i16::from_str(exchanges)?,
-            },
+            exchanges_allowed_per_player: parse_exchanges(take(&mut values, "exchanges")?)?,
             exchange_tile_limit: i16::from_str(take(&mut values, "exchange-limit")?)?,
         });
         if let Some(key) = values.keys().next() {
             return Err(format!("{key} is not a preset key").into());
         }
-        if rack_size == 0
-            || game_config.num_players() == 0
-            || game_config.exchanges_allowed_per_player() < 0
-            || game_config.exchange_tile_limit() < 1
+        game_config.check_parts()?;
+        game_config.check_scores()?;
+        Ok(game_config)
+    }
+
+    #[inline]
+    fn check_parts(&self) -> error::Returns<()> {
+        if self.rack_size() == 0
+            || self.num_players() == 0
+            || self.exchanges_allowed_per_player() < 0
+            || self.exchange_tile_limit() < 1
         {
             return Err("a game has a rack, a player and an exchange limit of 1 or more".into());
         }
-        game_config.check_scores()?;
-        Ok(game_config)
+        if let Some(num_played) = (self.rack_size()..=u8::MAX)
+            .find(|&n| n > self.rack_size() && self.num_played_bonus(n) != 0)
+        {
+            return Err(format!(
+                "a bonus for {num_played} tiles is more than a rack of {} holds",
+                self.rack_size()
+            )
+            .into());
+        }
+        Ok(())
     }
 
     #[inline]
@@ -1184,5 +1280,121 @@ mod tests {
         assert!(GameConfig::new_static_from_text(&text, &files).is_err());
         let text = preset_text_of("english", "super", &make_english_game_config());
         assert!(GameConfig::new_static_from_text(&text, &files).is_ok());
+    }
+
+    #[test]
+    #[inline]
+    fn an_option_overrides_its_part_of_the_preset() {
+        let options = Options {
+            preset: "english",
+            tiles: None,
+            board: None,
+            rack_size: None,
+            jumbled: false,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: None,
+        };
+        let gc = options.make_game_config(&no_files).unwrap();
+        assert!(same_game_config(&gc, &make_english_game_config()));
+        let jumbled = Options {
+            preset: "super-english",
+            tiles: None,
+            board: None,
+            rack_size: None,
+            jumbled: true,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: None,
+        };
+        let gc = jumbled.make_game_config(&no_files).unwrap();
+        assert!(same_game_config(
+            &gc,
+            &make_jumbled_super_english_game_config()
+        ));
+        let every_field = Options {
+            preset: "hong-kong-english",
+            tiles: Some("english"),
+            board: Some("super"),
+            rack_size: Some(8),
+            jumbled: false,
+            players: Some(3),
+            bingo_bonus: Some("7:25,8:50"),
+            zeros_to_end: Some(4),
+            passes_to_end: Some(2),
+            exchange_limit: Some(3),
+            exchanges: Some("5"),
+        };
+        let gc = every_field.make_game_config(&no_files).unwrap();
+        assert_eq!(gc.alphabet().num_tiles(), 100);
+        assert_eq!(gc.board_layout().dim().rows, 21);
+        assert_eq!(gc.rack_size(), 8);
+        assert_eq!(gc.num_players(), 3);
+        assert_eq!(gc.num_played_bonus(7), 25);
+        assert_eq!(gc.num_played_bonus(8), 50);
+        assert_eq!(gc.num_played_bonus(9), 0);
+        assert_eq!(gc.num_zeros_to_end(), 4);
+        assert_eq!(gc.num_passes_to_end(), 2);
+        assert_eq!(gc.exchange_tile_limit(), 3);
+        assert_eq!(gc.exchanges_allowed_per_player(), 5);
+        let smaller_rack = Options {
+            preset: "hong-kong-english",
+            tiles: None,
+            board: None,
+            rack_size: Some(7),
+            jumbled: false,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: None,
+        };
+        assert!(smaller_rack.make_game_config(&no_files).is_err());
+        let unknown = Options {
+            preset: "chess",
+            tiles: None,
+            board: None,
+            rack_size: None,
+            jumbled: false,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: None,
+        };
+        assert!(unknown.make_game_config(&no_files).is_err());
+        let preset_text = preset_text_of("english", "standard", &make_spanish_game_config());
+        let files = |path: &str| -> error::Returns<String> {
+            match path {
+                "spanish-ish.txt" => Ok(preset_text.clone()),
+                _ => no_files(path),
+            }
+        };
+        let from_file = Options {
+            preset: "spanish-ish.txt",
+            tiles: None,
+            board: None,
+            rack_size: None,
+            jumbled: false,
+            players: None,
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: Some("unlimited"),
+        };
+        let gc = from_file.make_game_config(&files).unwrap();
+        assert_eq!(gc.exchange_tile_limit(), 1);
+        assert_eq!(gc.exchanges_allowed_per_player(), i16::MAX);
+        assert!(gc.challenges_are_passes());
+        assert_eq!(gc.alphabet().num_tiles(), 100);
     }
 }
