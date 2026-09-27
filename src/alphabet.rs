@@ -91,6 +91,9 @@ impl Alphabet {
             let blank_label = tokens.next().ok_or("not enough tokens")?.into();
             let freq = u8::from_str(tokens.next().ok_or("not enough tokens")?)?;
             let score = i8::from_str(tokens.next().ok_or("not enough tokens")?)?;
+            if !(-32..=32).contains(&score) {
+                return Err("a tile scores from -32 to 32".into());
+            }
             let is_vowel = match u8::from_str(tokens.next().ok_or("not enough tokens")?)? {
                 0 => false,
                 1 => true,
@@ -120,6 +123,9 @@ impl Alphabet {
                 alias_labels,
                 alias_blank_labels,
             });
+        }
+        if !(1..=64).contains(&tiles.len()) {
+            return Err("an alphabet has from 1 to 64 tiles".into());
         }
         Ok(Self::new_static(tiles))
     }
@@ -582,5 +588,31 @@ impl AlphabetReader {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[inline]
+    fn tiles_text(num_tiles: usize, score: i8) -> String {
+        let mut text = String::from("?\t?\t2\t0\t0\t0\t0\n");
+        for i in 1..num_tiles {
+            text.push_str(&format!("T{i}\tt{i}\t1\t{score}\t0\t0\t0\n"));
+        }
+        text
+    }
+
+    #[test]
+    #[inline]
+    fn a_tile_file_is_refused_where_its_scores_would_not_fit() {
+        assert!(Alphabet::new_static_from_text(&tiles_text(27, 32)).is_ok());
+        assert!(Alphabet::new_static_from_text(&tiles_text(27, -32)).is_ok());
+        assert!(Alphabet::new_static_from_text(&tiles_text(27, 33)).is_err());
+        assert!(Alphabet::new_static_from_text(&tiles_text(27, -33)).is_err());
+        assert!(Alphabet::new_static_from_text(&tiles_text(64, 1)).is_ok());
+        assert!(Alphabet::new_static_from_text(&tiles_text(65, 1)).is_err());
+        assert!(Alphabet::new_static_from_text("").is_err());
     }
 }
