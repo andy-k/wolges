@@ -12,6 +12,7 @@ use wolges::{
 mod game_args;
 
 type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
+type GameRng = rand::rngs::ChaCha20Rng;
 
 #[derive(clap::Parser)]
 struct Cli {
@@ -147,9 +148,9 @@ fn do_it<N: kwg::Node + Sync>(
     let mut loss_draw_win = [0i64; 3];
 
     let mut game_state = game_state::GameState::new(game_config);
-    //let mut rng = rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng)?;
+    //let mut rng = GameRng::try_from_rng(&mut rand::rngs::SysRng)?;
     // "the seed is an array of 32 bytes".len() == 32.
-    let mut rng = rand::rngs::ChaCha20Rng::from_seed(*b"Wolges Copyright (C) Andy Kurnia");
+    let mut rng = GameRng::from_seed(*b"Wolges Copyright (C) Andy Kurnia");
     let mut timers = game_timers::GameTimers::new(game_config.num_players());
     if false {
         // https://discord.com/channels/741321677828522035/1157118170398724176/1193946371129094154
