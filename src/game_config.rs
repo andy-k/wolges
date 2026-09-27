@@ -8,19 +8,19 @@ pub enum GameRules {
 }
 
 pub struct StaticGameConfig {
-    game_rules: GameRules,
-    alphabet: alphabet::Alphabet,
-    board_layout: board_layout::BoardLayout,
-    rack_size: u8,
-    num_played_bonus: [i16; 256],
-    num_players: u8,
-    num_passes_to_end: u8,
-    challenges_are_passes: bool, // count challenge as pass turn or as zero turn
-    num_zeros_to_end: u8,
-    zeros_can_end_empty_board: bool,
-    exchanges_are_zeros: bool,
-    exchanges_allowed_per_player: i16,
-    exchange_tile_limit: i16, // >= 1
+    pub game_rules: GameRules,
+    pub alphabet: alphabet::Alphabet,
+    pub board_layout: board_layout::BoardLayout,
+    pub rack_size: u8,
+    pub num_played_bonus: [i16; 256],
+    pub num_players: u8,
+    pub num_passes_to_end: u8,
+    pub challenges_are_passes: bool, // count challenge as pass turn or as zero turn
+    pub num_zeros_to_end: u8,
+    pub zeros_can_end_empty_board: bool,
+    pub exchanges_are_zeros: bool,
+    pub exchanges_allowed_per_player: i16,
+    pub exchange_tile_limit: i16, // >= 1
 }
 
 pub enum GameConfig {
