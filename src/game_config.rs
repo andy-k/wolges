@@ -865,6 +865,16 @@ impl Options<'_> {
 }
 
 impl GameConfig {
+    // a game as text: one "key value" a line, each of these keys once -- tiles
+    // NAME|FILE (a bundled alphabet, or a file like src/alphabets/*), board
+    // NAME|FILE (a bundled board layout, or a board file), rules
+    // classic|jumbled, rack-size N, players N, bingo-bonus TILES:POINTS,... (or
+    // none), such as 7:50, zeros-to-end N and passes-to-end N (the turns in a
+    // row that end a game, 0 for never), zeros-can-end-empty-board yes|no,
+    // challenges-are-passes yes|no, exchanges-are-zeros yes|no, exchanges
+    // N|unlimited (each player's) and exchange-limit N (the fewest tiles the
+    // bag holds for an exchange). A line starting with # is a comment and a
+    // blank line is ignored. A FILE is what read_file returns for it.
     #[inline]
     pub fn new_static_from_text(
         s: &str,

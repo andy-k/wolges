@@ -160,6 +160,11 @@ impl BoardLayout {
         })
     }
 
+    // a board as text: one grid line per row, starting and ending with |, each
+    // square between the bars one of ~ 4W, = 3W, - 2W, ^ 4L, " 3L, ' 2L, a
+    // space for a plain square and # for a punctured one; and one line "star
+    // ROW COL" (counted from 0) for the starting square. A line starting with #
+    // is a comment and a blank line is ignored.
     #[inline]
     pub fn new_static_from_text(s: &str) -> error::Returns<Self> {
         let mut premiums = Vec::new();
