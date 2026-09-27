@@ -12,6 +12,7 @@ pub struct StaticGameConfig {
     alphabet: alphabet::Alphabet,
     board_layout: board_layout::BoardLayout,
     rack_size: u8,
+    num_played_bonus: [i16; 256],
     num_players: u8,
     num_passes_to_end: u8,
     challenges_are_passes: bool, // count challenge as pass turn or as zero turn
@@ -107,10 +108,7 @@ impl GameConfig {
     #[inline(always)]
     pub fn num_played_bonus(&self, num_played: u8) -> i16 {
         match self {
-            GameConfig::Static(x) => {
-                // branchless
-                50 & -((num_played >= x.rack_size) as i16)
-            }
+            GameConfig::Static(x) => x.num_played_bonus[num_played as usize],
         }
     }
 
@@ -134,12 +132,22 @@ impl GameConfig {
 }
 
 #[inline]
+pub fn make_num_played_bonus(bonuses: &[(u8, i16)]) -> [i16; 256] {
+    let mut num_played_bonus = [0; 256];
+    for &(num_played, bonus) in bonuses {
+        num_played_bonus[num_played as usize] = bonus;
+    }
+    num_played_bonus
+}
+
+#[inline]
 pub fn make_catalan_game_config() -> GameConfig {
     GameConfig::Static(StaticGameConfig {
         game_rules: GameRules::Classic,
         alphabet: alphabet::make_catalan_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -158,6 +166,7 @@ pub fn make_jumbled_catalan_game_config() -> GameConfig {
         alphabet: alphabet::make_catalan_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -176,6 +185,7 @@ pub fn make_super_catalan_game_config() -> GameConfig {
         alphabet: alphabet::make_super_catalan_alphabet(),
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -194,6 +204,7 @@ pub fn make_jumbled_super_catalan_game_config() -> GameConfig {
         alphabet: alphabet::make_super_catalan_alphabet(),
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -212,6 +223,7 @@ pub fn make_dutch_game_config() -> GameConfig {
         alphabet: alphabet::make_dutch_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -230,6 +242,7 @@ pub fn make_jumbled_dutch_game_config() -> GameConfig {
         alphabet: alphabet::make_dutch_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -248,6 +261,7 @@ pub fn make_english_game_config() -> GameConfig {
         alphabet: alphabet::make_english_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -267,6 +281,7 @@ pub fn make_exchange_test_game_config() -> GameConfig {
         alphabet: alphabet::make_english_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 2,
         challenges_are_passes: true,
@@ -286,6 +301,7 @@ pub fn make_exchange_unsolvable_test_game_config() -> GameConfig {
         alphabet: alphabet::make_english_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 2,
         challenges_are_passes: true,
@@ -305,6 +321,7 @@ pub fn make_board_test_game_config(board_layout: board_layout::BoardLayout) -> G
         alphabet: alphabet::make_english_alphabet(),
         board_layout,
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -323,6 +340,7 @@ pub fn make_jumbled_english_game_config() -> GameConfig {
         alphabet: alphabet::make_english_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -341,6 +359,7 @@ pub fn make_punctured_english_game_config() -> GameConfig {
         alphabet: alphabet::make_english_alphabet(),
         board_layout: board_layout::make_punctured_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -359,6 +378,7 @@ pub fn make_jumbled_punctured_english_game_config() -> GameConfig {
         alphabet: alphabet::make_english_alphabet(),
         board_layout: board_layout::make_punctured_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -377,6 +397,7 @@ pub fn make_hong_kong_english_game_config() -> GameConfig {
         alphabet: alphabet::make_hong_kong_english_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 9,
+        num_played_bonus: make_num_played_bonus(&[(9, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -395,6 +416,7 @@ pub fn make_super_english_game_config() -> GameConfig {
         alphabet: alphabet::make_super_english_alphabet(),
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -413,6 +435,7 @@ pub fn make_jumbled_super_english_game_config() -> GameConfig {
         alphabet: alphabet::make_super_english_alphabet(),
         board_layout: board_layout::make_super_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -431,6 +454,7 @@ pub fn make_french_game_config() -> GameConfig {
         alphabet: alphabet::make_french_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -449,6 +473,7 @@ pub fn make_jumbled_french_game_config() -> GameConfig {
         alphabet: alphabet::make_french_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -467,6 +492,7 @@ pub fn make_german_game_config() -> GameConfig {
         alphabet: alphabet::make_german_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 4,
         challenges_are_passes: false,
@@ -485,6 +511,7 @@ pub fn make_jumbled_german_game_config() -> GameConfig {
         alphabet: alphabet::make_german_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 4,
         challenges_are_passes: false,
@@ -503,6 +530,7 @@ pub fn make_norwegian_game_config() -> GameConfig {
         alphabet: alphabet::make_norwegian_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -521,6 +549,7 @@ pub fn make_jumbled_norwegian_game_config() -> GameConfig {
         alphabet: alphabet::make_norwegian_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -541,6 +570,7 @@ pub fn make_polish_game_config() -> GameConfig {
         alphabet: alphabet::make_polish_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 4,
         challenges_are_passes: false,
@@ -559,6 +589,7 @@ pub fn make_jumbled_polish_game_config() -> GameConfig {
         alphabet: alphabet::make_polish_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 4,
         challenges_are_passes: false,
@@ -577,6 +608,7 @@ pub fn make_slovene_game_config() -> GameConfig {
         alphabet: alphabet::make_slovene_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -595,6 +627,7 @@ pub fn make_jumbled_slovene_game_config() -> GameConfig {
         alphabet: alphabet::make_slovene_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -614,6 +647,7 @@ pub fn make_spanish_game_config() -> GameConfig {
         alphabet: alphabet::make_spanish_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 4,
         challenges_are_passes: true,
@@ -632,6 +666,7 @@ pub fn make_jumbled_spanish_game_config() -> GameConfig {
         alphabet: alphabet::make_spanish_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 4,
         challenges_are_passes: true,
@@ -650,6 +685,7 @@ pub fn make_swedish_game_config() -> GameConfig {
         alphabet: alphabet::make_swedish_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -668,6 +704,7 @@ pub fn make_jumbled_swedish_game_config() -> GameConfig {
         alphabet: alphabet::make_swedish_alphabet(),
         board_layout: board_layout::make_standard_board_layout(),
         rack_size: 7,
+        num_played_bonus: make_num_played_bonus(&[(7, 50)]),
         num_players: 2,
         num_passes_to_end: 0,
         challenges_are_passes: false,
@@ -694,5 +731,19 @@ mod tests {
         assert_eq!(gc.time_adjustment(-60_001), -20);
         assert_eq!(gc.time_adjustment(-3_277 * 60_000), -32_770);
         assert!(gc.time_adjustment(i64::MIN) < -32_770);
+    }
+
+    #[test]
+    #[inline]
+    fn the_bonus_is_paid_for_a_full_rack_only() {
+        for (gc, rack_size) in [
+            (make_english_game_config(), 7),
+            (make_hong_kong_english_game_config(), 9),
+        ] {
+            for num_played in 0..=u8::MAX {
+                let bonus = if num_played == rack_size { 50 } else { 0 };
+                assert_eq!(gc.num_played_bonus(num_played), bonus, "{num_played}");
+            }
+        }
     }
 }
