@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphabet, board_layout};
+use super::{alphabet, board_layout, error};
+use std::str::FromStr;
 
 pub enum GameRules {
     Classic,
@@ -742,6 +743,112 @@ pub fn make_game_config_by_name(name: &str) -> Option<GameConfig> {
         .map(|(_, make)| make())
 }
 
+#[inline]
+pub fn parse_num_played_bonus(s: &str, rack_size: u8) -> error::Returns<[i16; 256]> {
+    let mut bonuses = Vec::new();
+    if s != "none" {
+        for entry in s.split(',') {
+            let (num_played, bonus) = entry
+                .split_once(':')
+                .ok_or("a bonus is tiles:points, as in 7:50")?;
+            let num_played = u8::from_str(num_played)?;
+            if !(1..=rack_size).contains(&num_played) {
+                return Err(format!("a rack of {rack_size} cannot play {num_played} tiles").into());
+            }
+            if bonuses.iter().any(|&(n, _)| n == num_played) {
+                return Err(format!("the bonus for {num_played} tiles is given twice").into());
+            }
+            bonuses.push((num_played, i16::from_str(bonus)?));
+        }
+    }
+    Ok(make_num_played_bonus(&bonuses))
+}
+
+#[inline]
+fn take<'a>(
+    values: &mut std::collections::BTreeMap<&str, &'a str>,
+    key: &str,
+) -> error::Returns<&'a str> {
+    values
+        .remove(key)
+        .ok_or_else(|| format!("{key} is missing").into())
+}
+
+#[inline]
+fn yes_no(value: &str) -> error::Returns<bool> {
+    match value {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        _ => Err(format!("{value:?} is not yes or no").into()),
+    }
+}
+
+impl GameConfig {
+    #[inline]
+    pub fn new_static_from_text(
+        s: &str,
+        read_file: &impl Fn(&str) -> error::Returns<String>,
+    ) -> error::Returns<Self> {
+        let mut values = std::collections::BTreeMap::new();
+        for line in s.lines() {
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (key, value) = line
+                .trim_end()
+                .split_once(' ')
+                .ok_or_else(|| format!("{line:?} is not a key and a value"))?;
+            if values.insert(key, value.trim_start()).is_some() {
+                return Err(format!("{key} is given twice").into());
+            }
+        }
+        let tiles = take(&mut values, "tiles")?;
+        let alphabet = match alphabet::make_alphabet_by_name(tiles) {
+            Some(alphabet) => alphabet,
+            None => alphabet::Alphabet::new_static_from_text(&read_file(tiles)?)?,
+        };
+        let board = take(&mut values, "board")?;
+        let board_layout = match board_layout::make_board_layout_by_name(board) {
+            Some(board_layout) => board_layout,
+            None => board_layout::BoardLayout::new_static_from_text(&read_file(board)?)?,
+        };
+        let rack_size = u8::from_str(take(&mut values, "rack-size")?)?;
+        let game_config = Self::Static(StaticGameConfig {
+            game_rules: match take(&mut values, "rules")? {
+                "classic" => GameRules::Classic,
+                "jumbled" => GameRules::Jumbled,
+                rules => return Err(format!("{rules:?} is not classic or jumbled").into()),
+            },
+            alphabet,
+            board_layout,
+            rack_size,
+            num_played_bonus: parse_num_played_bonus(take(&mut values, "bingo-bonus")?, rack_size)?,
+            num_players: u8::from_str(take(&mut values, "players")?)?,
+            num_passes_to_end: u8::from_str(take(&mut values, "passes-to-end")?)?,
+            challenges_are_passes: yes_no(take(&mut values, "challenges-are-passes")?)?,
+            num_zeros_to_end: u8::from_str(take(&mut values, "zeros-to-end")?)?,
+            zeros_can_end_empty_board: yes_no(take(&mut values, "zeros-can-end-empty-board")?)?,
+            exchanges_are_zeros: yes_no(take(&mut values, "exchanges-are-zeros")?)?,
+            exchanges_allowed_per_player: match take(&mut values, "exchanges")? {
+                "unlimited" => i16::MAX,
+                exchanges => i16::from_str(exchanges)?,
+            },
+            exchange_tile_limit: i16::from_str(take(&mut values, "exchange-limit")?)?,
+        });
+        if let Some(key) = values.keys().next() {
+            return Err(format!("{key} is not a preset key").into());
+        }
+        if rack_size == 0
+            || game_config.num_players() == 0
+            || game_config.exchanges_allowed_per_player() < 0
+            || game_config.exchange_tile_limit() < 1
+        {
+            return Err("a game has a rack, a player and an exchange limit of 1 or more".into());
+        }
+        Ok(game_config)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,6 +880,85 @@ mod tests {
         }
     }
 
+    #[inline]
+    fn preset_text_of(tiles: &str, board: &str, gc: &GameConfig) -> String {
+        let bonuses = (0..=u8::MAX)
+            .filter(|&n| gc.num_played_bonus(n) != 0)
+            .map(|n| format!("{n}:{}", gc.num_played_bonus(n)))
+            .collect::<Vec<_>>();
+        let yes_no = |b| if b { "yes" } else { "no" };
+        format!(
+            "# written by the test\n\ntiles {tiles}\nboard {board}\nrules {}\nrack-size {}\n\
+             bingo-bonus {}\nplayers {}\npasses-to-end {}\nchallenges-are-passes {}\n\
+             zeros-to-end {}\nzeros-can-end-empty-board {}\nexchanges-are-zeros {}\n\
+             exchanges {}\nexchange-limit {}\n",
+            match gc.game_rules() {
+                GameRules::Classic => "classic",
+                GameRules::Jumbled => "jumbled",
+            },
+            gc.rack_size(),
+            if bonuses.is_empty() {
+                "none".to_string()
+            } else {
+                bonuses.join(",")
+            },
+            gc.num_players(),
+            gc.num_passes_to_end(),
+            yes_no(gc.challenges_are_passes()),
+            gc.num_zeros_to_end(),
+            yes_no(gc.zeros_can_end_empty_board()),
+            yes_no(gc.exchanges_are_zeros()),
+            if gc.exchanges_allowed_per_player() == i16::MAX {
+                "unlimited".to_string()
+            } else {
+                gc.exchanges_allowed_per_player().to_string()
+            },
+            gc.exchange_tile_limit(),
+        )
+    }
+
+    #[inline]
+    fn same_game_config(a: &GameConfig, b: &GameConfig) -> bool {
+        let (alphabet, other_alphabet) = (a.alphabet(), b.alphabet());
+        let (board_layout, other_board_layout) = (a.board_layout(), b.board_layout());
+        matches!(
+            (a.game_rules(), b.game_rules()),
+            (GameRules::Classic, GameRules::Classic) | (GameRules::Jumbled, GameRules::Jumbled)
+        ) && alphabet.len() == other_alphabet.len()
+            && (0..alphabet.len()).all(|tile| {
+                alphabet.of_board(tile) == other_alphabet.of_board(tile)
+                    && alphabet.freq(tile) == other_alphabet.freq(tile)
+                    && alphabet.score(tile) == other_alphabet.score(tile)
+                    && alphabet.is_vowel(tile) == other_alphabet.is_vowel(tile)
+            })
+            && board_layout.dim().rows == other_board_layout.dim().rows
+            && board_layout.dim().cols == other_board_layout.dim().cols
+            && board_layout.star_row() == other_board_layout.star_row()
+            && board_layout.star_col() == other_board_layout.star_col()
+            && board_layout
+                .premiums()
+                .iter()
+                .zip(other_board_layout.premiums())
+                .all(|(p, q)| {
+                    p.word_multiplier == q.word_multiplier && p.tile_multiplier == q.tile_multiplier
+                })
+            && a.rack_size() == b.rack_size()
+            && (0..=u8::MAX).all(|n| a.num_played_bonus(n) == b.num_played_bonus(n))
+            && a.num_players() == b.num_players()
+            && a.num_passes_to_end() == b.num_passes_to_end()
+            && a.challenges_are_passes() == b.challenges_are_passes()
+            && a.num_zeros_to_end() == b.num_zeros_to_end()
+            && a.zeros_can_end_empty_board() == b.zeros_can_end_empty_board()
+            && a.exchanges_are_zeros() == b.exchanges_are_zeros()
+            && a.exchanges_allowed_per_player() == b.exchanges_allowed_per_player()
+            && a.exchange_tile_limit() == b.exchange_tile_limit()
+    }
+
+    #[inline]
+    fn no_files(path: &str) -> error::Returns<String> {
+        Err(format!("no file {path}").into())
+    }
+
     #[test]
     #[inline]
     fn every_bundled_game_is_found_by_its_name() {
@@ -790,5 +976,88 @@ mod tests {
             );
         }
         assert!(make_game_config_by_name("klingon").is_none());
+    }
+
+    #[test]
+    #[inline]
+    fn every_bundled_game_reads_back_from_its_text() {
+        for (name, make) in GAME_CONFIGS {
+            let board = if name.starts_with("super-") {
+                "super"
+            } else {
+                "standard"
+            };
+            let gc = make();
+            let text = preset_text_of(name, board, &gc);
+            let read = GameConfig::new_static_from_text(&text, &no_files).unwrap();
+            assert!(same_game_config(&read, &gc), "{name}");
+        }
+        let gc = make_jumbled_english_game_config();
+        let text = preset_text_of("english", "standard", &gc);
+        let read = GameConfig::new_static_from_text(&text, &no_files).unwrap();
+        assert!(same_game_config(&read, &gc), "jumbled");
+        assert!(!same_game_config(&read, &make_english_game_config()));
+    }
+
+    #[test]
+    #[inline]
+    fn a_preset_reads_its_tiles_and_board_through_the_given_reader() {
+        let gc = make_punctured_english_game_config();
+        let tiles = "?\t?\t2\t0\t0\t0\t0\nA\ta\t98\t1\t1\t0\t0\n";
+        let board = "star 1 1\n|# #|\n|   |\n|#-#|\n";
+        let files = |path: &str| -> error::Returns<String> {
+            match path {
+                "tiles.txt" => Ok(tiles.to_string()),
+                "board.txt" => Ok(board.to_string()),
+                _ => no_files(path),
+            }
+        };
+        let text = preset_text_of("tiles.txt", "board.txt", &gc);
+        let read = GameConfig::new_static_from_text(&text, &files).unwrap();
+        assert_eq!(read.alphabet().len(), 2);
+        assert_eq!(read.alphabet().num_tiles(), 100);
+        assert_eq!(read.board_layout().dim().rows, 3);
+        assert_eq!(read.board_layout().star_col(), 1);
+        assert!(GameConfig::new_static_from_text(&text, &no_files).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_preset_file_that_cannot_be_played_is_refused() {
+        let good = preset_text_of("english", "standard", &make_english_game_config());
+        assert!(GameConfig::new_static_from_text(&good, &no_files).is_ok());
+        let edits: &[(&str, &str)] = &[
+            ("rack-size 7\n", ""),
+            ("rack-size 7\n", "rack-size 7\nrack-size 7\n"),
+            ("rack-size 7\n", "rack-size 7\nrack-sizes 7\n"),
+            ("rack-size 7\n", "rack-size seven\n"),
+            ("rack-size 7\n", "rack-size 0\n"),
+            ("rack-size 7\n", "rack-size\n"),
+            ("rules classic\n", "rules chess\n"),
+            ("bingo-bonus 7:50\n", "bingo-bonus 8:50\n"),
+            ("bingo-bonus 7:50\n", "bingo-bonus 0:50\n"),
+            ("bingo-bonus 7:50\n", "bingo-bonus 7:50,7:25\n"),
+            ("bingo-bonus 7:50\n", "bingo-bonus 7\n"),
+            ("players 2\n", "players 0\n"),
+            (
+                "challenges-are-passes no\n",
+                "challenges-are-passes maybe\n",
+            ),
+            ("exchanges unlimited\n", "exchanges -1\n"),
+            ("exchange-limit 7\n", "exchange-limit 0\n"),
+            ("tiles english\n", "tiles klingon\n"),
+            ("board standard\n", "board round\n"),
+        ];
+        for (old, new) in edits {
+            assert_eq!(good.matches(old).count(), 1, "{old:?}");
+            let text = good.replace(old, new);
+            assert!(
+                GameConfig::new_static_from_text(&text, &no_files).is_err(),
+                "{new:?}"
+            );
+        }
+        let no_bonus = good.replace("bingo-bonus 7:50\n", "bingo-bonus none\n");
+        let read = GameConfig::new_static_from_text(&no_bonus, &no_files).unwrap();
+        assert_eq!(read.num_played_bonus(7), 0);
     }
 }
