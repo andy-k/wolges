@@ -47,24 +47,25 @@ runtime at all. Picking a move is now a plain synchronous function call.
 MEASURING THE SIMMER: A TWO-SEAT COMPARE
 
 lab/leavegen.txt's leave compare measures leave TABLES: each seat picks its
-move by one greedy look at the board with its own table. leave sim-compare is
-the simmer's counterpart: both seats share the same leave table, but each picks
-its move by running the full rollout instead of a single greedy look, and the
-two seats can each be configured differently. Every seat reads its own options,
---p0-picker and --p0-win-pct or --p1-picker and --p1-win-pct (how it picks a
-move, and a win% table), and both share one --iters rollout budget per move.
-Giving both seats identical options and expecting the result to land near 50%
-is a harness sanity check (an unbiased comparison should tie); giving them
-different options measures which one plays better.
+move by one greedy look at the board with its own table. The same command
+measures the simmer: with --p0-picker simmer and --p1-picker simmer each seat
+picks its move by running the full rollout instead of a single greedy look, and
+the two seats can each be configured differently. Every seat reads its own
+leave table and its own options, --p0-picker and --p0-win-pct or --p1-picker
+and --p1-win-pct (how it picks a move, and a win% table), and both share one
+--iters rollout budget per move. Giving both seats identical options and
+expecting the result to land near 50% is a harness sanity check (an unbiased
+comparison should tie); giving them different options measures which one plays
+better.
 
-A seat does not have to sim at all. --p0-picker / --p1-picker take "hasty",
-which is the single greedy look leave compare uses on both of its seats;
-"dynamic", the same look with every kept leave valued against the tiles still
-unseen, which needs a full-length leave table (census --full); or "simmer", the
-default. So the question the simmer exists to answer -- is it worth anything
-over just taking the best-looking move? -- is one run of one subcommand, on the
-same deals, with the same leave table on both sides and nothing else differing.
-Twenty pairs at 200 rollouts a move: the simming seat took 58.75%.
+A seat does not have to sim at all. --p0-picker / --p1-picker take "hasty", the
+single greedy look and the default; "dynamic", the same look with every kept
+leave valued against the tiles still unseen, which needs a full-length leave
+table (census --full); or "simmer". So the question the simmer exists to answer
+-- is it worth anything over just taking the best-looking move? -- is one run
+of one subcommand, on the same deals, with the same leave table on both sides
+and nothing else differing. Twenty pairs at 200 rollouts a move: the simming
+seat took 58.75%.
 
 That option is also the one to reach for when a run is too slow to finish. A
 hasty seat costs nothing, so a simmer-against-hasty run is about half the price
@@ -72,7 +73,7 @@ of simmer-against-simmer and still answers "is this configuration any good"
 against a fixed reference, where two simming seats only answer "is it better
 than that other configuration".
 
-As in leave compare, each game pair starts from the same deal with the seats
+As with leave tables, each game pair starts from the same deal with the seats
 swapped, so first-move advantage cancels between the two halves of the pair.
 Each seat's simmer is reseeded before every single move from a mix of the run's
 seed, the pair number, the game number, and the turn number, so the whole run
@@ -171,7 +172,7 @@ for any margin-and-tile-count combination the table never saw enough of to have
 an entry. The table is handed to the simmer by reference and defaults to none,
 so a caller without one uses the sigmoid alone, unchanged.
 
-leave sim-compare can give each seat its own table (--p0-win-pct /
+leave compare can give each simmer seat its own table (--p0-win-pct /
 --p1-win-pct), or none for the sigmoid, to weigh the sigmoid against the
 empirical table directly, seat against seat.
 
@@ -204,4 +205,4 @@ eight threads now give byte-identical results.
 Gated off entirely for the single-threaded wasm build (which has no threads to
 split across) and off by default even where threads are available (one thread
 keeps the original single-stream behavior, byte-identical to before parallel
-rollouts existed); leave sim-compare takes the thread count as --sim-threads.
+rollouts existed); leave compare takes the thread count as --sim-threads.
