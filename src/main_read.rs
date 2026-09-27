@@ -992,18 +992,17 @@ fn do_quackle<R: WgReader>(
 }
 
 #[inline]
-fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
+fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
     args: &[String],
-    language_name: &str,
     make_alphabet: AlphabetMaker,
 ) -> error::Returns<bool> {
-    match args[1].strip_prefix(language_name) {
-        Some(args1_suffix) => match args1_suffix {
-            "-klv" | "-klv16" => {
+    match args.get(1).map(String::as_str) {
+        Some(task) => match task {
+            "klv" | "klv16" => {
                 // klv16: same as klv1, but scales by 8.0 instead of 256.0.
                 // for use with olaugh/magpie-retro.
-                let is_klv16 = args1_suffix == "-klv16";
-                let alphabet = make_alphabet();
+                let is_klv16 = task == "klv16";
+                let alphabet = make_alphabet()?;
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
                 let parts = parse_klv(klv_bytes)?;
@@ -1048,9 +1047,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 Ok(true)
             }
-            "-kwg" | "-kbwg" => {
-                let alphabet = make_alphabet();
-                let is_kbwg = args1_suffix == "-kbwg";
+            "kwg" | "kbwg" => {
+                let alphabet = make_alphabet()?;
+                let is_kbwg = task == "kbwg";
                 if is_kbwg {
                     do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, None)?;
                 } else {
@@ -1058,47 +1057,47 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 Ok(true)
             }
-            "-kwg0" | "-kbwg0" => {
-                let alphabet = make_alphabet();
-                if args1_suffix == "-kbwg0" {
+            "kwg0" | "kbwg0" => {
+                let alphabet = make_alphabet()?;
+                if task == "kbwg0" {
                     do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, alphabet.of_rack(0))?;
                 } else {
                     do_wg_dawg(args, &alphabet, &KwgReader {}, 0, alphabet.of_rack(0))?;
                 }
                 Ok(true)
             }
-            "-kwg-gaddag" | "-kbwg-gaddag" => {
-                let alphabet = make_alphabet();
-                if args1_suffix == "-kbwg-gaddag" {
+            "kwg-gaddag" | "kbwg-gaddag" => {
+                let alphabet = make_alphabet()?;
+                if task == "kbwg-gaddag" {
                     do_wg_dawg(args, &alphabet, &KbwgReader {}, 1, Some("@"))?;
                 } else {
                     do_wg_dawg(args, &alphabet, &KwgReader {}, 1, Some("@"))?;
                 }
                 Ok(true)
             }
-            "-kwg-nodes" | "-kbwg-nodes" => {
-                let alphabet = make_alphabet();
-                if args1_suffix == "-kbwg-nodes" {
+            "kwg-nodes" | "kbwg-nodes" => {
+                let alphabet = make_alphabet()?;
+                if task == "kbwg-nodes" {
                     do_wg_nodes(args, &alphabet, &KbwgReader {})?;
                 } else {
                     do_wg_nodes(args, &alphabet, &KwgReader {})?;
                 }
                 Ok(true)
             }
-            "-kwg-prob" | "-kbwg-prob" => {
-                let alphabet = make_alphabet();
-                if args1_suffix == "-kbwg-prob" {
+            "kwg-prob" | "kbwg-prob" => {
+                let alphabet = make_alphabet()?;
+                if task == "kbwg-prob" {
                     do_wg_prob(args, &alphabet, &KbwgReader {})?;
                 } else {
                     do_wg_prob(args, &alphabet, &KwgReader {})?;
                 }
                 Ok(true)
             }
-            "-prob" => {
+            "prob" => {
                 if args.len() < 3 {
                     return Err("need more argument".into());
                 }
-                let alphabet = make_alphabet();
+                let alphabet = make_alphabet()?;
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
                 let mut word_prob = prob::WordProbability::new(&alphabet);
                 let mut v = Vec::new();
@@ -1118,47 +1117,47 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 Ok(true)
             }
-            "-klv-anagram-" | "-klv-anagram" | "-klv-anagram+" => {
-                let mode = if args1_suffix.ends_with('-') {
+            "klv-anagram-" | "klv-anagram" | "klv-anagram+" => {
+                let mode = if task.ends_with('-') {
                     AnagramMode::Sub
-                } else if args1_suffix.ends_with('+') {
+                } else if task.ends_with('+') {
                     AnagramMode::Super
                 } else {
                     AnagramMode::Exact
                 };
-                let alphabet = make_alphabet();
+                let alphabet = make_alphabet()?;
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
                 do_klv_anagram(args, &alphabet, &KwgReader {}, klv_bytes, mode)?;
                 Ok(true)
             }
-            "-kwg-anagram-" | "-kbwg-anagram-" | "-kwg-anagram" | "-kbwg-anagram"
-            | "-kwg-anagram+" | "-kbwg-anagram+" => {
-                let mode = if args1_suffix.ends_with('-') {
+            "kwg-anagram-" | "kbwg-anagram-" | "kwg-anagram" | "kbwg-anagram" | "kwg-anagram+"
+            | "kbwg-anagram+" => {
+                let mode = if task.ends_with('-') {
                     AnagramMode::Sub
-                } else if args1_suffix.ends_with('+') {
+                } else if task.ends_with('+') {
                     AnagramMode::Super
                 } else {
                     AnagramMode::Exact
                 };
-                let alphabet = make_alphabet();
-                if args1_suffix.starts_with("-kbwg") {
+                let alphabet = make_alphabet()?;
+                if task.starts_with("kbwg") {
                     do_wg_anagram(args, &alphabet, &KbwgReader {}, mode)?;
                 } else {
                     do_wg_anagram(args, &alphabet, &KwgReader {}, mode)?;
                 }
                 Ok(true)
             }
-            "-kwg-check" | "-kbwg-check" => {
-                let alphabet = make_alphabet();
-                if args1_suffix == "-kbwg-check" {
+            "kwg-check" | "kbwg-check" => {
+                let alphabet = make_alphabet()?;
+                if task == "kbwg-check" {
                     do_wg_check(args, &alphabet, &KbwgReader {})?;
                 } else {
                     do_wg_check(args, &alphabet, &KwgReader {})?;
                 }
                 Ok(true)
             }
-            "-q2-ort" => {
-                let alphabet = make_alphabet();
+            "q2-ort" => {
+                let alphabet = make_alphabet()?;
                 // ort: olaugh rack table.
                 // the format was discussed in woogles discord.
                 // https://discord.com/channels/741321677828522035/1157118170398724176/1164983643836530759
@@ -1244,10 +1243,10 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 }
                 Ok(true)
             }
-            "-make-q2-ort" => {
+            "make-q2-ort" => {
                 // assume input is good (e.g. no duplicates)
                 let num_buckets = u32::from_str(&args[4])?;
-                let alphabet = make_alphabet();
+                let alphabet = make_alphabet()?;
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
                 let mut csv_reader = csv::ReaderBuilder::new()
                     .has_headers(false)
@@ -1326,9 +1325,9 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 )?;
                 Ok(true)
             }
-            "-wmp" | "-wmp-words" => {
-                let words_only = args1_suffix == "-wmp-words";
-                let alphabet = make_alphabet();
+            "wmp" | "wmp-words" => {
+                let words_only = task == "wmp-words";
+                let alphabet = make_alphabet()?;
                 let alphabet_label = &WolgesAlphabetLabel {
                     alphabet: &alphabet,
                 };
@@ -1963,19 +1962,14 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 make_writer(&args[3])?.write_all(ret.as_bytes())?;
                 Ok(true)
             }
-            "-make-wmp1"
-            | "-make-wmp1-overflow"
-            | "-make-wmp2"
-            | "-make-wmp2-overflow"
-            | "-make-wmp" => {
-                let allow_overflow =
-                    args1_suffix == "-make-wmp2-overflow" || args1_suffix == "-make-wmp1-overflow";
-                let is_v1 = args1_suffix == "-make-wmp1" || args1_suffix == "-make-wmp1-overflow";
-                let is_v2 = !is_v1
-                    && (args1_suffix == "-make-wmp2" || args1_suffix == "-make-wmp2-overflow");
+            "make-wmp1" | "make-wmp1-overflow" | "make-wmp2" | "make-wmp2-overflow"
+            | "make-wmp" => {
+                let allow_overflow = task == "make-wmp2-overflow" || task == "make-wmp1-overflow";
+                let is_v1 = task == "make-wmp1" || task == "make-wmp1-overflow";
+                let is_v2 = !is_v1 && (task == "make-wmp2" || task == "make-wmp2-overflow");
                 let is_v3_plus = !is_v1 && !is_v2;
                 let never_inline_b2 = allow_overflow;
-                let alphabet = make_alphabet();
+                let alphabet = make_alphabet()?;
                 let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
                 let all_words = read_machine_words_sorted_by_length(
                     alphabet_reader,
@@ -2700,67 +2694,66 @@ fn next_prime(mut x: u32) -> u32 {
     }
 }
 
-fn main() -> error::Returns<()> {
-    let args = std::env::args().collect::<Vec<_>>();
-    if args.len() <= 1 {
-        println!(
-            "args:
-  english-klv CSW24.klv CSW24.csv
-  english-klv CSW24.klv2 CSW24.csv
+#[derive(clap::Parser)]
+#[command(
+    about = "read word graphs, leave tables and other lexicon files",
+    arg_required_else_help = true,
+    after_help = "tasks:
+  klv CSW24.klv CSW24.csv
+  klv CSW24.klv2 CSW24.csv
     read klv/klv2 file
-  english-klv16 CSW24.klv16 CSW24.csv
+  klv16 CSW24.klv16 CSW24.csv
     read klv16 file
-  english-kwg CSW24.kwg CSW24.txt
-  english-kwg CSW24.kad CSW24.txt
+  kwg CSW24.kwg CSW24.txt
+  kwg CSW24.kad CSW24.txt
     read kwg/kad file (dawg) (use kwg0 to allow 0, such as for klv-kwg-extract)
-  english-kbwg CSW24.kbwg CSW24.txt
+  kbwg CSW24.kbwg CSW24.txt
     read kbwg file (dawg) (use kbwg0 to allow 0)
-  english-kwg-gaddag CSW24.kwg CSW24.txt
+  kwg-gaddag CSW24.kwg CSW24.txt
     read gaddawg kwg file (gaddag)
-  english-kbwg-gaddag CSW24.kbwg CSW24.txt
+  kbwg-gaddag CSW24.kbwg CSW24.txt
     read gaddawg kbwg file (gaddag)
-  english-kwg-nodes CSW24.kwg CSW24.kwg.raw
+  kwg-nodes CSW24.kwg CSW24.kwg.raw
     read kwg file for human inspection
-  english-kbwg-nodes CSW24.kbwg CSW24.kbwg.raw
+  kbwg-nodes CSW24.kbwg CSW24.kbwg.raw
     read kbwg file for human inspection
-  english-kwg-prob CSW24.kwg -
+  kwg-prob CSW24.kwg -
     read kwg file (dawg) by probability (output format subject to changes)
-  english-prob word [word...]
+  prob word [word...]
     show raw probability
-  english-klv-anagram- CSW24.klv2 - A?AC
-  english-klv-anagram CSW24.klv2 - A?AC
-  english-klv-anagram+ CSW24.klv2 - A?AC
+  klv-anagram- CSW24.klv2 - A?AC
+  klv-anagram CSW24.klv2 - A?AC
+  klv-anagram+ CSW24.klv2 - A?AC
     list all leaves with subanagram, anagram, or superanagram
-  english-kwg-anagram- CSW24.kwg - A?AC
-  english-kwg-anagram CSW24.kwg - A?AC
-  english-kwg-anagram+ CSW24.kwg - A?AC
-  english-kbwg-anagram- CSW24.kbwg - A?AC
-  english-kbwg-anagram CSW24.kbwg - A?AC
-  english-kbwg-anagram+ CSW24.kbwg - A?AC
+  kwg-anagram- CSW24.kwg - A?AC
+  kwg-anagram CSW24.kwg - A?AC
+  kwg-anagram+ CSW24.kwg - A?AC
+  kbwg-anagram- CSW24.kbwg - A?AC
+  kbwg-anagram CSW24.kbwg - A?AC
+  kbwg-anagram+ CSW24.kbwg - A?AC
     list all words with subanagram, anagram, or superanagram (using dawg)
-  english-kwg-check CSW24.kwg word [word...]
-  english-kbwg-check CSW24.kbwg word [word...]
+  kwg-check CSW24.kwg word [word...]
+  kbwg-check CSW24.kbwg word [word...]
     checks if all words are valid (using dawg)
-  english-q2-ort something.ort something.csv
+  q2-ort something.ort something.csv
     read .ort (format subject to change)
-  english-make-q2-ort something.csv something.ort num_buckets
+  make-q2-ort something.csv something.ort num_buckets
     generate .ort with the given num_buckets (ideally prime eg 5297687)
-  english-wmp-words something.wmp something.txt
+  wmp-words something.wmp something.txt
     read .wmp words (format subject to change)
-  english-wmp something.wmp something.txt
+  wmp something.wmp something.txt
     read .wmp (format subject to change)
-  english-make-wmp1 something.txt something.wmp
-  english-make-wmp1-overflow something.txt something.wmp
+  make-wmp1 something.txt something.wmp
+  make-wmp1-overflow something.txt something.wmp
     generate .wmp v1 (-overflow = allow overflows, disable 2-blank inlining)
-  english-make-wmp2 something.txt something.wmp
-  english-make-wmp2-overflow something.txt something.wmp
+  make-wmp2 something.txt something.wmp
+  make-wmp2-overflow something.txt something.wmp
     generate .wmp v2 (-overflow = allow overflows)
-  english-make-wmp something.txt something.wmp
+  make-wmp something.txt something.wmp
     generate .wmp v3
-  (english can also be catalan, dutch, french, german, norwegian, polish,
-    slovene, spanish, swedish, decimal, hex)
-  (english can also be custom, with an extra alphabet file argument:
-    custom-kwg alphabet.txt CSW24.kwg CSW24.txt)
+  (the tiles are english unless --tiles gives other bundled tiles, such as
+    french, super-english or hex, or a file in the form of src/alphabets/*.txt,
+    as in --tiles french kwg words.kwg words.txt)
   klv-kwg-extract CSW24.klv2 racks.kwg
     just copy out the kwg for further analysis.
   kwg-hitcheck CSW24.kwg cls csa ncs outfile
@@ -2789,222 +2782,202 @@ fn main() -> error::Returns<()> {
   stats-zt
     experimental statistics exploration showing the Z table
 input/output files can be \"-\" (not advisable for binary files)"
-        );
-        Ok(())
-    } else {
-        let t0 = std::time::Instant::now();
-        if do_lang(&args, "english", alphabet::make_english_alphabet)?
-            || do_lang(&args, "catalan", alphabet::make_catalan_alphabet)?
-            || do_lang(&args, "dutch", alphabet::make_dutch_alphabet)?
-            || do_lang(&args, "french", alphabet::make_french_alphabet)?
-            || do_lang(&args, "german", alphabet::make_german_alphabet)?
-            || do_lang(&args, "norwegian", alphabet::make_norwegian_alphabet)?
-            || do_lang(&args, "polish", alphabet::make_polish_alphabet)?
-            || do_lang(&args, "slovene", alphabet::make_slovene_alphabet)?
-            || do_lang(&args, "spanish", alphabet::make_spanish_alphabet)?
-            || do_lang(&args, "swedish", alphabet::make_swedish_alphabet)?
-            || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
-            || do_lang(&args, "hex", alphabet::make_hex_alphabet)?
-            || do_lang(
-                &args,
-                "super-english",
-                alphabet::make_super_english_alphabet,
-            )?
-            || do_lang(
-                &args,
-                "super-catalan",
-                alphabet::make_super_catalan_alphabet,
-            )?
-            || do_lang(
-                &args,
-                "hong-kong-english",
-                alphabet::make_hong_kong_english_alphabet,
-            )?
-        {
-        } else if args[1].starts_with("custom-") {
-            if args.len() < 3 {
-                return Err("need alphabet file".into());
-            }
-            let alph_text = std::fs::read_to_string(&args[2])?;
-            let mut shifted_args = vec![args[0].clone(), args[1].clone()];
-            shifted_args.extend_from_slice(&args[3..]);
-            if !do_lang(&shifted_args, "custom", || {
-                alphabet::Alphabet::new_static_from_text(&alph_text).unwrap()
-            })? {
-                return Err("invalid argument".into());
-            }
-        } else if args[1] == "klv-kwg-extract" {
-            let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            let parts = parse_klv(klv_bytes)?;
-            // binary output
-            make_writer(&args[3])?.write_all(parts.kwg_bytes)?;
-        } else if args[1] == "kwg-hitcheck"
-            || args[1] == "kwg-hitcheck-gaddag"
-            || args[1] == "kbwg-hitcheck"
-            || args[1] == "kbwg-hitcheck-gaddag"
-        {
-            let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            let initial_idx = if args[1].ends_with("-gaddag") { 1 } else { 0 };
-            let mut ret = String::new();
-            if args[1].starts_with("kbwg") {
-                kwg_hitcheck(
-                    &mut ret,
-                    &KbwgReader {},
-                    kwg_bytes,
-                    initial_idx,
-                    u32::from_str(&args[3])?,
-                    u32::from_str(&args[4])?,
-                    u32::from_str(&args[5])?,
-                )?;
-            } else {
-                kwg_hitcheck(
-                    &mut ret,
-                    &KwgReader {},
-                    kwg_bytes,
-                    initial_idx,
-                    u32::from_str(&args[3])?,
-                    u32::from_str(&args[4])?,
-                    u32::from_str(&args[5])?,
-                )?;
-            }
-            make_writer(&args[6])?.write_all(ret.as_bytes())?;
-        } else if args[1] == "quackle-make-superleaves" {
-            let reader = &KwgReader {};
-            let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            let parts = parse_klv(klv_bytes)?;
-            let kwg_bytes = parts.kwg_bytes;
-            let mut r = parts.r;
-            let is_klv2 = parts.is_klv2;
-            if 0 == reader.len(kwg_bytes) {
-                return Err("out of bounds".into());
-            }
-            let mut ret = Vec::new();
-            iter_dawg(
-                &QuackleLeavesAlphabetLabel {},
-                reader,
+)]
+struct Cli {
+    #[arg(
+        long,
+        value_name = "NAME|FILE",
+        default_value = "english",
+        help = "bundled tiles or an alphabet file"
+    )]
+    tiles: String,
+    #[arg(help = "what to do, from the list below")]
+    task: String,
+    #[arg(allow_negative_numbers = true, help = "the task's files and values")]
+    args: Vec<String>,
+}
+
+fn main() -> error::Returns<()> {
+    let cli: Cli = clap::Parser::parse();
+    let t0 = std::time::Instant::now();
+    // the command line without its options, as the tasks read it
+    let mut args = vec![std::env::args().next().unwrap_or_default(), cli.task];
+    args.extend(cli.args);
+    let done = do_task(&args, || {
+        alphabet::make_alphabet_from(&cli.tiles, &|path| Ok(std::fs::read_to_string(path)?))
+    })?;
+    if done {
+    } else if args[1] == "klv-kwg-extract" {
+        let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        let parts = parse_klv(klv_bytes)?;
+        // binary output
+        make_writer(&args[3])?.write_all(parts.kwg_bytes)?;
+    } else if args[1] == "kwg-hitcheck"
+        || args[1] == "kwg-hitcheck-gaddag"
+        || args[1] == "kbwg-hitcheck"
+        || args[1] == "kbwg-hitcheck-gaddag"
+    {
+        let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        let initial_idx = if args[1].ends_with("-gaddag") { 1 } else { 0 };
+        let mut ret = String::new();
+        if args[1].starts_with("kbwg") {
+            kwg_hitcheck(
+                &mut ret,
+                &KbwgReader {},
                 kwg_bytes,
-                reader.arc_index(kwg_bytes, 0),
-                Some("\x01"),
-                &mut |s: &str| {
-                    let float_leave = read_leave_value(klv_bytes, &mut r, is_klv2)?;
-                    let rounded_leave = (float_leave * 256.0).round();
-                    let int_leave = (rounded_leave as i16) ^ 0x8000u16 as i16;
-                    let slen = s.len();
-                    ret.reserve(slen + 3);
-                    ret.push(slen as u8);
-                    ret.extend(s.bytes());
-                    ret.extend(int_leave.to_le_bytes());
-                    Ok(())
-                },
-                &mut default_in,
-                &mut default_out,
+                initial_idx,
+                u32::from_str(&args[3])?,
+                u32::from_str(&args[4])?,
+                u32::from_str(&args[5])?,
             )?;
-            if r != klv_bytes.len() {
-                return Err("too many leaves".into());
-            }
-            // binary output
-            make_writer(&args[3])?.write_all(&ret)?;
-        } else if args[1] == "quackle-superleaves" {
-            let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-            let mut i = 0;
-            let mut s = String::new();
-            while i < bytes.len() {
-                let l = bytes[i] as usize;
-                if i + l + 3 > bytes.len() {
-                    return Err("out of bounds".into());
-                }
-                s.clear();
-                for j in 1..=l {
-                    let c = bytes[i + j];
-                    if c == 1 {
-                        s.push('?');
-                    } else if (5..=30).contains(&c) {
-                        s.push((c + (b'A' - 5)) as char);
-                    } else {
-                        return Err("invalid tile".into());
-                    }
-                }
-                i += l + 3;
-                csv_out.serialize((
-                    &s,
-                    (read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0,
-                ))?;
-            }
-        } else if args[1] == "quackle" {
-            do_quackle(&args, |p| QuackleReader { offset: p })?;
-        } else if args[1] == "quackle-small" {
-            do_quackle(&args, |p| QuackleSmallReader { offset: p })?;
-        } else if args[1] == "zyzzyva" {
-            let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 0x8 > bytes.len() {
-                return Err("out of bounds".into());
-            }
-            dump_dawg(
-                &args,
-                &LexpertAlphabetLabel {},
-                &KwgReader {},
-                bytes,
-                1,
-                None,
-            )?;
-        } else if args[1] == "lexpert" {
-            let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-            if 0x4c > bytes.len() {
-                return Err("out of bounds".into());
-            }
-            dump_dawg(
-                &args,
-                &LexpertAlphabetLabel {},
-                &LexpertReader {},
-                bytes,
-                2,
-                None,
-            )?;
-        } else if args[1] == "stats-zt" {
-            let mut ret = String::new();
-            for ci in [0.8f64, 0.85, 0.9, 0.95, 0.99, 0.995, 0.999] {
-                writeln!(
-                    ret,
-                    "{:4.1}% {}",
-                    ci * 100.0,
-                    stats::NormalDistribution::reverse_ci(ci)
-                )?;
-            }
-            ret.push('\n');
-            let cumulative_normal_density = stats::NormalDistribution::cumulative_normal_density;
-            for y in (35..=50).rev().step_by(5) {
-                let v = y as f32 * -0.1;
-                writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
-            }
-            for y in (0..=34i32).rev() {
-                write!(ret, "{:4.1}", y as f32 * -0.1)?;
-                for x in 0..=9 {
-                    let v = (y * 10 + x) as f32 * -0.01;
-                    //write!(ret, " {:5.2}", v)?;
-                    write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
-                }
-                ret.push('\n');
-            }
-            ret.push('\n');
-            for y in 0..=34i32 {
-                write!(ret, "{:4.1}", y as f32 * 0.1)?;
-                for x in 0..=9 {
-                    let v = (y * 10 + x) as f32 * 0.01;
-                    //write!(ret, " {:5.2}", v)?;
-                    write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
-                }
-                ret.push('\n');
-            }
-            for y in (35..=50).step_by(5) {
-                let v = y as f32 * 0.1;
-                writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
-            }
-            print!("{ret}");
         } else {
-            return Err("invalid argument".into());
+            kwg_hitcheck(
+                &mut ret,
+                &KwgReader {},
+                kwg_bytes,
+                initial_idx,
+                u32::from_str(&args[3])?,
+                u32::from_str(&args[4])?,
+                u32::from_str(&args[5])?,
+            )?;
         }
-        writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
-        Ok(())
+        make_writer(&args[6])?.write_all(ret.as_bytes())?;
+    } else if args[1] == "quackle-make-superleaves" {
+        let reader = &KwgReader {};
+        let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        let parts = parse_klv(klv_bytes)?;
+        let kwg_bytes = parts.kwg_bytes;
+        let mut r = parts.r;
+        let is_klv2 = parts.is_klv2;
+        if 0 == reader.len(kwg_bytes) {
+            return Err("out of bounds".into());
+        }
+        let mut ret = Vec::new();
+        iter_dawg(
+            &QuackleLeavesAlphabetLabel {},
+            reader,
+            kwg_bytes,
+            reader.arc_index(kwg_bytes, 0),
+            Some("\x01"),
+            &mut |s: &str| {
+                let float_leave = read_leave_value(klv_bytes, &mut r, is_klv2)?;
+                let rounded_leave = (float_leave * 256.0).round();
+                let int_leave = (rounded_leave as i16) ^ 0x8000u16 as i16;
+                let slen = s.len();
+                ret.reserve(slen + 3);
+                ret.push(slen as u8);
+                ret.extend(s.bytes());
+                ret.extend(int_leave.to_le_bytes());
+                Ok(())
+            },
+            &mut default_in,
+            &mut default_out,
+        )?;
+        if r != klv_bytes.len() {
+            return Err("too many leaves".into());
+        }
+        // binary output
+        make_writer(&args[3])?.write_all(&ret)?;
+    } else if args[1] == "quackle-superleaves" {
+        let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+        let mut i = 0;
+        let mut s = String::new();
+        while i < bytes.len() {
+            let l = bytes[i] as usize;
+            if i + l + 3 > bytes.len() {
+                return Err("out of bounds".into());
+            }
+            s.clear();
+            for j in 1..=l {
+                let c = bytes[i + j];
+                if c == 1 {
+                    s.push('?');
+                } else if (5..=30).contains(&c) {
+                    s.push((c + (b'A' - 5)) as char);
+                } else {
+                    return Err("invalid tile".into());
+                }
+            }
+            i += l + 3;
+            csv_out.serialize((
+                &s,
+                (read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0,
+            ))?;
+        }
+    } else if args[1] == "quackle" {
+        do_quackle(&args, |p| QuackleReader { offset: p })?;
+    } else if args[1] == "quackle-small" {
+        do_quackle(&args, |p| QuackleSmallReader { offset: p })?;
+    } else if args[1] == "zyzzyva" {
+        let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        if 0x8 > bytes.len() {
+            return Err("out of bounds".into());
+        }
+        dump_dawg(
+            &args,
+            &LexpertAlphabetLabel {},
+            &KwgReader {},
+            bytes,
+            1,
+            None,
+        )?;
+    } else if args[1] == "lexpert" {
+        let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        if 0x4c > bytes.len() {
+            return Err("out of bounds".into());
+        }
+        dump_dawg(
+            &args,
+            &LexpertAlphabetLabel {},
+            &LexpertReader {},
+            bytes,
+            2,
+            None,
+        )?;
+    } else if args[1] == "stats-zt" {
+        let mut ret = String::new();
+        for ci in [0.8f64, 0.85, 0.9, 0.95, 0.99, 0.995, 0.999] {
+            writeln!(
+                ret,
+                "{:4.1}% {}",
+                ci * 100.0,
+                stats::NormalDistribution::reverse_ci(ci)
+            )?;
+        }
+        ret.push('\n');
+        let cumulative_normal_density = stats::NormalDistribution::cumulative_normal_density;
+        for y in (35..=50).rev().step_by(5) {
+            let v = y as f32 * -0.1;
+            writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
+        }
+        for y in (0..=34i32).rev() {
+            write!(ret, "{:4.1}", y as f32 * -0.1)?;
+            for x in 0..=9 {
+                let v = (y * 10 + x) as f32 * -0.01;
+                //write!(ret, " {:5.2}", v)?;
+                write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
+            }
+            ret.push('\n');
+        }
+        ret.push('\n');
+        for y in 0..=34i32 {
+            write!(ret, "{:4.1}", y as f32 * 0.1)?;
+            for x in 0..=9 {
+                let v = (y * 10 + x) as f32 * 0.01;
+                //write!(ret, " {:5.2}", v)?;
+                write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
+            }
+            ret.push('\n');
+        }
+        for y in (35..=50).step_by(5) {
+            let v = y as f32 * 0.1;
+            writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
+        }
+        print!("{ret}");
+    } else {
+        return Err("invalid argument".into());
     }
+    writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
+    Ok(())
 }
