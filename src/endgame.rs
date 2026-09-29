@@ -318,7 +318,16 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     #[inline]
     fn run_id_loop(&mut self, player_idx: u8, verbose: bool) -> f32 {
         let mut last_valuation = f32::NAN;
-        for max_depth in 1.. {
+        // a move that does not end the line places tiles and leaves the mover some, or passes;
+        // a pass answering a pass repeats the position two plies back and ends it, and so does
+        // a play out. a mover holding one tile can pass before and after every tile the other
+        // places, so its line can run a ply longer than any a mover holding more can make. a
+        // rack with no tiles can only pass, as a rack holding its last tile does short of
+        // ending the game, so it counts as one tile.
+        let mine = self.racks[player_idx as usize].len().max(1);
+        let theirs = self.racks[player_idx as usize ^ 1].len().max(1);
+        let longest = (2 * (mine + theirs) + (mine == 1) as usize - 3).min(i8::MAX as usize);
+        for max_depth in 1..=longest as i8 {
             let old_num_state_eval = self.work_buffer.state_eval.len();
 
             self.work_buffer.depth_limited = false;
@@ -1820,6 +1829,30 @@ mod tests {
                 Position {
                     board: b,
                     racks: [vec![2, 1, 20], vec![8, 1, 20]],
+                },
+            ));
+        }
+
+        {
+            let mut b = empty_board();
+            put_word(&mut b, 7, 6, &[1, 20]); // AT
+            out.push((
+                "finished game, the mover's rack empty (board AT; p0=[] p1=[H])".to_string(),
+                Position {
+                    board: b,
+                    racks: [vec![], vec![8]],
+                },
+            ));
+        }
+
+        {
+            let mut b = empty_board();
+            put_word(&mut b, 7, 6, &[1, 20]); // AT
+            out.push((
+                "finished game, the other's rack empty (board AT; p0=[H,B] p1=[])".to_string(),
+                Position {
+                    board: b,
+                    racks: [vec![8, 2], vec![]],
                 },
             ));
         }
