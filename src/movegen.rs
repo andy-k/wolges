@@ -2612,8 +2612,9 @@ impl Clone for KurniaMoveGenerator {
 impl KurniaMoveGenerator {
     #[inline(always)]
     pub fn new(game_config: &game_config::GameConfig) -> Self {
+        let working_buffer = WorkingBuffer::new(game_config);
         Self {
-            working_buffer: WorkingBuffer::new(game_config),
+            working_buffer,
             plays: Vec::new(),
         }
     }
