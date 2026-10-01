@@ -92,7 +92,7 @@ struct WorkingBuffer {
     used_tile_scores_shadowr: Vec<i32>, // rack.len() (for shadow_play_right, premultiplied by SCALE)
     rack_tally_shadowl: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_left)
     rack_tally_shadowr: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_right)
-    spell_once: bool,
+    is_census: bool,
 }
 
 impl Clone for WorkingBuffer {
@@ -156,7 +156,7 @@ impl Clone for WorkingBuffer {
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
             rack_tally_shadowl: self.rack_tally_shadowl.clone(),
             rack_tally_shadowr: self.rack_tally_shadowr.clone(),
-            spell_once: self.spell_once,
+            is_census: self.is_census,
         }
     }
 
@@ -233,7 +233,7 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.rack_tally_shadowl);
         self.rack_tally_shadowr
             .clone_from(&source.rack_tally_shadowr);
-        self.spell_once = source.spell_once;
+        self.is_census = source.is_census;
     }
 }
 
@@ -334,7 +334,7 @@ impl WorkingBuffer {
             used_tile_scores_shadowr: Vec::new(),
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             rack_tally_shadowr: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
-            spell_once: false,
+            is_census: false,
         }
     }
 
@@ -1439,7 +1439,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg:
     play_out_bonus: i32,
     used_letters_tally: &'a mut [u8], // jumbled mode only
     accepts_alpha_cache: &'a mut [AlphaCacheEntry], // jumbled mode only
-    spell_once: bool, // real-before-blank descent for the census's spell-once sheet build
+    is_census: bool, // real-before-blank descent for the census's spell-once sheet build
 }
 
 fn gen_classic_place_moves<
@@ -1839,7 +1839,7 @@ fn gen_classic_place_moves<
     let alphabet = params.board_snapshot.game_config.alphabet();
     let anchor = params.anchor;
     let pass_leave_idx = params.multi_leaves.pass_leave_idx();
-    let spell_once = params.spell_once;
+    let is_census = params.is_census;
     let mut env = Env {
         params,
         alphabet,
@@ -1852,7 +1852,7 @@ fn gen_classic_place_moves<
         word_multiplier: 1,
         leave_idx: pass_leave_idx,
     };
-    if spell_once {
+    if is_census {
         play_left::<true, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
     } else {
         play_left::<false, _, _, _>(&mut env, &mut acc, 1, anchor, single_tile_plays);
@@ -2036,7 +2036,7 @@ fn gen_jumbled_place_moves<
                             env.params.rack_tally[tile as usize] += 1;
                         }
                         if let Some(blank_acc) = &opt_blank_acc
-                            && (!env.params.spell_once || env.params.rack_tally[tile as usize] == 0)
+                            && (!env.params.is_census || env.params.rack_tally[tile as usize] == 0)
                         {
                             env.params.rack_tally[0] -= 1;
                             env.params.used_letters_tally[tile as usize] += 1;
@@ -2142,7 +2142,7 @@ fn gen_jumbled_place_moves<
                                 env.params.rack_tally[tile as usize] += 1;
                             }
                             if let Some(blank_acc) = &opt_blank_acc
-                                && (!env.params.spell_once
+                                && (!env.params.is_census
                                     || env.params.rack_tally[tile as usize] == 0)
                             {
                                 env.params.rack_tally[0] -= 1;
@@ -2306,7 +2306,7 @@ fn gen_place_moves_at<
                 .accepts_alpha_cache
                 .as_deref_mut()
                 .unwrap_or(&mut []),
-            spell_once: working_buffer.spell_once,
+            is_census: working_buffer.is_census,
         },
         !placement.down,
     );
@@ -2853,14 +2853,14 @@ impl KurniaMoveGenerator {
         adjust_leave_value: AdjustLeaveValue,
         equity_predicate: EquityPredicate,
     ) {
-        self.working_buffer.spell_once = true;
+        self.working_buffer.is_census = true;
         self.gen_moves_filtered(
             params,
             place_move_predicate,
             adjust_leave_value,
             equity_predicate,
         );
-        self.working_buffer.spell_once = false;
+        self.working_buffer.is_census = false;
     }
 
     pub fn gen_moves_filtered<
