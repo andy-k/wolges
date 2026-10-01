@@ -327,7 +327,7 @@ pub fn make_hex_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/hex.txt")
 }
 
-// http://hkcrosswordclub.com/?cat=14
+// https://web.archive.org/web/20220207074935/http://hkcrosswordclub.com/?cat=14
 #[inline(always)]
 pub fn make_hong_kong_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/hong_kong_english.txt")
@@ -385,6 +385,34 @@ pub fn make_spanish_alphabet() -> Alphabet {
 #[inline(always)]
 pub fn make_swedish_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/swedish.txt")
+}
+
+pub type MakeAlphabet = fn() -> Alphabet;
+
+pub const ALPHABETS: &[(&str, MakeAlphabet)] = &[
+    ("catalan", make_catalan_alphabet),
+    ("decimal", make_decimal_alphabet),
+    ("dutch", make_dutch_alphabet),
+    ("english", make_english_alphabet),
+    ("french", make_french_alphabet),
+    ("german", make_german_alphabet),
+    ("hex", make_hex_alphabet),
+    ("hong-kong-english", make_hong_kong_english_alphabet),
+    ("norwegian", make_norwegian_alphabet),
+    ("polish", make_polish_alphabet),
+    ("slovene", make_slovene_alphabet),
+    ("spanish", make_spanish_alphabet),
+    ("super-catalan", make_super_catalan_alphabet),
+    ("super-english", make_super_english_alphabet),
+    ("swedish", make_swedish_alphabet),
+];
+
+#[inline]
+pub fn make_alphabet_by_name(name: &str) -> Option<Alphabet> {
+    ALPHABETS
+        .iter()
+        .find(|(this_name, _)| *this_name == name)
+        .map(|(_, make)| make())
 }
 
 pub struct AlphabetReader {
@@ -614,5 +642,20 @@ mod tests {
         assert!(Alphabet::new_static_from_text(&tiles_text(64, 1)).is_ok());
         assert!(Alphabet::new_static_from_text(&tiles_text(65, 1)).is_err());
         assert!(Alphabet::new_static_from_text("").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn every_bundled_alphabet_is_found_by_its_name() {
+        for (i, (name, make)) in ALPHABETS.iter().enumerate() {
+            assert!(
+                i == 0 || ALPHABETS[i - 1].0 < *name,
+                "{name} is out of order"
+            );
+            let alphabet = make_alphabet_by_name(name).unwrap();
+            assert_eq!(alphabet.len(), make().len(), "{name}");
+            assert_eq!(alphabet.num_tiles(), make().num_tiles(), "{name}");
+        }
+        assert!(make_alphabet_by_name("klingon").is_none());
     }
 }
