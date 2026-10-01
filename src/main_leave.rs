@@ -183,6 +183,20 @@ struct SelfPlay {
 }
 
 #[derive(clap::Args)]
+struct Gilles {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(default_value = "-", help = "player 1's leaves (- for none)")]
+    leave0: String,
+    #[arg(default_value = "-", help = "player 2's leaves (- for none)")]
+    leave1: String,
+    #[arg(default_value_t = 1_000_000)]
+    games: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+}
+
+#[derive(clap::Args)]
 struct Census {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -298,8 +312,6 @@ struct InOut {
 struct Generate {
     summary: String,
     leaves: String,
-    #[arg(help = "adds direct coverage for undersampled subracks")]
-    rare: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -323,7 +335,7 @@ enum Task {
     #[command(about = "autoplay and save only the summary")]
     AutoplaySummarizeOnly(SelfPlay),
     #[command(about = "GillesB board sampling, summarized as autoplay-summarize does")]
-    Gilles(SelfPlay),
+    Gilles(Gilles),
     #[command(about = "census leave generation")]
     Census(Census),
     #[command(about = "play game pairs to compare two sets of leaves")]
@@ -463,18 +475,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::Gilles(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
-            generate_gilles_summary(
-                game_config,
-                kwg,
-                klv0,
-                klv1,
-                SelfPlayParams {
-                    num_games: a.games,
-                    min_samples: a.min_samples,
-                    seed: a.seed,
-                    threads,
-                },
-            )
+            generate_gilles_summary(game_config, kwg, klv0, klv1, a.games, a.seed, threads)
         }
         Task::Census(a) => {
             let board_counts = parse_board_counts(&a.boards)?;
@@ -680,7 +681,6 @@ fn run<N: kwg::Node + Sync + Send>(
                 .has_headers(false)
                 .from_reader(make_reader(&a.summary)?),
             csv::Writer::from_writer(make_writer(&a.leaves)?),
-            a.rare.as_deref(),
         ),
         Task::GenerateFull(a) => generate_leaves::<_, _, true>(
             game_config,
@@ -688,7 +688,6 @@ fn run<N: kwg::Node + Sync + Send>(
                 .has_headers(false)
                 .from_reader(make_reader(&a.summary)?),
             csv::Writer::from_writer(make_writer(&a.leaves)?),
-            a.rare.as_deref(),
         ),
         Task::Playability(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -715,19 +714,6 @@ fn main() -> error::Returns<()> {
     }
     writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
     Ok(())
-}
-
-#[inline]
-fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
-    std::env::var(name)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(default)
-}
-
-#[inline(always)]
-fn env_flag(name: &str, default: bool) -> bool {
-    env_parse::<u64>(name, default as u64) != 0
 }
 
 struct SelfPlayParams {
@@ -758,59 +744,6 @@ fn generate_autoplay_logs<
     if !SUMMARIZE && min_samples_per_rack != 0 {
         return Err("min_samples_per_rack requires summarize".into());
     }
-
-    let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
-
-    let full_rack_forcing = env_flag("WOLGES_AUTOPLAY_FULL_RACK_FORCING", false);
-
-    let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
-
-    let oppdenial_rack = env_parse::<f64>("WOLGES_OPPDENIAL_RACK", 0.0);
-
-    let oppdenial_exact = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT", 0.0);
-    let oppdenial_exact_pool_max = env_usize("WOLGES_OPPDENIAL_EXACT_POOL_MAX", 32);
-
-    let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
-
-    let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
-        let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
-            wolges::return_error!(
-                "WOLGES_WINPCT is on, so WOLGES_WINPCT_TABLE must name the win% table".to_string()
-            )
-        };
-        let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "autoplay: win%-objective from {path}"
-        )?;
-        Some(t)
-    } else {
-        None
-    };
-
-    let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
-    let opp_on = (oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0)
-        && winpct_table.is_none();
-
-    let opp_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> = if opp_on {
-        let num_letters = game_config.alphabet().len() as usize;
-        let rack_size = game_config.rack_size() as usize;
-        let lat = census::MultisetLattice::new(num_letters, rack_size);
-        let add_table = census::AddTable::new(&lat);
-        let mut leave = vec![0i32; lat.len()];
-        census::fill_lattice_leaves(&lat, &mut leave, |tally| {
-            arc_klv0.leave_value_from_tally(tally)
-        });
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "autoplay: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} WOLGES_OPPDENIAL_EXACT={oppdenial_exact} \
-             oppdenial_exact_pool_max={oppdenial_exact_pool_max} opponent-denial machinery on ({} lattice leaves)",
-            lat.len(),
-        )?;
-        Some((lat, add_table, leave))
-    } else {
-        None
-    };
 
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -877,8 +810,6 @@ fn generate_autoplay_logs<
     let completed_moves = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
 
-    let rare_subrack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-
     // 0 = threads are collaboratively accumulating first num_games games.
     // 1 = one thread is determining which racks are undersampled after the
     //     first num_games games.
@@ -905,29 +836,19 @@ fn generate_autoplay_logs<
         csv_game_writer: std::fs::File,
         csv_log_writer: Option<std::fs::File>,
         full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
-        rare_subrack_map: fash::MyHashMap<bites::Bites, Cumulate>,
         undersampled_racks: Vec<bites::Bites>,
         undersampled_generation: u64,
         undersampling_comment: String,
         tick_periods: move_picker::Periods,
-        oppdenial_leave_sum_marg: Vec<f64>,
-        oppdenial_leave_boards: u64,
     }
     let mutexed_stuffs = std::sync::Arc::new(std::sync::Mutex::new(MutexedStuffs {
         csv_game_writer,
         csv_log_writer,
         full_rack_map,
-        rare_subrack_map,
         undersampled_racks,
         undersampled_generation: u64::MAX,
         undersampling_comment,
         tick_periods,
-        oppdenial_leave_sum_marg: if oppdenial_leave != 0.0 {
-            vec![0f64; game_config.alphabet().len() as usize]
-        } else {
-            Vec::new()
-        },
-        oppdenial_leave_boards: 0,
     }));
     let batch_size = 100;
 
@@ -954,8 +875,6 @@ fn generate_autoplay_logs<
             let undersampling_remediation_generation_id =
                 std::sync::Arc::clone(&undersampling_remediation_generation_id);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
-            let opp_ctx = opp_ctx.as_ref();
-            let winpct_table = winpct_table.as_ref();
             threads.push(s.spawn(move || {
                 let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut game_id = String::with_capacity(8);
@@ -982,8 +901,6 @@ fn generate_autoplay_logs<
                 let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
                 let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
 
-                let mut thread_rare_subrack_map =
-                    fash::MyHashMap::<bites::Bites, Cumulate>::default();
                 let mut exchange_buffer = if SUMMARIZE && min_samples_per_rack != 0 {
                     Vec::with_capacity(game_config.rack_size() as usize)
                 } else {
@@ -996,13 +913,7 @@ fn generate_autoplay_logs<
                 } else {
                     Vec::new()
                 };
-                let mut unseen_tally = if SUMMARIZE && min_samples_per_rack != 0 {
-                    vec![0u8; game_config.alphabet().len() as usize]
-                } else {
-                    Vec::new()
-                };
 
-                let mut unseen_pool = Vec::<u8>::new();
                 let mut sample_rack_buf = if SUMMARIZE && min_samples_per_rack != 0 {
                     Vec::with_capacity(game_config.rack_size() as usize)
                 } else {
@@ -1010,63 +921,7 @@ fn generate_autoplay_logs<
                 };
                 let mut undersampled_thread_racks = Vec::<bites::Bites>::new();
 
-                let opp_num_letters = game_config.alphabet().len() as usize;
-                let mut opp_sheet: Vec<i32> = Vec::new();
-                let mut opp_best: Vec<i32> = Vec::new();
-                let mut opp_marginal: Vec<f64> = Vec::new();
-                let mut opp_base_freqs: Vec<u8> = Vec::new();
-                let mut opp_unseen: Vec<u8> = Vec::new();
-                let mut opp_movegen_rack: Vec<u8> = Vec::new();
-                let mut opp_blank_deltas: Vec<(u8, i32)> = Vec::new();
-
-                let mut oppdenial_exact_kept_idx: Vec<u32> = Vec::new();
-                let mut oppdenial_exact_kept_size: Vec<u8> = Vec::new();
-                let mut oppdenial_exact_term: Vec<f64> = Vec::new();
-                if let Some((lat, _, _)) = opp_ctx {
-                    opp_sheet = vec![0i32; lat.len()];
-                    opp_best = vec![census::UNPLAYABLE; lat.len()];
-                    opp_marginal = vec![0f64; opp_num_letters];
-                    opp_base_freqs = (0..game_config.alphabet().len())
-                        .map(|tile| game_config.alphabet().freq(tile))
-                        .collect();
-                    opp_unseen = vec![0u8; opp_num_letters];
-                    if oppdenial_exact != 0.0 {
-                        oppdenial_exact_kept_idx = vec![0u32; lat.len()];
-                        oppdenial_exact_kept_size = vec![0u8; lat.len()];
-                        oppdenial_exact_term = vec![0f64; lat.len()];
-                    }
-                }
-
-                let mut oppdenial_leave_sum_marg: Vec<f64> = if oppdenial_leave != 0.0 {
-                    vec![0f64; opp_num_letters]
-                } else {
-                    Vec::new()
-                };
-                let mut oppdenial_leave_boards = 0u64;
-
-                let leave_size = if SUMMARIZE && min_samples_per_rack != 0 {
-                    game_config.rack_size() - 1
-                } else {
-                    0
-                };
-
-                let mut word_prob = if SUMMARIZE && min_samples_per_rack != 0 {
-                    Some(prob::WordProbability::new(game_config.alphabet()))
-                } else {
-                    None
-                };
-                let mut subrack_count_map = fash::MyHashMap::<bites::Bites, u64>::default();
-                let mut recompute_rack_tally = if SUMMARIZE && min_samples_per_rack != 0 {
-                    vec![0u8; game_config.alphabet().len() as usize]
-                } else {
-                    Vec::new()
-                };
                 let mut full_rack_tally = if SUMMARIZE && min_samples_per_rack != 0 {
-                    vec![0u8; game_config.alphabet().len() as usize]
-                } else {
-                    Vec::new()
-                };
-                let mut subrack_tally = if SUMMARIZE && min_samples_per_rack != 0 {
                     vec![0u8; game_config.alphabet().len() as usize]
                 } else {
                     Vec::new()
@@ -1085,11 +940,6 @@ fn generate_autoplay_logs<
                                 merge_rack_map(
                                     &mut mutex_guard.full_rack_map,
                                     &mut thread_full_rack_map,
-                                );
-
-                                merge_rack_map(
-                                    &mut mutex_guard.rare_subrack_map,
-                                    &mut thread_rare_subrack_map,
                                 );
                             }
                             undersampling_remediation_submission
@@ -1114,36 +964,20 @@ fn generate_autoplay_logs<
                                             &mut thread_full_rack_map,
                                             &mut mutex_guard.full_rack_map,
                                         );
-                                        std::mem::swap(
-                                            &mut thread_rare_subrack_map,
-                                            &mut mutex_guard.rare_subrack_map,
-                                        );
-                                        let deficit = recompute_undersampled_subracks(
+                                        let deficit = recompute_undersampled_racks(
                                             &thread_full_rack_map,
-                                            &thread_rare_subrack_map,
                                             &mut mutex_guard.undersampled_racks,
-                                            &mut subrack_count_map,
-                                            word_prob.as_mut(),
                                             RecomputeScratch {
-                                                rack_tally: &mut recompute_rack_tally,
                                                 full_rack_tally: &mut full_rack_tally,
-                                                subrack_tally: &mut subrack_tally,
                                                 alphabet_freqs: &mut alphabet_freqs,
                                                 exchange_buffer: &mut exchange_buffer,
                                             },
-                                            RecomputeParams {
-                                                leave_size,
-                                                full_rack_forcing,
-                                                min_samples: min_samples_per_rack,
-                                            },
+                                            game_config.rack_size(),
+                                            min_samples_per_rack,
                                         );
                                         std::mem::swap(
                                             &mut thread_full_rack_map,
                                             &mut mutex_guard.full_rack_map,
-                                        );
-                                        std::mem::swap(
-                                            &mut thread_rare_subrack_map,
-                                            &mut mutex_guard.rare_subrack_map,
                                         );
                                         mutex_guard.undersampled_generation = 0;
                                         mutex_guard.undersampling_comment.clear();
@@ -1187,10 +1021,6 @@ fn generate_autoplay_logs<
                                 &mut mutex_guard.full_rack_map,
                                 &mut thread_full_rack_map,
                             );
-                            merge_rack_map(
-                                &mut mutex_guard.rare_subrack_map,
-                                &mut thread_rare_subrack_map,
-                            );
 
                             let current_generation = undersampling_remediation_generation_id
                                 .load(std::sync::atomic::Ordering::Relaxed);
@@ -1199,36 +1029,20 @@ fn generate_autoplay_logs<
                                     &mut thread_full_rack_map,
                                     &mut mutex_guard.full_rack_map,
                                 );
-                                std::mem::swap(
-                                    &mut thread_rare_subrack_map,
-                                    &mut mutex_guard.rare_subrack_map,
-                                );
-                                let deficit = recompute_undersampled_subracks(
+                                let deficit = recompute_undersampled_racks(
                                     &thread_full_rack_map,
-                                    &thread_rare_subrack_map,
                                     &mut mutex_guard.undersampled_racks,
-                                    &mut subrack_count_map,
-                                    word_prob.as_mut(),
                                     RecomputeScratch {
-                                        rack_tally: &mut recompute_rack_tally,
                                         full_rack_tally: &mut full_rack_tally,
-                                        subrack_tally: &mut subrack_tally,
                                         alphabet_freqs: &mut alphabet_freqs,
                                         exchange_buffer: &mut exchange_buffer,
                                     },
-                                    RecomputeParams {
-                                        leave_size,
-                                        full_rack_forcing,
-                                        min_samples: min_samples_per_rack,
-                                    },
+                                    game_config.rack_size(),
+                                    min_samples_per_rack,
                                 );
                                 std::mem::swap(
                                     &mut thread_full_rack_map,
                                     &mut mutex_guard.full_rack_map,
-                                );
-                                std::mem::swap(
-                                    &mut thread_rare_subrack_map,
-                                    &mut mutex_guard.rare_subrack_map,
                                 );
                                 mutex_guard.undersampled_generation = current_generation;
                                 mutex_guard.undersampling_comment.clear();
@@ -1312,196 +1126,41 @@ fn generate_autoplay_logs<
                             },
                         };
 
-
-                        let mut oppdenial_exact_active = false;
-
-                        if SUMMARIZE
-                            && old_bag_len > 0
-                            && let Some((lat, add, leave)) = opp_ctx
-                        {
-                            opp_unseen.clone_from_slice(&opp_base_freqs);
-                            for &tile in game_state.board_tiles.iter() {
-                                if tile != 0 {
-                                    let base = tile & !((tile as i8) >> 7) as u8;
-                                    opp_unseen[base as usize] =
-                                        opp_unseen[base as usize].saturating_sub(1);
-                                }
-                            }
-                            opp_sheet.iter_mut().for_each(|v| *v = 0);
-                            let num_blanks_eff =
-                                (opp_unseen[0] as usize).min(game_config.rack_size() as usize);
-                            build_sheet_spell_once(
-                                &mut move_generator,
-                                &game_state.board_tiles,
-                                SpellTables {
-                                    game_config: &game_config,
-                                    kwg: &kwg,
-                                    klv: &arc_klv0,
-                                    lat,
-                                },
-                                SpellPool {
-                                    unseen_tally: &opp_unseen,
-                                    num_blanks_eff,
-                                    rack_size: game_config.rack_size() as usize,
-                                },
-                                &mut opp_movegen_rack,
-                                &mut opp_blank_deltas,
-                                &mut opp_sheet,
-                            );
-
-                            let pool: usize = opp_unseen.iter().map(|&c| c as usize).sum();
-                            let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
-                            if oppdenial_exact_board {
-                                census::best_equity_argmax_table(
-                                    lat,
-                                    &opp_sheet,
-                                    leave,
-                                    &mut opp_best,
-                                    &mut oppdenial_exact_kept_idx,
-                                    &mut oppdenial_exact_kept_size,
-                                );
-                            } else {
-                                census::best_equity_table(lat, &opp_sheet, leave, &mut opp_best);
-                            }
-                            if oppdenial_leave != 0.0 || oppdenial_rack != 0.0 {
-                                census::opp_denial_marginals(
-                                    lat,
-                                    add,
-                                    &opp_best,
-                                    &opp_unseen,
-                                    &mut opp_marginal,
-                                );
-                                if oppdenial_leave != 0.0 {
-                                    for (a, m) in
-                                        oppdenial_leave_sum_marg.iter_mut().zip(opp_marginal.iter())
-                                    {
-                                        *a += *m;
-                                    }
-                                    oppdenial_leave_boards += 1;
-                                }
-                            }
-                            if oppdenial_exact_board {
-                                oppdenial_exact_term.iter_mut().for_each(|x| *x = 0.0);
-                                census::opp_me2_per_rack(
-                                    lat,
-                                    add,
-                                    &opp_best,
-                                    &census::KeptArgmax {
-                                        idx: &oppdenial_exact_kept_idx,
-                                        size: &oppdenial_exact_kept_size,
-                                    },
-                                    &opp_unseen,
-                                    oppdenial_exact_me2,
-                                    &mut oppdenial_exact_term,
-                                );
-                            }
-                            oppdenial_exact_active = oppdenial_exact_board;
-                        }
-
-
-                        let winpct_board = WinpctBoard::from_bag(
-                            winpct_table,
-                            old_bag_len,
-                            game_config.rack_size() as usize,
-                            winpct_blend,
-                        );
-
-                        let knob = KnobFold {
-                            winpct_board: &winpct_board,
-                            oppdenial_rack,
-                            opp_marginal: &opp_marginal,
-                            oppdenial_exact,
-                            oppdenial_exact_term: &oppdenial_exact_term,
-                            oppdenial_exact_lat: if oppdenial_exact_active {
-                                opp_ctx.map(|(lat, _, _)| lat)
-                            } else {
-                                None
-                            },
-                        };
-
-
                         if SUMMARIZE && old_bag_len > 0 && !undersampled_thread_racks.is_empty() {
                             let chosen_undersampled_thread_rack_index =
                                 rng.random_range(0..undersampled_thread_racks.len());
 
+                            sample_rack_buf.clear();
+                            sample_rack_buf.extend_from_slice(
+                                &undersampled_thread_racks[chosen_undersampled_thread_rack_index],
+                            );
 
-                            unseen_tally.clone_from_slice(&alphabet_freqs);
-                            for &tile in game_state.board_tiles.iter() {
-                                if tile != 0 {
-                                    let base = tile & !((tile as i8) >> 7) as u8;
-                                    unseen_tally[base as usize] =
-                                        unseen_tally[base as usize].saturating_sub(1);
-                                }
-                            }
+                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                                board_snapshot,
+                                rack: &sample_rack_buf,
+                                max_gen: 1,
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            });
+                            let play = &move_generator.plays[0];
 
-                            let mut s_possible = true;
-                            for &tile in undersampled_thread_racks
-                                [chosen_undersampled_thread_rack_index]
-                                .iter()
+                            let rounded_equity = play.equity.as_f64();
+                            pool_one(&mut thread_full_rack_map, &sample_rack_buf[..], rounded_equity);
+                            undersampled_thread_racks
+                                .swap_remove(chosen_undersampled_thread_rack_index);
+                            if undersampling_remediation_countdown
+                                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                                <= 0
                             {
-                                if unseen_tally[tile as usize] > 0 {
-                                    unseen_tally[tile as usize] -= 1;
-                                } else {
-                                    s_possible = false;
-                                }
-                            }
 
+                                undersampling_remediation_countdown
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                            if s_possible || impossible_ok {
-                                let s_subrack = &undersampled_thread_racks
-                                    [chosen_undersampled_thread_rack_index];
-
-                                let num_filler =
-                                    (game_config.rack_size() as usize).saturating_sub(s_subrack.len());
-                                sample_rack_buf.clear();
-                                sample_rack_buf.extend_from_slice(s_subrack);
-                                unseen_pool.clear();
-                                for (tile, &c) in unseen_tally.iter().enumerate() {
-                                    for _ in 0..c {
-                                        unseen_pool.push(tile as u8);
-                                    }
-                                }
-                                let take = num_filler.min(unseen_pool.len());
-                                for i in 0..take {
-                                    let j = rng.random_range(i..unseen_pool.len());
-                                    unseen_pool.swap(i, j);
-                                }
-                                sample_rack_buf.extend_from_slice(&unseen_pool[..take]);
-                                sample_rack_buf.sort_unstable();
-
-                                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                    board_snapshot,
-                                    rack: &sample_rack_buf,
-                                    max_gen: 1,
-                                    num_exchanges_by_this_player: game_state
-                                        .current_player()
-                                        .num_exchanges,
-                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                    dynamic_leaves: None,
-                                });
-                                let play = &move_generator.plays[0];
-
-                                let rounded_equity = knob.apply(play.equity, &sample_rack_buf);
-                                if full_rack_forcing {
-
-                                    pool_one(&mut thread_full_rack_map, &sample_rack_buf[..], rounded_equity);
-                                } else {
-
-                                    pool_one(&mut thread_rare_subrack_map, &s_subrack[..], rounded_equity);
-                                }
-                                undersampled_thread_racks
-                                    .swap_remove(chosen_undersampled_thread_rack_index);
-                                if undersampling_remediation_countdown
-                                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
-                                    <= 0
-                                {
-
-                                    undersampling_remediation_countdown
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                                    undersampling_remediation_generation_id
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
+                                undersampling_remediation_generation_id
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             }
 
                             let current_undersampling_remediation_generation_id =
@@ -1633,7 +1292,7 @@ fn generate_autoplay_logs<
 
                         if SUMMARIZE && old_bag_len > 0 {
 
-                            let rounded_equity = knob.apply(play.equity, &cur_rack_as_vec);
+                            let rounded_equity = play.equity.as_f64();
                             pool_one(&mut thread_full_rack_map, &cur_rack_as_vec[..], rounded_equity);
                         }
 
@@ -1790,21 +1449,6 @@ fn generate_autoplay_logs<
 
                 if SUMMARIZE {
                     merge_rack_map(&mut mutex_guard.full_rack_map, &mut thread_full_rack_map);
-                    merge_rack_map(
-                        &mut mutex_guard.rare_subrack_map,
-                        &mut thread_rare_subrack_map,
-                    );
-
-                    if oppdenial_leave != 0.0 {
-                        for (a, b) in mutex_guard
-                            .oppdenial_leave_sum_marg
-                            .iter_mut()
-                            .zip(oppdenial_leave_sum_marg.iter())
-                        {
-                            *a += *b;
-                        }
-                        mutex_guard.oppdenial_leave_boards += oppdenial_leave_boards;
-                    }
                 }
             }));
         }
@@ -1848,35 +1492,6 @@ fn generate_autoplay_logs<
             }
             csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
         }
-
-        let rare_subrack_map = &mutex_guard.rare_subrack_map;
-        if !rare_subrack_map.is_empty() {
-            let mut rare_kv = rare_subrack_map.iter().collect::<Vec<_>>();
-            rare_kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
-            let mut rare_out = csv::Writer::from_path(claim_output_path(&format!(
-                "summary-rare-{run_identifier}"
-            ))?)?;
-            for (k, fv) in rare_kv.iter() {
-                cur_rack_ser.clear();
-                for &tile in k.iter() {
-                    cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
-                }
-                rare_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
-            }
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "{} rare samples over {} unique subracks into summary-rare-{run_identifier}",
-                rare_subrack_map.values().fold(0u64, |a, x| a + x.count),
-                rare_subrack_map.len(),
-            )?;
-        }
-
-        if oppdenial_leave != 0.0 && mutex_guard.oppdenial_leave_boards > 0 {
-            write_oppdenial_leave_marginal_sidecar(
-                &mutex_guard.oppdenial_leave_sum_marg,
-                mutex_guard.oppdenial_leave_boards,
-            )?;
-        }
     }
 
     writeln!(
@@ -1889,31 +1504,6 @@ fn generate_autoplay_logs<
     )?;
 
     Ok(())
-}
-
-#[inline(always)]
-fn env_usize(name: &str, default: usize) -> usize {
-    env_parse(name, default)
-}
-
-#[derive(Clone, Copy)]
-enum GillesRealRack {
-    Off,
-    AllTurns,
-    InWindow,
-}
-
-#[inline]
-fn wolges_gilles_real_rack() -> error::Returns<GillesRealRack> {
-    match std::env::var("WOLGES_GILLES_REAL_RACK").ok().as_deref() {
-        None | Some("off") => Ok(GillesRealRack::Off),
-        Some("all-turns") => Ok(GillesRealRack::AllTurns),
-        Some("in-window") => Ok(GillesRealRack::InWindow),
-        Some(other) => Err(format!(
-            "WOLGES_GILLES_REAL_RACK must be off, all-turns, or in-window, got {other:?}"
-        )
-        .into()),
-    }
 }
 
 #[inline]
@@ -1946,12 +1536,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     kwg: kwg::Kwg<N>,
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
-    SelfPlayParams {
-        num_games,
-        min_samples,
-        seed,
-        threads,
-    }: SelfPlayParams,
+    num_games: u64,
+    seed: Option<u64>,
+    threads: usize,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -1967,126 +1554,23 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         (0..alphabet.len()).map(|t| alphabet.freq(t) as u32).sum()
     };
 
-    let pool_min = env_usize("WOLGES_POOL_MIN", (num_tiles / 4) as usize);
-    let pool_max = env_usize(
-        "WOLGES_POOL_MAX",
-        (num_tiles as usize).saturating_sub(pool_min),
-    );
-    let group_size = env_usize(
-        "WOLGES_GILLES_GROUP",
-        (2 * rack_size as usize).saturating_sub(1),
-    )
-    .max(rack_size as usize);
-    let num_draws = env_usize("WOLGES_GILLES_DRAWS", 10);
-    let turn_stride = env_usize("WOLGES_GILLES_STRIDE", 3) as u32;
-
-    let samples_per_snapshot = env_usize(
-        "WOLGES_GILLES_SAMPLES_PER_SNAPSHOT",
-        n_choose_k(group_size, rack_size as usize),
-    ) as u32;
-    let min_undersampled = env_usize(
-        "WOLGES_GILLES_MIN_UNDERSAMPLED",
-        samples_per_snapshot as usize,
-    )
-    .min(samples_per_snapshot as usize) as u32;
-    let growth_cap = env_usize("WOLGES_GILLES_GROWTH", rack_size as usize);
-    let max_no_progress = env_usize("WOLGES_GILLES_MAX_NO_PROGRESS", 2) as u32;
-    let force_recompute_games = env_usize("WOLGES_GILLES_FORCE_RECOMPUTE_GAMES", 2000) as u64;
-
-    let (real_rack_enabled, real_rack_in_window_only, real_rack_mode) =
-        match wolges_gilles_real_rack()? {
-            GillesRealRack::Off => (false, false, "off"),
-            GillesRealRack::AllTurns => (true, false, "all-turns"),
-            GillesRealRack::InWindow => (true, true, "in-window"),
-        };
-
-    let real_rack_weight = env_usize("WOLGES_GILLES_REAL_RACK_WEIGHT", 1) as u64;
-
-    let reserve_enabled = env_flag("WOLGES_GILLES_RESERVE", false);
-    let reserve_budget = env_usize(
-        "WOLGES_GILLES_RESERVE_BUDGET",
-        (num_tiles as usize).saturating_sub(
-            pool_min + rack_size as usize * game_config.num_players() as usize + rack_size as usize,
-        ),
-    );
-
-    let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
-
-    let oppdenial_rack = env_parse::<f64>("WOLGES_OPPDENIAL_RACK", 0.0);
-
-    let oppdenial_exact = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT", 0.0);
-    let oppdenial_exact_pool_max = env_usize("WOLGES_OPPDENIAL_EXACT_POOL_MAX", 32);
-
-    let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
-
-    let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
-        let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
-            wolges::return_error!(
-                "WOLGES_WINPCT is on, so WOLGES_WINPCT_TABLE must name the win% table".to_string()
-            )
-        };
-        let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "gilles: win%-objective from {path}"
-        )?;
-        Some(t)
-    } else {
-        None
-    };
-
-    let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
-    let opp_on = (oppdenial_leave != 0.0 || oppdenial_rack != 0.0 || oppdenial_exact != 0.0)
-        && winpct_table.is_none();
-
-    let opp_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> = if opp_on {
-        let num_letters = game_config.alphabet().len() as usize;
-        let lat = census::MultisetLattice::new(num_letters, rack_size as usize);
-        let add_table = census::AddTable::new(&lat);
-        let mut leave = vec![0i32; lat.len()];
-        census::fill_lattice_leaves(&lat, &mut leave, |tally| {
-            arc_klv0.leave_value_from_tally(tally)
-        });
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "gilles: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} WOLGES_OPPDENIAL_RACK={oppdenial_rack} WOLGES_OPPDENIAL_EXACT={oppdenial_exact} \
-             oppdenial_exact_pool_max={oppdenial_exact_pool_max} opponent-denial machinery on ({} lattice leaves)",
-            lat.len(),
-        )?;
-        Some((lat, add_table, leave))
-    } else {
-        None
-    };
+    let pool_min = (num_tiles / 4) as usize;
+    let pool_max = (num_tiles as usize).saturating_sub(pool_min);
+    let group_size = (2 * rack_size as usize).saturating_sub(1);
+    let num_draws = 10;
+    let turn_stride = 3u32;
 
     writeln!(
         boxed_stdout_or_stderr(),
-        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget} real_rack={real_rack_mode}"
+        "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride}"
     )?;
 
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completed_samples = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    let remediation_state =
-        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(if min_samples == 0 {
-            3
-        } else {
-            0
-        }));
-    let remediation_submission = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let remediation_countdown = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
-    let remediation_generation_id = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mutexed = std::sync::Arc::new(std::sync::Mutex::new(GillesMutexed {
         full_rack_map: fash::MyHashMap::<bites::Bites, Cumulate>::default(),
-        undersampled_racks: Vec::new(),
-        best_remaining: u64::MAX,
-        no_progress: 0,
-        oppdenial_leave_sum_marg: if oppdenial_leave != 0.0 {
-            vec![0f64; game_config.alphabet().len() as usize]
-        } else {
-            Vec::new()
-        },
-        oppdenial_leave_boards: 0,
     }));
     let mutexed_tick = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
     let t0 = std::time::Instant::now();
@@ -2101,15 +1585,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             let num_processed_games = std::sync::Arc::clone(&num_processed_games);
             let completed_games = std::sync::Arc::clone(&completed_games);
             let completed_samples = std::sync::Arc::clone(&completed_samples);
-            let remediation_state = std::sync::Arc::clone(&remediation_state);
-            let remediation_submission = std::sync::Arc::clone(&remediation_submission);
-            let remediation_countdown = std::sync::Arc::clone(&remediation_countdown);
-            let remediation_generation_id = std::sync::Arc::clone(&remediation_generation_id);
             let mutexed = std::sync::Arc::clone(&mutexed);
             let mutexed_tick = std::sync::Arc::clone(&mutexed_tick);
             let run_identifier = run_identifier.clone();
-            let opp_ctx = opp_ctx.as_ref();
-            let winpct_table = winpct_table.as_ref();
             threads.push(s.spawn(move || {
                 let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -2120,51 +1598,13 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                     .map(|t| alphabet.freq(t))
                     .collect::<Vec<u8>>();
 
-                let impossible = env_flag("WOLGES_IMPOSSIBLE_OK", true);
-                let mut unseen_tally = vec![0u8; num_letters];
                 let mut cand_tally = vec![0u8; num_letters];
                 let mut best_group_tally = vec![0u8; num_letters];
-                let mut grown_tally = vec![0u8; num_letters];
                 let mut rack_tally = vec![0u8; num_letters];
                 let mut unseen_pool = Vec::<u8>::new();
-                let mut group_pool = Vec::<u8>::new();
                 let mut exchange_buffer = Vec::with_capacity(rack_size as usize);
                 let mut thread_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
-
-                let mut local_undersampled = fash::MyHashSet::<bites::Bites>::default();
-                let mut reserved_tally = vec![0u8; num_letters];
-                let mut real_rack_buf = Vec::<u8>::with_capacity(rack_size as usize);
-
-                let mut opp_sheet: Vec<i32> = Vec::new();
-                let mut opp_best: Vec<i32> = Vec::new();
-                let mut opp_marginal: Vec<f64> = Vec::new();
-                let mut opp_movegen_rack: Vec<u8> = Vec::new();
-                let mut opp_blank_deltas: Vec<(u8, i32)> = Vec::new();
-
-                let mut oppdenial_exact_kept_idx: Vec<u32> = Vec::new();
-                let mut oppdenial_exact_kept_size: Vec<u8> = Vec::new();
-                let mut oppdenial_exact_term: Vec<f64> = Vec::new();
-                if let Some((lat, _, _)) = opp_ctx {
-                    opp_sheet = vec![0i32; lat.len()];
-                    opp_best = vec![census::UNPLAYABLE; lat.len()];
-                    opp_marginal = vec![0f64; num_letters];
-                    if oppdenial_exact != 0.0 {
-                        oppdenial_exact_kept_idx = vec![0u32; lat.len()];
-                        oppdenial_exact_kept_size = vec![0u8; lat.len()];
-                        oppdenial_exact_term = vec![0f64; lat.len()];
-                    }
-                }
-
-                let mut oppdenial_leave_sum_marg: Vec<f64> = if oppdenial_leave != 0.0 {
-                    vec![0f64; num_letters]
-                } else {
-                    Vec::new()
-                };
-                let mut oppdenial_leave_boards = 0u64;
-                let mut remediation_begun = false;
-                let mut thread_generation_id = 0u64;
-                let mut games_this_gen = 0u64;
 
                 let ln_fact = {
                     let mut v = vec![0.0f64; num_tiles as usize + 1];
@@ -2184,175 +1624,13 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                 loop {
                     let num_prior_games =
                         num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let remediating = num_prior_games >= num_games;
-                    if remediating {
-                        if min_samples == 0 {
-                            num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                            break;
-                        }
-
-                        if !remediation_begun {
-                            {
-                                let mut g = mutexed.lock().unwrap();
-                                merge_rack_map(&mut g.full_rack_map, &mut thread_map);
-                            }
-                            remediation_submission
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            while remediation_submission.load(std::sync::atomic::Ordering::Relaxed)
-                                != num_threads as u64
-                            {}
-                            if remediation_state
-                                .compare_exchange(
-                                    0,
-                                    1,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                )
-                                .is_ok()
-                            {
-                                let mut g = mutexed.lock().unwrap();
-                                let remaining = recompute_undersampled(
-                                    &mut g,
-                                    &mut thread_map,
-                                    &base_freqs,
-                                    &mut rack_tally,
-                                    &mut exchange_buffer,
-                                    rack_size,
-                                    min_samples,
-                                );
-                                g.best_remaining = remaining;
-                                remediation_countdown
-                                    .store(remaining as i64, std::sync::atomic::Ordering::Relaxed);
-                                writeln!(boxed_stdout_or_stderr(),
-                                    "After {} seconds, remediation begins: {} racks below min_samples, {remaining} total deficit, into {run_identifier}",
-                                    t0.elapsed().as_secs(),
-                                    g.undersampled_racks.len(),).ok();
-                                remediation_state.store(2, std::sync::atomic::Ordering::Relaxed);
-                            } else {
-                                while remediation_state.load(std::sync::atomic::Ordering::Relaxed)
-                                    < 2
-                                {}
-                            }
-                            remediation_begun = true;
-                        }
-
-                        let cur_gen =
-                            remediation_generation_id.load(std::sync::atomic::Ordering::Relaxed);
-                        if thread_generation_id != cur_gen
-                            || local_undersampled.is_empty()
-                            || remediation_countdown.load(std::sync::atomic::Ordering::Relaxed) <= 0
-                            || games_this_gen >= force_recompute_games
-                        {
-                            let mut g = mutexed.lock().unwrap();
-                            merge_rack_map(&mut g.full_rack_map, &mut thread_map);
-                            let want_recompute = (remediation_countdown
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                                <= 0
-                                || games_this_gen >= force_recompute_games)
-                                && remediation_generation_id
-                                    .load(std::sync::atomic::Ordering::Relaxed)
-                                    == cur_gen;
-                            if want_recompute {
-                                let remaining = recompute_undersampled(
-                                    &mut g,
-                                    &mut thread_map,
-                                    &base_freqs,
-                                    &mut rack_tally,
-                                    &mut exchange_buffer,
-                                    rack_size,
-                                    min_samples,
-                                );
-                                if remaining == 0 || remaining >= g.best_remaining {
-                                    g.no_progress += 1;
-                                } else {
-                                    g.no_progress = 0;
-                                    g.best_remaining = remaining;
-                                }
-                                if remaining == 0 || g.no_progress >= max_no_progress {
-                                    remediation_state
-                                        .store(3, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                remediation_countdown
-                                    .store(remaining as i64, std::sync::atomic::Ordering::Relaxed);
-                                remediation_generation_id
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                writeln!(boxed_stdout_or_stderr(),
-                                    "After {} seconds, remediation recompute: {} racks below min_samples, {remaining} deficit, {} samples, into {run_identifier}",
-                                    t0.elapsed().as_secs(),
-                                    g.undersampled_racks.len(),
-                                    completed_samples.load(std::sync::atomic::Ordering::Relaxed),).ok();
-                            }
-                            games_this_gen = 0;
-                            thread_generation_id = remediation_generation_id
-                                .load(std::sync::atomic::Ordering::Relaxed);
-                            local_undersampled.clear();
-                            for r in g.undersampled_racks.iter() {
-                                local_undersampled.insert(r.clone());
-                            }
-                        }
-                        if remediation_state.load(std::sync::atomic::Ordering::Relaxed) >= 3 {
-                            num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                            break;
-                        }
-                        games_this_gen += 1;
+                    if num_prior_games >= num_games {
+                        num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        break;
                     }
 
                     rng.set_stream(num_prior_games);
-                    if remediating && reserve_enabled && !local_undersampled.is_empty() {
-
-                        reserved_tally.iter_mut().for_each(|m| *m = 0);
-                        let mut reserved_total = 0usize;
-                        for rack in local_undersampled.iter().take(1024) {
-                            if reserved_total + rack_size as usize > reserve_budget {
-                                break;
-                            }
-
-                            let mut delta = 0usize;
-                            let mut i = 0;
-                            while i < rack.len() {
-                                let t = rack[i] as usize;
-                                let mut c = 0u8;
-                                while i < rack.len() && rack[i] as usize == t {
-                                    c += 1;
-                                    i += 1;
-                                }
-                                if c > reserved_tally[t] {
-                                    delta += (c - reserved_tally[t]) as usize;
-                                }
-                            }
-                            if reserved_total + delta > reserve_budget {
-                                continue;
-                            }
-                            let mut i = 0;
-                            while i < rack.len() {
-                                let t = rack[i] as usize;
-                                let mut c = 0u8;
-                                while i < rack.len() && rack[i] as usize == t {
-                                    c += 1;
-                                    i += 1;
-                                }
-                                if c > reserved_tally[t] {
-                                    reserved_tally[t] = c;
-                                }
-                            }
-                            reserved_total += delta;
-                        }
-                        game_state.reset();
-                        game_state.bag.shuffle(&mut rng);
-                        for (t, &c) in reserved_tally.iter().enumerate() {
-                            for _ in 0..c {
-                                game_state.bag.remove_tile(t as u8);
-                            }
-                        }
-                        let rsz = game_config.rack_size() as usize;
-                        let bag = &mut game_state.bag;
-                        let players = &mut game_state.players;
-                        for (i, player) in players.iter_mut().enumerate() {
-                            bag.replenish(&mut player.rack, rsz, i);
-                        }
-                    } else {
-                        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                    }
+                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
 
                     let mut turn_idx = 0u32;
                     let mut base_turn: Option<u32> = None;
@@ -2362,9 +1640,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
                         let pool_count = (num_tiles as usize).saturating_sub(board_tiles_count);
 
-                        let winpct_board =
-                            WinpctBoard::new(winpct_table, pool_count, rack_size as usize, winpct_blend);
-
                         if pool_count >= pool_min
                             && pool_count <= pool_max
                             && board_tiles_count > 0
@@ -2372,20 +1647,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             && (turn_idx - *base_turn.get_or_insert(turn_idx))
                                 .is_multiple_of(turn_stride)
                         {
-
-                            unseen_tally.clone_from_slice(&base_freqs);
-                            for &t in game_state.board_tiles.iter() {
-                                if t != 0 {
-                                    let base = t & !((t as i8) >> 7) as u8;
-                                    unseen_tally[base as usize] =
-                                        unseen_tally[base as usize].saturating_sub(1);
-                                }
-                            }
-
-                            let group_src: &[u8] =
-                                if impossible { &base_freqs } else { &unseen_tally };
-                            let num_unseen =
-                                group_src.iter().map(|&c| c as usize).sum::<usize>();
+                            let group_src: &[u8] = &base_freqs;
+                            let num_unseen = group_src.iter().map(|&c| c as usize).sum::<usize>();
                             if num_unseen >= group_size {
                                 unseen_pool.clear();
                                 for (tile, &c) in group_src.iter().enumerate() {
@@ -2407,8 +1670,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     let mut lnp = 0.0f64;
                                     for (tile, &k) in cand_tally.iter().enumerate() {
                                         if k > 0 {
-                                            lnp +=
-                                                ln_choose(group_src[tile] as usize, k as usize);
+                                            lnp += ln_choose(group_src[tile] as usize, k as usize);
                                         }
                                     }
                                     if lnp < best_lnp {
@@ -2427,345 +1689,34 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                         &arc_klv1
                                     },
                                 };
-
-
-                                let mut oppdenial_exact_active = false;
-
-                                if let Some((lat, add, leave)) = opp_ctx {
-                                    opp_sheet.iter_mut().for_each(|v| *v = 0);
-                                    let num_blanks_eff =
-                                        (unseen_tally[0] as usize).min(rack_size as usize);
-                                    build_sheet_spell_once(
-                                        &mut move_generator,
-                                        &game_state.board_tiles,
-                                        SpellTables {
-                                            game_config: &game_config,
-                                            kwg: &kwg,
-                                            klv: &arc_klv0,
-                                            lat,
-                                        },
-                                        SpellPool {
-                                            unseen_tally: &unseen_tally,
-                                            num_blanks_eff,
-                                            rack_size: rack_size as usize,
-                                        },
-                                        &mut opp_movegen_rack,
-                                        &mut opp_blank_deltas,
-                                        &mut opp_sheet,
-                                    );
-
-                                    let pool: usize =
-                                        unseen_tally.iter().map(|&c| c as usize).sum();
-                                    let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
-                                    if oppdenial_exact_board {
-                                        census::best_equity_argmax_table(
-                                            lat,
-                                            &opp_sheet,
-                                            leave,
-                                            &mut opp_best,
-                                            &mut oppdenial_exact_kept_idx,
-                                            &mut oppdenial_exact_kept_size,
-                                        );
-                                    } else {
-                                        census::best_equity_table(
-                                            lat,
-                                            &opp_sheet,
-                                            leave,
-                                            &mut opp_best,
-                                        );
-                                    }
-                                    if oppdenial_leave != 0.0 || oppdenial_rack != 0.0 {
-                                        census::opp_denial_marginals(
-                                            lat,
-                                            add,
-                                            &opp_best,
-                                            &unseen_tally,
-                                            &mut opp_marginal,
-                                        );
-                                        if oppdenial_leave != 0.0 {
-                                            for (a, m) in
-                                                oppdenial_leave_sum_marg.iter_mut().zip(opp_marginal.iter())
-                                            {
-                                                *a += *m;
-                                            }
-                                            oppdenial_leave_boards += 1;
-                                        }
-                                    }
-                                    if oppdenial_exact_board {
-                                        oppdenial_exact_term.iter_mut().for_each(|x| *x = 0.0);
-                                        census::opp_me2_per_rack(
-                                            lat,
-                                            add,
-                                            &opp_best,
-                                            &census::KeptArgmax {
-                                                idx: &oppdenial_exact_kept_idx,
-                                                size: &oppdenial_exact_kept_size,
+                                rack_tally.clone_from(&best_group_tally);
+                                let move_generator = &mut move_generator;
+                                let thread_map = &mut thread_map;
+                                let completed_samples = &completed_samples;
+                                generate_exchanges(&mut ExchangeEnv {
+                                    found_exchange_move: |rack_bytes: &[u8]| {
+                                        move_generator.gen_moves_unfiltered(
+                                            &movegen::GenMovesParams {
+                                                board_snapshot: &board_snapshot,
+                                                rack: rack_bytes,
+                                                max_gen: 1,
+                                                num_exchanges_by_this_player: 0,
+                                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                                dynamic_leaves: None,
                                             },
-                                            &unseen_tally,
-                                            oppdenial_exact_me2,
-                                            &mut oppdenial_exact_term,
                                         );
-                                    }
-                                    oppdenial_exact_active = oppdenial_exact_board;
-                                }
-
-
-                                let knob = KnobFold {
-                                    winpct_board: &winpct_board,
-                                    oppdenial_rack,
-                                    opp_marginal: &opp_marginal,
-                                    oppdenial_exact,
-                                    oppdenial_exact_term: &oppdenial_exact_term,
-                                    oppdenial_exact_lat: if oppdenial_exact_active {
-                                        opp_ctx.map(|(lat, _, _)| lat)
-                                    } else {
-                                        None
+                                        let equity = move_generator.plays[0].equity.as_f64();
+                                        pool_one(thread_map, rack_bytes, equity);
+                                        completed_samples
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     },
-                                };
-
-                                if !remediating {
-
-                                    rack_tally.clone_from(&best_group_tally);
-                                    let move_generator = &mut move_generator;
-                                    let thread_map = &mut thread_map;
-                                    let completed_samples = &completed_samples;
-                                    generate_exchanges(&mut ExchangeEnv {
-                                        found_exchange_move: |rack_bytes: &[u8]| {
-                                            move_generator.gen_moves_unfiltered(
-                                                &movegen::GenMovesParams {
-                                                    board_snapshot: &board_snapshot,
-                                                    rack: rack_bytes,
-                                                    max_gen: 1,
-                                                    num_exchanges_by_this_player: 0,
-                                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                                    dynamic_leaves: None,
-                                                },
-                                            );
-                                            let equity =
-                                                knob.apply(move_generator.plays[0].equity, rack_bytes);
-                                            pool_one(thread_map, rack_bytes, equity);
-                                            completed_samples
-                                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                        },
-                                        rack_tally: &mut rack_tally,
-                                        min_len: rack_size,
-                                        max_len: rack_size,
-                                        exchange_buffer: &mut exchange_buffer,
-                                    });
-                                } else {
-
-                                    let mut movegens_done = 0u32;
-                                    let mut undersampled_done = 0u32;
-
-                                    rack_tally.clone_from(&best_group_tally);
-                                    sample_undersampled(
-                                        rack_size,
-                                        &mut move_generator,
-                                        &board_snapshot,
-                                        &mut thread_map,
-                                        &mut local_undersampled,
-                                        SampleScratch {
-                                            rack_tally: &mut rack_tally,
-                                            exchange_buffer: &mut exchange_buffer,
-                                        },
-                                        SampleBudget {
-                                            countdown: &remediation_countdown,
-                                            completed_samples: &completed_samples,
-                                            movegens_done: &mut movegens_done,
-                                            undersampled_done: &mut undersampled_done,
-                                            samples_per_snapshot,
-                                            target: samples_per_snapshot,
-                                            knob,
-                                        },
-                                    );
-
-                                    let mut grew = false;
-                                    if undersampled_done < min_undersampled {
-                                        grown_tally.clone_from(&best_group_tally);
-                                        let mut cur_group = group_size;
-                                        while cur_group < num_unseen
-                                            && cur_group - group_size < growth_cap
-                                        {
-                                            let mut best_i = usize::MAX;
-                                            let mut best_ratio = f64::INFINITY;
-                                            for i in 0..num_letters {
-                                                if unseen_tally[i] as usize
-                                                    > grown_tally[i] as usize
-                                                {
-                                                    let ratio = (unseen_tally[i] as f64
-                                                        - grown_tally[i] as f64)
-                                                        / (grown_tally[i] as f64 + 1.0);
-                                                    if ratio < best_ratio {
-                                                        best_ratio = ratio;
-                                                        best_i = i;
-                                                    }
-                                                }
-                                            }
-                                            if best_i == usize::MAX {
-                                                break;
-                                            }
-                                            grown_tally[best_i] += 1;
-                                            cur_group += 1;
-                                            grew = true;
-                                        }
-                                        if grew {
-                                            rack_tally.clone_from(&grown_tally);
-                                            sample_undersampled(
-                                                rack_size,
-                                                &mut move_generator,
-                                                &board_snapshot,
-                                                &mut thread_map,
-                                                &mut local_undersampled,
-                                                SampleScratch {
-                                                    rack_tally: &mut rack_tally,
-                                                    exchange_buffer: &mut exchange_buffer,
-                                                },
-                                                SampleBudget {
-                                                    countdown: &remediation_countdown,
-                                                    completed_samples: &completed_samples,
-                                                    movegens_done: &mut movegens_done,
-                                                    undersampled_done: &mut undersampled_done,
-                                                    samples_per_snapshot,
-                                                    target: min_undersampled,
-                                                    knob,
-                                                },
-                                            );
-                                        }
-                                    }
-
-                                    if movegens_done < samples_per_snapshot {
-                                        group_pool.clear();
-                                        let cur_tally = if grew {
-                                            &grown_tally
-                                        } else {
-                                            &best_group_tally
-                                        };
-                                        for (tile, &c) in cur_tally.iter().enumerate() {
-                                            for _ in 0..c {
-                                                group_pool.push(tile as u8);
-                                            }
-                                        }
-                                        while movegens_done < samples_per_snapshot
-                                            && group_pool.len() >= rack_size as usize
-                                        {
-                                            for i in 0..rack_size as usize {
-                                                let j = rng.random_range(i..group_pool.len());
-                                                group_pool.swap(i, j);
-                                            }
-                                            exchange_buffer.clear();
-                                            exchange_buffer.extend_from_slice(
-                                                &group_pool[..rack_size as usize],
-                                            );
-                                            exchange_buffer.sort_unstable();
-                                            move_generator.gen_moves_unfiltered(
-                                                &movegen::GenMovesParams {
-                                                    board_snapshot: &board_snapshot,
-                                                    rack: &exchange_buffer,
-                                                    max_gen: 1,
-                                                    num_exchanges_by_this_player: 0,
-                                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                                    dynamic_leaves: None,
-                                                },
-                                            );
-                                            let equity =
-                                                knob.apply(move_generator.plays[0].equity, &exchange_buffer);
-                                            pool_one(&mut thread_map, &exchange_buffer[..], equity);
-                                            completed_samples
-                                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                            movegens_done += 1;
-                                            if local_undersampled.remove(&exchange_buffer[..]) {
-                                                remediation_countdown.fetch_sub(
-                                                    1,
-                                                    std::sync::atomic::Ordering::Relaxed,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
+                                    rack_tally: &mut rack_tally,
+                                    min_len: rack_size,
+                                    max_len: rack_size,
+                                    exchange_buffer: &mut exchange_buffer,
+                                });
                             }
                         }
-
-
-                        let real_rack_here = real_rack_enabled
-                            && !game_state.bag.is_empty()
-                            && (!real_rack_in_window_only
-                                || (pool_count >= pool_min && pool_count <= pool_max));
-                        let mut rr_oppdenial_exact_active = false;
-                        if real_rack_here
-                            && let Some((lat, add, leave)) = opp_ctx
-                        {
-
-                            unseen_tally.clone_from_slice(&base_freqs);
-                            for &t in game_state.board_tiles.iter() {
-                                if t != 0 {
-                                    let base = t & !((t as i8) >> 7) as u8;
-                                    unseen_tally[base as usize] =
-                                        unseen_tally[base as usize].saturating_sub(1);
-                                }
-                            }
-                            opp_sheet.iter_mut().for_each(|v| *v = 0);
-                            let num_blanks_eff =
-                                (unseen_tally[0] as usize).min(rack_size as usize);
-                            build_sheet_spell_once(
-                                &mut move_generator,
-                                &game_state.board_tiles,
-                                SpellTables {
-                                    game_config: &game_config,
-                                    kwg: &kwg,
-                                    klv: &arc_klv0,
-                                    lat,
-                                },
-                                SpellPool {
-                                    unseen_tally: &unseen_tally,
-                                    num_blanks_eff,
-                                    rack_size: rack_size as usize,
-                                },
-                                &mut opp_movegen_rack,
-                                &mut opp_blank_deltas,
-                                &mut opp_sheet,
-                            );
-                            let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                            let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
-                            if oppdenial_exact_board {
-                                census::best_equity_argmax_table(
-                                    lat,
-                                    &opp_sheet,
-                                    leave,
-                                    &mut opp_best,
-                                    &mut oppdenial_exact_kept_idx,
-                                    &mut oppdenial_exact_kept_size,
-                                );
-                            } else {
-                                census::best_equity_table(lat, &opp_sheet, leave, &mut opp_best);
-                            }
-
-                            if oppdenial_leave != 0.0 || oppdenial_rack != 0.0 {
-                                census::opp_denial_marginals(
-                                    lat,
-                                    add,
-                                    &opp_best,
-                                    &unseen_tally,
-                                    &mut opp_marginal,
-                                );
-                            }
-                            if oppdenial_exact_board {
-                                oppdenial_exact_term.iter_mut().for_each(|x| *x = 0.0);
-                                census::opp_me2_per_rack(
-                                    lat,
-                                    add,
-                                    &opp_best,
-                                    &census::KeptArgmax {
-                                        idx: &oppdenial_exact_kept_idx,
-                                        size: &oppdenial_exact_kept_size,
-                                    },
-                                    &unseen_tally,
-                                    oppdenial_exact_me2,
-                                    &mut oppdenial_exact_term,
-                                );
-                            }
-                            rr_oppdenial_exact_active = oppdenial_exact_board;
-                        }
-
 
                         let board_snapshot = movegen::BoardSnapshot {
                             board_tiles: &game_state.board_tiles,
@@ -2786,37 +1737,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             dynamic_leaves: None,
                         });
 
-                        if real_rack_here {
-                            let w = real_rack_weight;
-                            real_rack_buf.clone_from(&game_state.current_player().rack);
-                            real_rack_buf.sort_unstable();
-
-                            let rr_knob = KnobFold {
-                                winpct_board: &winpct_board,
-                                oppdenial_rack,
-                                opp_marginal: &opp_marginal,
-                                oppdenial_exact,
-                                oppdenial_exact_term: &oppdenial_exact_term,
-                                oppdenial_exact_lat: if rr_oppdenial_exact_active {
-                                    opp_ctx.map(|(lat, _, _)| lat)
-                                } else {
-                                    None
-                                },
-                            };
-                            let eq = rr_knob.apply(move_generator.plays[0].equity, &real_rack_buf)
-                                * w as f64;
-                            thread_map
-                                .entry(real_rack_buf[..].into())
-                                .and_modify(|e| {
-                                    e.equity += eq;
-                                    e.count += w;
-                                })
-                                .or_insert(Cumulate {
-                                    equity: eq,
-                                    count: w,
-                                });
-                            completed_samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
                         let play = &move_generator.plays[0];
                         game_state.play(&game_config, &mut rng, &play.play).unwrap();
                         let game_ended =
@@ -2832,22 +1752,18 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                     let elapsed = t0.elapsed().as_secs();
                     let mut tick = mutexed_tick.lock().unwrap();
                     if tick.update(elapsed) {
-                        writeln!(boxed_stdout_or_stderr(),
+                        writeln!(
+                            boxed_stdout_or_stderr(),
                             "After {elapsed} seconds, {} games, {} samples into {run_identifier}",
                             completed_games.load(std::sync::atomic::Ordering::Relaxed),
-                            completed_samples.load(std::sync::atomic::Ordering::Relaxed),).ok();
+                            completed_samples.load(std::sync::atomic::Ordering::Relaxed),
+                        )
+                        .ok();
                     }
                 }
 
                 let mut g = mutexed.lock().unwrap();
                 merge_rack_map(&mut g.full_rack_map, &mut thread_map);
-
-                if oppdenial_leave != 0.0 {
-                    for (a, b) in g.oppdenial_leave_sum_marg.iter_mut().zip(oppdenial_leave_sum_marg.iter()) {
-                        *a += *b;
-                    }
-                    g.oppdenial_leave_boards += oppdenial_leave_boards;
-                }
             }));
         }
         for thread in threads {
@@ -2859,13 +1775,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
     let g = mutexed.lock().unwrap();
     let map = &g.full_rack_map;
-    if min_samples != 0 && !g.undersampled_racks.is_empty() {
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "gilles: {} racks still below min_samples after remediation (blocked tail)",
-            g.undersampled_racks.len(),
-        )?;
-    }
     let mut total_equity = 0.0;
     let mut row_count = 0u64;
     for v in map.values() {
@@ -2898,13 +1807,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         completed_samples.load(std::sync::atomic::Ordering::Relaxed),
     )?;
 
-    if oppdenial_leave != 0.0 && g.oppdenial_leave_boards > 0 {
-        write_oppdenial_leave_marginal_sidecar(
-            &g.oppdenial_leave_sum_marg,
-            g.oppdenial_leave_boards,
-        )?;
-    }
-
     Ok(())
 }
 
@@ -2934,29 +1836,8 @@ fn pool_one(map: &mut fash::MyHashMap<bites::Bites, Cumulate>, key: &[u8], equit
         .or_insert_with(|| Cumulate { equity, count: 1 });
 }
 
-#[inline]
-fn pool_rare_one(
-    subrack_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
-    key: &[u8],
-    equity: f64,
-    count: u64,
-) {
-    subrack_map
-        .entry(key.into())
-        .and_modify(|v| {
-            v.equity += equity;
-            v.count += count;
-        })
-        .or_insert(Cumulate { equity, count });
-}
-
 struct GillesMutexed {
     full_rack_map: fash::MyHashMap<bites::Bites, Cumulate>,
-    undersampled_racks: Vec<bites::Bites>,
-    best_remaining: u64,
-    no_progress: u32,
-    oppdenial_leave_sum_marg: Vec<f64>,
-    oppdenial_leave_boards: u64,
 }
 
 #[inline]
@@ -2976,258 +1857,61 @@ fn merge_rack_map(
     }
 }
 
-#[inline]
-fn recompute_undersampled(
-    g: &mut GillesMutexed,
-    scratch_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
-    base_freqs: &[u8],
-    rack_tally: &mut Vec<u8>,
-    exchange_buffer: &mut Vec<u8>,
-    rack_size: u8,
-    min_samples: u64,
-) -> u64 {
-    std::mem::swap(&mut g.full_rack_map, scratch_map);
-    g.undersampled_racks.clear();
-    rack_tally.clear();
-    rack_tally.extend_from_slice(base_freqs);
-    let mut remaining = 0u64;
-    {
-        let map = &*scratch_map;
-        let undersampled = &mut g.undersampled_racks;
-        generate_exchanges(&mut ExchangeEnv {
-            found_exchange_move: |rack_bytes: &[u8]| {
-                let count = map.get(rack_bytes).map_or(0, |v| v.count);
-                if count < min_samples {
-                    undersampled.push(rack_bytes.into());
-                    remaining += min_samples - count;
-                }
-            },
-            rack_tally: &mut rack_tally[..],
-            min_len: rack_size,
-            max_len: rack_size,
-            exchange_buffer,
-        });
-    }
-    std::mem::swap(&mut g.full_rack_map, scratch_map);
-    remaining
-}
-
 struct RecomputeScratch<'a> {
-    rack_tally: &'a mut [u8],
     full_rack_tally: &'a mut [u8],
-    subrack_tally: &'a mut [u8],
     alphabet_freqs: &'a mut [u8],
     exchange_buffer: &'a mut Vec<u8>,
 }
 
-struct RecomputeParams {
-    leave_size: u8,
-    full_rack_forcing: bool,
-    min_samples: u64,
-}
-
 #[inline]
-fn recompute_undersampled_subracks(
+fn recompute_undersampled_racks(
     full_rack_map: &fash::MyHashMap<bites::Bites, Cumulate>,
-    rare_subrack_map: &fash::MyHashMap<bites::Bites, Cumulate>,
     undersampled: &mut Vec<bites::Bites>,
-    subrack_count: &mut fash::MyHashMap<bites::Bites, u64>,
-    word_prob: Option<&mut prob::WordProbability>,
     scratch: RecomputeScratch<'_>,
-    params: RecomputeParams,
+    rack_size: u8,
+    min_samples: u64,
 ) -> u64 {
     let RecomputeScratch {
-        rack_tally,
         full_rack_tally,
-        subrack_tally,
         alphabet_freqs,
         exchange_buffer,
     } = scratch;
-    let RecomputeParams {
-        leave_size,
-        full_rack_forcing,
-        min_samples,
-    } = params;
-
-    let Some(word_prob) = word_prob else {
-        undersampled.clear();
-        return 0;
-    };
-
-    if min_samples == 0 {
-        undersampled.clear();
-        return 0;
-    }
-    if full_rack_forcing {
-        let rack_size = leave_size + 1;
-        full_rack_tally.copy_from_slice(alphabet_freqs);
-        let frozen_freq: &[u8] = full_rack_tally;
-        undersampled.clear();
-        let mut remaining = 0u64;
-        generate_exchanges(&mut ExchangeEnv {
-            found_exchange_move: |rack_bytes: &[u8]| {
-                let mut i = 0;
-                while i < rack_bytes.len() {
-                    let t = rack_bytes[i] as usize;
-                    let mut run = 1u8;
-                    while i + (run as usize) < rack_bytes.len()
-                        && rack_bytes[i + (run as usize)] as usize == t
-                    {
-                        run += 1;
-                    }
-                    if run > frozen_freq[t] {
-                        return;
-                    }
-                    i += run as usize;
-                }
-                let count = full_rack_map.get(rack_bytes).map_or(0, |c| c.count);
-                if count < min_samples {
-                    undersampled.push(rack_bytes.into());
-                    remaining += min_samples - count;
-                }
-            },
-            rack_tally: alphabet_freqs,
-            min_len: rack_size,
-            max_len: rack_size,
-            exchange_buffer,
-        });
-        return remaining;
-    }
-
-    subrack_count.clear();
-    for (k, fv) in full_rack_map.iter() {
-        if fv.count == 0 {
-            continue;
-        }
-        rack_tally.iter_mut().for_each(|m| *m = 0);
-        k.iter().for_each(|&tile| rack_tally[tile as usize] += 1);
-        full_rack_tally.copy_from_slice(rack_tally);
-        let count = fv.count;
-        let frozen_full = &*full_rack_tally;
-        generate_exchanges(&mut ExchangeEnv {
-            found_exchange_move: |subrack_bytes: &[u8]| {
-                subrack_tally.iter_mut().for_each(|m| *m = 0);
-                subrack_bytes
-                    .iter()
-                    .for_each(|&tile| subrack_tally[tile as usize] += 1);
-                let w = word_prob.completion_draw_ways(frozen_full, subrack_tally, word_prob.bag());
-                *subrack_count.entry(subrack_bytes.into()).or_insert(0) += count * w;
-            },
-            rack_tally,
-            min_len: 1,
-            max_len: leave_size,
-            exchange_buffer,
-        });
-    }
-
-    for (k, fv) in rare_subrack_map.iter() {
-        if fv.count > 0 {
-            *subrack_count.entry(k[..].into()).or_insert(0) += fv.count;
-        }
-    }
 
     undersampled.clear();
-    let mut remaining = 0u64;
-    {
-        let subrack_count = &*subrack_count;
-        let undersampled = &mut *undersampled;
-        generate_exchanges(&mut ExchangeEnv {
-            found_exchange_move: |subrack_bytes: &[u8]| {
-                let count = subrack_count.get(subrack_bytes).copied().unwrap_or(0);
-                if count < min_samples {
-                    undersampled.push(subrack_bytes.into());
-                    remaining += min_samples - count;
-                }
-            },
-            rack_tally: alphabet_freqs,
-            min_len: 1,
-            max_len: leave_size,
-            exchange_buffer,
-        });
+    if min_samples == 0 {
+        return 0;
     }
-    remaining
-}
-
-struct SampleScratch<'a> {
-    rack_tally: &'a mut [u8],
-    exchange_buffer: &'a mut Vec<u8>,
-}
-
-struct SampleBudget<'a> {
-    countdown: &'a std::sync::atomic::AtomicI64,
-    completed_samples: &'a std::sync::atomic::AtomicU64,
-    movegens_done: &'a mut u32,
-    undersampled_done: &'a mut u32,
-    samples_per_snapshot: u32,
-    target: u32,
-    knob: KnobFold<'a>,
-}
-
-#[inline]
-fn sample_undersampled<N: kwg::Node, L: kwg::Node>(
-    rack_size: u8,
-    move_generator: &mut movegen::KurniaMoveGenerator,
-    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
-    thread_map: &mut fash::MyHashMap<bites::Bites, Cumulate>,
-    local_undersampled: &mut fash::MyHashSet<bites::Bites>,
-    scratch: SampleScratch<'_>,
-    budget: SampleBudget<'_>,
-) {
-    let SampleScratch {
-        rack_tally,
-        exchange_buffer,
-    } = scratch;
-    let SampleBudget {
-        countdown,
-        completed_samples,
-        movegens_done,
-        undersampled_done,
-        samples_per_snapshot,
-        target,
-        knob,
-    } = budget;
+    full_rack_tally.copy_from_slice(alphabet_freqs);
+    let frozen_freq: &[u8] = full_rack_tally;
+    let mut remaining = 0u64;
     generate_exchanges(&mut ExchangeEnv {
         found_exchange_move: |rack_bytes: &[u8]| {
-            if *movegens_done >= samples_per_snapshot || *undersampled_done >= target {
-                return;
+            let mut i = 0;
+            while i < rack_bytes.len() {
+                let t = rack_bytes[i] as usize;
+                let mut run = 1u8;
+                while i + (run as usize) < rack_bytes.len()
+                    && rack_bytes[i + (run as usize)] as usize == t
+                {
+                    run += 1;
+                }
+                if run > frozen_freq[t] {
+                    return;
+                }
+                i += run as usize;
             }
-            if !local_undersampled.contains(rack_bytes) {
-                return;
+            let count = full_rack_map.get(rack_bytes).map_or(0, |c| c.count);
+            if count < min_samples {
+                undersampled.push(rack_bytes.into());
+                remaining += min_samples - count;
             }
-            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                board_snapshot,
-                rack: rack_bytes,
-                max_gen: 1,
-                num_exchanges_by_this_player: 0,
-                pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                dynamic_leaves: None,
-            });
-            let equity = knob.apply(move_generator.plays[0].equity, rack_bytes);
-            pool_one(thread_map, rack_bytes, equity);
-            completed_samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            *movegens_done += 1;
-            local_undersampled.remove(rack_bytes);
-            *undersampled_done += 1;
-            countdown.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         },
-        rack_tally,
+        rack_tally: alphabet_freqs,
         min_len: rack_size,
         max_len: rack_size,
         exchange_buffer,
     });
-}
-
-#[inline]
-fn n_choose_k(n: usize, k: usize) -> usize {
-    if k > n {
-        return 0;
-    }
-    let k = k.min(n - k);
-    let mut result = 1usize;
-    for i in 0..k {
-        result = result * (n - i) / (i + 1);
-    }
-    result
+    remaining
 }
 
 #[inline]
@@ -3466,212 +2150,6 @@ struct SpellPool<'a> {
 }
 
 #[inline]
-fn oppdenial_leave_marginal_path() -> error::Returns<String> {
-    match std::env::var("WOLGES_OPPDENIAL_LEAVE_MARGINAL") {
-        Ok(path) => Ok(path),
-        Err(_) => wolges::return_error!(
-            "WOLGES_OPPDENIAL_LEAVE_MARGINAL must name the companion file".to_string()
-        ),
-    }
-}
-
-#[inline]
-fn write_oppdenial_leave_marginal_sidecar(sum_marg: &[f64], boards: u64) -> error::Returns<()> {
-    let path = oppdenial_leave_marginal_path()?;
-    let mut w = csv::Writer::from_path(&path)?;
-    w.serialize(("tile_index", "avg_marginal"))?;
-    let boards = boards as f64;
-    for (t, &s) in sum_marg.iter().enumerate() {
-        w.serialize((t, s / boards))?;
-    }
-    w.flush()?;
-    writeln!(
-        boxed_stdout_or_stderr(),
-        "wrote {} board-averaged oppdenial_leave marginals to {path}",
-        sum_marg.len()
-    )?;
-    Ok(())
-}
-
-#[inline]
-fn load_oppdenial_leave_marginal_sidecar(
-    path: &str,
-    num_letters: usize,
-) -> error::Returns<Vec<f64>> {
-    let mut avg = vec![0f64; num_letters];
-    let mut rd = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .from_path(path)?;
-    for result in rd.records() {
-        let record = result?;
-        let t = usize::from_str(&record[0])?;
-        if t < num_letters {
-            avg[t] = f64::from_str(&record[1])?;
-        }
-    }
-    Ok(avg)
-}
-
-#[inline]
-fn oppdenial_rack_fold(oppdenial_rack: f64, marginal: &[f64], rack_bytes: &[u8]) -> f64 {
-    if marginal.is_empty() {
-        return 0.0;
-    }
-    let mut d = 0.0f64;
-    for &t in rack_bytes {
-        d += marginal[t as usize];
-    }
-    oppdenial_rack * d / equity::SCALE as f64
-}
-
-#[inline]
-fn oppdenial_exact_fold(oppdenial_exact: f64, oppdenial_exact_term: &[f64], rank: usize) -> f64 {
-    if rank >= oppdenial_exact_term.len() {
-        return 0.0;
-    }
-    -oppdenial_exact * oppdenial_exact_term[rank] / equity::SCALE as f64
-}
-
-#[derive(Clone, Copy)]
-struct KnobFold<'a> {
-    winpct_board: &'a Option<WinpctBoard<'a>>,
-    oppdenial_rack: f64,
-    opp_marginal: &'a [f64],
-    oppdenial_exact: f64,
-    oppdenial_exact_term: &'a [f64],
-    oppdenial_exact_lat: Option<&'a census::MultisetLattice>,
-}
-
-impl KnobFold<'_> {
-    #[inline]
-    fn apply(&self, base: equity::Equity, rack: &[u8]) -> f64 {
-        let rank = match self.oppdenial_exact_lat {
-            Some(lat) => lat.rank_bytes(rack) as usize,
-            None => usize::MAX,
-        };
-        winpct_apply(self.winpct_board, base)
-            + oppdenial_rack_fold(self.oppdenial_rack, self.opp_marginal, rack)
-            + oppdenial_exact_fold(self.oppdenial_exact, self.oppdenial_exact_term, rank)
-    }
-}
-
-#[inline]
-fn winpct_remap(
-    table: &win_pct::WinPctTable,
-    best: &mut [i32],
-    full_rack_start: usize,
-    bag: usize,
-    my: usize,
-    opp: usize,
-    blend: f64,
-) {
-    let Some(inv_slope_mp) = winpct_inv_slope(table, bag, my, opp) else {
-        return;
-    };
-    for e in best[full_rack_start..].iter_mut() {
-        *e = winpct_g(table, *e, bag, my, opp, inv_slope_mp, blend);
-    }
-}
-
-#[inline]
-fn winpct_inv_slope(
-    table: &win_pct::WinPctTable,
-    bag: usize,
-    my: usize,
-    opp: usize,
-) -> Option<f64> {
-    let dd = 25i32; // slope measurement half-width (points)
-    let slope =
-        (table.get(dd, bag, my, opp) - table.get(-dd, bag, my, opp)) as f64 / (2.0 * dd as f64);
-    if slope <= 1e-6 {
-        None
-    } else {
-        Some(equity::SCALE as f64 / slope)
-    }
-}
-
-#[inline]
-fn winpct_g(
-    table: &win_pct::WinPctTable,
-    e_mp: i32,
-    bag: usize,
-    my: usize,
-    opp: usize,
-    inv_slope_mp: f64,
-    blend: f64,
-) -> i32 {
-    let e_pts = equity::descale_score(e_mp);
-    let wprob = table.get(e_pts, bag, my, opp) as f64;
-    let g_mp = (wprob - 0.5) * inv_slope_mp;
-    ((1.0 - blend) * e_mp as f64 + blend * g_mp).round() as i32
-}
-
-#[derive(Clone, Copy)]
-struct WinpctBoard<'a> {
-    table: &'a win_pct::WinPctTable,
-    bag: usize,
-    my: usize,
-    opp: usize,
-    inv_slope_mp: f64,
-    blend: f64,
-}
-
-impl WinpctBoard<'_> {
-    #[inline(always)]
-    fn new(
-        table: Option<&win_pct::WinPctTable>,
-        unseen: usize,
-        rack_size: usize,
-        blend: f64,
-    ) -> Option<WinpctBoard<'_>> {
-        WinpctBoard::from_bag(
-            table,
-            unseen.saturating_sub(2 * rack_size),
-            rack_size,
-            blend,
-        )
-    }
-
-    #[inline]
-    fn from_bag(
-        table: Option<&win_pct::WinPctTable>,
-        bag: usize,
-        rack_size: usize,
-        blend: f64,
-    ) -> Option<WinpctBoard<'_>> {
-        let table = table?;
-        let inv_slope_mp = winpct_inv_slope(table, bag, rack_size, rack_size)?;
-        Some(WinpctBoard {
-            table,
-            bag,
-            my: rack_size,
-            opp: rack_size,
-            inv_slope_mp,
-            blend,
-        })
-    }
-}
-
-#[inline]
-fn winpct_apply(wpb: &Option<WinpctBoard>, e: equity::Equity) -> f64 {
-    match wpb {
-        Some(w) => {
-            winpct_g(
-                w.table,
-                e.raw(),
-                w.bag,
-                w.my,
-                w.opp,
-                w.inv_slope_mp,
-                w.blend,
-            ) as f64
-                / equity::SCALE as f64
-        }
-        None => e.as_f64(),
-    }
-}
-
-#[inline]
 fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
     move_generator: &mut movegen::KurniaMoveGenerator,
     board_tiles: &[u8],
@@ -3858,24 +2336,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
 
-    let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
-        let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
-            wolges::return_error!(
-                "WOLGES_WINPCT is on, so WOLGES_WINPCT_TABLE must name the win% table".to_string()
-            )
-        };
-        let t = win_pct::WinPctTable::from_csv(make_reader(&path)?)?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census: win%-objective from {path}"
-        )?;
-        Some(t)
-    } else {
-        None
-    };
-
-    let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
-
     let gens = board_counts.len();
 
     let max_boards = board_counts.iter().copied().max().unwrap_or(1).max(1);
@@ -3889,7 +2349,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
-    let full_rack_start = lat.full_rack_start();
     writeln!(
         boxed_stdout_or_stderr(),
         "census: lattice {} leaves (letters {num_letters}, rack_size {rack_size}), \
@@ -3912,15 +2371,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let zeta_pool_min = 36;
 
     let scatter = lat.len() <= 12_000_000;
-
-    let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
-
-    let oppdenial_rack = env_parse::<f64>("WOLGES_OPPDENIAL_RACK", 0.0);
-
-    let oppdenial_exact = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT", 0.0);
-    let oppdenial_exact_pool_max = env_usize("WOLGES_OPPDENIAL_EXACT_POOL_MAX", 32);
-
-    let oppdenial_exact_me2 = env_parse::<f64>("WOLGES_OPPDENIAL_EXACT_ME2", 1.0);
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
 
@@ -4029,39 +2479,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                 let mut maxsheet = vec![0i32; lat_len];
 
-                let opp_term = oppdenial_leave != 0.0 || oppdenial_rack != 0.0;
-
-                let mut oppdenial_leave_best = if opp_term
-                    || oppdenial_exact != 0.0
-                    || winpct_table.is_some()
-                {
-                    vec![census::UNPLAYABLE; lat_len]
-                } else {
-                    Vec::new()
-                };
-                let mut oppdenial_leave_marginal = if opp_term {
-                    vec![0f64; num_letters]
-                } else {
-                    Vec::new()
-                };
-
-                let mut oppdenial_exact_kept_idx = if oppdenial_exact != 0.0 {
-                    vec![0u32; lat_len]
-                } else {
-                    Vec::new()
-                };
-                let mut oppdenial_exact_kept_size = if oppdenial_exact != 0.0 {
-                    vec![0u8; lat_len]
-                } else {
-                    Vec::new()
-                };
-                let mut oppdenial_exact_term = if oppdenial_exact != 0.0 {
-                    vec![0f64; lat_len]
-                } else {
-                    Vec::new()
-                };
-
-                let mut tally_buf = vec![0u8; num_letters];
                 let mut unseen_tally = vec![0u8; num_letters];
                 let mut movegen_rack = Vec::<u8>::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
@@ -4135,72 +2552,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     den_board.iter_mut().for_each(|x| *x = 0.0);
 
                     let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                    if let Some(wp_table) = winpct_table.as_ref() {
-
-                        census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                        let u: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                        let bag = u.saturating_sub(2 * rack_size);
-                        winpct_remap(
-                            wp_table,
-                            &mut oppdenial_leave_best,
-                            full_rack_start,
-                            bag,
-                            rack_size,
-                            rack_size,
-                            winpct_blend,
-                        );
-                        census::apportion_table(
-                            &lat,
-                            &oppdenial_leave_best,
-                            &unseen_tally,
-                            &mut num_board,
-                            &mut den_board,
-                        );
-                    } else {
-
-                    let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
-                    if opp_term || oppdenial_exact_board {
-                        if oppdenial_exact_board {
-                            census::best_equity_argmax_table(
-                                &lat,
-                                &sheet,
-                                leave,
-                                &mut oppdenial_leave_best,
-                                &mut oppdenial_exact_kept_idx,
-                                &mut oppdenial_exact_kept_size,
-                            );
-                        } else {
-                            census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                        }
-                    }
-                    if opp_term {
-                        census::opp_denial_marginals(
-                            &lat,
-                            &add_table,
-                            &oppdenial_leave_best,
-                            &unseen_tally,
-                            &mut oppdenial_leave_marginal,
-                        );
-                    }
-                    if oppdenial_exact_board {
-
-                        oppdenial_exact_term.iter_mut().for_each(|x| *x = 0.0);
-                        census::opp_me2_per_rack(
-                            &lat,
-                            &add_table,
-                            &oppdenial_leave_best,
-                            &census::KeptArgmax {
-                                idx: &oppdenial_exact_kept_idx,
-                                size: &oppdenial_exact_kept_size,
-                            },
-                            &unseen_tally,
-                            oppdenial_exact_me2,
-                            &mut oppdenial_exact_term,
-                        );
-                    } else if oppdenial_exact != 0.0 && log_first {
-                        writeln!(boxed_stdout_or_stderr(),
-                            "  oppdenial_exact: pool {pool} > {oppdenial_exact_pool_max}, skipping the term this board").ok();
-                    }
                     census::apportion_fused(
                         &lat,
                         &add_table,
@@ -4219,35 +2570,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             null_leave,
                             scatter,
                         },
-                        &census::OppDenialParams {
-                            oppdenial_rack,
-                            marginal: if oppdenial_rack != 0.0 {
-                                &oppdenial_leave_marginal
-                            } else {
-                                &[]
-                            },
-                            oppdenial_exact: if oppdenial_exact_board { oppdenial_exact } else { 0.0 },
-                            oppdenial_exact_term: if oppdenial_exact_board {
-                                &oppdenial_exact_term
-                            } else {
-                                &[]
-                            },
-                        },
                     );
-                    }
                     for (idx, slot) in contrib.iter_mut().enumerate() {
                         *slot = if den_board[idx] > 0.0 {
-                            let mut v = (num_board[idx] / den_board[idx]).round() as i32;
-                            if oppdenial_leave != 0.0 {
-
-                                lat.unrank_into(idx, &mut tally_buf);
-                                let mut d = 0.0f64;
-                                for (t, &c) in tally_buf.iter().enumerate() {
-                                    d += c as f64 * oppdenial_leave_marginal[t];
-                                }
-                                v += (oppdenial_leave * d).round() as i32;
-                            }
-                            v
+                            (num_board[idx] / den_board[idx]).round() as i32
                         } else {
                             census::UNPLAYABLE
                         };
@@ -4558,7 +2884,6 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
-    rare_path: Option<&str>,
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
 
@@ -4654,21 +2979,6 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     } = subrack_map
         .remove([][..].into())
         .ok_or("empty-rack entry should not be missing")?;
-
-    if let Some(fp) = rare_path {
-        let mut rare_reader = csv::ReaderBuilder::new().has_headers(false).from_path(fp)?;
-        for result in rare_reader.records() {
-            let record = result?;
-            if record[0].is_empty() {
-                continue;
-            }
-            let equity = f64::from_str(&record[1])?;
-            let count = u64::from_str(&record[2])?;
-            parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
-            pool_rare_one(&mut subrack_map, &rack_bytes, equity, count);
-            *subrack_support.entry(rack_bytes[..].into()).or_insert(0u64) += count;
-        }
-    }
 
     let smooth_min = 50;
     let mut ev_map = fash::MyHashMap::<bites::Bites, _>::default();
@@ -4822,31 +3132,6 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         num_smoothed,
         num_filled_in,
     )?;
-
-    let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
-    if oppdenial_leave != 0.0 {
-        let path = oppdenial_leave_marginal_path()?;
-        if std::path::Path::new(&path).exists() {
-            let num_letters = game_config.alphabet().len() as usize;
-            let avg_marginal = load_oppdenial_leave_marginal_sidecar(&path, num_letters)?;
-            for (k, v) in ev_map.iter_mut() {
-                let mut d = 0.0f64;
-                for &tile in k.iter() {
-                    d += avg_marginal[tile as usize];
-                }
-                *v += oppdenial_leave * d / equity::SCALE as f64;
-            }
-            writeln!(
-                stdout_or_stderr,
-                "generate: folded WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} from {path}"
-            )?;
-        } else {
-            writeln!(
-                stdout_or_stderr,
-                "generate: WOLGES_OPPDENIAL_LEAVE={oppdenial_leave} set but sidecar {path} not found; leaves unchanged"
-            )?;
-        }
-    }
 
     let mut kv = ev_map.into_iter().collect::<Vec<_>>();
     kv.sort_unstable_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
@@ -6325,22 +4610,5 @@ mod tests {
         let (eq, cnt) = decompose_contribution(&fv, 3);
         assert!((eq - 15.0).abs() < 1e-9); // (10/2) * 3
         assert_eq!(cnt, 3); // w only
-    }
-
-    #[test]
-    #[inline]
-    fn rare_pools_by_count_into_subrack_map() {
-        let mut m = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-        m.insert(
-            b"\x01"[..].into(),
-            Cumulate {
-                equity: 10.0,
-                count: 2,
-            },
-        ); // full-rack A, sum10 n2
-        pool_rare_one(&mut m, &b"\x01"[..], 5.0, 3); // rare A, sum5 n3
-        let a = m.get(&b"\x01"[..]).unwrap();
-        assert_eq!(a.count, 5);
-        assert!((a.equity - 15.0).abs() < 1e-9); // mean 15/5 = 3.0
     }
 }

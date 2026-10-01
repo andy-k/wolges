@@ -49,8 +49,6 @@ done
 forcing_on=""
 if [ -z "$gilles_mode" ] && [ -z "$no_forcing_mode" ]; then
   forcing_on=1
-  export WOLGES_AUTOPLAY_FULL_RACK_FORCING=1
-  export WOLGES_IMPOSSIBLE_OK=1
 fi
 
 if [ "$#" -lt 3 ]; then
@@ -95,11 +93,7 @@ options:
                 under --gilles.
   --threads N   worker threads for every leave run (default: every core)
   --gilles      collect samples via gillesb board-sampling instead
-                of autoplay. :min_samples_per_rack now drives coverage: after the
-                mandatory games, remediation games direct their samples at racks
-                still seen fewer than that many times until every rack reaches it
-                (or no further progress is possible). :0 (or omitted) is pure
-                board sampling.
+                of autoplay. counts take no :min_samples_per_rack.
 EOF
   exit 2
 fi
@@ -146,6 +140,10 @@ while [ "${!i:-}" != "" ]; do
     exit 1
   fi
   if [ "${full_arg}" != "${before_colon}" ]; then
+    if [ "$gilles_mode" ]; then
+      echo "--gilles takes a plain game count, not ${full_arg}" >&2
+      exit 1
+    fi
     after_colon="${full_arg#*:}"
     if [ "${after_colon}" != "$[${after_colon} + 0]" ]; then
       echo "invalid number: ${after_colon}" >&2
@@ -201,10 +199,8 @@ while [ "${!i:-}" != "" ]; do
   effective_generate_subcommand="${generate_subcommand}"
   leave_name="leaves"
 
-  # rare-subrack coverage, written by autoplay only when :min_samples > 0
-  rare_summary=""
   if [ "$gilles_mode" ]; then
-    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
+    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon"
     summary_file="$(ls -1td gilles-summary-* | head -1)"
     echo "$summary_file"
     mv -fv "$summary_file" "summary${num_processed}.csv"
@@ -213,15 +209,11 @@ while [ "${!i:-}" != "" ]; do
     log_file="$(ls -1td games-log-* | head -1 | cut -f2- -d-)"
     echo "$log_file"
     mv -fv "summary-${log_file}" "summary${num_processed}.csv"
-    if [ -f "summary-rare-${log_file}" ]; then
-      mv -fv "summary-rare-${log_file}" "summary${num_processed}-rare.csv"
-      rare_summary="summary${num_processed}-rare.csv"
-    fi
   fi
   last_leave="${leave_name}$[num_processed + 1]"
-  time cargo run --release --bin leave -- "${leave_options[@]}" ${threads:+--threads "$threads"} "$effective_generate_subcommand" "summary${num_processed}.csv" "${last_leave}.csv" ${rare_summary:+"$rare_summary"}
+  time cargo run --release --bin leave -- "${leave_options[@]}" ${threads:+--threads "$threads"} "$effective_generate_subcommand" "summary${num_processed}.csv" "${last_leave}.csv"
   time cargo run --release --bin buildlex -- "$buildlex_subcommand" "$last_leave".{csv,"$klv_ext"}
-  zip -9v result.zip "summary${num_processed}.csv" ${rare_summary:+"$rare_summary"} "$last_leave".{csv,"$klv_ext"}
+  zip -9v result.zip "summary${num_processed}.csv" "$last_leave".{csv,"$klv_ext"}
   last_leave="${last_leave}.${klv_ext}"
   let num_processed=num_processed+1
 

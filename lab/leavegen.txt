@@ -254,15 +254,10 @@ FORCING HARD-TO-DRAW RACKS
 
 Self-play rarely deals a rack full of rare tiles, so the leaves that lean on
 such racks are built from too few games. To cover them, autoplay can force a
-hard-to-draw rack onto a board and value its best play there.
-WOLGES_IMPOSSIBLE_OK controls what happens when a forced rack needs a tile the
-board has already used up: on (the default) values the rack anyway -- its tiles
-forced onto the board, since the move generator plays it whether or not the bag
-still holds those tiles -- so the rare rack still gets covered; off records
-only what the board could really deal, at the cost of a per-sample possibility
-check.
-
-New knobs: WOLGES_IMPOSSIBLE_OK.
+hard-to-draw rack onto a board and value its best play there. When a forced
+rack needs a tile the board has already used up, it is valued anyway -- its
+tiles forced onto the board, since the move generator plays it whether or not
+the bag still holds those tiles -- so the rare rack still gets covered.
 
 
 WORKER THREADS
@@ -283,17 +278,15 @@ and 75 of the 100 tiles -- never the empty opening board, and never the endgame
 once the bag is empty (with an empty bag no tiles are drawn, so the leave table
 is not consulted there).
 
-At each snapshot it draws several random groups of tiles -- by default from the
-whole starting bag -- keeps the least likely group, meaning the rarest,
+At each snapshot it draws several random groups of tiles -- from the whole
+starting bag -- keeps the least likely group, meaning the rarest,
 hardest-to-draw combination, and then forms every full rack that can be made
 from that group, valuing each rack's best play on that board. Drawing from the
 whole bag lets a group include rares this board has already used up; such a
 rack is then valued with its tiles forced onto the board, since the move
-generator plays it whether or not the bag still holds those tiles. (The
-WOLGES_IMPOSSIBLE_OK knob introduced above switches the draw source to this
-board's leftover pool.) Forming every rack from one chosen group yields a
-dense, related batch of racks per board at once, which is what makes it
-efficient.
+generator plays it whether or not the bag still holds those tiles. Forming
+every rack from one chosen group yields a dense, related batch of racks per
+board at once, which is what makes it efficient.
 
 The output is exactly the autoplay summary format -- a totals row, then rack,
 equity-sum, count rows -- so a board-sampling run and an autoplay run merge
@@ -304,11 +297,7 @@ The rules of thumb -- when to snapshot, how big a group to draw, how many
 groups to try, how far apart to snapshot -- are GillesB's. The group size and
 the snapshot window scale with the game's tile count so they fit any variant;
 for the classic English game they reduce to his values (snapshot at 25 to 75
-tiles left, a group of 13 tiles, 7-tile racks). Each is exposed as a knob, but
-the defaults are those published values.
-
-New knobs: WOLGES_GILLES_DRAWS, WOLGES_GILLES_GROUP, WOLGES_GILLES_STRIDE,
-WOLGES_POOL_MAX, WOLGES_POOL_MIN.
+tiles left, a group of 13 tiles, 7-tile racks).
 
 
 HOW THE METHODS COMPARE
@@ -333,205 +322,6 @@ So at this point board sampling is the strongest table, ahead of the self-play
 autoplay baseline, and both are far ahead of null. The autoplay baseline here
 is the existing self-play table described above, and the numbers are on that
 footing.
-
-
-COVERING THE RARE RACKS
-
-Plain board sampling never promises that every rack gets studied. A rack built
-mostly from one-of-a-kind tiles -- a rack that wants the Q, say -- is hard to
-draw, so across a whole run it turns up only a handful of times, or never. Its
-leaves then rest on very few samples or none, and leave generate has to guess
-their value from the fuller racks it did see rather than measure it directly.
-(leave generate does exactly that filling-in, called smoothing.)
-The question this raises: if we spent the effort to sample those rare racks
-enough to measure them, would the resulting table play any better?
-
-To find out, leave gilles takes one more optional number, a minimum-sample
-target, right after the game count:
-
-  cargo run --release --bin leave -- \
-    gilles CSW24.kwg a.klv2 b.klv2 1000000 [min_samples] [seed]
-
-A min_samples of 0, the default, is exactly the plain board sampling already
-described -- byte for byte the same summary. A nonzero value turns on a
-remediation phase: the threads first play the requested games as usual, then
-keep playing extra games, but on each board they now aim the rack enumeration
-at the racks still short of the target count. On a snapshot they take the worst
-(least-likely) group, enumerate the still-undersampled racks inside it, widen
-the group with a few of the rarest leftover tiles to reach more of them, and
-fill any remaining room with random racks so each snapshot still does a steady
-amount of work. The threads periodically rebuild the shortfall list and stop
-once nothing is left short or the shortfall stops dropping.
-
-Because every rack it scores is assembled from tiles actually left on that
-board, it is always a rack that could really occur there. Any racks that still
-cannot be reached -- a tail of one-copy tiles that always get played before the
-snapshot window opens -- are reported at the end rather than silently dropped.
-(One supporting fix rode along here: the exchange enumerator now clears its
-working buffer before it starts, since the random fill-in can leave tiles
-behind and the enumeration assumes an empty buffer; without the reset the
-enumeration would quietly produce almost nothing and wrongly look like full
-coverage.)
-
-With a target of 1 the shortfall falls steadily to zero, covering all 3,199,724
-racks the standard tile distribution can form. That count is a property of the
-100-tile bag -- the standard letter counts plus two blanks -- not of any word
-list: a word list decides which racks can score, not which can be drawn. So the
-remediation does what it claims: it reaches every rack with measured data.
-
-The rarest racks, though, make it crawl. A tile with a single copy in the bag
-is almost always played before the midgame snapshot window opens, so a rack
-needing it can only be sampled in the rare game where that tile happens to sit
-unplayed that long, and chasing the last few thousand such racks that way
-dominates the whole run. WOLGES_GILLES_RESERVE (off by default) attacks that
-tail directly: before each remediation game it takes a batch of the
-still-uncovered racks, gathers the tiles they need, sets those aside up to a
-budget, and deals the game from the rest of the bag. The reserved tiles never
-enter play, so they are still unseen when the midgame snapshots happen and the
-wanted racks become directly drawable right where the sampling looks -- at the
-correct midgame phase, and with nothing impossible ever sampled, since the
-held-back tiles really are unseen on that board. The budget,
-WOLGES_GILLES_RESERVE_BUDGET, defaults to what the bag can spare and still deal
-the opening racks and play into the snapshot window, so it scales with the bag
-rather than being a fixed count. It is off by default because holding tiles
-back makes the board a little unnatural -- those tiles are absent more often
-than chance would have them -- which can nudge the leave values, so it is a
-lever to grind the rare tail faster, to be checked with leave compare before
-it is trusted.
-
-The verdict, measured our own table against our own with leave compare at one
-million game pairs, plain board sampling as the yardstick:
-
-  min-samples remediation vs plain board sampling: leave compare reports
-    49.9660 for the remediated table (the first table) -- a lead of about one
-    standard error below an even split, which reads as a tie.
-
-  reserve pool vs plain board sampling: leave compare reports 49.9856 for
-    the reserved-pool table, well inside the noise -- a tie.
-
-So spending the effort to measure the rare racks, instead of letting
-leave generate fill them in, does not make the table play any better: the
-fill-in estimate for those hard-to-draw racks was already good enough, because
-a rack that is hard to draw is also one the move generator rarely has to value
-in real play. Both levers stay optional and off by default; they earn their
-keep only when you specifically want the rare tail measured rather than
-estimated.
-
-New knobs: WOLGES_GILLES_RESERVE, WOLGES_GILLES_RESERVE_BUDGET.
-
-
-THE REAL DRAWN RACK
-
-Board sampling builds its racks from the worst group on each board -- the
-least-likely tiles -- which is what the method is for, but it has a side
-effect. The racks it studies lean toward odd, rare-tile holdings and rarely
-toward the common vowel-heavy ones. So the method tends to undervalue
-vowel-rich leaves and overvalue rare-tile leaves. That slant in the valuations,
-more than any gap in rare-rack coverage, looks like the method's main remaining
-weakness -- which suggests a different fix: instead of manufacturing more rare
-racks, also study the ordinary racks the player actually held.
-
-WOLGES_GILLES_REAL_RACK turns that on. On each greedy turn the game has already
-found the player's best play, so recording the rack that was held that turn,
-scored by that best play, costs almost nothing, and it feeds the sampling the
-natural mix of racks the worst-group draw skips over. The knob picks when to
-record: off (the default) leaves the plain method untouched; all-turns records
-every turn, the way autoplay does; in-window records only while the board sits
-inside the snapshot window. It records only while the bag still has tiles, so
-there is always a real leave to value, and it stores each real rack exactly
-like a worst-group rack, so everything decomposes into leaves the same way.
-
-There is a scale mismatch, though: the worst-group draw floods many
-manufactured racks per game while the real rack adds only about one per turn,
-so at par the real rack is swamped in the totals.
-WOLGES_GILLES_REAL_RACK_WEIGHT counts each real-rack sample this many times
-(default 1, a no-op), so a large weight lets the natural rack mix dominate -- a
-way to test whether real-rack sampling helps the leaves at all.
-
-The verdict, our table against our own at one million game pairs, plain board
-sampling as the yardstick:
-
-  real-rack sampling vs plain board sampling: leave compare reports 50.0135
-    for the real-rack table (the first table), inside the noise -- a tie.
-
-And pushing the weight high (for example 200) makes the vowel undervaluation
-worse, not better. That points the finger at how each rack is measured -- a
-single greedy best-play score -- rather than at which racks are chosen:
-rebalancing the mix of racks toward the common ones does not cure the slant, so
-the slant is baked into the one-play scoring, not into the sampling. Real-rack
-sampling stays off by default and the weight stays 1, both changing nothing
-unless asked.
-
-New knobs: WOLGES_GILLES_REAL_RACK, WOLGES_GILLES_REAL_RACK_WEIGHT.
-
-
-COVERING RARE SUBRACKS IN AUTOPLAY
-
-The same rare-coverage question applies to the autoplay baseline, and autoplay
-already has a way to chase it: alongside the racks its games naturally deal, it
-can force extra samples of the rarely-seen ones. But folding those forced
-samples in correctly turns out to matter, and the naive way does real harm.
-
-Recall that leave generate apportions each rack's average score across all
-the smaller tile-groups you could keep from it, weighting by how drawable the
-extra tiles are. That apportioning is right for a rack the games actually
-dealt. It is wrong for a forced sample: a forced rack comes from a lopsided,
-unusual board picked precisely to reach a rare holding, so apportioning its
-score across all of its leaves would leak that oddness into the common leaves
-that share those smaller groups -- the very leaves that are already well
-measured. Done that way, forcing more samples makes the common leaves worse,
-which defeats the purpose of forcing at all.
-
-The fix keeps the two kinds of samples in two separate files. The normal
-summary holds the racks the games really dealt, apportioned across their leaves
-exactly as before; when nothing is forced this file is byte for byte what
-autoplay wrote before. A second, rare file holds the forced samples, and each
-one is credited only to the single leave it was forced for -- never apportioned
-anywhere else. The rare file is written only when something was actually
-forced.
-
-To make that work, two things that autoplay used to do one full rack at a time
-now happen one leave at a time: measuring how many samples each leave has, and
-topping up the short ones. Autoplay measures each leave's coverage by breaking
-the real racks down the same way leave generate will, adds in the rare
-samples gathered so far, and tops up whichever leaves are still short by
-completing each with filler tiles drawn from the board's still-unseen pool. The
-impossible-rack switch described earlier (WOLGES_IMPOSSIBLE_OK) decides what to
-do when a leave cannot occur on the current board. So the prize here is
-precisely the undersampled leaves -- the ones the games rarely produce -- not
-the mathematically least-likely racks; a common leave that simply happened to
-come up little gets topped up just as a genuinely rare one does.
-
-leave generate takes the rare file as one more optional argument after the
-leaves file:
-
-  cargo run --release --bin leave -- \
-    generate summary.csv leaves.csv [rare.csv]
-
-Its rows are already counted per leave, each carrying its own score total and
-sample count, so they are added straight into the same running totals
-leave generate keeps, skipping the apportioning a full rack goes through.
-They only ever name real leaves you keep, never the empty leave that all the
-others are measured against, so the empty-leave baseline never moves: the rare
-file can only fill in coverage, it cannot tilt the whole table. (The reader
-borrows each field in place rather than copying it, so it allocates nothing per
-row, matching how the main summary is read.) The genleaves.sh driver carries
-the rare file end to end: when autoplay forcing is on it writes the rare file
-beside the normal summary, hands it to the leave generate step, and adds it
-to the result archive; when forcing is off no rare file is made or passed, so
-the plain autoplay and board-sampling paths stay byte-identical to before.
-
-This is a correctness fix rather than a new lever: it is what makes forced
-rare-subrack coverage safe to add at all. Whether the added coverage then moves
-the table is the same question the remediation above answered -- covering the
-rare tail with measured data, rather than an estimate, does not by itself make
-a stronger table -- and here too the safe default is to leave forcing off
-unless you specifically want that tail measured. The claim that folding forced
-samples into the common pile makes the leaves measurably worse is the design
-rationale for the two-file split, and it is verifiable from the code:
-apportioning lopsided-board samples pollutes the shared common leaves. It is
-argued from that mechanism, not from an at-scale leave compare of folding-in
-versus the split.
 
 
 TWO WAYS TO WEIGHT A RACK IN THE DECOMPOSE
@@ -855,163 +645,33 @@ thirty-six tiles). None of these change the leaves; they are why the census can
 be both exact and fast, which is its selling point over sampling.
 
 
-CREDITING WHAT THE OPPONENT CANNOT DRAW
-
-Every leave value so far measures only what a leave does for the holder's own
-next turn: the best play it makes possible once the rest of the rack is drawn.
-But the tiles a player keeps are also tiles the opponent cannot draw. Keeping
-the Q, the Z, or a fistful of blanks starves the other side's next rack a
-little, so their best reply comes out slightly worse. That harm -- the value of
-what your kept tiles deny the opponent -- is nowhere in the leave table. The
-experiments here try to add it, and none of them pays off; they are kept as
-recorded dead-ends.
-
-All of them share one piece of per-board work. On a sampled board, the census
-machinery already values every full rack that could be drawn from the pool of
-tiles not yet seen. Reusing that, these terms ask a second question about the
-opponent: how much worse is the opponent's expected best play once some of the
-unseen tiles are locked up in your hand? Because the same valuation answers
-both questions, the opponent term is just an extra fold on top of a board the
-sampler already studied. Each term is a knob whose value is the weight -- a
-multiplier -- given to the opponent piece; every one defaults to zero (off),
-and off leaves the leave tables byte for byte identical to the plain method.
-
-
-THE PER-LETTER OPPONENT TERM (one tile at a time)
-
-The cheap version measures the denial one letter at a time. On a sampled board,
-take the opponent's expected best play over all the racks they could draw from
-the unseen pool. Now remove one tile of a given letter from that pool and take
-the same expectation again: it drops a little, because a slightly worse set of
-racks is now drawable. That drop is what a single tile of that letter denies
-the opponent. Doing this for every letter gives a per-letter drop, and
-averaging those over all the sampled boards gives one denial figure per letter.
-
-There are two places to fold that per-letter drop in, and the code exposes
-both:
-
-  WOLGES_OPPDENIAL_LEAVE adds it straight into the finished table. The sampler
-  writes the board-averaged per-letter drops to a companion file next to the
-  summary, and the decompose step adds the weight times the sum of a leave's
-  own per-letter drops to that leave's value.
-
-  WOLGES_OPPDENIAL_RACK adds it earlier, to each drawn rack's recorded value
-  before the summary is written, so it rides through the same summarize-and-
-  decompose path as every other recorded value with no companion file.
-
-Both use the same per-letter drops, and both are linear: each kept tile's
-denial is counted on its own and the counts are summed. That is the built-in
-weakness. Leave values are not additive -- the worth of keeping Q and U
-together is not the worth of Q plus the worth of U -- so adding up each tile's
-denial separately can only estimate the true joint effect of holding several
-tiles at once. Still, it is the obvious first cut and it costs almost nothing
-on top of the census, so it is worth measuring.
-
-Verdict. Running the census with each term turned on against the census with it
-off, one million game pairs, our tables against our own tables:
-
-  WOLGES_OPPDENIAL_LEAVE: the term-on table scores 49.9691, confidence 80.9 --
-    a hair below an even split, meaning the denial credit made the table very
-    slightly worse, but the lead is under one standard error (the roughly 0.035
-    pp noise floor at a million pairs), so it is really no change either way,
-    if anything a tiny loss.
-
-  WOLGES_OPPDENIAL_RACK: the term-on table scores 49.9931, confidence 57.7 -- a
-    tie, well inside the noise.
-
-Neither per-letter term earns its place; both stay off by default.
-
-
-THE EXACT JOINT OPPONENT TERM
-
-Because the per-letter estimate double-counts when several kept tiles all help
-the same opponent play, the next step computes the opponent effect exactly,
-with no per-tile shortcut. For each full rack the holder might draw, it works
-out the opponent's expected best play from the pool that whole rack leaves
-behind -- the average of the opponent's best play over every full rack they
-could draw from what is left -- using the very best-play values the census
-already has. That is the honest joint quantity the per-letter term was
-approximating.
-
-The exact term then subtracts a second piece: what the holder's own next turn
-recovers from that same leftover pool. WOLGES_OPPDENIAL_EXACT folds the weight
-times this joint correction into each drawn rack's value.
-
-Exactness is not free. The opponent's expectation is an average over every
-drawable full rack, computed once for every full rack the holder might draw, so
-the cost grows with the square of the number of drawable racks. To keep that
-bounded the term only runs on boards whose unseen pool is small:
-WOLGES_OPPDENIAL_EXACT_POOL_MAX (default 32 tiles) is the ceiling, and boards
-with a larger pool skip the term.
-
-Verdict. Census with WOLGES_OPPDENIAL_EXACT on against census with it off, one
-million pairs, our-vs-our: 50.0014, confidence 51.5 -- a dead tie. Doing the
-opponent term exactly rather than one tile at a time changes nothing
-measurable; it too stays off.
-
-New knobs: WOLGES_OPPDENIAL_EXACT, WOLGES_OPPDENIAL_EXACT_POOL_MAX,
-WOLGES_OPPDENIAL_LEAVE, WOLGES_OPPDENIAL_RACK.
-
-
-DIALING BACK THE RECOVERY PIECE
-
-The joint correction has two halves: what the opponent still expects from the
-leftover pool, minus what the holder's own next turn recovers from it. That
-second half can over-credit. The census leave value is already a fixed point
-that sums the holder's own future turns -- the leaves that reproduce themselves
-when fed back in -- so subtracting the holder's recovery again partly counts
-the same future twice. WOLGES_OPPDENIAL_EXACT_ME2 (default 1.0) scales just
-that recovery half: 1.0 keeps the full correction exactly as above, 0.0 drops
-the recovery half and counts only the opponent's expectation (the opponent-only
-denial, which the fixed point does not already contain), and values in between
-temper it.
-
-At the default 1.0 this is the same dead-tie result as WOLGES_OPPDENIAL_EXACT
-above. The opponent-only setting (0.0) is a distinct variant, and it does not
-help: in a fresh head-to-head the full correction (1.0) beats it 50.13 to 49.87
-(confidence 100), so dropping the holder's-recovery half is a small negative,
-not a win. The knob stays at 1.0.
-
-New knobs: WOLGES_OPPDENIAL_EXACT_ME2, WOLGES_OPPDENIAL_LEAVE_MARGINAL.
-
-
 FORCING FULL RARE RACKS
 
 Self-play almost never deals a rack full of rare tiles, so the leaves that
-depend on such racks are built from too few games. Autoplay already patches
-this by forcing: deliberately building and playing the cases that self-play
-starves, so their leaves rest on real plays rather than on nothing. Until now
-it forced at the level of undersampled subracks -- the shorter kept-tile
-combinations -- and kept them in a side list, apart from the main rack tally.
-It had to: under the per-occurrence decompose, dropping a full rare rack into
-the main tally would over-count every common subrack that rack happens to
-contain.
+depend on such racks are built from too few games. Autoplay patches this by
+forcing: deliberately building and playing the cases that self-play starves, so
+their leaves rest on real plays rather than on nothing.
 
-Full-rack forcing adds the other option -- force undersampled full racks in
-their entirety and record them in the main rack tally, exactly like a naturally
-drawn rack. Switched on (WOLGES_AUTOPLAY_FULL_RACK_FORCING, off by default),
-the remediation step walks the possible full racks, looks each up in the rack
-tally, and targets any seen fewer than the min-samples count. A rack that wants
-more copies of a tile than the whole bag holds is skipped -- it can never be
-completed, so forcing it would be wasted work. Paired with the
-WOLGES_IMPOSSIBLE_OK knob turned on, it will also force racks that this board
-cannot currently deal, building them with their tiles forced onto the board. A
-forced rack is built tile for tile and recorded keyed by the full rack, count
-one. Switched off, the old subrack-targeted path is byte-for-byte unchanged.
+Forcing works on whole racks. The remediation step walks the possible full
+racks, looks each up in the rack tally, and targets any seen fewer than the
+min-samples count, recording each forced rack in the main rack tally exactly
+like a naturally drawn one. A rack that wants more copies of a tile than the
+whole bag holds is skipped -- it can never be completed, so forcing it would be
+wasted work. It also forces racks that this board cannot currently deal,
+building them with their tiles forced onto the board. A forced rack is built
+tile for tile and recorded keyed by the full rack, count one.
 
 This is only sound alongside the per-rack decompose (the -generate weighting
 that counts each distinct rack once, weighted by the ways the bag could
 complete it, rather than once per occurrence). That weighting is what keeps a
-force-covered rack from inflating the common subracks it shares, which is the
-very over-counting the side-list subrack path was invented to avoid.
+force-covered rack from inflating the common subracks it shares.
 
 Measured at volume, full-rack forcing was worth turning on for the autoplay
 recipe by default. A bare autoplay run now forces each undersampled full rack,
-places racks board-tolerantly (it exports the full-rack-forcing and
-impossible-ok knobs), and covers every globally-possible rack at least once by
-defaulting each generation's min-samples to one. Passing --no-forcing reverts
-to plain natural-rack sampling; --gilles keeps its own board sampler and is
-never forced.
+places racks board-tolerantly, and covers every globally-possible rack at least
+once by defaulting each generation's min-samples to one. Passing --no-forcing
+reverts to plain natural-rack sampling; --gilles keeps its own board sampler
+and is never forced.
 
 On the per-rack decompose footing (each distinct rack weighted once, not once
 per occurrence), the forced autoplay table roughly ties board sampling.
@@ -1025,8 +685,6 @@ forcing is a small, sub-noise improvement in coverage, not a step change; it is
 kept on because a leave built on a real forced play is sounder than one left
 starved, and it costs nothing when the racks it targets are the ones self-play
 would have missed.
-
-New knobs: WOLGES_AUTOPLAY_FULL_RACK_FORCING.
 
 
 THE PER-RACK DECOMPOSE BECOMES THE DEFAULT
@@ -1097,8 +755,7 @@ VALUING A PLAY BY ITS CHANCE OF WINNING
 Every method so far values a play by its equity -- the points it scores on the
 board plus the value of the leave it keeps -- and picks the play with the most
 equity. But points are only a stand-in for the thing that actually decides a
-game, which is winning it. This section tries to skip the stand-in and value a
-play directly by how often it leads to a win.
+game, which is winning it.
 
 The chance of winning is written "win%": the probability that the player to
 move eventually wins this game, a number from 0 (a certain loss) through 0.5
@@ -1109,9 +766,7 @@ not read off a hand-tuned formula.
 wolges already carries such a hand-tuned formula elsewhere in the engine: an
 S-shaped curve that turns a point lead into a win-chance guess (a small lead
 reads near 0.5, a large lead flattens out near 0 or 1). The idea here is to
-replace that guess with a table measured from our own play, and then to see
-whether valuing racks by that measured win chance builds a better leave table
-than valuing them by points.
+replace that guess with a table measured from our own play.
 
 
 THE WIN% TABLE, MEASURED FROM SELF-PLAY
@@ -1173,75 +828,6 @@ figures come from leave winpct-eval grading each table on held-out self-play
 leave comparison. The margin is small, but the direction is what counts: a
 table read straight off played-out games predicts winners a touch better than a
 formula nobody had to hand-tune.
-
-
-VALUING RACKS BY WIN% (WOLGES_WINPCT)
-
-With a table in hand, all three builders -- census, gilles, and autoplay -- can
-be switched from valuing a rack by its best play's points to valuing it by the
-win chance that best play implies. Setting WOLGES_WINPCT on (it reads the table
-from WOLGES_WINPCT_TABLE, which must be set) does this; off, the builders
-record raw equity and the leave tables come out byte-for-byte unchanged.
-
-The remap works per board. At a board's count-state the table gives a curve
-from point lead to win chance. Near an even game each point is worth a fixed
-slice of win chance -- that curve's slope at zero lead. To value a play, take
-the points its best move yields, look up the win chance that lead implies,
-subtract the even-game 0.5, and divide by that slope. The result is the point
-lead that would carry the same win chance near an even game -- call it the
-play's win-adjusted value. By construction it equals the play's points for
-small leads, and it bends toward a ceiling for large ones -- a big lead is
-nearly a won game either way, so extra points past it buy very little win
-chance. That concave bend (flattening toward a ceiling) is the only thing win%
-adds on top of points.
-
-Each board's best-play value is remapped this way before the samples are summed
-and handed to the decompose step, so the leave tables see a per-board remap,
-not a remap of the averaged total -- the two differ because the bend is not a
-straight line. Because the win% objective is one whole objective, it is not
-combined with the opponent terms (denial, and the exact opponent correction):
-loading a win% table switches that machinery off.
-
-WOLGES_WINPCT_BLEND dials how much of the remap to apply. A rack's value
-becomes (1 - blend) times its points plus blend times that win-adjusted value.
-At 1.0, the default, it is the pure win% objective just described; at 0.0 it is
-pure points (and identical to the win%-off tables); in between it keeps points
-dominant and adds a win-chance nudge.
-
-
-THE VERDICT: WIN% DOES NOT BEAT POINTS FOR A STATIC LEAVE
-
-It does not help, and it slightly hurts. Building gilles leaves with the win%
-objective on and comparing them against the same gilles leaves with it off, the
-win%-on table wins only about 49.36 percent of the pairs -- roughly 0.64 pp
-below an even split, a clear loss. This is a fresh, high-volume gilles
-self-play head-to-head, our own tables against our own, and it is as confident
-as the comparison gets (confidence 100): the win% objective is a settled
-negative.
-
-Dialing WOLGES_WINPCT_BLEND down from 1.0 toward 0.0 shrinks the loss back
-toward a tie, as expected -- less remap means closer to plain points. The
-full-blend end is the pure win% objective just measured; the smaller blends
-were only spot-checked on a census-side run at lower volume, and they land
-between that loss and a tie, which is all the sign predicts.
-
-The reason is structural, and it holds no matter how good the table is. For any
-fixed count-state the table's win chance never decreases as the lead grows --
-it is monotone in the lead. So the play with the highest win chance is always
-the very same play with the highest points: the remap re-scales the value
-credited to each leave but never changes which play is chosen. And a leave
-table is static -- one value per kept group of tiles, consulted with no
-lookahead. The one thing win% could add over points is a preference about
-variance -- when you are ahead you may want the safer play even if it scores a
-touch less, and when behind the riskier one -- but choosing on variance means
-weighing how the game could branch from here, which is lookahead the one-move
-builders do not do. A per-board monotone re-scaling of a single number cannot
-smuggle that in. So even though the measured table predicts winners a hair
-better than the old formula, it cannot make the leaves themselves any better,
-and the small nonlinearity it does inject nudges them slightly the wrong way.
-The knob stays off by default.
-
-New knobs: WOLGES_WINPCT, WOLGES_WINPCT_BLEND, WOLGES_WINPCT_TABLE.
 
 
 MERGING WIN% TABLES (leave winpct-combine)
@@ -1326,12 +912,10 @@ subracks are reweighted and fades as the floor shuts more of them out -- and
 the higher floors are the cheaper ones, so the floor trades strength against
 cost.
 
-This is worth setting beside the win% result, which lost. A win% table is a
-fixed remap of one number and cannot change which play is chosen. The pool
-reweight is not a remap: it feeds each move real information the static table
-never had -- which tiles are actually still drawable -- and that can and does
-change which leave looks best as the pool empties. It is the one place a static
-table, read a little less statically, plays measurably better.
+The pool reweight feeds each move real information the static table never had
+-- which tiles are actually still drawable -- and that can and does change
+which leave looks best as the pool empties. It is the one place a static table,
+read a little less statically, plays measurably better.
 
 New knobs: WOLGES_DYNAMIC_LEAVES, WOLGES_DYNAMIC_LEAVES_MIN_KEEP.
 
@@ -1377,8 +961,7 @@ manufactures rare racks by snapshotting midgame boards.
 
     ./genleaves.sh --gilles english english 2000000 2000000 2000000
 
-Its snapshot heuristics are the WOLGES_POOL_* and WOLGES_GILLES_* knobs. The
-genleaves.sh arguments are explained under RUNNING GENLEAVES.SH below.
+The genleaves.sh arguments are explained under RUNNING GENLEAVES.SH below.
 
 Self-play autoplay -- wolges's original baseline. It plays games and learns
 from the racks held.
@@ -1401,8 +984,8 @@ play-config is the tile distribution to play games with (english, norwegian,
 super-english, and so on); leave-config is the distribution the leave table is
 compiled for. They are usually the same, which is why the examples read
 "english english". Each trailing number is one generation's game count, so
-three numbers means three generations; append :N to a count to ask for N
-samples of every rack that generation.
+three numbers means three generations; append :N to a count to have autoplay
+gather N samples of every rack that generation.
 
 Options, each written before the configs:
   --threads N   worker threads for every leave run (default: every core)
@@ -1428,83 +1011,6 @@ Every run:
   started within the same 1/65536 second share a stamp; every file is created
   without overwriting an existing one, inserting a _1 (then _2) before the
   extension on a clash, so no run ever clobbers another's output.
-
-Shared across builders:
-  WOLGES_IMPOSSIBLE_OK (0 or 1; default 1) -- whether to value a rack the board
-    cannot currently deal; read by autoplay's forcing and board sampling's
-    draw source:
-      1  force the rack's tiles onto the board, so rare racks still get covered
-      0  record only what the board could really deal
-  WOLGES_OPPDENIAL_EXACT (a decimal weight; default 0.0, off) -- weight on the
-    exact joint opponent correction folded into each drawn rack's value. 0.0
-    disables it.
-  WOLGES_OPPDENIAL_EXACT_ME2 (a decimal; default 1.0) -- scales the
-    holder's-recovery half of the joint correction: 1.0 keeps it in full, 0.0
-    keeps only the opponent's expectation, values between temper it; read only
-    when WOLGES_OPPDENIAL_EXACT is nonzero.
-  WOLGES_OPPDENIAL_EXACT_POOL_MAX (a whole number of tiles; default 32) --
-    largest unseen pool on which the exact joint term is computed; larger
-    boards skip it.
-  WOLGES_OPPDENIAL_LEAVE (a decimal weight; default 0.0, off) -- weight on the
-    per-letter opponent-denial term, folded into the finished table through a
-    companion file; read by all three builders. 0.0 disables it. A recorded
-    dead-end.
-  WOLGES_OPPDENIAL_LEAVE_MARGINAL (a file path; no default) -- the companion
-    per-letter file, written only when WOLGES_OPPDENIAL_LEAVE is nonzero, and
-    required whenever it is.
-  WOLGES_OPPDENIAL_RACK (a decimal weight; default 0.0, off) -- the same
-    per-letter drop folded into each drawn rack's recorded value instead of
-    through a file. 0.0 disables it.
-  WOLGES_WINPCT (0 or 1; default 0) -- read by all three builders; not combined
-    with the opponent terms. A recorded negative:
-      1  value each rack by the win chance its best play implies
-      0  value each rack by points, and the leave tables are byte-identical
-  WOLGES_WINPCT_BLEND (a decimal from 0.0 to 1.0; default 1.0) -- blend from
-    pure points (0.0) to the pure win% remap (1.0); used only when
-    WOLGES_WINPCT is 1.
-  WOLGES_WINPCT_TABLE (a file path; no default) -- the win% table; required
-    when WOLGES_WINPCT is 1, which fails without it.
-
-Board sampling (gilles):
-  It also reads the shared knobs above. Its own knobs:
-  WOLGES_GILLES_DRAWS (a whole number; default 10) -- random groups drawn per
-    snapshot before keeping the least likely one.
-  WOLGES_GILLES_GROUP (a whole number of tiles; default two rack-sizes minus
-    one, 13 EN) -- worst-group size drawn per snapshot.
-  WOLGES_GILLES_REAL_RACK (off, all-turns, or in-window; default off) --
-    besides the manufactured racks, whether to also record the real rack held
-    each turn. A no-op measured at par:
-      off        the plain method, no real racks recorded
-      all-turns  record the real rack held every turn
-      in-window  record it only while the board sits in the snapshot window
-  WOLGES_GILLES_REAL_RACK_WEIGHT (a whole number; default 1) -- counts each
-    real-rack sample this many times.
-  WOLGES_GILLES_RESERVE (0 or 1; default 0) -- only with a nonzero min-sample
-    target:
-      1  hold the tiles the uncovered racks need out of the deal, so they
-         become drawable in the window
-      0  deal every game normally
-  WOLGES_GILLES_RESERVE_BUDGET (a whole number of tiles; default what the bag
-    can spare) -- how many tiles the reserve may hold back at once.
-  WOLGES_GILLES_STRIDE (a whole number; default 3) -- turns between snapshots.
-  WOLGES_POOL_MAX (a whole number of tiles; default the tile count minus
-    WOLGES_POOL_MIN, 75 EN) -- high edge of the snapshot window.
-  WOLGES_POOL_MIN (a whole number of tiles; default a quarter of the tile
-    count, 25 EN) -- low edge of the snapshot window, counted in tiles not yet
-    on the board.
-
-Census:
-  It also reads the shared knobs above.
-
-Autoplay:
-  It also reads the shared knobs above. Its own knob:
-  WOLGES_AUTOPLAY_FULL_RACK_FORCING (0 or 1; default 0; the genleaves autoplay
-    recipe turns it on) -- how autoplay forces the rare tail; sound only
-    alongside the per-rack decompose. genleaves.sh's --no-forcing option turns
-    it back off:
-      1  force whole undersampled racks into the main rack tally, like a
-         natural sample
-      0  target undersampled subracks in a side list
 
 Compare and dynamic leaves:
   WOLGES_COMPARE_PORCELAIN (0 or 1; default 0) -- leave compare's output;
