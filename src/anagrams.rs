@@ -211,7 +211,7 @@ impl Anagrams {
     }
 
     #[inline(always)]
-    fn words_of(&self, len: u8, span: Span) -> alphagram::Words<'_> {
+    pub fn words_of(&self, len: u8, span: Span) -> alphagram::Words<'_> {
         let from = span.at as usize;
         alphagram::Words {
             words: &self.arena[from..from + span.n as usize * len as usize],
@@ -232,6 +232,14 @@ impl Anagrams {
             return None;
         }
         Some(self.words_of(len, *self.groups.get(len as usize)?.get(&key.0)?))
+    }
+
+    #[inline(always)]
+    pub fn span(&self, key: alphagram::Key, len: u8) -> Option<Span> {
+        if !self.filter_may_hold(key.0, len) {
+            return None;
+        }
+        self.groups.get(len as usize)?.get(&key.0).copied()
     }
 
     #[inline(always)]

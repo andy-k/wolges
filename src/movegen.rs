@@ -427,6 +427,7 @@ struct WorkingBuffer {
     found_placements: Vec<PossiblePlacement>,
     placement_order: Vec<(i32, u32)>,
     placement_scratch: Vec<(i32, u32)>,
+    span_memo: SpanMemo,
     anchor_left_bounds: Vec<i32>, // per lean placement, two blocks by left edge
     bounds_at: usize,             // the popped lean placement's block, or usize::MAX
     used_letters_tally: Vec<u8>,
@@ -497,6 +498,7 @@ impl Clone for WorkingBuffer {
             found_placements: self.found_placements.clone(),
             placement_order: self.placement_order.clone(),
             placement_scratch: self.placement_scratch.clone(),
+            span_memo: self.span_memo.clone(),
             anchor_left_bounds: self.anchor_left_bounds.clone(),
             bounds_at: self.bounds_at,
             used_letters_tally: self.used_letters_tally.clone(),
@@ -573,6 +575,7 @@ impl Clone for WorkingBuffer {
         self.found_placements.clone_from(&source.found_placements);
         self.placement_order.clone_from(&source.placement_order);
         self.placement_scratch.clone_from(&source.placement_scratch);
+        self.span_memo.clone_from(&source.span_memo);
         self.anchor_left_bounds
             .clone_from(&source.anchor_left_bounds);
         self.bounds_at = source.bounds_at;
@@ -680,6 +683,7 @@ impl WorkingBuffer {
             found_placements: Vec::new(),
             placement_order: Vec::new(),
             placement_scratch: Vec::new(),
+            span_memo: SpanMemo::new(),
             anchor_left_bounds: Vec::new(),
             bounds_at: usize::MAX,
             used_letters_tally: Vec::new(),
@@ -2070,6 +2074,7 @@ struct GenPlaceMovesParams<
     threshold: i32,
     subracks: &'a [Subrack],
     subracks_by_played: &'a [u32],
+    span_memo: &'a mut SpanMemo,
 }
 
 #[inline(always)]
@@ -2613,6 +2618,88 @@ struct Subrack {
     blanks: u8,
 }
 
+#[derive(Clone)]
+struct SpanMemo {
+    turn: u32,
+    slots: Vec<SpanMemoSlot>,
+    visits: Vec<(u32, anagrams::Span)>,
+}
+
+#[derive(Clone, Copy)]
+struct SpanMemoSlot {
+    key: u128,
+    turn: u32,
+    len: u8,
+    from: u32,
+    upto: u32,
+}
+
+impl SpanMemoSlot {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            key: 0,
+            turn: 0,
+            len: 0,
+            from: 0,
+            upto: 0,
+        }
+    }
+}
+
+impl SpanMemo {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            turn: 0,
+            slots: Vec::new(),
+            visits: Vec::new(),
+        }
+    }
+
+    #[inline(always)]
+    fn start_turn(&mut self, placements: usize) {
+        if self.turn == u32::MAX {
+            self.slots.fill(SpanMemoSlot::new());
+            self.turn = 0;
+        }
+        let want = (placements * 2).next_power_of_two();
+        if self.slots.len() < want {
+            self.slots.resize(want, SpanMemoSlot::new());
+        }
+        self.turn += 1;
+        self.visits.clear();
+    }
+
+    #[inline(always)]
+    fn find(&self, key: u128, len: u8) -> Result<(u32, u32), usize> {
+        let mask = self.slots.len() - 1;
+        let mut at = alphagram::mixed(key).rotate_left(len as u32) as usize & mask;
+        loop {
+            let slot = &self.slots[at];
+            if slot.turn != self.turn {
+                return Err(at);
+            }
+            if slot.key == key && slot.len == len {
+                return Ok((slot.from, slot.upto));
+            }
+            at = (at + 1) & mask;
+        }
+    }
+
+    #[inline(always)]
+    fn keep(&mut self, at: usize, key: u128, len: u8, from: u32) {
+        debug_assert!(self.visits.len() <= u32::MAX as usize);
+        self.slots[at] = SpanMemoSlot {
+            key,
+            turn: self.turn,
+            len,
+            from,
+            upto: self.visits.len() as u32,
+        };
+    }
+}
+
 #[inline]
 fn build_subracks(
     multi_leaves: &klv::MultiLeaves,
@@ -2741,20 +2828,6 @@ fn gen_classic_place_moves<
         base_perp: i32,
         word_multiplier: i32,
         bound: i32,
-    }
-
-    #[inline]
-    fn check_words<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
-        env: &mut Env<'_, CallbackType, N, L>,
-        key: alphagram::Key,
-        leave_idx: u32,
-    ) {
-        let source = env.source;
-        let len = (env.right - env.left) as u8;
-        let Some(found) = source.words(key, len) else {
-            return;
-        };
-        fit_words::<false, _, _, _>(env, found, leave_idx, 0, 0)
     }
 
     #[inline]
@@ -3031,20 +3104,56 @@ fn gen_classic_place_moves<
     env.base_perp = e.base_perp;
     env.word_multiplier = e.word_multiplier;
     let len = (rightmost - leftmost) as u8;
-    let from = env.params.subracks_by_played[e.num_played as usize] as usize;
-    let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
-    for si in from..upto {
+    let kept = env.params.span_memo.find(e.playthrough_key, len);
+    let (from, upto) = match kept {
+        Ok((from, upto)) => (from as usize, upto as usize),
+        Err(_) => (
+            env.params.subracks_by_played[e.num_played as usize] as usize,
+            env.params.subracks_by_played[e.num_played as usize + 1] as usize,
+        ),
+    };
+    let kept_from = env.params.span_memo.visits.len() as u32;
+    for i in from..upto {
+        let (si, kept_span) = match kept {
+            Ok(_) => {
+                let (si, span) = env.params.span_memo.visits[i];
+                (si as usize, Some(span))
+            }
+            Err(_) => (i, None),
+        };
         let subrack = env.params.subracks[si];
         env.bound = env.params.score_bound.saturating_add(subrack.leave_value);
         if env.bound < env.params.threshold {
             break;
         }
         let key = e.playthrough_key + subrack.key;
+        let source = env.source;
         if subrack.blanks == 0 {
-            check_words(&mut env, alphagram::Fitted(key), subrack.leave_idx);
+            let span = match kept_span {
+                Some(span) => span,
+                None => {
+                    let Some(span) = source.span(alphagram::Fitted(key), len) else {
+                        continue;
+                    };
+                    env.params.span_memo.visits.push((si as u32, span));
+                    span
+                }
+            };
+            fit_words::<false, _, _, _>(
+                &mut env,
+                source.words_of(len, span),
+                subrack.leave_idx,
+                0,
+                0,
+            );
             continue;
         }
-        let source = env.source;
+        if kept.is_err() {
+            env.params
+                .span_memo
+                .visits
+                .push((si as u32, anagrams::Span { at: 0, n: 0 }));
+        }
         if subrack.blanks >= 2 {
             let key_holds = env.layout.holds(key);
             let mut first = e.blank_ok & !1;
@@ -3071,6 +3180,11 @@ fn gen_classic_place_moves<
             let found = source.words_at(at);
             fit_words_apart(&mut env, found, subrack.leave_idx, tile, 0);
         });
+    }
+    if let Err(at) = kept {
+        env.params
+            .span_memo
+            .keep(at, e.playthrough_key, len, kept_from);
     }
 }
 
@@ -3689,6 +3803,7 @@ fn gen_place_moves_at_lean<
             threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
+            span_memo: &mut working_buffer.span_memo,
         },
         !placement.down,
         left_bounds,
@@ -3812,6 +3927,7 @@ fn gen_place_moves_at<
             threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
+            span_memo: &mut working_buffer.span_memo,
         },
         !placement.down,
     );
@@ -5312,6 +5428,7 @@ fn kurnia_gen_place_moves_iter<
         );
         sorted_from = sort_next_range(&mut placement_order, &starts, &mut bucket);
     }
+    working_buffer.span_memo.start_turn(found_placements.len());
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
