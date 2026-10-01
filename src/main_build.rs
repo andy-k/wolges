@@ -189,6 +189,21 @@ fn read_leaves_f32<Readable: std::io::Read>(
     Ok(leaves_map)
 }
 
+#[inline]
+fn refuse_a_wider_graph<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    alphabet: &alphabet::Alphabet,
+    kwg_path: &str,
+) -> error::Returns<()> {
+    let alphabet_len = alphabet.len();
+    if kwg.fits_alphabet(alphabet_len) {
+        return Ok(());
+    }
+    wolges::return_error!(format!(
+        "{kwg_path} has tiles past these {alphabet_len} tiles",
+    ));
+}
+
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // support "-" to mean stdout.
@@ -318,6 +333,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 "-macondo" => {
                     let alphabet = make_alphabet();
                     let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args[2])?);
+                    refuse_a_wider_graph(&kwg, &alphabet, &args[2])?;
                     make_writer(&args[4])?.write_all(&lexport::to_macondo(
                         &kwg,
                         &alphabet,
@@ -335,6 +351,7 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                 "-lxd" => {
                     let alphabet = make_alphabet();
                     let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args[2])?);
+                    refuse_a_wider_graph(&kwg, &alphabet, &args[2])?;
                     make_writer(&args[5])?
                         .write_all(&lexport::to_lxd(&kwg, &alphabet, &args[3], &args[4])?)?;
                     Ok(true)

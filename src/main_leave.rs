@@ -103,6 +103,21 @@ fn read_to_end(reader: &mut Box<dyn std::io::Read>) -> Result<Vec<u8>, std::io::
 }
 
 #[inline]
+fn refuse_a_wider_graph<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    game_config: &game_config::GameConfig,
+    kwg_path: &str,
+) -> error::Returns<()> {
+    let alphabet_len = game_config.alphabet().len();
+    if kwg.fits_alphabet(alphabet_len) {
+        return Ok(());
+    }
+    wolges::return_error!(format!(
+        "{kwg_path} has tiles past this game's {alphabet_len}",
+    ));
+}
+
+#[inline]
 fn do_lang<GameConfigMaker: Fn() -> game_config::GameConfig>(
     args: &[String],
     language_name: &str,
@@ -147,6 +162,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -198,6 +214,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -249,6 +266,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -300,6 +318,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -346,6 +365,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -391,6 +411,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let arc_klv0 = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -443,6 +464,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 sim_compare(make_game_config(), kwg, arc_klv, num_game_pairs, seed)?;
                 Ok(true)
             }
@@ -464,6 +486,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let game_config = make_game_config();
                 let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut game_state = game_state::GameState::new(&game_config);
@@ -545,6 +568,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let game_config = make_game_config();
                 let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut game_state = game_state::GameState::new(&game_config);
@@ -621,6 +645,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let arc_klv = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -647,6 +672,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let arc_klv = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -673,6 +699,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let arc_klv = if args3 == "-" {
                     std::sync::Arc::new(klv::Klv::<kwg::Node22>::from_bytes_alloc(
                         klv::EMPTY_KLV_BYTES,
@@ -768,6 +795,7 @@ fn do_lang_kwg<GameConfigMaker: Fn() -> game_config::GameConfig, N: kwg::Node + 
                 };
                 let kwg =
                     kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(&args[2])?)?);
+                refuse_a_wider_graph(&kwg, &make_game_config(), &args[2])?;
                 let klv = if args3 == "-" {
                     klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
                 } else {

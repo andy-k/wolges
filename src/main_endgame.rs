@@ -1271,11 +1271,28 @@ usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
 
     if big {
         let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        refuse_a_wider_graph(&kwg, &game_config, kwg_path)?;
         solve_position(&game_config, &kwg, &question, score_diff)
     } else {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        refuse_a_wider_graph(&kwg, &game_config, kwg_path)?;
         solve_position(&game_config, &kwg, &question, score_diff)
     }
+}
+
+#[inline]
+fn refuse_a_wider_graph<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    game_config: &game_config::GameConfig,
+    kwg_path: &str,
+) -> error::Returns<()> {
+    let alphabet_len = game_config.alphabet().len();
+    if kwg.fits_alphabet(alphabet_len) {
+        return Ok(());
+    }
+    wolges::return_error!(format!(
+        "{kwg_path} has tiles past this game's {alphabet_len}",
+    ));
 }
 
 #[inline(always)]
