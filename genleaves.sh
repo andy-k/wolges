@@ -7,6 +7,7 @@ klv1_mode=""
 logs_mode=""
 gilles_mode=""
 no_forcing_mode=""
+threads=""
 while :; do
   if [ "${1:-}" = "--" ]; then
     shift
@@ -35,6 +36,11 @@ while :; do
   if [ "${1:-}" = "--no-forcing" ]; then
     no_forcing_mode=1
     shift
+    continue
+  fi
+  if [ "${1:-}" = "--threads" ]; then
+    threads="${2:?--threads needs a number}"
+    shift 2
     continue
   fi
   break
@@ -87,6 +93,7 @@ options:
                 globally-possible rack once) with impossible-tolerant placement.
                 --no-forcing reverts to plain natural-rack sampling. ignored
                 under --gilles.
+  --threads N   worker threads for every leave run (default: every core)
   --gilles      collect samples via gillesb board-sampling instead
                 of autoplay. :min_samples_per_rack now drives coverage: after the
                 mandatory games, remediation games direct their samples at racks
@@ -99,6 +106,13 @@ fi
 
 leave_param="$1"
 buildlex_param="$2"
+
+# a config word as leave's options: the word is a preset, and a jumbled-
+# prefix adds --jumbled
+leave_options=(--preset "${leave_param#jumbled-}")
+if [ "${leave_param#jumbled-}" != "$leave_param" ]; then
+  leave_options+=(--jumbled)
+fi
 
 kwg=""
 for x in *.kwg *.kbwg; do
@@ -116,9 +130,9 @@ if [ ! "$kwg" ]; then
   exit 1
 fi
 
-kbwg_modifier=""
+kbwg_flag=""
 if [ "$kwg" != "${kwg%.kbwg}" ]; then
-  kbwg_modifier="-big"
+  kbwg_flag="--kbwg"
 fi
 
 echo "$kwg"
@@ -141,9 +155,9 @@ while [ "${!i:-}" != "" ]; do
   let i=i+1
 done
 
-autoplay_subcommand="${leave_param}${kbwg_modifier}-autoplay-summarize"
-gilles_subcommand="${leave_param}${kbwg_modifier}-gilles"
-generate_subcommand="${leave_param}-generate"
+autoplay_subcommand="autoplay-summarize"
+gilles_subcommand="gilles"
+generate_subcommand="generate"
 buildlex_subcommand="${buildlex_param}-klv2"
 klv_ext="klv2"
 if [ ! "$logs_mode" ]; then
@@ -190,12 +204,12 @@ while [ "${!i:-}" != "" ]; do
   # rare-subrack coverage, written by autoplay only when :min_samples > 0
   rare_summary=""
   if [ "$gilles_mode" ]; then
-    time cargo run --release --bin leave -- "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
+    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$gilles_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
     summary_file="$(ls -1td gilles-summary-* | head -1)"
     echo "$summary_file"
     mv -fv "$summary_file" "summary${num_processed}.csv"
   else
-    time cargo run --release --bin leave -- "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
+    time cargo run --release --bin leave -- "${leave_options[@]}" ${kbwg_flag:+"$kbwg_flag"} ${threads:+--threads "$threads"} "$autoplay_subcommand" "$kwg" "$last_leave"{,} "$before_colon" "$after_colon"
     log_file="$(ls -1td games-log-* | head -1 | cut -f2- -d-)"
     echo "$log_file"
     mv -fv "summary-${log_file}" "summary${num_processed}.csv"
@@ -205,7 +219,7 @@ while [ "${!i:-}" != "" ]; do
     fi
   fi
   last_leave="${leave_name}$[num_processed + 1]"
-  time cargo run --release --bin leave -- "$effective_generate_subcommand" "summary${num_processed}.csv" "${last_leave}.csv" ${rare_summary:+"$rare_summary"}
+  time cargo run --release --bin leave -- "${leave_options[@]}" ${threads:+--threads "$threads"} "$effective_generate_subcommand" "summary${num_processed}.csv" "${last_leave}.csv" ${rare_summary:+"$rare_summary"}
   time cargo run --release --bin buildlex -- "$buildlex_subcommand" "$last_leave".{csv,"$klv_ext"}
   zip -9v result.zip "summary${num_processed}.csv" ${rare_summary:+"$rare_summary"} "$last_leave".{csv,"$klv_ext"}
   last_leave="${last_leave}.${klv_ext}"

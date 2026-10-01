@@ -22,7 +22,7 @@ TL;DR -- IF YOU JUST WANT A GOOD TABLE
 Run this. The census works out every leave's value exactly, one board at a
 time, and needs no environment variables:
 
-  cargo run --release --bin leave -- english-census CSW24.kwg - - 3x256,2048
+  cargo run --release --bin leave -- census CSW24.kwg - - 3x256,2048
 
 That builds a competitive table with no tuning: three cheap generations of 256
 boards to settle the leaves, then one generation of 2048 boards to pin them
@@ -72,22 +72,33 @@ games to a randomly named log file such as log-60abcdef; the name carries a
 run stamp, and two runs never overwrite each other's logs. These three are the
 same -- play with no leave table on either side:
 
-  cargo run --release --bin leave -- english-autoplay CSW24.kwg
-  cargo run --release --bin leave -- english-autoplay CSW24.kwg - -
-  cargo run --release --bin leave -- english-autoplay CSW24.kwg - - 1000000
+  cargo run --release --bin leave -- autoplay CSW24.kwg
+  cargo run --release --bin leave -- autoplay CSW24.kwg - -
+  cargo run --release --bin leave -- autoplay CSW24.kwg - - 1000000
 
 The two arguments after the word graph are the tables for player 0 and player
 1; they need not match, and "-" means no table (the default for both). The last
 number is how many games to play.
 
+The game is English on the standard board unless options before the task say
+otherwise. --preset picks another bundled game (french, super-english,
+hong-kong-english and the rest of GAME_CONFIGS in src/game_config.rs) or a
+preset file, whose format is described where src/game_config.rs reads it.
+--tiles, --board, --rack-size, --players, --bingo-bonus, --zeros-to-end,
+--passes-to-end, --exchange-limit and --exchanges each replace one part of the
+preset, --jumbled plays the anagram rules, and --kbwg reads a word graph in the
+wider format:
+
+  cargo run --release --bin leave -- --preset french autoplay french.kwg
+
 The second step tallies a log into one row per rack -- the rack, the sum of the
 best-play equities seen for it, and how many times it was seen:
 
-  cargo run --release --bin leave -- english-summarize log-60abcdef summary.csv
+  cargo run --release --bin leave -- summarize log-60abcdef summary.csv
 
 With bash, several logs combine in one pass:
 
-  cargo run --release --bin leave -- english-summarize <(cat log-*) summary.csv
+  cargo run --release --bin leave -- summarize <(cat log-*) summary.csv
 
 The third step turns that tally into a leave table, valuing each leave from the
 racks that hold it. Each leave's value is the average of the best-play values
@@ -98,7 +109,7 @@ thinly sampled to trust borrow their value from their neighbors on the way out
 (discussed below):
 
   cargo run --release --bin leave -- \
-    english-generate summary.csv leaves.csv
+    generate summary.csv leaves.csv
 
 The fourth step compiles the csv into the binary klv2 the move generator reads:
 
@@ -108,12 +119,12 @@ Feeding a finished table back in as the players' table and repeating from the
 first step lets each generation improve on the last:
 
   cargo run --release --bin leave -- \
-    english-autoplay CSW24.kwg leaves.klv2 leaves.klv2
+    autoplay CSW24.kwg leaves.klv2 leaves.klv2
 
 With bash, {,} repeats an argument so both seats share one table without
 retyping it:
 
-  cargo run --release --bin leave -- english-autoplay CSW24.kwg leaves.klv2{,}
+  cargo run --release --bin leave -- autoplay CSW24.kwg leaves.klv2{,}
 
 The genleaves.sh script automates the whole loop -- play a generation,
 summarize, generate, compile, then play the next generation with the table just
@@ -124,12 +135,12 @@ config, the config for the leave set, and one game count per generation.
 HOW LEAVE QUALITY IS MEASURED
 
 Two leave tables are compared by having them play each other. The
-english-compare command runs self-play games in which player 0 uses the first
+leave compare command runs self-play games in which player 0 uses the first
 table and player 1 uses the second, everything else identical, and reports
 player 0's share of the games:
 
   cargo run --release --bin leave -- \
-    english-compare CSW24.kwg a.klv2 b.klv2 1000000
+    compare CSW24.kwg a.klv2 b.klv2 1000000
 
 The last number is how many game pairs to play. Games are run in mirrored
 pairs: the same deal is played twice, once with each table in each seat, so the
@@ -143,7 +154,7 @@ more and is the better table in that head-to-head. The share is reported in
 percentage points, written "pp": 50.13 means 0.13 pp above a tie.
 
 Because each game turns partly on luck, a small gap can be noise, so
-english-compare also reports a confidence: the probability that the leading
+leave compare also reports a confidence: the probability that the leading
 table is genuinely ahead rather than ahead by chance. It comes from a
 normal-curve model that treats each game as an even bet and measures how many
 standard errors the lead sits above an even split. A standard error is the
@@ -165,14 +176,14 @@ share directly instead of pattern-matching the human-readable line.
 
 New knobs: WOLGES_COMPARE_PORCELAIN.
 
-Every number below is a fresh english-compare run of our own tables against our
+Every number below is a fresh leave compare run of our own tables against our
 own tables.
 
 
 THE NULL REFERENCE
 
 The simplest possible table gives every leave a value of zero. Call it the null
-table (english-compare takes it by passing "-" instead of a file). It never
+table (leave compare takes it by passing "-" instead of a file). It never
 changes, so every other table can be measured against the same far-away
 yardstick and all the results sit on one scale. Any real leave table beats null
 by a wide margin -- knowing that keeping ING beats keeping QVX is most of the
@@ -281,18 +292,15 @@ New knobs: WOLGES_IMPOSSIBLE_OK.
 
 WORKER THREADS
 
-Every builder and every compare runs in parallel across cores. WOLGES_THREADS
-sets the worker-thread count -- self-play autoplay, the playability scan, and
-english-compare so far -- defaulting to the machine's core count. Threads
+Every builder and every compare runs in parallel across cores. --threads sets
+the worker-thread count, defaulting to the machine's core count. Threads
 change only how fast a run goes, never the table it produces.
-
-New knobs: WOLGES_THREADS.
 
 
 BOARD-SAMPLING LEAVES
 
 The board-sampling method, published by GillesB, manufactures racks instead of
-waiting for self-play to deal them. english-gilles plays greedy games and,
+waiting for self-play to deal them. leave gilles plays greedy games and,
 every few turns while a game is in its middle, takes a snapshot of the board.
 "Middle" means the number of tiles not yet on the board is between a quarter
 and three-quarters of the full set -- for the classic English game, between 25
@@ -314,8 +322,8 @@ efficient.
 
 The output is exactly the autoplay summary format -- a totals row, then rack,
 equity-sum, count rows -- so a board-sampling run and an autoplay run merge
-with each other through english-resummarize and decompose into leaves through
-english-generate in the very same way.
+with each other through leave resummarize and decompose into leaves through
+leave generate in the very same way.
 
 The rules of thumb -- when to snapshot, how big a group to draw, how many
 groups to try, how far apart to snapshot -- are GillesB's. The group size and
@@ -330,14 +338,14 @@ WOLGES_POOL_MAX, WOLGES_POOL_MIN.
 
 HOW THE METHODS COMPARE
 
-All three tables are measured with english-compare at one million game pairs,
+All three tables are measured with leave compare at one million game pairs,
 fresh, our own against our own. Board sampling is ahead:
 
-  board sampling vs the autoplay baseline: english-compare reports 47.8800 for
+  board sampling vs the autoplay baseline: leave compare reports 47.8800 for
     the autoplay table (the first table), confidence 100 -- so board sampling
     wins, its lead about 2.1 pp above an even split.
 
-  board sampling vs null: english-compare reports 35.3946 for null, confidence
+  board sampling vs null: leave compare reports 35.3946 for null, confidence
     100 -- so board sampling wins by about 14.6 pp.
 
   null vs null: 50.00, the calibration check.
@@ -357,17 +365,17 @@ COVERING THE RARE RACKS
 Plain board sampling never promises that every rack gets studied. A rack built
 mostly from one-of-a-kind tiles -- a rack that wants the Q, say -- is hard to
 draw, so across a whole run it turns up only a handful of times, or never. Its
-leaves then rest on very few samples or none, and english-generate has to guess
+leaves then rest on very few samples or none, and leave generate has to guess
 their value from the fuller racks it did see rather than measure it directly.
-(english-generate does exactly that filling-in, called smoothing.)
+(leave generate does exactly that filling-in, called smoothing.)
 The question this raises: if we spent the effort to sample those rare racks
 enough to measure them, would the resulting table play any better?
 
-To find out, english-gilles takes one more optional number, a minimum-sample
+To find out, leave gilles takes one more optional number, a minimum-sample
 target, right after the game count:
 
   cargo run --release --bin leave -- \
-    english-gilles CSW24.kwg a.klv2 b.klv2 1000000 [min_samples] [seed]
+    gilles CSW24.kwg a.klv2 b.klv2 1000000 [min_samples] [seed]
 
 A min_samples of 0, the default, is exactly the plain board sampling already
 described -- byte for byte the same summary. A nonzero value turns on a
@@ -413,21 +421,21 @@ the opening racks and play into the snapshot window, so it scales with the bag
 rather than being a fixed count. It is off by default because holding tiles
 back makes the board a little unnatural -- those tiles are absent more often
 than chance would have them -- which can nudge the leave values, so it is a
-lever to grind the rare tail faster, to be checked with english-compare before
+lever to grind the rare tail faster, to be checked with leave compare before
 it is trusted.
 
-The verdict, measured our own table against our own with english-compare at one
+The verdict, measured our own table against our own with leave compare at one
 million game pairs, plain board sampling as the yardstick:
 
-  min-samples remediation vs plain board sampling: english-compare reports
+  min-samples remediation vs plain board sampling: leave compare reports
     49.9660 for the remediated table (the first table) -- a lead of about one
     standard error below an even split, which reads as a tie.
 
-  reserve pool vs plain board sampling: english-compare reports 49.9856 for
+  reserve pool vs plain board sampling: leave compare reports 49.9856 for
     the reserved-pool table, well inside the noise -- a tie.
 
 So spending the effort to measure the rare racks, instead of letting
-english-generate fill them in, does not make the table play any better: the
+leave generate fill them in, does not make the table play any better: the
 fill-in estimate for those hard-to-draw racks was already good enough, because
 a rack that is hard to draw is also one the move generator rarely has to value
 in real play. Both levers stay optional and off by default; they earn their
@@ -468,7 +476,7 @@ way to test whether real-rack sampling helps the leaves at all.
 The verdict, our table against our own at one million game pairs, plain board
 sampling as the yardstick:
 
-  real-rack sampling vs plain board sampling: english-compare reports 50.0135
+  real-rack sampling vs plain board sampling: leave compare reports 50.0135
     for the real-rack table (the first table), inside the noise -- a tie.
 
 And pushing the weight high (for example 200) makes the vowel undervaluation
@@ -489,7 +497,7 @@ already has a way to chase it: alongside the racks its games naturally deal, it
 can force extra samples of the rarely-seen ones. But folding those forced
 samples in correctly turns out to matter, and the naive way does real harm.
 
-Recall that english-generate apportions each rack's average score across all
+Recall that leave generate apportions each rack's average score across all
 the smaller tile-groups you could keep from it, weighting by how drawable the
 extra tiles are. That apportioning is right for a rack the games actually
 dealt. It is wrong for a forced sample: a forced rack comes from a lopsided,
@@ -510,7 +518,7 @@ forced.
 To make that work, two things that autoplay used to do one full rack at a time
 now happen one leave at a time: measuring how many samples each leave has, and
 topping up the short ones. Autoplay measures each leave's coverage by breaking
-the real racks down the same way english-generate will, adds in the rare
+the real racks down the same way leave generate will, adds in the rare
 samples gathered so far, and tops up whichever leaves are still short by
 completing each with filler tiles drawn from the board's still-unseen pool. The
 impossible-rack switch described earlier (WOLGES_IMPOSSIBLE_OK) decides what to
@@ -519,22 +527,22 @@ precisely the undersampled leaves -- the ones the games rarely produce -- not
 the mathematically least-likely racks; a common leave that simply happened to
 come up little gets topped up just as a genuinely rare one does.
 
-english-generate takes the rare file as one more optional argument after the
+leave generate takes the rare file as one more optional argument after the
 leaves file:
 
   cargo run --release --bin leave -- \
-    english-generate summary.csv leaves.csv [rare.csv]
+    generate summary.csv leaves.csv [rare.csv]
 
 Its rows are already counted per leave, each carrying its own score total and
 sample count, so they are added straight into the same running totals
-english-generate keeps, skipping the apportioning a full rack goes through.
+leave generate keeps, skipping the apportioning a full rack goes through.
 They only ever name real leaves you keep, never the empty leave that all the
 others are measured against, so the empty-leave baseline never moves: the rare
 file can only fill in coverage, it cannot tilt the whole table. (The reader
 borrows each field in place rather than copying it, so it allocates nothing per
 row, matching how the main summary is read.) The genleaves.sh driver carries
 the rare file end to end: when autoplay forcing is on it writes the rare file
-beside the normal summary, hands it to the english-generate step, and adds it
+beside the normal summary, hands it to the leave generate step, and adds it
 to the result archive; when forcing is off no rare file is made or passed, so
 the plain autoplay and board-sampling paths stay byte-identical to before.
 
@@ -547,7 +555,7 @@ unless you specifically want that tail measured. The claim that folding forced
 samples into the common pile makes the leaves measurably worse is the design
 rationale for the two-file split, and it is verifiable from the code:
 apportioning lopsided-board samples pollutes the shared common leaves. It is
-argued from that mechanism, not from an at-scale english-compare of folding-in
+argued from that mechanism, not from an at-scale leave compare of folding-in
 versus the split.
 
 
@@ -556,14 +564,14 @@ TWO WAYS TO WEIGHT A RACK IN THE DECOMPOSE
 The generate step values a leave by averaging the best-play values of all the
 fuller racks that contain it. That average has to weight each fuller rack
 somehow, and there are two sensible ways to do it -- the same choice applies to
-any summary fed to english-generate, whether it came from self-play or from
+any summary fed to leave generate, whether it came from self-play or from
 board sampling.
 
 Recall how a rack reaches the average. Self-play (or board sampling) sees a
 full rack some number of times and, each time, records the best-play equity
 from it; the summary keeps that rack's running equity-sum and its count of
 sightings. Its mean best-play value is that equity-sum divided by that count.
-When english-generate splits the rack across the leaves you could keep from it,
+When leave generate splits the rack across the leaves you could keep from it,
 it must also weight the rack by how many ways the rest of the rack -- the tiles
 beyond the leave -- could be drawn from the bag, the same draw-combination
 count the autoplay baseline used (drawing without replacement). For a rack R
@@ -614,10 +622,10 @@ Board sampling and the autoplay baseline both manufacture or observe racks and
 then average what those racks happened to be worth. A third method, called the
 census, takes the opposite approach: on a single board it goes through every
 possible holding exactly and works out what each leave is worth, with no racks
-sampled at all. english-census does this on one board, then repeats over many
+sampled at all. leave census does this on one board, then repeats over many
 fresh boards and averages, and writes the result as a leave table:
 
-  cargo run --release --bin leave -- english-census CSW24.kwg a.klv2 b.klv2 500
+  cargo run --release --bin leave -- census CSW24.kwg a.klv2 b.klv2 500
 
 The two leave files are the tables the two players use while a game is played
 out to reach a board worth studying; the last number is how many boards to
@@ -1169,7 +1177,7 @@ racks a leave could complete to. A whole-game rollout asks a different question
 of tiles you keep that only pay off two or three turns later? To find out, it
 stops looking one move ahead and plays entire games to the finish.
 
-The english-rollout subcommand plays many complete self-play games, both
+The leave rollout subcommand plays many complete self-play games, both
 players choosing their plays with the same leave table (the table is a
 parameter; the null table by default). At each turn it records the mover's full
 rack. When a game ends it takes the final score difference -- the margin,
@@ -1293,7 +1301,7 @@ sampling; --gilles keeps its own board sampler and is never forced.
 
 On the per-rack decompose footing (each distinct rack weighted once, not once
 per occurrence), the forced autoplay table roughly ties board sampling.
-english-compare reports 50.0218 for the forced autoplay table against board
+leave compare reports 50.0218 for the forced autoplay table against board
 sampling, confidence 73.1. That lead is about 0.02 pp above an even split,
 smaller than one standard error at a million pairs (about 0.035 pp), so it is a
 marginal positive that sits inside the noise -- consistently on the right side
@@ -1309,7 +1317,7 @@ New knobs: WOLGES_AUTOPLAY_FULL_RACK_FORCING.
 
 THE PER-RACK DECOMPOSE BECOMES THE DEFAULT
 
-Recall the two ways english-generate can weight each rack when it turns a
+Recall the two ways leave generate can weight each rack when it turns a
 summary of sampled full racks into a per-leave table: per-occurrence folds in
 each rack's sampled count, while per-rack uses each distinct rack's average
 once, weighted only by ways(R, S), the ways to draw its missing tiles.
@@ -1319,11 +1327,11 @@ its count squares the effect -- and it is exactly what let a force-covered rare
 rack pull hard on every short leave it shares with common racks. Per-rack has
 neither problem, because a rack's average enters once no matter how it got into
 the summary. It is the correct decompose, so it is now the default: a bare
-english-generate does the right thing with no environment variable set.
+leave generate does the right thing with no environment variable set.
 
 Measured on identical samples -- the same summary decomposed both ways, so
 nothing but the weighting differs -- the per-rack table beats the
-per-occurrence table. english-compare reports 52.0648 for the per-rack table,
+per-occurrence table. leave compare reports 52.0648 for the per-rack table,
 confidence 100: per-rack wins by about 2.06 pp. That is a large, certain gap,
 and it settles a footing question left open earlier. The
 board-sampling-versus-autoplay comparison reported near the top of this file --
@@ -1394,7 +1402,7 @@ each rack by the whole-bag draw odds instead of this board's leftover pool.
 It comes out a no-op. A rack's best value on a board does not depend on the
 pool, so racks that were already drawable here keep the exact same value; only
 board-impossible racks are newly added, and those are a small, rarely-decisive
-share of the table. In our own head-to-head english-compare reports 49.9996 at
+share of the table. In our own head-to-head leave compare reports 49.9996 at
 confidence 50.5 -- an even split, no measurable difference. Kept opt-in as a
 recorded dead-end.
 
@@ -1408,14 +1416,14 @@ different ways, and the one difference that remains is how each weights a rack.
 The census weights a full rack by the number of ways the pool can deal all of
 that rack's tiles at once and apportions that value onto every leave the rack
 contains. The self-play sampler logs each rack it draws once, and
-english-generate later weights each rack only by ways(R, S), the draw-ways of
+leave generate later weights each rack only by ways(R, S), the draw-ways of
 its missing tiles. WOLGES_CENSUS_RACK_SUMMARY (default off, byte-identical)
 pins that one difference down: it values each full rack once per board (its
 exact best play, with no full-rack draw weight), averages across boards, and
 then, instead of apportioning and writing a klv, writes the census result in
 exactly the file the self-play sampler produces -- a total row, then one row
 per rack of the rack, its total best-play value in points, and the number of
-boards. Feeding that to english-generate reproduces the self-play pipeline but
+boards. Feeding that to leave generate reproduces the self-play pipeline but
 with the exact per-board best in place of sampled racks, so whatever gap
 remains between the two tables is exactly this full-rack draw weighting.
 
@@ -1424,11 +1432,11 @@ Coverage matches the forcing path from the start. With WOLGES_IMPOSSIBLE_OK on
 board's play sheet over the whole bag so a board-impossible rack still gets a
 real best play, and at the end drops only the racks impossible even from the
 full bag (needing more of a tile than exists, such as seven of the same rare
-tile), whose completions are zero and which english-generate would discard
+tile), whose completions are zero and which leave generate would discard
 anyway. Set WOLGES_IMPOSSIBLE_OK=0 for drawable racks only.
 
 The rack summary is not the stronger table. In our own head-to-head against the
-default full-rack census english-compare reports 49.9842 at confidence 67.2 --
+default full-rack census leave compare reports 49.9842 at confidence 67.2 --
 a tie, if anything a hair behind. So the full-rack draw weighting the census
 does by default is not costing it anything; the two roads to a leave table
 arrive at the same quality. Kept opt-in.
@@ -1507,7 +1515,7 @@ store rack values; it stores leaves, and a leave is an average over many racks,
 so it is far more pinned down than any one rack. WOLGES_CENSUS_CI_REPORT=leave
 reports the tighter, correct target: it apportions each rack's board-to-board
 bounce down onto the leaves through the very same completion weighting the
-english-generate decompose uses, so a leave's interval is the wobble of its own
+leave generate decompose uses, so a leave's interval is the wobble of its own
 weighted average. (An exact routine walks every rack-and-kept-combination pair
 to do this, checked against a slow brute-force computation by a unit test.) The
 confidence and target knobs apply the same way, and rack still prints the
@@ -1554,14 +1562,14 @@ New knobs: WOLGES_CENSUS_CI_STOP_EVERY, WOLGES_CENSUS_CI_STOP_FRAC.
 A SELF-ITERATING RACK SUMMARY
 
 The rack summary began as a single pass that had to hand its file to a separate
-english-generate step to turn per-rack values into per-leave values. The
+leave generate step to turn per-rack values into per-leave values. The
 ordinary apportioning census already iterates on its own -- each pass sharpens
 the leaves, and the next pass re-values the racks under the sharper leaves
 until the leaves reproduce themselves when fed back in -- but the rack summary
 could not, because it handed the per-leave breakdown off to the external step.
 It now does that breakdown in-process, so it can run several passes by itself.
 An exact routine apportions each valued rack's average down onto every kept
-combination with the same completion weighting english-generate uses, centered
+combination with the same completion weighting leave generate uses, centered
 so that keeping nothing is worth zero -- a value-carrying twin of the per-leave
 interval routine, and likewise checked against a brute force by a unit test. At
 each generation boundary the rack-summary census builds its leaves this way,
@@ -1569,7 +1577,7 @@ the next pass values racks under them, and the last pass writes the klv
 directly. A single-generation run still writes the summary file, so that path
 is unchanged. With WOLGES_IMPOSSIBLE_OK on the exhaustive census reaches every
 globally-possible leave, so a multi-pass run matches the full table the
-external english-generate would produce; without it, a sparse drawable-only run
+external leave generate would produce; without it, a sparse drawable-only run
 leaves the leaves it never reached at their prior value. As with the
 apportioning multi-pass, it never smooths or fills in leaves it did not
 measure.
@@ -1630,7 +1638,7 @@ RECORDING AND GRADING THE TABLE
 Two command-line tools build and check the table.
 
   cargo run --release --bin leave -- \
-    english-winpct CSW24.kwg leave.klv2 win_pct.csv 1000000
+    winpct CSW24.kwg leave.klv2 win_pct.csv 1000000
 
 plays that many greedy self-play games with the given leave table ("-" for the
 null table) and writes the raw win% table to win_pct.csv. At every turn it
@@ -1640,7 +1648,7 @@ tally. Games are seeded by game number, so the same seed and game count
 reproduce the same table no matter how many threads run it.
 
   cargo run --release --bin leave -- \
-    english-winpct-eval CSW24.kwg leave.klv2 table.csv 1000000
+    winpct-eval CSW24.kwg leave.klv2 table.csv 1000000
 
 grades a finished table against fresh games. For every snapshot it compares
 both the table's win-chance and the old hand-tuned formula's guess against what
@@ -1651,7 +1659,7 @@ chance and the real outcome, where lower is better. Grade with a different
 
 The measured table is a slightly better predictor than the hand-tuned formula:
 about 0.170 to the formula's 0.172, a hair lower (lower is better). Those
-figures come from english-winpct-eval grading each table on held-out self-play
+figures come from leave winpct-eval grading each table on held-out self-play
 -- a different seed than the table was built on -- not from a head-to-head
 leave comparison. The margin is small, but the direction is what counts: a
 table read straight off played-out games predicts winners a touch better than a
@@ -1727,19 +1735,19 @@ The knob stays off by default.
 New knobs: WOLGES_WINPCT, WOLGES_WINPCT_BLEND, WOLGES_WINPCT_TABLE.
 
 
-MERGING WIN% TABLES (english-winpct-combine)
+MERGING WIN% TABLES (leave winpct-combine)
 
 A trustworthy table needs many games, and one process is slow, so a table can
 be recorded on several seeds or machines and merged:
 
   cargo run --release --bin leave -- \
-    english-winpct-combine <( cat part1.csv part2.csv ) win_pct.csv
+    winpct-combine <( cat part1.csv part2.csv ) win_pct.csv
 
 The first argument is the input, the tables concatenated ("-" for standard
 input); the second is the output ("-" for standard output). The merge adds the
 per-count-state tallies together. Because those are integer counts, combining
 is exact -- there is no rounding error from having split the work, which
-averaging finished tables would introduce. This mirrors english-resummarize,
+averaging finished tables would introduce. This mirrors leave resummarize,
 which combines the samplers' rack summaries the same way.
 
 
@@ -1782,14 +1790,14 @@ search, all read the reweighted number. Only the midgame pays -- once the bag
 is empty the endgame keeps its own leftover-penalty leaves untouched. And the
 reweight always completes the leave to a full seven-tile rack, so it needs a
 full-length table -- one with a value for every whole rack, not just the six or
-fewer tiles an ordinary leave keeps -- the kind english-generate writes with
+fewer tiles an ordinary leave keeps -- the kind leave generate writes with
 full racks turned on.
 
-A pair of players isolates the effect. english-compare, given the same
+A pair of players isolates the effect. leave compare, given the same
 full-length table to both seats, can turn the reweight on for one seat only:
 
   WOLGES_DYNAMIC_LEAVES=1 cargo run --release --bin leave -- \
-    english-compare CSW24.kwg full.klv2 full.klv2 50000
+    compare CSW24.kwg full.klv2 full.klv2 50000
 
 Player zero values its midgame leaves against the live pool; player one reads
 the static table. The two tables are identical, so the win rate measures one
@@ -1823,7 +1831,7 @@ DYNAMIC LEAVES REACH THE SAMPLERS' OWN MOVE CHOICE
 
 The pool-aware reweight described above -- replacing a kept subrack's static
 leave value with the live-pool completion average of a full-rack table -- was
-only wired into english-compare, the head-to-head harness. The samplers that
+only wired into leave compare, the head-to-head harness. The samplers that
 actually build leave tables in the first place (autoplay, gilles, census) still
 chose which move to play at each self-play turn using the flat static klv, even
 when WOLGES_DYNAMIC_LEAVES was set.
@@ -1832,7 +1840,7 @@ The same optional reweight context, built once per run and gated on that same
 knob, is now threaded into the greedy trajectory-advancing move choice of all
 three samplers, so turning the knob on changes which moves they actually play
 (and therefore which boards and racks they sample), not only which move
-english-compare picks. With the knob off, no context is built and every site
+leave compare picks. With the knob off, no context is built and every site
 passes none through, so a bare run generates leaves exactly as before.
 
 The reweight needs a full-length (kept racks of size one through seven, not
@@ -1855,13 +1863,13 @@ good table, use the census.
 Census -- exact, and the one to use. It values every leave on a board exactly,
 then averages over many boards.
 
-    cargo run --release --bin leave -- english-census CSW24.kwg - - 3x256,2048
+    cargo run --release --bin leave -- census CSW24.kwg - - 3x256,2048
 
 Three cheap generations of 256 boards settle the leaves, then one generation of
 2048 pins them down. There is a cheaper recipe worth knowing, and which you
 want depends on what the table is for:
 
-    cargo run --release --bin leave -- english-census CSW24.kwg - - 4x256
+    cargo run --release --bin leave -- census CSW24.kwg - - 4x256
 
 4x256 finishes much sooner than 3x256,2048, because every board is fixed by its
 position in the run: 4x256 builds 256 boards and reuses them for its later
@@ -1918,7 +1926,7 @@ GENLEAVES.SH below.
 Whole-game rollout -- a recorded negative, kept for reference. It credits whole
 finished games to the racks held; too noisy to beat the census.
 
-    cargo run --release --bin leave -- english-rollout CSW24.kwg - 1000000
+    cargo run --release --bin leave -- rollout CSW24.kwg - 1000000
 
 RUNNING GENLEAVES.SH
 
@@ -1936,6 +1944,7 @@ three numbers means three generations; append :N to a count to ask for N
 samples of every rack that generation.
 
 Options, each written before the configs:
+  --threads N   worker threads for every leave run (default: every core)
   --gilles      collect samples by board sampling instead of self-play autoplay
   --no-forcing  turn off autoplay's full-rack forcing, reverting to plain
                 natural sampling (ignored under --gilles)
@@ -1950,9 +1959,6 @@ fixed set of values lists what each one does. EN is the classic two-player
 English game.
 
 Every run:
-  WOLGES_THREADS (a whole number; default the core count) -- worker threads for
-    every parallel run and for english-compare; changes only speed, never the
-    table.
   Output files carry a run stamp -- the wall-clock time at 1/65536-second
   resolution, in hex -- shared by a census run's snapshots
   (census-gen-<stamp>-<gen>.klv2), its summary and leaves, a rollout's
@@ -1962,8 +1968,8 @@ Every run:
   without overwriting an existing one, inserting a _1 (then _2) before the
   extension on a clash, so no run ever clobbers another's output.
 
-Decompose (english-generate):
-  WOLGES_GENERATE_PER_RACK (0 or 1; default 1) -- how the english-generate
+Decompose (leave generate):
+  WOLGES_GENERATE_PER_RACK (0 or 1; default 1) -- how the leave generate
     decompose weights each rack; applies to any autoplay or board-sampling
     summary:
       1  weight each distinct rack once, by its draw-ways (per-rack)
@@ -1986,7 +1992,7 @@ Decompose (english-generate):
     summary-sq-<stamp>. It is what tells WOLGES_GENERATE_SMOOTH_CI how far each
     rack's samples spread; without it no interval can be worked out and every
     leave falls back to the sample floor. It has the same shape as a summary,
-    totals line and all, so english-resummarize pools a pile of sidecars just
+    totals line and all, so leave resummarize pools a pile of sidecars just
     as it pools the summaries they came from. Its count column repeats the
     summary's, and a rack whose counts disagree is skipped -- a sidecar that
     does not belong to the summary describes different samples.
@@ -2156,7 +2162,7 @@ Autoplay:
       0  target undersampled subracks in a side list
 
 Whole-game rollout:
-  It also reads WOLGES_THREADS. Its own knobs:
+  Its own knobs:
   WOLGES_ROLLOUT_CV (0 or 1; default 0) -- how each leave is credited:
       1  credit the game margin minus the census one-move value of that turn's
          rack
@@ -2171,11 +2177,11 @@ Whole-game rollout:
     the pure rollout with no fallback.
 
 Compare and dynamic leaves:
-  WOLGES_COMPARE_PORCELAIN (0 or 1; default 0) -- english-compare's output;
+  WOLGES_COMPARE_PORCELAIN (0 or 1; default 0) -- leave compare's output;
     changes no table:
       1  append a machine-readable result block after the normal output
       0  print the human-readable output only
-  WOLGES_DYNAMIC_LEAVES (0 or 1; default 0) -- in english-compare it applies to
+  WOLGES_DYNAMIC_LEAVES (0 or 1; default 0) -- in leave compare it applies to
     player zero only; needs a full-length table:
       1  reweight the midgame leave table against the live pool before valuing
          any play
