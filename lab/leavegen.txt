@@ -124,7 +124,7 @@ thinly sampled to trust borrow their value from their neighbors on the way out
 
 The fourth step compiles the csv into the binary klv2 the move generator reads:
 
-  cargo run --release --bin buildlex -- english-klv2 leaves.csv leaves.klv2
+  cargo run --release --bin buildlex -- klv2 leaves.csv leaves.klv2
 
 Feeding a finished table back in as the players' table and repeating from the
 first step lets each generation improve on the last:
@@ -979,7 +979,7 @@ their answers plays better than either. buildlex mixes two tables leave by
 leave, the weight saying how much of the second table to take:
 
     cargo run --release --bin buildlex -- \
-      english-blend census.klv2 selfplay.klv2 0.5 blend.klv2
+      blend census.klv2 selfplay.klv2 0.5 blend.klv2
 
 A leave only one of the two lists keeps that table's own value, since blending
 it against a zero the other table never claimed would be inventing a number.

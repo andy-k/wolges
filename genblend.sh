@@ -119,8 +119,8 @@ done
 census_subcommand="census"
 autoplay_subcommand="autoplay-summarize-only"
 generate_subcommand="generate"
-buildlex_subcommand="${buildlex_param}-klv2"
-blend_subcommand="${buildlex_param}-blend"
+buildlex_subcommand="klv2"
+blend_subcommand="blend"
 
 # the census stamps its output with the run; copy it to a fixed name
 if [ ! -e census.klv2 ]; then
@@ -164,13 +164,13 @@ for full_arg in "$@"; do
   fi
   time cargo run --release --bin leave -- "${leave_options[@]}" ${threads:+--threads "$threads"} \
     "$generate_subcommand" "summary${num_processed}.csv" "leaves${num_processed}.csv"
-  time cargo run --release --bin buildlex -- "$buildlex_subcommand" \
+  time cargo run --release --bin buildlex -- --tiles "$buildlex_param" "$buildlex_subcommand" \
     "leaves${num_processed}".{csv,klv2}
   last_leave="leaves${num_processed}.klv2"
 done
 
 # the blend
-time cargo run --release --bin buildlex -- "$blend_subcommand" \
+time cargo run --release --bin buildlex -- --tiles "$buildlex_param" "$blend_subcommand" \
   census.klv2 "$last_leave" "$weight" blend.klv2
 echo "blend.klv2 takes ${weight} of ${last_leave} and the rest of census.klv2"
 ls -l census.klv2 "$last_leave" blend.klv2
