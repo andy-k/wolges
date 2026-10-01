@@ -467,7 +467,8 @@ fn main() -> error::Returns<()> {
     english-legacy-... for legacy (which is the former default),
     this is applicable for kwg, kwg-anything, klv/klv2)
   (english can also be catalan, dutch, french, german, norwegian, polish,
-    slovene, spanish, swedish, decimal, hex)
+    slovene, spanish, swedish, decimal, hex, super-english, super-catalan,
+    hong-kong-english)
   (english can also be custom, with an extra alphabet file argument:
     custom-kwg alphabet.txt words.txt out.kwg)
 input/output files can be \"-\" (not advisable for binary files)"
@@ -490,6 +491,21 @@ input/output files can be \"-\" (not advisable for binary files)"
             || do_lang(&args, "swedish", alphabet::make_swedish_alphabet)?
             || do_lang(&args, "decimal", alphabet::make_decimal_alphabet)?
             || do_lang(&args, "hex", alphabet::make_hex_alphabet)?
+            || do_lang(
+                &args,
+                "super-english",
+                alphabet::make_super_english_alphabet,
+            )?
+            || do_lang(
+                &args,
+                "super-catalan",
+                alphabet::make_super_catalan_alphabet,
+            )?
+            || do_lang(
+                &args,
+                "hong-kong-english",
+                alphabet::make_hong_kong_english_alphabet,
+            )?
         {
         } else if args[1].starts_with("custom-") {
             if args.len() < 3 {
