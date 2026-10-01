@@ -27,17 +27,6 @@ pub struct SimmerConfig {
     pub win_prob_source: WinProbSource,
 }
 
-impl Default for SimmerConfig {
-    fn default() -> Self {
-        Self {
-            descale: true,
-            w_no_out: 10.0,
-            w_out: 10000.0,
-            win_prob_source: WinProbSource::Sigmoid,
-        }
-    }
-}
-
 #[inline(always)]
 pub fn win_prob_unfinished(final_spread: i32, num_unseen_tiles: usize, cfg: &SimmerConfig) -> f64 {
     // handwavily: assume spread of +/- (30 + num_unseen_tiles) should be 90%/10% (-Andy Kurnia)
@@ -108,7 +97,7 @@ pub struct Simmer {
 
 impl Simmer {
     // The other methods must be called with the same game_config.
-    pub fn new(game_config: &game_config::GameConfig) -> Self {
+    pub fn new(game_config: &game_config::GameConfig, config: SimmerConfig) -> Self {
         Self {
             initial_game_state: game_state::GameState::new(game_config),
             initial_score_spread: 0,
@@ -126,7 +115,7 @@ impl Simmer {
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
 
             rng: rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
-            config: SimmerConfig::default(),
+            config,
         }
     }
 
@@ -135,14 +124,8 @@ impl Simmer {
         self.rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
     }
 
-    #[inline(always)]
-    pub fn set_config(&mut self, config: SimmerConfig) {
-        self.config = config;
-    }
-
     pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
-        let mut clone = Simmer::new(game_config);
-        clone.config = self.config;
+        let mut clone = Simmer::new(game_config, self.config);
         clone.prepare(
             game_config,
             &self.initial_game_state,
@@ -387,7 +370,15 @@ mod tests {
 
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00");
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
-        let mut simmer = Simmer::new(&game_config);
+        let mut simmer = Simmer::new(
+            &game_config,
+            SimmerConfig {
+                descale: true,
+                w_no_out: 10.0,
+                w_out: 10000.0,
+                win_prob_source: WinProbSource::Sigmoid,
+            },
+        );
         simmer.reseed(99);
         simmer.prepare(&game_config, &game_state, 0, false);
         simmer.prepare_iteration();
@@ -425,7 +416,12 @@ mod tests {
 
     #[test]
     fn win_prob_unfinished_hits_sigmoid_prob_at_the_crafted_lead() {
-        let cfg = SimmerConfig::default();
+        let cfg = SimmerConfig {
+            descale: true,
+            w_no_out: 10.0,
+            w_out: 10000.0,
+            win_prob_source: WinProbSource::Sigmoid,
+        };
         let lead_points = 30.0 + 10.0;
         let lead_millipoints = (lead_points * equity::SCALE as f64) as i32;
         assert!((win_prob_unfinished(lead_millipoints, 10, &cfg) - 0.9).abs() < 1e-9);
@@ -458,7 +454,15 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
         let opponent_draw = |seed: u64| -> Vec<u8> {
-            let mut simmer = Simmer::new(&game_config);
+            let mut simmer = Simmer::new(
+                &game_config,
+                SimmerConfig {
+                    descale: true,
+                    w_no_out: 10.0,
+                    w_out: 10000.0,
+                    win_prob_source: WinProbSource::Sigmoid,
+                },
+            );
             simmer.prepare(&game_config, &game_state, 2, false);
             simmer.reseed(seed);
             simmer.prepare_iteration();
@@ -471,12 +475,12 @@ mod tests {
         assert_ne!(opponent_draw(777), opponent_draw(778));
     }
 
-    fn prepared_simmer() -> (Simmer, usize, usize, usize) {
+    fn prepared_simmer(config: SimmerConfig) -> (Simmer, usize, usize, usize) {
         let game_config = game_config::make_english_game_config();
         let mut game_state = game_state::GameState::new(&game_config);
         let mut deal_rng = rand::rngs::ChaCha20Rng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
-        let mut simmer = Simmer::new(&game_config);
+        let mut simmer = Simmer::new(&game_config, config);
         simmer.prepare(&game_config, &game_state, 2, false);
         let bag = simmer.game_state.bag.len();
         let turn = simmer.initial_game_state.turn as usize;
@@ -492,12 +496,13 @@ mod tests {
 
     #[test]
     fn table_source_uses_table_where_sampled_else_sigmoid() {
-        let (mut simmer, bag, my, opp) = prepared_simmer();
         let cfg = SimmerConfig {
+            descale: true,
+            w_no_out: 10.0,
+            w_out: 10000.0,
             win_prob_source: WinProbSource::Table,
-            ..SimmerConfig::default()
         };
-        simmer.set_config(cfg);
+        let (simmer, bag, my, opp) = prepared_simmer(cfg);
 
         let final_spread = 40 * equity::SCALE;
         let sigmoid = win_prob_unfinished(final_spread, bag + my + opp, &cfg);
@@ -525,9 +530,13 @@ mod tests {
 
     #[test]
     fn sigmoid_source_ignores_table() {
-        let (mut simmer, bag, my, opp) = prepared_simmer();
-        let cfg = SimmerConfig::default();
-        simmer.set_config(cfg);
+        let cfg = SimmerConfig {
+            descale: true,
+            w_no_out: 10.0,
+            w_out: 10000.0,
+            win_prob_source: WinProbSource::Sigmoid,
+        };
+        let (simmer, bag, my, opp) = prepared_simmer(cfg);
         let final_spread = 40 * equity::SCALE;
 
         let mut acc = win_pct::WinPctAccumulator::new();
