@@ -596,7 +596,7 @@ impl WorkingBuffer {
         !want_raw
             && !self.is_census
             && self.word_source_fits_config
-            && self.rack_tally[0] <= 1
+            && self.rack_tally[0] <= 2
             && !self.subracks.is_empty()
             && layout
                 .is_some_and(|layout| layout.covers(board_snapshot.game_config.alphabet(), extent))
@@ -2566,40 +2566,28 @@ fn gen_classic_place_moves<
     }
 
     #[inline]
-    fn check_words<
-        const BLANKED: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
-        N: kwg::Node,
-        L: kwg::Node,
-    >(
+    fn check_words<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         key: alphagram::Key,
-        base_key: u128,
         leave_idx: u32,
-        blank_ok: u64,
-    ) -> u8 {
+    ) {
         let source = env.source;
         let len = (env.right - env.left) as u8;
         let Some(found) = source.words(key, len) else {
-            return 0;
+            return;
         };
-        fit_words::<BLANKED, _, _, _>(env, found, base_key, leave_idx, blank_ok)
+        fit_words::<false, _, _, _>(env, found, leave_idx, 0, 0)
     }
 
     #[inline]
-    fn fit_words_apart<
-        const BLANKED: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
-        N: kwg::Node,
-        L: kwg::Node,
-    >(
+    fn fit_words_apart<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         found: alphagram::Words<'_>,
-        base_key: u128,
         leave_idx: u32,
-        blank_ok: u64,
-    ) -> u8 {
-        fit_words::<BLANKED, _, _, _>(env, found, base_key, leave_idx, blank_ok)
+        blank_letter: u8,
+        first_blank: u8,
+    ) {
+        fit_words::<true, _, _, _>(env, found, leave_idx, blank_letter, first_blank)
     }
 
     #[inline(always)]
@@ -2611,25 +2599,11 @@ fn gen_classic_place_moves<
     >(
         env: &mut Env<'_, CallbackType, N, L>,
         found: alphagram::Words<'_>,
-        base_key: u128,
         leave_idx: u32,
-        blank_ok: u64,
-    ) -> u8 {
+        blank_letter: u8,
+        first_blank: u8,
+    ) {
         let len = (env.right - env.left) as u8;
-        let mut blank_letter = 0u8;
-        if BLANKED {
-            let mut spelled = 0u128;
-            for &tile in &found.words[..len as usize] {
-                spelled += env.layout.place_value(tile);
-            }
-            let Some(tile) = env.layout.tile_added(base_key, spelled) else {
-                return 0;
-            };
-            blank_letter = tile;
-            if blank_ok >> tile & 1 == 0 {
-                return tile;
-            }
-        }
         let board_strip = env.params.board_strip;
         let cross_set_strip = env.params.cross_set_strip;
         let tile_multipliers = env.params.remaining_tile_multipliers_strip;
@@ -2717,27 +2691,65 @@ fn gen_classic_place_moves<
             }
             let blank_value = env.alphabet.scaled_score(0);
             let real_value = env.alphabet.score(blank_letter) as i32 * equity::SCALE;
+            if first_blank == 0 {
+                for (i, &c) in word.iter().enumerate() {
+                    let pos = left + i;
+                    if c != blank_letter || board_strip[pos] != 0 {
+                        continue;
+                    }
+                    let delta = (blank_value - real_value) * tile_multipliers[pos] as i32;
+                    let blanked_score = score
+                        + delta * env.word_multiplier
+                        + delta * perpendicular_word_multipliers[pos] as i32;
+                    covered!(blanked_score);
+                    env.params.word_strip_buffer[pos] = c | 0x80;
+                    (env.params.callback)(
+                        env.left,
+                        &env.params.word_strip_buffer[env.left as usize..env.right as usize],
+                        blanked_score,
+                        leave_value,
+                    );
+                    env.params.word_strip_buffer[pos] = c;
+                }
+                continue 'word;
+            }
+            let first_value = env.alphabet.score(first_blank) as i32 * equity::SCALE;
             for (i, &c) in word.iter().enumerate() {
                 let pos = left + i;
-                if c != blank_letter || board_strip[pos] != 0 {
+                if c != first_blank || board_strip[pos] != 0 {
                     continue;
                 }
-                let delta = (blank_value - real_value) * tile_multipliers[pos] as i32;
-                let blanked_score = score
-                    + delta * env.word_multiplier
-                    + delta * perpendicular_word_multipliers[pos] as i32;
-                covered!(blanked_score);
+                let delta1 = (blank_value - first_value) * tile_multipliers[pos] as i32;
+                let once_score = score
+                    + delta1 * env.word_multiplier
+                    + delta1 * perpendicular_word_multipliers[pos] as i32;
                 env.params.word_strip_buffer[pos] = c | 0x80;
-                (env.params.callback)(
-                    env.left,
-                    &env.params.word_strip_buffer[env.left as usize..env.right as usize],
-                    blanked_score,
-                    leave_value,
-                );
+                for (j, &d) in word.iter().enumerate() {
+                    let pos2 = left + j;
+                    if d != blank_letter
+                        || board_strip[pos2] != 0
+                        || pos2 == pos
+                        || (first_blank == blank_letter && pos2 < pos)
+                    {
+                        continue;
+                    }
+                    let delta2 = (blank_value - real_value) * tile_multipliers[pos2] as i32;
+                    let blanked_score = once_score
+                        + delta2 * env.word_multiplier
+                        + delta2 * perpendicular_word_multipliers[pos2] as i32;
+                    covered!(blanked_score);
+                    env.params.word_strip_buffer[pos2] = d | 0x80;
+                    (env.params.callback)(
+                        env.left,
+                        &env.params.word_strip_buffer[env.left as usize..env.right as usize],
+                        blanked_score,
+                        leave_value,
+                    );
+                    env.params.word_strip_buffer[pos2] = d;
+                }
                 env.params.word_strip_buffer[pos] = c;
             }
         }
-        blank_letter
     }
 
     #[derive(Clone, Copy)]
@@ -2883,26 +2895,38 @@ fn gen_classic_place_moves<
                 }
                 let key = e.playthrough_key + subrack.key;
                 if subrack.blanks == 0 {
-                    check_words::<false, _, _, _>(
-                        &mut env,
-                        alphagram::Fitted(key),
-                        0,
-                        subrack.leave_idx,
-                        0,
-                    );
+                    check_words(&mut env, alphagram::Fitted(key), subrack.leave_idx);
                     continue;
                 }
                 let source = env.source;
                 let len = (right - left) as u8;
-                source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |_, at| {
+                if subrack.blanks >= 2 {
+                    let mut first = e.blank_ok & !1;
+                    while first != 0 {
+                        let l1 = first.trailing_zeros() as u8;
+                        first &= first - 1;
+                        let key1 = key + env.layout.place_value(l1);
+                        if !env.layout.holds(key1) {
+                            continue;
+                        }
+                        source.blank_groups(
+                            alphagram::Fitted(key1),
+                            len,
+                            e.blank_ok,
+                            |tile, at| {
+                                if tile < l1 {
+                                    return;
+                                }
+                                let found = source.words_at(at);
+                                fit_words_apart(&mut env, found, subrack.leave_idx, tile, l1);
+                            },
+                        );
+                    }
+                    continue;
+                }
+                source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |tile, at| {
                     let found = source.words_at(at);
-                    fit_words_apart::<true, _, _, _>(
-                        &mut env,
-                        found,
-                        key,
-                        subrack.leave_idx,
-                        e.blank_ok,
-                    );
+                    fit_words_apart(&mut env, found, subrack.leave_idx, tile, 0);
                 });
             }
         }
