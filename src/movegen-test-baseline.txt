@@ -1,3 +1,5 @@
+=== lexicon: kwg 5970396 bytes, hash bd70e86a3736ceda ===
+=== lexicon: klv 3667340 bytes, hash ef84556c1cd54ee3 ===
 === Case 0: rack=AEINRST fen=15/15/15/15/15/15/15/15/15/15/15/15/15/15/15 ===
   66.000 8B ANESTRI 66
   66.000 8C RATINES 66

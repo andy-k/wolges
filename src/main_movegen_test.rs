@@ -1,6 +1,12 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::{alphabet, display, error, game_config, klv, kwg, movegen};
+use wolges::{alphabet, display, error, fash, game_config, klv, kwg, movegen};
+
+const KWG_PATH: &str = "lexbin/CSW24.kwg";
+const KLV_PATH: &str = "lexbin/CSW24.klv2";
+const BASELINE_PATH: &str = "movegen-test-baseline.txt";
+
+const LEXICON_LINES: usize = 2;
 
 struct TestCase {
     fen: &'static str,
@@ -139,6 +145,18 @@ static TEST_CASES: &[TestCase] = &[
     },
 ];
 
+#[inline(always)]
+fn lexicon_line(what: &str, bytes: &[u8]) -> String {
+    use std::hash::Hasher;
+    let mut hasher = fash::MyHasher::default();
+    hasher.write(bytes);
+    format!(
+        "=== lexicon: {what} {} bytes, hash {:016x} ===",
+        bytes.len(),
+        hasher.finish()
+    )
+}
+
 fn parse_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
     let reader = alphabet::AlphabetReader::new_for_racks(alphabet);
     let sb = rack_str.as_bytes();
@@ -156,8 +174,11 @@ fn parse_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
 }
 
 fn main() -> error::Returns<()> {
-    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
-    let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?);
+    use std::fmt::Write;
+    let kwg_bytes = std::fs::read(KWG_PATH)?;
+    let klv_bytes = std::fs::read(KLV_PATH)?;
+    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+    let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv_bytes);
     let game_config = game_config::make_english_game_config();
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
@@ -167,12 +188,14 @@ fn main() -> error::Returns<()> {
 
     let check_mode = std::env::args().nth(1).as_deref() == Some("--check");
     let baseline = if check_mode {
-        Some(std::fs::read_to_string("movegen-test-baseline.txt")?)
+        Some(std::fs::read_to_string(BASELINE_PATH)?)
     } else {
         None
     };
 
     let mut output = String::new();
+    writeln!(output, "{}", lexicon_line("kwg", &kwg_bytes)).unwrap();
+    writeln!(output, "{}", lexicon_line("klv", &klv_bytes)).unwrap();
     let mut total_elapsed = std::time::Duration::ZERO;
     let mut total_moves = 0usize;
 
@@ -199,7 +222,6 @@ fn main() -> error::Returns<()> {
         let elapsed = t0.elapsed();
         total_elapsed += elapsed;
 
-        use std::fmt::Write;
         writeln!(
             output,
             "=== Case {case_idx}: rack={} fen={} ===",
@@ -228,6 +250,13 @@ fn main() -> error::Returns<()> {
         if output == *baseline {
             eprintln!("PASS: output matches baseline");
         } else {
+            for (mine, theirs) in output.lines().zip(baseline.lines()).take(LEXICON_LINES) {
+                if mine != theirs {
+                    eprintln!("lexicon differs from the one the baseline was written with");
+                    eprintln!("  baseline: {theirs}");
+                    eprintln!("  this run: {mine}");
+                }
+            }
             print!("{output}");
             eprintln!("FAIL: output differs from baseline");
             std::process::exit(1);
