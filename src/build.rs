@@ -794,6 +794,7 @@ pub fn build_big(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alphabet;
     use crate::kwg::{self, Node};
 
     fn collect_dawg_words<N: kwg::Node>(
@@ -894,5 +895,125 @@ mod tests {
 
         let klv = crate::klv::Klv::<kwg::Node22>::from_bytes_alloc(crate::klv::EMPTY_KLV_BYTES);
         assert_eq!(klv.leave_value_from_tally(&[0, 1]), 0);
+    }
+
+    #[inline]
+    fn shipped_alphabets() -> Vec<(&'static str, alphabet::Alphabet)> {
+        vec![
+            ("catalan", alphabet::make_catalan_alphabet()),
+            ("super_catalan", alphabet::make_super_catalan_alphabet()),
+            ("decimal", alphabet::make_decimal_alphabet()),
+            ("dutch", alphabet::make_dutch_alphabet()),
+            ("english", alphabet::make_english_alphabet()),
+            ("french", alphabet::make_french_alphabet()),
+            ("german", alphabet::make_german_alphabet()),
+            ("hex", alphabet::make_hex_alphabet()),
+            (
+                "hong_kong_english",
+                alphabet::make_hong_kong_english_alphabet(),
+            ),
+            ("norwegian", alphabet::make_norwegian_alphabet()),
+            ("polish", alphabet::make_polish_alphabet()),
+            ("slovene", alphabet::make_slovene_alphabet()),
+            ("spanish", alphabet::make_spanish_alphabet()),
+            ("super_english", alphabet::make_super_english_alphabet()),
+            ("swedish", alphabet::make_swedish_alphabet()),
+        ]
+    }
+
+    #[inline]
+    fn words_over_tiles(len: u8) -> Vec<bites::Bites> {
+        let last = len - 1;
+        let mut words = Vec::new();
+        for tile in 1..len {
+            words.push(vec![tile, tile][..].into());
+            words.push(vec![tile, last][..].into());
+            words.push(vec![last, tile][..].into());
+            words.push(vec![1, tile, last][..].into());
+            words.push(vec![tile, tile, tile, last, 1][..].into());
+        }
+        words.sort_unstable();
+        words.dedup();
+        words
+    }
+
+    #[inline]
+    fn words_in_graph<N: kwg::Node>(bytes: &[u8]) -> Vec<bites::Bites> {
+        let kwg = kwg::Kwg::<N>::from_bytes_alloc(bytes);
+        let mut got = Vec::new();
+        collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
+        got.sort_unstable();
+        got
+    }
+
+    #[test]
+    #[inline]
+    fn every_graph_holds_every_shipped_alphabet() {
+        for (name, alphabet) in shipped_alphabets() {
+            let len = alphabet.len();
+            assert!(len >= 2, "{name}: an alphabet is a blank and some tiles");
+            let words = words_over_tiles(len);
+
+            let bytes = build(BuildContent::Gaddawg, BuildLayout::Wolges, &words)
+                .unwrap_or_else(|e| panic!("{name}: kwg refused {len} tiles: {e}"));
+            assert_eq!(words_in_graph::<kwg::Node22>(&bytes), words, "{name}: kwg");
+
+            let bytes = build(BuildContent::DawgOnly, BuildLayout::Wolges, &words)
+                .unwrap_or_else(|e| panic!("{name}: dawg refused {len} tiles: {e}"));
+            assert_eq!(words_in_graph::<kwg::Node22>(&bytes), words, "{name}: dawg");
+
+            let bytes = build_big(BuildContent::Gaddawg, BuildLayout::Wolges, &words)
+                .unwrap_or_else(|e| panic!("{name}: kbwg refused {len} tiles: {e}"));
+            assert_eq!(words_in_graph::<kwg::Node24>(&bytes), words, "{name}: kbwg");
+
+            let alphagrams = make_alphagrams(&words);
+            let bytes = build(BuildContent::DawgOnly, BuildLayout::Wolges, &alphagrams)
+                .unwrap_or_else(|e| panic!("{name}: kad refused {len} tiles: {e}"));
+            assert_eq!(
+                words_in_graph::<kwg::Node22>(&bytes),
+                alphagrams.to_vec(),
+                "{name}: kad",
+            );
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn the_matrix_holds_a_full_sixty_four_tile_alphabet() {
+        let widest = shipped_alphabets()
+            .iter()
+            .map(|(_, alphabet)| alphabet.len())
+            .max();
+        assert_eq!(
+            widest,
+            Some(64),
+            "no shipped alphabet fills the tile field, so nothing here tests it",
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn the_matrix_holds_every_alphabet_the_crate_ships() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("alphabets");
+        let mut on_disk = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .trim_end_matches(".txt")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        on_disk.sort_unstable();
+        let mut in_matrix = shipped_alphabets()
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect::<Vec<_>>();
+        in_matrix.sort_unstable();
+        assert_eq!(in_matrix, on_disk, "the matrix and the crate disagree");
     }
 }
