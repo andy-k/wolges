@@ -219,21 +219,6 @@ impl Anagrams {
     }
 
     #[inline(always)]
-    pub fn blank_letters(&self, key: alphagram::Key, len: u8, ok: u64) -> u64 {
-        let mut raw = 0u64;
-        let Some(table) = self.blanked.get(len as usize) else {
-            return raw;
-        };
-        let Some(&run) = table.get(&key.0) else {
-            return raw;
-        };
-        for &a in &self.answers[run.at as usize..][..run.n as usize] {
-            raw |= 1u64 << a.tile;
-        }
-        raw & ok
-    }
-
-    #[inline(always)]
     pub fn words_at(&self, at: alphagram::WordsAt) -> alphagram::Words<'_> {
         self.words_of(
             at.len,
@@ -404,17 +389,12 @@ mod tests {
                 held.blank_groups(key, 3, u64::MAX, |_, at| {
                     got.push(sorted(Some(held.words_at(at))));
                 });
-                let mask = held.blank_letters(key, 3, u64::MAX);
                 let mut want = Vec::new();
-                let mut could_be = mask;
-                while could_be != 0 {
-                    let tile = could_be.trailing_zeros() as u8;
-                    could_be &= could_be - 1;
-                    want.push(from_the_list(
-                        &words,
-                        &layout,
-                        key.0 + layout.place_value(tile),
-                    ));
+                for tile in 1u8..=6 {
+                    let spelled = from_the_list(&words, &layout, key.0 + layout.place_value(tile));
+                    if !spelled.is_empty() {
+                        want.push(spelled);
+                    }
                 }
                 assert_eq!(got, want, "{a} {b}");
                 found += got.len();
@@ -431,10 +411,12 @@ mod tests {
         let layout = test_layout();
         let key = alphagram::Fitted(layout.key_of(&[1, 2]).unwrap());
         let mut got = Vec::new();
-        held.blank_groups(key, 3, u64::MAX, |_, at| {
+        let mut letters = Vec::new();
+        held.blank_groups(key, 3, u64::MAX, |tile, at| {
+            letters.push(tile);
             got.push(sorted(Some(held.words_at(at))));
         });
-        assert_eq!(held.blank_letters(key, 3, u64::MAX), 1u64 << 1);
+        assert_eq!(letters, [1]);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].len(), 3);
     }

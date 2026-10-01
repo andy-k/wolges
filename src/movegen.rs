@@ -2312,18 +2312,35 @@ fn gen_classic_place_moves<
     >(
         env: &mut Env<'_, CallbackType, N, L>,
         key: alphagram::Key,
+        base_key: u128,
         leave_idx: u32,
-        blank_letter: u8,
-    ) {
+        blank_ok: u64,
+    ) -> u8 {
         let source = env.source;
         let len = (env.right - env.left) as u8;
         let Some(found) = source.words(key, len) else {
-            return;
+            return 0;
         };
-        fit_words::<BLANKED, _, _, _>(env, found, leave_idx, blank_letter);
+        fit_words::<BLANKED, _, _, _>(env, found, base_key, leave_idx, blank_ok)
     }
 
     #[inline]
+    fn fit_words_apart<
+        const BLANKED: bool,
+        CallbackType: FnMut(i8, &[u8], i32, i32),
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, CallbackType, N, L>,
+        found: alphagram::Words<'_>,
+        base_key: u128,
+        leave_idx: u32,
+        blank_ok: u64,
+    ) -> u8 {
+        fit_words::<BLANKED, _, _, _>(env, found, base_key, leave_idx, blank_ok)
+    }
+
+    #[inline(always)]
     fn fit_words<
         const BLANKED: bool,
         CallbackType: FnMut(i8, &[u8], i32, i32),
@@ -2332,10 +2349,25 @@ fn gen_classic_place_moves<
     >(
         env: &mut Env<'_, CallbackType, N, L>,
         found: alphagram::Words<'_>,
+        base_key: u128,
         leave_idx: u32,
-        blank_letter: u8,
-    ) {
+        blank_ok: u64,
+    ) -> u8 {
         let len = (env.right - env.left) as u8;
+        let mut blank_letter = 0u8;
+        if BLANKED {
+            let mut spelled = 0u128;
+            for &tile in &found.words[..len as usize] {
+                spelled += env.layout.place_value(tile);
+            }
+            let Some(tile) = env.layout.tile_added(base_key, spelled) else {
+                return 0;
+            };
+            blank_letter = tile;
+            if blank_ok >> tile & 1 == 0 {
+                return tile;
+            }
+        }
         let board_strip = env.params.board_strip;
         let cross_set_strip = env.params.cross_set_strip;
         let tile_multipliers = env.params.remaining_tile_multipliers_strip;
@@ -2443,6 +2475,7 @@ fn gen_classic_place_moves<
                 env.params.word_strip_buffer[pos] = c;
             }
         }
+        blank_letter
     }
 
     #[derive(Clone, Copy)]
@@ -2591,22 +2624,24 @@ fn gen_classic_place_moves<
                     check_words::<false, _, _, _>(
                         &mut env,
                         alphagram::Fitted(key),
+                        0,
                         subrack.leave_idx,
                         0,
                     );
                     continue;
                 }
-                let mut could_be = env.source.blank_letters(
-                    alphagram::Fitted(key),
-                    (right - left) as u8,
-                    e.blank_ok,
-                );
-                while could_be != 0 {
-                    let tile = could_be.trailing_zeros() as u8;
-                    could_be &= could_be - 1;
-                    let full = alphagram::Fitted(key + env.layout.place_value(tile));
-                    check_words::<true, _, _, _>(&mut env, full, subrack.leave_idx, tile);
-                }
+                let source = env.source;
+                let len = (right - left) as u8;
+                source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |_, at| {
+                    let found = source.words_at(at);
+                    fit_words_apart::<true, _, _, _>(
+                        &mut env,
+                        found,
+                        key,
+                        subrack.leave_idx,
+                        e.blank_ok,
+                    );
+                });
             }
         }
     }
