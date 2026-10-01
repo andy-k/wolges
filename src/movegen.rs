@@ -3040,6 +3040,7 @@ impl KurniaMoveGenerator {
     ) {
         let working_buffer = &mut self.working_buffer;
         working_buffer.init(board_snapshot, &[], &|leave_value: i32| leave_value, None);
+        working_buffer.prev_board_tiles.fill(0xff);
         gen_remaining_words(board_snapshot, working_buffer, found_word)
     }
 }
@@ -4038,5 +4039,55 @@ mod tests {
             a == expect,
             "the tie-break did not order the plays as documented"
         );
+    }
+
+    #[test]
+    #[inline]
+    fn a_generation_after_remaining_words_matches_a_fresh_one() {
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let seat = fen_parser
+            .parse("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15")
+            .unwrap()
+            .to_vec();
+        let empty = fen_parser
+            .parse("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15")
+            .unwrap()
+            .to_vec();
+        let rack = parse_test_rack(gc.alphabet(), "AEST");
+        let seat_snapshot = BoardSnapshot {
+            board_tiles: &seat,
+            game_config: &gc,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let empty_snapshot = BoardSnapshot {
+            board_tiles: &empty,
+            game_config: &gc,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let plays = |move_generator: &mut KurniaMoveGenerator| {
+            move_generator.gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &seat_snapshot,
+                rack: &rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            move_generator
+                .plays
+                .iter()
+                .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&seat_snapshot)))
+                .collect::<Vec<_>>()
+        };
+        let fresh = plays(&mut KurniaMoveGenerator::new(&gc));
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        assert_eq!(plays(&mut move_generator), fresh);
+        move_generator.gen_remaining_words(&empty_snapshot, |_| {});
+        assert_eq!(plays(&mut move_generator), fresh);
     }
 }
