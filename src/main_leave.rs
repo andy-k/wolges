@@ -2322,6 +2322,90 @@ struct SpellPool<'a> {
     unseen_tally: &'a [u8],
     num_blanks_eff: usize,
     rack_size: usize,
+    phase: BoardPhase,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum BoardPhase {
+    Opening,
+    Midgame,
+    Endgame,
+}
+
+impl BoardPhase {
+    #[inline(always)]
+    fn of_board(board_tiles: &[u8], game_config: &game_config::GameConfig) -> Self {
+        if board_tiles.iter().all(|&t| t == 0) {
+            return BoardPhase::Opening;
+        }
+        if bag_size(board_tiles, game_config) <= 0 {
+            BoardPhase::Endgame
+        } else {
+            BoardPhase::Midgame
+        }
+    }
+
+    #[inline]
+    fn name(self) -> &'static str {
+        match self {
+            BoardPhase::Opening => "opening",
+            BoardPhase::Midgame => "midgame",
+            BoardPhase::Endgame => "endgame",
+        }
+    }
+}
+
+#[inline]
+fn opening_adjustment(
+    phase: BoardPhase,
+    game_config: &game_config::GameConfig,
+    down: bool,
+    idx: i8,
+    word: &[u8],
+) -> i32 {
+    if phase != BoardPhase::Opening {
+        return 0;
+    }
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    -(equity::OPENING_HOTSPOT_PENALTY
+        * (idx..)
+            .zip(word)
+            .filter(|&(i, &tile)| {
+                tile != 0
+                    && alphabet.is_vowel(tile)
+                    && if down {
+                        board_layout.danger_star_down(i)
+                    } else {
+                        board_layout.danger_star_across(i)
+                    }
+            })
+            .count() as i32)
+}
+
+#[inline]
+fn endgame_leave_value(game_config: &game_config::GameConfig, tally: &[u8]) -> i32 {
+    let alphabet = game_config.alphabet();
+    let held: i32 = tally
+        .iter()
+        .enumerate()
+        .map(|(t, &n)| n as i32 * alphabet.score(t as u8) as i32)
+        .sum();
+    -equity::ENDGAME_PENALTY_BASE - 2 * held * equity::SCALE
+}
+
+#[inline]
+fn play_out_bonus(game_config: &game_config::GameConfig, unseen_tally: &[u8], rack: &[u8]) -> i32 {
+    let alphabet = game_config.alphabet();
+    let mut left: i32 = unseen_tally
+        .iter()
+        .enumerate()
+        .map(|(t, &n)| n as i32 * alphabet.score(t as u8) as i32)
+        .sum();
+    for &t in rack {
+        left -= alphabet.score(t) as i32;
+    }
+    2 * left * equity::SCALE
 }
 
 #[inline]
@@ -2344,6 +2428,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         unseen_tally,
         num_blanks_eff,
         rack_size,
+        phase,
     } = pool;
     movegen_rack.clear();
     for (t, &c) in unseen_tally.iter().enumerate() {
@@ -2377,7 +2462,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
                 idx,
                 word,
                 blank_deltas,
-            );
+            ) + opening_adjustment(phase, game_config, down, idx, word);
             census::record_blank_variants(
                 lat,
                 sheet,
@@ -2703,6 +2788,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             unseen_tally: &unseen_tally,
                             num_blanks_eff,
                             rack_size,
+                            phase: BoardPhase::Midgame,
                         },
                         &mut movegen_rack,
                         &mut blank_deltas,
@@ -4621,6 +4707,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
     let board_tiles = fen_parser.parse(board_fen)?.to_vec();
     let tiles_on_board = board_tiles.iter().filter(|&&t| t != 0).count();
+    let phase = BoardPhase::of_board(&board_tiles, &game_config);
     let mut unseen_tally = (0..alphabet.len())
         .map(|t| alphabet.freq(t))
         .collect::<Vec<u8>>();
@@ -4654,6 +4741,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             unseen_tally: &unseen_tally,
             num_blanks_eff,
             rack_size,
+            phase,
         },
         &mut movegen_rack,
         &mut blank_deltas,
@@ -4668,10 +4756,32 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
         }
     }
     let mut leave = vec![0i32; lat.len()];
-    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    match phase {
+        BoardPhase::Opening | BoardPhase::Midgame => {
+            census::fill_lattice_leaves(&lat, &mut leave, |tally| {
+                klv.leave_value_from_tally(tally)
+            });
+        }
+        BoardPhase::Endgame => {
+            census::fill_lattice_leaves(&lat, &mut leave, |tally| {
+                endgame_leave_value(&game_config, tally)
+            });
+        }
+    }
     println!(
         "{tiles_on_board} tiles on the board, {unseen} unseen, {num_candidates} candidate plays \
          in {sheet_elapsed:?}",
+    );
+    println!(
+        "  valued as {} ({})",
+        phase.name(),
+        match phase {
+            BoardPhase::Opening =>
+                "a vowel on a danger star costs the opening penalty; leaves from the table",
+            BoardPhase::Midgame => "score plus the leave table",
+            BoardPhase::Endgame =>
+                "no leave table: going out is worth twice what the opponent holds",
+        },
     );
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
     let mut rack = Vec::new();
@@ -4692,11 +4802,20 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
         let mut played = vec![0u8; num_letters];
         let mut kept = tally.clone();
         let mut best = i32::MIN;
+        let empty_keep = match phase {
+            BoardPhase::Endgame => play_out_bonus(&game_config, &unseen_tally, &rack),
+            BoardPhase::Opening | BoardPhase::Midgame => {
+                let empty = vec![0u8; num_letters];
+                let idx = lat.rank(&empty);
+                if idx == !0 { 0 } else { leave[idx as usize] }
+            }
+        };
         best_split(
             &RackSplit {
                 lat: &lat,
                 sheet: &sheet,
                 leave: &leave,
+                empty_keep,
                 rack: &rack,
             },
             0,
@@ -4704,12 +4823,69 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             &mut kept,
             &mut best,
         );
+        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot: &movegen::BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &game_config,
+                kwg: &kwg,
+                klv: &klv,
+            },
+            rack: &rack,
+            max_gen: 1,
+            num_exchanges_by_this_player: 0,
+            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let (movegen_best, movegen_play) = move_generator.plays.first().map_or_else(
+            || (f64::NAN, "nothing".to_string()),
+            |m| {
+                let mut shown = String::new();
+                match &m.play {
+                    movegen::Play::Exchange { tiles } if tiles.is_empty() => {
+                        shown.push_str("pass");
+                    }
+                    movegen::Play::Exchange { tiles } => {
+                        shown.push_str("exch ");
+                        for &tile in tiles.iter() {
+                            shown.push_str(alphabet.of_rack(tile).unwrap());
+                        }
+                    }
+                    movegen::Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        ..
+                    } => {
+                        if *down {
+                            write!(shown, "{}{} ", display::column(*lane), idx + 1).unwrap();
+                        } else {
+                            write!(shown, "{}{} ", lane + 1, display::column(*idx)).unwrap();
+                        }
+                        for &tile in word.iter() {
+                            if tile == 0 {
+                                shown.push('.');
+                            } else {
+                                shown.push_str(alphabet.of_board(tile).unwrap());
+                            }
+                        }
+                    }
+                }
+                (m.equity.as_f64(), shown)
+            },
+        );
         let drawable = rack
             .iter()
             .all(|&t| tally[t as usize] <= unseen_tally[t as usize]);
+        let sheet_best = equity::Equity::new(best).as_f64();
         println!(
-            "  {rack_str:<10} best equity {:>8.3}{}",
-            equity::Equity::new(best).as_f64(),
+            "  {rack_str:<10} best equity {sheet_best:>8.3}  (the move generator says \
+             {movegen_best:>8.3} for {movegen_play}{}){}",
+            if (sheet_best - movegen_best).abs() < 0.0005 {
+                ", agreed"
+            } else {
+                ", disagreed"
+            },
             if drawable {
                 ""
             } else {
@@ -4724,6 +4900,7 @@ struct RackSplit<'a> {
     lat: &'a census::MultisetLattice,
     sheet: &'a [i32],
     leave: &'a [i32],
+    empty_keep: i32,
     rack: &'a [u8],
 }
 
@@ -4738,7 +4915,12 @@ fn best_split(
         let played_idx = split.lat.rank(played);
         let kept_idx = split.lat.rank(kept);
         if played_idx != !0 && kept_idx != !0 {
-            let value = split.sheet[played_idx as usize] + split.leave[kept_idx as usize];
+            let keep_value = if kept.iter().all(|&n| n == 0) {
+                split.empty_keep
+            } else {
+                split.leave[kept_idx as usize]
+            };
+            let value = split.sheet[played_idx as usize] + keep_value;
             if value > *best {
                 *best = value;
             }
