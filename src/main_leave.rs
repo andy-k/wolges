@@ -4127,8 +4127,7 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
     };
-    move_generator.set_spell_once(true);
-    move_generator.gen_moves_filtered(
+    move_generator.gen_census_sheet(
         &params,
         |down, lane, idx, word: &[u8], _score: i32| {
             n_cand += 1;
@@ -4153,7 +4152,6 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         |leave_value| leave_value,
         |_equity, _play| false,
     );
-    move_generator.set_spell_once(false);
     n_cand
 }
 
