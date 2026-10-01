@@ -210,7 +210,7 @@ struct MultiLeavesDigit {
 #[derive(Default)]
 pub struct MultiLeaves {
     unique_tiles: Vec<u8>, // sorted, unique, len() == rack_bits.count_ones()
-    digits: Vec<MultiLeavesDigit>, // len() == rack_tally.len() == alphabet.len()
+    digits: Vec<MultiLeavesDigit>, // len() == rack_tally.len()
     leave_values: Vec<i32>, // typically 2**7, can be shorter when duplicates
     num_playeds: Vec<u8>,  // same length as leave_values
 }

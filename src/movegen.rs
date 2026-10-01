@@ -183,16 +183,16 @@ impl ShadowScores {
 // reset_for_another_kwg().
 // This is not enforced.
 struct WorkingBuffer {
-    rack_tally: Box<[u8]>,                                         // 27 for ?A-Z
-    word_buffer_for_across_plays: Box<[u8]>,                       // r*c
-    word_buffer_for_down_plays: Box<[u8]>,                         // c*r
-    cross_set_for_across_plays: Box<[CrossSet]>,                   // r*c
-    cross_set_for_down_plays: Box<[CrossSet]>,                     // c*r
-    cached_cross_set_for_across_plays: Box<[CachedCrossSet]>,      // c*r
-    cached_cross_set_for_down_plays: Box<[CachedCrossSet]>,        // r*c
+    rack_tally: [u8; MAX_ALPHABET_LEN],
+    word_buffer_for_across_plays: Box<[u8]>,     // r*c
+    word_buffer_for_down_plays: Box<[u8]>,       // c*r
+    cross_set_for_across_plays: Box<[CrossSet]>, // r*c
+    cross_set_for_down_plays: Box<[CrossSet]>,   // c*r
+    cached_cross_set_for_across_plays: Box<[CachedCrossSet]>, // c*r
+    cached_cross_set_for_down_plays: Box<[CachedCrossSet]>, // r*c
     cross_set_buffer_for_across_plays: Box<[CrossSetComputation]>, // c*r (perpendicular strips)
-    cross_set_buffer_for_down_plays: Box<[CrossSetComputation]>,   // r*c (perpendicular strips)
-    prev_board_tiles: Box<[u8]>, // r*c (previous board tiles for dirty tracking)
+    cross_set_buffer_for_down_plays: Box<[CrossSetComputation]>, // r*c (perpendicular strips)
+    prev_board_tiles: Box<[u8]>,                 // r*c (previous board tiles for dirty tracking)
     remaining_word_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
     remaining_word_multipliers_for_down_plays: Box<[i8]>, // c*r
     remaining_tile_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
@@ -227,8 +227,8 @@ struct WorkingBuffer {
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
     used_tile_scores_shadowl: ShadowScores, // for shadow_play_left, premultiplied by SCALE
     used_tile_scores_shadowr: ShadowScores, // for shadow_play_right, premultiplied by SCALE
-    rack_tally_shadowl: Box<[u8]>, // 27 for ?A-Z (for shadow_play_left)
-    rack_tally_shadowr: Box<[u8]>, // 27 for ?A-Z (for shadow_play_right)
+    rack_tally_shadowl: [u8; MAX_ALPHABET_LEN], // for shadow_play_left
+    rack_tally_shadowr: [u8; MAX_ALPHABET_LEN], // for shadow_play_right
     word_source_fits_config: bool,
     is_census: bool,
 }
@@ -237,7 +237,7 @@ impl Clone for WorkingBuffer {
     #[inline(always)]
     fn clone(&self) -> Self {
         Self {
-            rack_tally: self.rack_tally.clone(),
+            rack_tally: self.rack_tally,
             word_buffer_for_across_plays: self.word_buffer_for_across_plays.clone(),
             word_buffer_for_down_plays: self.word_buffer_for_down_plays.clone(),
             cross_set_for_across_plays: self.cross_set_for_across_plays.clone(),
@@ -297,8 +297,8 @@ impl Clone for WorkingBuffer {
             used_letters_tally: self.used_letters_tally.clone(),
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
-            rack_tally_shadowl: self.rack_tally_shadowl.clone(),
-            rack_tally_shadowr: self.rack_tally_shadowr.clone(),
+            rack_tally_shadowl: self.rack_tally_shadowl,
+            rack_tally_shadowr: self.rack_tally_shadowr,
             is_census: self.is_census,
             word_source_fits_config: self.word_source_fits_config,
         }
@@ -393,7 +393,7 @@ impl WorkingBuffer {
         let dim = game_config.board_layout().dim();
         let rows_times_cols = (dim.rows as isize * dim.cols as isize) as usize;
         Self {
-            rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
+            rack_tally: [0u8; MAX_ALPHABET_LEN],
             word_buffer_for_across_plays: vec![0u8; rows_times_cols].into_boxed_slice(),
             word_buffer_for_down_plays: vec![0u8; rows_times_cols].into_boxed_slice(),
             cross_set_for_across_plays: vec![CrossSet { bits: 0, score: 0 }; rows_times_cols]
@@ -488,8 +488,8 @@ impl WorkingBuffer {
             used_letters_tally: Vec::new(),
             used_tile_scores_shadowl: ShadowScores::default(),
             used_tile_scores_shadowr: ShadowScores::default(),
-            rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
-            rack_tally_shadowr: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
+            rack_tally_shadowl: [0u8; MAX_ALPHABET_LEN],
+            rack_tally_shadowr: [0u8; MAX_ALPHABET_LEN],
             is_census: false,
             word_source_fits_config: false,
         }
@@ -607,7 +607,7 @@ impl WorkingBuffer {
             bag_count_from_board(board_snapshot.game_config, self.num_tiles_on_board);
         let play_out_bonus = if self.num_tiles_in_bag <= 0 {
             2 * ((0u8..)
-                .zip(self.rack_tally.iter())
+                .zip(self.rack_tally.iter().take(alphabet.len() as usize))
                 .map(|(tile, &num)| {
                     (alphabet.freq(tile) as i32 - num as i32) * alphabet.score(tile) as i32
                 })
@@ -1825,7 +1825,7 @@ fn leave_value_of<L: kwg::Node>(
             play_out_bonus
         } else {
             let residual: i32 = (0u8..)
-                .zip(rack_tally.iter())
+                .zip(rack_tally.iter().take(alphabet.len() as usize))
                 .map(|(tile, &count)| count as i32 * alphabet.score(tile) as i32)
                 .sum();
             -equity::ENDGAME_PENALTY_BASE - 2 * residual * equity::SCALE
@@ -2903,14 +2903,17 @@ fn gen_jumbled_place_moves<
                 if is_played_out {
                     env.params.play_out_bonus
                 } else {
-                    let residual: i32 = (0u8..)
-                        .zip(env.params.rack_tally.iter())
-                        .map(|(tile, &count)| {
-                            count as i32
-                                * env.params.board_snapshot.game_config.alphabet().score(tile)
-                                    as i32
-                        })
-                        .sum();
+                    let residual: i32 =
+                        (0u8..)
+                            .zip(env.params.rack_tally.iter().take(
+                                env.params.board_snapshot.game_config.alphabet().len() as usize,
+                            ))
+                            .map(|(tile, &count)| {
+                                count as i32
+                                    * env.params.board_snapshot.game_config.alphabet().score(tile)
+                                        as i32
+                            })
+                            .sum();
                     -equity::ENDGAME_PENALTY_BASE - 2 * residual * equity::SCALE
                 }
             } else {
