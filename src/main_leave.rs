@@ -4242,7 +4242,7 @@ fn write_census_klv2(
         w += 4;
     }
     assert_eq!(w, bin.len());
-    std::fs::write(path, &bin)?;
+    make_writer(path)?.write_all(&bin)?;
     Ok(leave_values.len())
 }
 
