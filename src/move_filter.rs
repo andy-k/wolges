@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{equity, game_config, kwg, movegen, prob};
+use super::{equity, game_config, klv, kwg, movegen, prob};
 use rand::prelude::*;
 
 #[derive(Clone)]
@@ -189,6 +189,7 @@ impl GenMoves<'_> {
         rack: &[u8],
         num_exchanges_by_this_player: i16,
         max_gen: usize,
+        dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
     ) {
         match self {
             Self::Unfiltered => {
@@ -198,7 +199,7 @@ impl GenMoves<'_> {
                     max_gen,
                     num_exchanges_by_this_player,
                     pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                    dynamic_leaves: None,
+                    dynamic_leaves,
                 });
             }
             Self::Tilt { tilt, bot_level: _ } => {
@@ -211,7 +212,7 @@ impl GenMoves<'_> {
                         max_gen,
                         num_exchanges_by_this_player,
                         pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                        dynamic_leaves: None,
+                        dynamic_leaves,
                     },
                     |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
                         limited_vocab_checker.words_placed_are_ok(

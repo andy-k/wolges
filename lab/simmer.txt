@@ -58,12 +58,13 @@ is a harness sanity check (an unbiased comparison should tie); giving them
 different options measures which one plays better.
 
 A seat does not have to sim at all. --p0-picker / --p1-picker take "hasty",
-which is the single greedy look leave compare uses on both of its seats, or
-"simmer", the default. So the question the simmer exists to answer -- is it
-worth anything over just taking the best-looking move? -- is one run of one
-subcommand, on the same deals, with the same leave table on both sides and
-nothing else differing. Twenty pairs at 200 rollouts a move: the simming seat
-took 58.75%.
+which is the single greedy look leave compare uses on both of its seats;
+"dynamic", the same look with every kept leave valued against the tiles still
+unseen, which needs a full-length leave table (census --full); or "simmer", the
+default. So the question the simmer exists to answer -- is it worth anything
+over just taking the best-looking move? -- is one run of one subcommand, on the
+same deals, with the same leave table on both sides and nothing else differing.
+Twenty pairs at 200 rollouts a move: the simming seat took 58.75%.
 
 That option is also the one to reach for when a run is too slow to finish. A
 hasty seat costs nothing, so a simmer-against-hasty run is about half the price

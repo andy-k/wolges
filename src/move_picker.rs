@@ -48,6 +48,7 @@ pub fn gen_simmer_candidates<N: kwg::Node, L: kwg::Node>(
         rack,
         num_exchanges_by_this_player,
         max_gen,
+        None,
     );
     let quota = field.nonplacing_quota.min(max_gen);
     let mut held = move_generator
@@ -382,6 +383,7 @@ impl Periods {
 #[expect(clippy::large_enum_variant)]
 pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Hasty,
+    Dynamic(klv::DynamicLeavesRef<'a>),
     Simmer(Simmer<'a, N, L>),
 }
 
@@ -634,6 +636,17 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                     rack,
                     game_state.current_player().num_exchanges,
                     1,
+                    None,
+                );
+            }
+            MovePicker::Dynamic(dynamic_leaves) => {
+                filtered_movegen.gen_moves(
+                    move_generator,
+                    board_snapshot,
+                    rack,
+                    game_state.current_player().num_exchanges,
+                    1,
+                    Some(*dynamic_leaves),
                 );
             }
             MovePicker::Simmer(simmer) => {
