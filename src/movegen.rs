@@ -94,6 +94,7 @@ struct WorkingBuffer {
     used_tile_scores_shadowr: Vec<i32>, // rack.len() (for shadow_play_right, premultiplied by SCALE)
     rack_tally_shadowl: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_left)
     rack_tally_shadowr: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_right)
+    word_source_fits_config: bool,
     is_census: bool,
 }
 
@@ -162,6 +163,7 @@ impl Clone for WorkingBuffer {
             rack_tally_shadowl: self.rack_tally_shadowl.clone(),
             rack_tally_shadowr: self.rack_tally_shadowr.clone(),
             is_census: self.is_census,
+            word_source_fits_config: self.word_source_fits_config,
         }
     }
 
@@ -242,6 +244,7 @@ impl Clone for WorkingBuffer {
         self.rack_tally_shadowr
             .clone_from(&source.rack_tally_shadowr);
         self.is_census = source.is_census;
+        self.word_source_fits_config = source.word_source_fits_config;
     }
 }
 
@@ -346,6 +349,7 @@ impl WorkingBuffer {
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             rack_tally_shadowr: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             is_census: false,
+            word_source_fits_config: false,
         }
     }
 
@@ -366,6 +370,7 @@ impl WorkingBuffer {
         let layout = board_snapshot.anagrams.map(anagrams::Anagrams::layout);
         !want_raw
             && !self.is_census
+            && self.word_source_fits_config
             && self.rack_tally[0] <= 1
             && !self.subracks.is_empty()
             && layout
@@ -380,6 +385,14 @@ impl WorkingBuffer {
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
+        self.word_source_fits_config = match board_snapshot.anagrams.map(anagrams::Anagrams::layout)
+        {
+            Some(layout) => {
+                let dim = board_snapshot.game_config.board_layout().dim();
+                layout.matches(alphabet, dim.rows.max(dim.cols) as u8)
+            }
+            None => false,
+        };
         self.num_tiles_on_rack = rack.len().try_into().unwrap();
         self.exchange_buffer.clear();
         self.exchange_buffer
@@ -4779,6 +4792,34 @@ mod tests {
     }
 
     #[inline]
+    fn sweep_kwg_covering(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+        let dim = gc.board_layout().dim();
+        let longest = dim.rows.max(dim.cols) as u8;
+        assert!(
+            (longest as usize) < gc.alphabet().len() as usize,
+            "this alphabet cannot spell a word as long as the line",
+        );
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut word_buf = Vec::new();
+        let mut words = Vec::<bites::Bites>::with_capacity(SWEEP_WORDS.len() + 1);
+        for w in SWEEP_WORDS {
+            reader.set_word(w, &mut word_buf).unwrap();
+            words.push(word_buf[..].into());
+        }
+        words.push((1u8..=longest).collect::<Vec<_>>()[..].into());
+        words.sort_unstable();
+        words.dedup();
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                &words,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[inline]
     fn sweep_output() -> String {
         let gc = game_config::make_english_game_config();
         let kwg = sweep_kwg(&gc);
@@ -4863,27 +4904,14 @@ mod tests {
         std::fs::write("src/movegen-sweep-baseline.txt", sweep_output()).unwrap();
     }
 
-    #[test]
     #[inline]
-    fn the_tables_find_exactly_what_the_descent_finds() {
-        let gc = game_config::make_english_game_config();
-        let kwg = sweep_kwg(&gc);
+    fn both_arms_agree(gc: &game_config::GameConfig, boards: &[&str], racks: &[&str]) {
+        let kwg = sweep_kwg_covering(gc);
         let dim = gc.board_layout().dim();
         let layout = alphagram::KeyLayout::of(gc.alphabet(), dim.rows.max(dim.cols) as u8).unwrap();
         let held = anagrams::Anagrams::build(&kwg, layout.clone()).unwrap();
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
-        let empty = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
-        let one = "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15";
-        let two = "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15";
-        let three = "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15";
-        let dead = "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15";
-        let boards = [empty, one, two, three, dead];
-        let racks = [
-            "AEINRST", "CARTONS", "STARTED", "SEATERS", "RATTANS", "AAAAAAA", "AE", "ST", "CAT",
-            "NNNNTTT", "ERASECS", "?EINRST", "?AT", "C?T", "?ANTES", "?", "?A", "??TANS",
-            "?ANTS??",
-        ];
         for max_gen in [1usize, 5, 100_000] {
             for fen in boards {
                 let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
@@ -4894,12 +4922,12 @@ mod tests {
                     for (anagrams, out) in [(None, &mut walked), (Some(&held), &mut fetched)] {
                         let board_snapshot = BoardSnapshot {
                             board_tiles: &board_tiles,
-                            game_config: &gc,
+                            game_config: gc,
                             kwg: &kwg,
                             anagrams,
                             klv: &klv,
                         };
-                        let mut move_generator = KurniaMoveGenerator::new(&gc);
+                        let mut move_generator = KurniaMoveGenerator::new(gc);
                         move_generator.gen_moves_unfiltered(&GenMovesParams {
                             board_snapshot: &board_snapshot,
                             rack: &rack,
@@ -4921,6 +4949,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    static SWEEP_RACKS: &[&str] = &[
+        "AEINRST", "CARTONS", "STARTED", "SEATERS", "RATTANS", "AAAAAAA", "AE", "ST", "CAT",
+        "NNNNTTT", "ERASECS", "?EINRST", "?AT", "C?T", "?ANTES", "?", "?A", "??TANS", "?ANTS??",
+    ];
+
+    #[test]
+    #[inline]
+    fn the_tables_find_exactly_what_the_descent_finds() {
+        let gc = game_config::make_english_game_config();
+        let empty = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
+        let one = "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15";
+        let two = "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15";
+        let three = "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15";
+        let dead = "15/15/15/15/15/15/15/6N3A4/15/6N8/15/15/15/15/15";
+        both_arms_agree(&gc, &[empty, one, two, three, dead], SWEEP_RACKS);
+    }
+
+    #[test]
+    #[inline]
+    fn a_wide_board_is_read_the_same_on_every_extent() {
+        let gc = game_config::make_super_english_game_config();
+        let dim = gc.board_layout().dim();
+        assert!(dim.cols > 15, "this board is not wider than the old guard");
+        let empty = "21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21/21";
+        let one = "21/21/21/21/21/21/21/21/21/21/8CARE9/21/21/21/21/21/21/21/21/21/21";
+        let two = "21/21/21/21/21/21/21/21/21/21/8CARE9/8A12/8N12/8E12/21/21/21/21/21/21/21";
+        both_arms_agree(&gc, &[empty, one, two], SWEEP_RACKS);
     }
 
     #[inline]
