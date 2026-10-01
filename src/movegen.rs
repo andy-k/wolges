@@ -102,7 +102,6 @@ struct PossiblePlacement {
     leftmost: i8,
     rightmost: i8,
     best_possible_equity: i32,
-    scores_at: u32,
 }
 
 #[derive(Clone)]
@@ -381,8 +380,6 @@ struct WorkingBuffer {
     exchange_buffer: Vec<u8>,    // rack.len(), or max(word length) with word prune
     lane_scaffold: Box<[LaneScaffold]>, // rows + cols, across lanes first
     best_leave_values: Vec<i32>, // rack.len() + 1
-    placement_scores: Vec<i32>,
-    shadow_scores: Vec<i32>,
     span_out: Vec<(i8, i8, u8, i32)>,
     subracks: Vec<Subrack>,
     subracks_by_played: Vec<u32>,
@@ -446,8 +443,6 @@ impl Clone for WorkingBuffer {
             exchange_buffer: self.exchange_buffer.clone(),
             lane_scaffold: self.lane_scaffold.clone(),
             best_leave_values: self.best_leave_values.clone(),
-            placement_scores: self.placement_scores.clone(),
-            shadow_scores: self.shadow_scores.clone(),
             span_out: self.span_out.clone(),
             subracks: self.subracks.clone(),
             subracks_by_played: self.subracks_by_played.clone(),
@@ -516,8 +511,6 @@ impl Clone for WorkingBuffer {
         self.exchange_buffer.clone_from(&source.exchange_buffer);
         self.lane_scaffold.clone_from(&source.lane_scaffold);
         self.best_leave_values.clone_from(&source.best_leave_values);
-        self.placement_scores.clone_from(&source.placement_scores);
-        self.shadow_scores.clone_from(&source.shadow_scores);
         self.span_out.clone_from(&source.span_out);
         self.subracks.clone_from(&source.subracks);
         self.subracks_by_played
@@ -618,8 +611,6 @@ impl WorkingBuffer {
             lane_scaffold: vec![LaneScaffold::new(); dim.rows as usize + dim.cols as usize]
                 .into_boxed_slice(),
             best_leave_values: Vec::new(),
-            placement_scores: Vec::new(),
-            shadow_scores: Vec::new(),
             span_out: Vec::new(),
             subracks: Vec::new(),
             subracks_by_played: Vec::new(),
@@ -1284,7 +1275,6 @@ struct GenPlacePlacementsParams<'a> {
     descending_scores: &'a [i32],
     lane_scaffold: &'a mut LaneScaffold,
     best_leave_values: &'a [i32],
-    shadow_scores: &'a mut Vec<i32>,
     span_out: &'a mut Vec<(i8, i8, u8, i32)>,
     per_span: bool,
     num_max_played: u8,
@@ -1348,10 +1338,7 @@ fn rack_subset_lengths(
 }
 
 #[inline]
-fn gen_place_placements<
-    'a,
-    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32], u8),
->(
+fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8)>(
     params: &'a mut GenPlacePlacementsParams<'a>,
     single_tile_plays: bool,
     want_raw: bool,
@@ -1378,7 +1365,7 @@ fn gen_place_placements<
 fn gen_place_placements_impl<
     'a,
     const PER_SPAN: bool,
-    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32], u8),
+    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
 >(
     params: &'a mut GenPlacePlacementsParams<'a>,
     single_tile_plays: bool,
@@ -1414,9 +1401,6 @@ fn gen_place_placements_impl<
         rightmost: 0,
         best_possible_equity: i32::MIN,
     };
-    env.params
-        .shadow_scores
-        .resize(env.params.num_max_played as usize + 1, i32::MIN);
 
     // during shadow-playing, main_score and perpendicular_cumulative_score
     // assume all tiles placed from rack this turn are worth zero,
@@ -1526,12 +1510,6 @@ fn gen_place_placements_impl<
         }
         if equity > env.best_possible_equity {
             env.best_possible_equity = equity;
-        }
-        let score = equity - env.params.best_leave_values[num_played as usize];
-        if let Some(slot) = env.params.shadow_scores.get_mut(num_played as usize)
-            && score > *slot
-        {
-            *slot = score;
         }
     }
 
@@ -1841,7 +1819,7 @@ fn gen_place_placements_impl<
     #[inline(always)]
     fn gen_places_from<
         const PER_SPAN: bool,
-        PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32], u8),
+        PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, u8),
     >(
         env: &mut Env<'_>,
         single_tile_plays: bool,
@@ -1849,18 +1827,10 @@ fn gen_place_placements_impl<
         mut possible_strip_placement_callback: PossibleStripPlacementCallbackType,
     ) {
         if want_raw {
-            possible_strip_placement_callback(
-                env.anchor,
-                env.leftmost,
-                env.rightmost,
-                i32::MAX,
-                &[],
-                0,
-            );
+            possible_strip_placement_callback(env.anchor, env.leftmost, env.rightmost, i32::MAX, 0);
         } else {
             env.best_possible_equity = i32::MIN;
             env.params.span_out.clear();
-            env.params.shadow_scores.fill(i32::MIN);
             shadow_play_left::<PER_SPAN>(
                 env,
                 Accumulator {
@@ -1878,12 +1848,7 @@ fn gen_place_placements_impl<
                     for i in 0..env.params.span_out.len() {
                         let (left, right, num_played, equity) = env.params.span_out[i];
                         possible_strip_placement_callback(
-                            env.anchor,
-                            left,
-                            right,
-                            equity,
-                            env.params.shadow_scores,
-                            num_played,
+                            env.anchor, left, right, equity, num_played,
                         );
                     }
                 } else {
@@ -1892,7 +1857,6 @@ fn gen_place_placements_impl<
                         env.leftmost,
                         env.rightmost,
                         env.best_possible_equity,
-                        env.params.shadow_scores,
                         0,
                     );
                 }
@@ -1956,8 +1920,12 @@ fn gen_place_placements_impl<
     }
 }
 
-struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>
-{
+struct GenPlaceMovesParams<
+    'a,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+> {
     board_snapshot: &'a BoardSnapshot<'a, N, L>,
     board_strip: &'a [u8],
     cross_set_strip: &'a [CrossSet],
@@ -1981,7 +1949,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg:
     play_out_bonus: i32,
     used_letters_tally: &'a mut [u8], // jumbled mode only
     is_census: bool, // real-before-blank descent for the census's spell-once sheet build
-    scores: &'a [i32],
+    score_bound: i32,
     threshold: i32,
     subracks: &'a [Subrack],
     subracks_by_played: &'a [u32],
@@ -2018,14 +1986,14 @@ fn leave_value_of<L: kwg::Node>(
 #[inline]
 fn gen_classic_place_moves_lean<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, i32),
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
@@ -2043,7 +2011,7 @@ fn gen_classic_place_moves_lean<
     #[inline(always)]
     fn record<
         const SPELL_ONCE: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -2087,7 +2055,7 @@ fn gen_classic_place_moves_lean<
 
     fn play_right<
         const SPELL_ONCE: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -2251,7 +2219,7 @@ fn gen_classic_place_moves_lean<
 
     fn play_left<
         const SPELL_ONCE: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -2596,7 +2564,7 @@ fn build_subracks(
 #[inline]
 fn gen_classic_place_moves<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, i32),
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -2604,7 +2572,7 @@ fn gen_classic_place_moves<
     source: &'a anagrams::Anagrams,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         source: &'a anagrams::Anagrams,
         layout: &'a alphagram::KeyLayout,
@@ -2615,12 +2583,11 @@ fn gen_classic_place_moves<
         base_main: i32,
         base_perp: i32,
         word_multiplier: i32,
-        score_bound: Option<i32>,
         bound: i32,
     }
 
     #[inline]
-    fn check_words<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn check_words<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         key: alphagram::Key,
         leave_idx: u32,
@@ -2634,7 +2601,11 @@ fn gen_classic_place_moves<
     }
 
     #[inline]
-    fn fit_words_apart<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn fit_words_apart<
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, CallbackType, N, L>,
         found: alphagram::Words<'_>,
         leave_idx: u32,
@@ -2647,7 +2618,7 @@ fn gen_classic_place_moves<
     #[inline(always)]
     fn fit_words<
         const BLANKED: bool,
-        CallbackType: FnMut(i8, &[u8], i32, i32),
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
         N: kwg::Node,
         L: kwg::Node,
     >(
@@ -2718,15 +2689,13 @@ fn gen_classic_place_moves<
             #[cfg(debug_assertions)]
             macro_rules! covered {
                 ($score:expr) => {
-                    if env.score_bound.is_some() {
-                        debug_assert!(
-                            $score + leave_value <= env.bound,
-                            "found {} when the bound for {} tiles was {}",
-                            $score + leave_value,
-                            env.num_played,
-                            env.bound,
-                        );
-                    }
+                    debug_assert!(
+                        $score + leave_value <= env.bound,
+                        "found {} when the bound for {} tiles was {}",
+                        $score + leave_value,
+                        env.num_played,
+                        env.bound,
+                    );
                 };
             }
             #[cfg(not(debug_assertions))]
@@ -2735,7 +2704,7 @@ fn gen_classic_place_moves<
             }
             if !BLANKED {
                 covered!(score);
-                (env.params.callback)(
+                env.params.threshold = (env.params.callback)(
                     env.left,
                     &env.params.word_strip_buffer[env.left as usize..env.right as usize],
                     score,
@@ -2757,7 +2726,7 @@ fn gen_classic_place_moves<
                         + delta * perpendicular_word_multipliers[pos] as i32;
                     covered!(blanked_score);
                     env.params.word_strip_buffer[pos] = c | 0x80;
-                    (env.params.callback)(
+                    env.params.threshold = (env.params.callback)(
                         env.left,
                         &env.params.word_strip_buffer[env.left as usize..env.right as usize],
                         blanked_score,
@@ -2793,7 +2762,7 @@ fn gen_classic_place_moves<
                         + delta2 * perpendicular_word_multipliers[pos2] as i32;
                     covered!(blanked_score);
                     env.params.word_strip_buffer[pos2] = d | 0x80;
-                    (env.params.callback)(
+                    env.params.threshold = (env.params.callback)(
                         env.left,
                         &env.params.word_strip_buffer[env.left as usize..env.right as usize],
                         blanked_score,
@@ -2826,7 +2795,7 @@ fn gen_classic_place_moves<
         layout: &alphagram::KeyLayout,
         params: &GenPlaceMovesParams<
             '_,
-            impl FnMut(i8, &[u8], i32, i32),
+            impl FnMut(i8, &[u8], i32, i32) -> i32,
             impl kwg::Node,
             impl kwg::Node,
         >,
@@ -2855,7 +2824,6 @@ fn gen_classic_place_moves<
     let alphabet = params.board_snapshot.game_config.alphabet();
     let layout = source.layout();
     let letters = (u64::MAX >> (64 - alphabet.len() as u32)) & !1;
-    let anchor = params.anchor;
     let leftmost = params.leftmost;
     let rightmost = params.rightmost;
     let num_max_played = params.num_max_played;
@@ -2864,16 +2832,15 @@ fn gen_classic_place_moves<
         source,
         layout,
         alphabet,
-        left: 0,
-        right: 0,
+        left: leftmost,
+        right: rightmost,
         num_played: 0,
         base_main: 0,
         base_perp: 0,
         word_multiplier: 1,
-        score_bound: None,
         bound: 0,
     };
-    let mut left_extent = Extent {
+    let mut e = Extent {
         playthrough_key: 0,
         base_main: 0,
         base_perp: 0,
@@ -2883,121 +2850,81 @@ fn gen_classic_place_moves<
         dead_squares: 0,
         blank_ok: 0,
     };
-    for left in (leftmost..=anchor).rev() {
-        add_square(
-            &mut left_extent,
-            left as usize,
-            letters,
-            env.layout,
-            env.params,
-        );
-        if left > 0 && env.params.board_strip[left as usize - 1] != 0 {
+    for idx in leftmost..rightmost {
+        add_square(&mut e, idx as usize, letters, env.layout, env.params);
+    }
+    debug_assert!(leftmost == 0 || env.params.board_strip[leftmost as usize - 1] == 0);
+    debug_assert!(
+        rightmost as usize == env.params.board_strip.len()
+            || env.params.board_strip[rightmost as usize] == 0
+    );
+    debug_assert_eq!(e.num_played, env.params.span_num_played);
+    if e.dead_squares != 0
+        || e.num_played > num_max_played
+        || e.num_played == 0
+        || rightmost - leftmost < 2
+    {
+        return;
+    }
+    if e.num_played == 1 && !single_tile_plays && e.free_squares == 0 {
+        return;
+    }
+    env.num_played = e.num_played;
+    env.base_main = e.base_main;
+    env.base_perp = e.base_perp;
+    env.word_multiplier = e.word_multiplier;
+    let len = (rightmost - leftmost) as u8;
+    let from = env.params.subracks_by_played[e.num_played as usize] as usize;
+    let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
+    for si in from..upto {
+        let subrack = env.params.subracks[si];
+        env.bound = env.params.score_bound.saturating_add(subrack.leave_value);
+        if env.bound < env.params.threshold {
+            break;
+        }
+        let key = e.playthrough_key + subrack.key;
+        if subrack.blanks == 0 {
+            check_words(&mut env, alphagram::Fitted(key), subrack.leave_idx);
             continue;
         }
-        if env.params.span_num_played != 0 && left != leftmost {
-            continue;
-        }
-        let mut e = left_extent;
-        for right in anchor + 1..=rightmost {
-            if right > anchor + 1 {
-                add_square(&mut e, right as usize - 1, letters, env.layout, env.params);
-            }
-            if e.dead_squares != 0 || e.num_played > num_max_played {
-                break;
-            }
-            debug_assert!(right == rightmost || env.params.board_strip[right as usize] == 0);
-            if e.num_played == 0 || right - left < 2 {
-                continue;
-            }
-            if e.num_played == 1 && !single_tile_plays && e.free_squares == 0 {
-                continue;
-            }
-            if env.params.span_num_played != 0 && right != rightmost {
-                continue;
-            }
-            env.left = left;
-            env.right = right;
-            env.num_played = e.num_played;
-            env.base_main = e.base_main;
-            env.base_perp = e.base_perp;
-            env.word_multiplier = e.word_multiplier;
-            env.score_bound = if env.params.threshold == i32::MIN {
-                None
-            } else {
-                match env.params.scores.get(e.num_played as usize) {
-                    Some(&score) if score != i32::MIN => Some(
-                        score.saturating_add(
-                            env.params
-                                .board_snapshot
-                                .game_config
-                                .num_played_bonus(e.num_played) as i32
-                                * equity::SCALE,
-                        ),
-                    ),
-                    _ => None,
-                }
-            };
-            let from = env.params.subracks_by_played[e.num_played as usize] as usize;
-            let upto = env.params.subracks_by_played[e.num_played as usize + 1] as usize;
-            for si in from..upto {
-                let subrack = env.params.subracks[si];
-                if let Some(score_bound) = env.score_bound {
-                    env.bound = score_bound.saturating_add(subrack.leave_value);
-                    if env.bound < env.params.threshold {
-                        break;
-                    }
-                }
-                let key = e.playthrough_key + subrack.key;
-                if subrack.blanks == 0 {
-                    check_words(&mut env, alphagram::Fitted(key), subrack.leave_idx);
+        let source = env.source;
+        if subrack.blanks >= 2 {
+            let mut first = e.blank_ok & !1;
+            while first != 0 {
+                let l1 = first.trailing_zeros() as u8;
+                first &= first - 1;
+                let key1 = key + env.layout.place_value(l1);
+                if !env.layout.holds(key1) {
                     continue;
                 }
-                let source = env.source;
-                let len = (right - left) as u8;
-                if subrack.blanks >= 2 {
-                    let mut first = e.blank_ok & !1;
-                    while first != 0 {
-                        let l1 = first.trailing_zeros() as u8;
-                        first &= first - 1;
-                        let key1 = key + env.layout.place_value(l1);
-                        if !env.layout.holds(key1) {
-                            continue;
-                        }
-                        source.blank_groups(
-                            alphagram::Fitted(key1),
-                            len,
-                            e.blank_ok,
-                            |tile, at| {
-                                if tile < l1 {
-                                    return;
-                                }
-                                let found = source.words_at(at);
-                                fit_words_apart(&mut env, found, subrack.leave_idx, tile, l1);
-                            },
-                        );
+                source.blank_groups(alphagram::Fitted(key1), len, e.blank_ok, |tile, at| {
+                    if tile < l1 {
+                        return;
                     }
-                    continue;
-                }
-                source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |tile, at| {
                     let found = source.words_at(at);
-                    fit_words_apart(&mut env, found, subrack.leave_idx, tile, 0);
+                    fit_words_apart(&mut env, found, subrack.leave_idx, tile, l1);
                 });
             }
+            continue;
         }
+        source.blank_groups(alphagram::Fitted(key), len, e.blank_ok, |tile, at| {
+            let found = source.words_at(at);
+            fit_words_apart(&mut env, found, subrack.leave_idx, tile, 0);
+        });
     }
 }
 
 #[inline]
 fn gen_jumbled_place_moves<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, i32),
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
-    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node> {
+    struct Env<'a, CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node> {
         params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
@@ -3019,7 +2946,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn tally_moved<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn tally_moved<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         letter: u8,
     ) {
@@ -3030,7 +2957,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn tally_add<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn tally_add<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         letter: u8,
     ) {
@@ -3040,7 +2967,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn tally_sub<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn tally_sub<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         letter: u8,
     ) {
@@ -3052,7 +2979,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn rack_take<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn rack_take<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         tile: u8,
     ) {
@@ -3063,7 +2990,7 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn rack_put<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn rack_put<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         tile: u8,
     ) {
@@ -3072,7 +2999,11 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline]
-    fn alpha_accepts<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn alpha_accepts<
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, CallbackType, N, L>,
     ) -> bool {
         if env.alpha_dead {
@@ -3116,7 +3047,11 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
-    fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn record_if_valid<
+        CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
         idx_left: i8,
@@ -3167,7 +3102,7 @@ fn gen_jumbled_place_moves<
         }
     }
 
-    fn play_right<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn play_right<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut idx: i8,
@@ -3273,7 +3208,7 @@ fn gen_jumbled_place_moves<
         }
     }
 
-    fn play_left<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+    fn play_left<CallbackType: FnMut(i8, &[u8], i32, i32) -> i32, N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &mut Accumulator,
         mut idx: i8,
@@ -3425,7 +3360,7 @@ fn gen_jumbled_place_moves<
 #[inline(always)]
 fn gen_place_moves_lean<
     'a,
-    CallbackType: FnMut(i8, &[u8], i32, i32),
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -3439,7 +3374,12 @@ fn gen_place_moves_lean<
 }
 
 #[inline(always)]
-fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+fn gen_place_moves<
+    'a,
+    CallbackType: FnMut(i8, &[u8], i32, i32) -> i32,
+    N: kwg::Node,
+    L: kwg::Node,
+>(
     params: &'a mut GenPlaceMovesParams<'a, CallbackType, N, L>,
     single_tile_plays: bool,
 ) {
@@ -3454,7 +3394,7 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L
 
 struct GenPlaceMovesAtParams<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 > {
@@ -3470,7 +3410,7 @@ struct GenPlaceMovesAtParams<
 #[inline(always)]
 fn gen_place_moves_at_lean<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -3575,13 +3515,7 @@ fn gen_place_moves_at_lean<
             play_out_bonus: working_buffer.play_out_bonus,
             used_letters_tally: &mut working_buffer.used_letters_tally,
             is_census: working_buffer.is_census,
-            scores: working_buffer
-                .placement_scores
-                .get(
-                    placement.scores_at as usize
-                        ..placement.scores_at as usize + num_max_played as usize + 1,
-                )
-                .unwrap_or(&[]),
+            score_bound: i32::MAX,
             threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
@@ -3593,7 +3527,7 @@ fn gen_place_moves_at_lean<
 #[inline(always)]
 fn gen_place_moves_at<
     'a,
-    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     N: kwg::Node,
     L: kwg::Node,
 >(
@@ -3698,13 +3632,12 @@ fn gen_place_moves_at<
             play_out_bonus: working_buffer.play_out_bonus,
             used_letters_tally: &mut working_buffer.used_letters_tally,
             is_census: working_buffer.is_census,
-            scores: working_buffer
-                .placement_scores
-                .get(
-                    placement.scores_at as usize
-                        ..placement.scores_at as usize + num_max_played as usize + 1,
-                )
-                .unwrap_or(&[]),
+            score_bound: placement.best_possible_equity
+                - working_buffer.best_leave_values[placement.num_played as usize]
+                + board_snapshot
+                    .game_config
+                    .num_played_bonus(placement.num_played) as i32
+                    * equity::SCALE,
             threshold,
             subracks: &working_buffer.subracks,
             subracks_by_played: &working_buffer.subracks_by_played,
@@ -4087,6 +4020,7 @@ impl KurniaMoveGenerator {
                         score,
                     },
                 });
+                i32::MIN
             };
         if !LEAN && working_buffer.turn_is_supported(true, board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
@@ -4289,6 +4223,7 @@ impl KurniaMoveGenerator {
                         },
                     );
                 }
+                threshold.get().raw()
             };
         if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
@@ -4512,6 +4447,7 @@ impl KurniaMoveGenerator {
                         },
                     );
                 }
+                threshold.get().raw()
             };
         if !LEAN && working_buffer.turn_is_supported(false, params.board_snapshot) {
             for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
@@ -4658,7 +4594,7 @@ fn kurnia_gen_exchange_moves<
 
 struct KurniaIterParams<
     'a,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
@@ -4676,7 +4612,7 @@ struct KurniaIterParams<
 #[inline]
 fn kurnia_gen_place_moves_iter_lean<
     'a,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
@@ -4780,8 +4716,6 @@ fn kurnia_gen_place_moves_iter_lean<
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
     placement_order.clear();
-    let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
-    placement_scores.clear();
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
@@ -4813,20 +4747,12 @@ fn kurnia_gen_place_moves_iter_lean<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
-                shadow_scores: &mut working_buffer.shadow_scores,
                 span_out: &mut working_buffer.span_out,
                 per_span: false,
             },
             true,
             want_raw,
-            |anchor: i8,
-             leftmost: i8,
-             rightmost: i8,
-             best_possible_equity: i32,
-             best_possible_score: &[i32],
-             num_played: u8| {
-                let scores_at = placement_scores.len() as u32;
-                placement_scores.extend_from_slice(best_possible_score);
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
                     down: false,
@@ -4835,7 +4761,6 @@ fn kurnia_gen_place_moves_iter_lean<
                     leftmost,
                     rightmost,
                     best_possible_equity,
-                    scores_at,
                 });
             },
         );
@@ -4870,20 +4795,12 @@ fn kurnia_gen_place_moves_iter_lean<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
-                shadow_scores: &mut working_buffer.shadow_scores,
                 span_out: &mut working_buffer.span_out,
                 per_span: false,
             },
             false,
             want_raw,
-            |anchor: i8,
-             leftmost: i8,
-             rightmost: i8,
-             best_possible_equity: i32,
-             best_possible_score: &[i32],
-             num_played: u8| {
-                let scores_at = placement_scores.len() as u32;
-                placement_scores.extend_from_slice(best_possible_score);
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
                     down: true,
@@ -4892,7 +4809,6 @@ fn kurnia_gen_place_moves_iter_lean<
                     leftmost,
                     rightmost,
                     best_possible_equity,
-                    scores_at,
                 });
             },
         );
@@ -4908,7 +4824,6 @@ fn kurnia_gen_place_moves_iter_lean<
     }
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
-    working_buffer.placement_scores = placement_scores;
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
         Some((equity, idx)) => {
             if can_accept(equity) {
@@ -4957,7 +4872,7 @@ fn kurnia_gen_place_moves_iter_lean<
 #[inline]
 fn kurnia_gen_place_moves_iter<
     'a,
-    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32) -> i32,
     CanAccept: 'a + Fn(i32) -> bool,
     CurrentThreshold: 'a + Fn() -> i32,
     N: kwg::Node,
@@ -5061,8 +4976,6 @@ fn kurnia_gen_place_moves_iter<
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
     placement_order.clear();
-    let mut placement_scores = std::mem::take(&mut working_buffer.placement_scores);
-    placement_scores.clear();
     for row in 0..dim.rows {
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
@@ -5094,20 +5007,12 @@ fn kurnia_gen_place_moves_iter<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
-                shadow_scores: &mut working_buffer.shadow_scores,
                 span_out: &mut working_buffer.span_out,
                 per_span: true,
             },
             true,
             want_raw,
-            |anchor: i8,
-             leftmost: i8,
-             rightmost: i8,
-             best_possible_equity: i32,
-             best_possible_score: &[i32],
-             num_played: u8| {
-                let scores_at = placement_scores.len() as u32;
-                placement_scores.extend_from_slice(best_possible_score);
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
                     down: false,
@@ -5116,7 +5021,6 @@ fn kurnia_gen_place_moves_iter<
                     leftmost,
                     rightmost,
                     best_possible_equity,
-                    scores_at,
                 });
             },
         );
@@ -5151,20 +5055,12 @@ fn kurnia_gen_place_moves_iter<
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
-                shadow_scores: &mut working_buffer.shadow_scores,
                 span_out: &mut working_buffer.span_out,
                 per_span: true,
             },
             false,
             want_raw,
-            |anchor: i8,
-             leftmost: i8,
-             rightmost: i8,
-             best_possible_equity: i32,
-             best_possible_score: &[i32],
-             num_played: u8| {
-                let scores_at = placement_scores.len() as u32;
-                placement_scores.extend_from_slice(best_possible_score);
+            |anchor: i8, leftmost: i8, rightmost: i8, best_possible_equity: i32, num_played: u8| {
                 found_placements.push(PossiblePlacement {
                     num_played,
                     down: true,
@@ -5173,7 +5069,6 @@ fn kurnia_gen_place_moves_iter<
                     leftmost,
                     rightmost,
                     best_possible_equity,
-                    scores_at,
                 });
             },
         );
@@ -5189,7 +5084,6 @@ fn kurnia_gen_place_moves_iter<
     }
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
-    working_buffer.placement_scores = placement_scores;
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
         Some((equity, idx)) => {
             if can_accept(equity) {
