@@ -232,4 +232,45 @@ impl GenMoves<'_> {
             }
         }
     }
+
+    #[inline(always)]
+    pub fn gen_nonplacing_moves<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        move_generator: &mut movegen::KurniaMoveGenerator,
+        board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+        rack: &[u8],
+        num_exchanges_by_this_player: i16,
+        max_gen: usize,
+        pass_policy: movegen::PassPolicy,
+    ) {
+        let params = movegen::GenMovesParams {
+            board_snapshot,
+            rack,
+            max_gen,
+            num_exchanges_by_this_player,
+            pass_policy,
+            dynamic_leaves: None,
+        };
+        match self {
+            Self::Unfiltered => {
+                move_generator.gen_moves_filtered(
+                    &params,
+                    |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| false,
+                    |leave_value: i32| leave_value,
+                    |_equity: equity::Equity, _play: &movegen::Play| true,
+                );
+            }
+            Self::Tilt { tilt, bot_level: _ } => {
+                let leave_scale = tilt.leave_scale;
+                move_generator.gen_moves_filtered(
+                    &params,
+                    |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| false,
+                    |leave_value: i32| {
+                        (leave_value as i64 * leave_scale as i64 / LEAVE_SCALE_DENOM as i64) as i32
+                    },
+                    |_equity: equity::Equity, _play: &movegen::Play| true,
+                );
+            }
+        }
+    }
 }

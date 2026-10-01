@@ -2589,6 +2589,11 @@ impl KurniaMoveGenerator {
         }
     }
 
+    #[inline(always)]
+    pub fn num_tiles_in_bag(&self) -> i16 {
+        self.working_buffer.num_tiles_in_bag
+    }
+
     // call this before passing a different kwg.
     #[inline(always)]
     pub fn reset_for_another_kwg(&mut self) {
