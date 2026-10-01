@@ -957,6 +957,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             for &wm_val in &params.remaining_word_multipliers_strip[i + 1..strider_len] {
                 if wm_val != 1 {
                     // wm_val == 1 is frequent.
+                    if wm > i32::MAX / equity::SCALE {
+                        break;
+                    }
                     wm *= wm_val as i32;
                     // monotonically increasing only if all multipliers are positive.
                     if let Err(idx) = params.aggregated_word_multipliers.binary_search(&wm) {
@@ -4307,5 +4310,46 @@ mod tests {
             .map(|row| (row, ((row as i32 * 45 + 7) % 127) as i8))
             .collect::<Vec<_>>();
         a_reused_generator_agrees_on_an_uneven_board(127, 127, 70, 90, &tiles);
+    }
+
+    #[test]
+    #[inline]
+    fn a_lane_of_many_word_squares_is_ranked_without_overflow() {
+        let (rows, cols) = (21, 21);
+        let mut premiums = Vec::new();
+        for row in 0..rows {
+            for _ in 0..cols {
+                premiums.push(board_layout::Premium {
+                    word_multiplier: if row == 0 { 3 } else { 1 },
+                    tile_multiplier: 1,
+                });
+            }
+        }
+        let gc = game_config::make_board_test_game_config(board_layout::make_test_board_layout(
+            premiums.into_boxed_slice(),
+            matrix::Dim { rows, cols },
+            10,
+            10,
+        ));
+        let kwg = test_kwg(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut board_tiles = vec![0u8; (rows as isize * cols as isize) as usize];
+        let rack = parse_test_rack(gc.alphabet(), "AEST");
+        board_tiles[gc.board_layout().dim().at_row_col(0, 9)] = rack[0];
+        board_tiles[gc.board_layout().dim().at_row_col(1, 9)] = rack[3];
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let plays = place_plays(
+            &mut KurniaMoveGenerator::new(&gc),
+            &board_snapshot,
+            &rack,
+            false,
+        );
+        assert!(plays.contains(&(false, 0, 9, vec![0, 19], 6_000)));
+        assert!(plays.contains(&(false, 0, 7, vec![19, 5, 0, 20], 108_000)));
     }
 }
