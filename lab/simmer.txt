@@ -151,6 +151,11 @@ the rollout budget through the same begin_decision / resume calls a study
 session would use, and print the leaderboard as the estimates converge. The
 separate copy of the loop is gone.
 
+The driver seeds its own decision from the system RNG, so two runs of it roll
+out different positions and neither can be set beside the other. Give the
+simmer a whole number as its first argument to fix that seed, and the same run
+gives the same rollouts every time.
+
 
 AN EMPIRICAL WIN% TABLE AS AN ALTERNATIVE TO THE SIGMOID
 
