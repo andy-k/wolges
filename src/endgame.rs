@@ -1975,7 +1975,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn peg_aggregate_arithmetic() {
+    fn peg_aggregate_weights_each_outcome_by_how_many_tiles_give_it() {
         let (win_pct, expected) = super::peg_aggregate(&[(2, 3000.0), (1, 0.0), (1, -5000.0)]);
         assert_eq!(win_pct, 0.625);
         assert_eq!(expected, 250.0);
@@ -2035,7 +2035,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn pv_playout_invariant() {
+    fn a_principal_variation_plays_out_to_the_value_it_claims() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
@@ -2107,7 +2107,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn properties_pv_legal_and_value_bounds() {
+    fn every_principal_variation_is_legal_and_its_value_bounded() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
@@ -2277,7 +2277,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn one_in_bag_play_then_draw() {
+    fn a_one_in_bag_solve_agrees_with_the_reference_and_beats_passing() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);

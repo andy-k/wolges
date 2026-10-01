@@ -1072,7 +1072,7 @@ mod tests {
     use super::*;
     #[test]
     #[inline]
-    fn lattice_roundtrips_and_counts() {
+    fn a_lattice_ranks_every_multiset_back_to_itself() {
         let lat = MultisetLattice::new(3, 2);
 
         assert_eq!(lat.len(), 10);
@@ -1085,7 +1085,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn lattice_roundtrips_english_sized() {
+    fn an_english_sized_lattice_ranks_back_at_every_sample() {
         let lat = MultisetLattice::new(27, 7);
         assert_eq!(lat.len(), 5_379_616);
         let mut buf = vec![0u8; 27];
@@ -1135,7 +1135,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn fast_conv_matches_naive() {
+    fn best_equity_table_matches_naive() {
         let lat = MultisetLattice::new(4, 4);
 
         let mut sheet = vec![0i32; lat.len()];
@@ -1160,7 +1160,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn draw_average_weights_and_full_leave() {
+    fn a_leave_is_worth_the_average_of_the_racks_it_draws_into() {
         let lat = MultisetLattice::new(2, 2);
         let unseen = [1u8, 1u8];
         let mut best = vec![0i32; lat.len()];
@@ -1204,7 +1204,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn apportion_matches_naive() {
+    fn apportion_table_matches_naive() {
         let lat = MultisetLattice::new(3, 3);
         let unseen = [4u8, 3u8, 2u8];
         let mut best = vec![UNPLAYABLE; lat.len()];
