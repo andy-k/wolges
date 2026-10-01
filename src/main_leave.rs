@@ -370,6 +370,26 @@ struct BoardStats {
 }
 
 #[derive(clap::Args)]
+struct Position {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(help = "the board, as a fen")]
+    board: String,
+    #[arg(help = "the rack of the player to move, such as AEINRST")]
+    rack: Option<String>,
+    #[arg(long, default_value_t = 10, help = "how many moves to list")]
+    moves: usize,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "write the board's dynamic leaves, from the tiles not on it, to FILE as a klv2 (needs a --full table)"
+    )]
+    dynamic: Option<String>,
+}
+
+#[derive(clap::Args)]
 struct SimChunkCheck {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -493,6 +513,10 @@ enum Task {
         about = "shape of the boards in a fen file: tiles, words, mean word length, perimeter per tile, radius of gyration, holes"
     )]
     BoardStats(BoardStats),
+    #[command(
+        about = "one board given as fen: the board, the tiles not on it, its words and its shape; with a rack, the rack's moves and dynamic leaves"
+    )]
+    Position(Position),
     #[command(
         about = "check that cutting one decision into randomly sized chunks of resume calls gives the same leaderboard as running it in one call"
     )]
@@ -761,6 +785,22 @@ fn run<N: kwg::Node + Sync + Send>(
             inspect_dynamic_leaves(game_config, klv, &a.rack, &a.board, threads)
         }
         Task::BoardStats(a) => board_stats(game_config, &mut make_reader(&a.boards)?),
+        Task::Position(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = read_klv(&game_config, &a.klv)?;
+            inspect_position(
+                game_config,
+                kwg,
+                klv,
+                PositionParams {
+                    fen: &a.board,
+                    rack: a.rack.as_deref(),
+                    num_moves: a.moves,
+                    dynamic_out: a.dynamic.as_deref(),
+                    threads,
+                },
+            )
+        }
         Task::SimChunkCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -5115,13 +5155,45 @@ fn inspect_dynamic_leaves<L: kwg::Node>(
         pool[tile as usize] -= 1;
     }
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
-    let lat = census::MultisetLattice::new(num_letters, rack_size);
-    let add = census::AddTable::new_with_threads(&lat, threads);
-    let full_v = full_rack_values(&lat, &klv);
+    let (lat, add, full_v) = lattice_leaves(&klv, num_letters, rack_size, threads)?;
     println!("rack {rack_str}, {pool_size} tiles unseen");
+    print_rack_keeps(alphabet, &klv, &lat, &add, &full_v, &pool, &rack);
+    Ok(())
+}
+
+// the lattice of every multiset up to a full rack, and each one's value in the
+// leaves; the leaves must be a --full table, which values full racks too.
+#[inline]
+fn lattice_leaves<L: kwg::Node>(
+    klv: &klv::Klv<L>,
+    num_letters: usize,
+    rack_size: usize,
+    threads: usize,
+) -> error::Returns<(census::MultisetLattice, census::AddTable, Vec<i32>)> {
+    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let full_v = full_rack_values(&lat, klv);
+    let add = census::AddTable::new_with_threads(&lat, threads);
+    Ok((lat, add, full_v))
+}
+
+// every subrack of the rack: its value in the leaves, and its value once the
+// tiles still to draw come from the pool.
+#[inline]
+fn print_rack_keeps<L: kwg::Node>(
+    alphabet: &alphabet::Alphabet,
+    klv: &klv::Klv<L>,
+    lat: &census::MultisetLattice,
+    add: &census::AddTable,
+    full_v: &[i32],
+    pool: &[u8],
+    rack: &[u8],
+) {
+    let num_letters = alphabet.len() as usize;
+    let rack_size = lat.rack_size();
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     println!("  keep                 static    dynamic     delta");
     let mut distinct: Vec<(u8, u8)> = Vec::new();
-    for &tile in &rack {
+    for &tile in rack {
         match distinct.last_mut() {
             Some((t, count)) if *t == tile => *count += 1,
             _ => distinct.push((tile, 1)),
@@ -5146,7 +5218,7 @@ fn inspect_dynamic_leaves<L: kwg::Node>(
             let static_value = klv.leave_value_from_tally(&kept_tally);
             let draw = (rack_size - size).min(pool_size);
             let dynamic =
-                census::dynamic_leave_value(&lat, &add, &full_v, &pool, s_ridx as usize, draw);
+                census::dynamic_leave_value(lat, add, full_v, pool, s_ridx as usize, draw);
             rows.push((size, kept, static_value, dynamic));
         }
         let mut i = 0;
@@ -5178,6 +5250,316 @@ fn inspect_dynamic_leaves<L: kwg::Node>(
                 (dynamic - static_value) as f64 / scale,
             );
         }
+    }
+}
+
+// each multiset's value once the tiles still to draw come from the pool less
+// itself, one draw at a time from the full racks down; NaN where the pool
+// cannot hold it.
+#[inline]
+fn dynamic_leaves_of_pool(
+    lat: &census::MultisetLattice,
+    add: &census::AddTable,
+    full_v: &[i32],
+    pool: &[u8],
+) -> Vec<f64> {
+    let n = lat.num_letters();
+    let full_start = lat.full_rack_start();
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+    let mut value = vec![f64::NAN; lat.len()];
+    let mut tally = vec![0u8; n];
+    for idx in (0..lat.len()).rev() {
+        lat.unrank_into(idx, &mut tally);
+        if tally.iter().zip(pool).any(|(&s, &p)| s > p) {
+            continue;
+        }
+        let size: usize = tally.iter().map(|&c| c as usize).sum();
+        let left = pool_size - size;
+        if idx >= full_start || left == 0 {
+            value[idx] = full_v[idx] as f64;
+            continue;
+        }
+        let mut sum = 0.0;
+        for t in 0..n {
+            let r = pool[t] - tally[t];
+            if r != 0 {
+                sum += r as f64 * value[add.add(idx, t)];
+            }
+        }
+        value[idx] = sum / left as f64;
+    }
+    value
+}
+
+// whether the lexicon holds the word; a jumbled lexicon holds alphagrams.
+#[inline]
+fn lexicon_holds<N: kwg::Node>(kwg: &kwg::Kwg<N>, jumbled: bool, word: &mut [u8]) -> bool {
+    if jumbled {
+        word.sort_unstable();
+    }
+    let mut p = 0;
+    for &tile in word.iter() {
+        p = kwg.seek(p, tile);
+        if p <= 0 {
+            return false;
+        }
+    }
+    kwg[p].accepts()
+}
+
+#[inline]
+fn print_moves<N: kwg::Node, L: kwg::Node>(
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    rack: &[u8],
+    num_moves: usize,
+    dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
+) {
+    move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+        board_snapshot,
+        rack,
+        max_gen: num_moves,
+        num_exchanges_by_this_player: 0,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
+        dynamic_leaves,
+    });
+    for play in &move_generator.plays {
+        println!(
+            "  {:>9.3}  {}",
+            play.equity.raw() as f64 / equity::SCALE as f64,
+            play.play.fmt(board_snapshot),
+        );
+    }
+}
+
+struct PositionParams<'a> {
+    fen: &'a str,
+    rack: Option<&'a str>,
+    num_moves: usize,
+    dynamic_out: Option<&'a str>,
+    threads: usize,
+}
+
+#[inline]
+fn inspect_position<N: kwg::Node, L: kwg::Node>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    PositionParams {
+        fen,
+        rack,
+        num_moves,
+        dynamic_out,
+        threads,
+    }: PositionParams<'_>,
+) -> error::Returns<()> {
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    let dim = board_layout.dim();
+    let num_letters = alphabet.len() as usize;
+    let rack_size = game_config.rack_size() as usize;
+    let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
+    let board_tiles = fen_parser.parse(fen)?.to_vec();
+    display::print_board(alphabet, board_layout, &board_tiles);
+
+    let mut off_board = vec![0u8; num_letters];
+    for (tile, slot) in (0u8..).zip(off_board.iter_mut()) {
+        *slot = alphabet.freq(tile);
+    }
+    for &tile in &board_tiles {
+        if tile != 0 {
+            let tile = if tile & 0x80 != 0 { 0 } else { tile } as usize;
+            if off_board[tile] == 0 {
+                return Err("the board holds more of a tile than the bag has".into());
+            }
+            off_board[tile] -= 1;
+        }
+    }
+    let mut unseen = off_board.clone();
+    let mut rack_tiles = Vec::new();
+    if let Some(rack) = rack {
+        alphabet::AlphabetReader::new_for_racks(alphabet).set_word(rack, &mut rack_tiles)?;
+        rack_tiles.sort_unstable();
+        if rack_tiles.len() > rack_size {
+            return Err("that is more tiles than a rack holds".into());
+        }
+        for &tile in &rack_tiles {
+            if unseen[tile as usize] == 0 {
+                return Err("the rack holds a tile the board has already used up".into());
+            }
+            unseen[tile as usize] -= 1;
+        }
+    }
+    let unseen_size: usize = unseen.iter().map(|&c| c as usize).sum();
+    if rack.is_some() {
+        println!("unseen: {unseen_size} tiles, the bag and the other racks");
+    } else {
+        println!("not on the board: {unseen_size} tiles, the bag and every rack");
+    }
+    let (mut vowels, mut consonants) = (0usize, 0usize);
+    let mut cells = Vec::with_capacity(num_letters);
+    for (tile, &count) in (0u8..).zip(unseen.iter()) {
+        if tile != 0 {
+            if alphabet.is_vowel(tile) {
+                vowels += count as usize;
+            } else {
+                consonants += count as usize;
+            }
+        }
+        cells.push(format!(
+            "{:>2} {:>2}/{:<2}",
+            alphabet.of_rack(tile).unwrap(),
+            count,
+            alphabet.freq(tile)
+        ));
+    }
+    for line in cells.chunks(8) {
+        println!("  {}", line.join("  ").trim_end());
+    }
+    println!(
+        "  vowels {vowels}, consonants {consonants}, blanks {}",
+        unseen[0]
+    );
+    if rack.is_some() {
+        let others = (game_config.num_players() as usize).saturating_sub(1) * rack_size;
+        if unseen_size > others {
+            println!("  in the bag: {}", unseen_size - others);
+        } else if game_config.num_players() == 2 {
+            let mut other = Vec::new();
+            for (tile, &count) in (0u8..).zip(unseen.iter()) {
+                other.extend(std::iter::repeat_n(tile, count as usize));
+            }
+            println!(
+                "  the bag is empty: the other rack is {}",
+                alphabet.fmt_rack(&other)
+            );
+        } else {
+            println!("  the bag is empty");
+        }
+    }
+
+    let jumbled = matches!(game_config.game_rules(), game_config::GameRules::Jumbled);
+    let mut num_words = 0usize;
+    let mut not_words = Vec::<String>::new();
+    let mut word = Vec::new();
+    for down in [false, true] {
+        for lane in 0..if down { dim.cols } else { dim.rows } {
+            let strider = dim.lane(down, lane);
+            let mut i = 0;
+            while i < strider.len() {
+                let start = i;
+                while i < strider.len() && board_tiles[strider.at(i)] != 0 {
+                    i += 1;
+                }
+                if i - start >= 2 {
+                    num_words += 1;
+                    word.clear();
+                    word.extend((start..i).map(|j| board_tiles[strider.at(j)] & 0x7f));
+                    if !lexicon_holds(&kwg, jumbled, &mut word) {
+                        not_words.push(
+                            (start..i)
+                                .map(|j| alphabet.of_board(board_tiles[strider.at(j)]).unwrap())
+                                .collect(),
+                        );
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+    if not_words.is_empty() {
+        println!("words: {num_words}, every one in the lexicon");
+    } else {
+        println!(
+            "words: {num_words}, {} not in the lexicon: {}",
+            not_words.len(),
+            not_words.join(" ")
+        );
+    }
+    let shape = board_shape(board_layout, &board_tiles);
+    println!(
+        "shape: {} tiles, mean word length {:.3}, perimeter per tile {:.3}, radius of gyration {:.3}, {} holes",
+        shape.area,
+        if shape.num_words > 0 {
+            shape.total_word_length as f64 / shape.num_words as f64
+        } else {
+            0.0
+        },
+        if shape.area > 0 {
+            shape.perimeter as f64 / shape.area as f64
+        } else {
+            0.0
+        },
+        shape.radius_of_gyration,
+        shape.holes,
+    );
+
+    let lattice = if rack.is_some() || dynamic_out.is_some() {
+        match lattice_leaves(&klv, num_letters, rack_size, threads) {
+            Ok(lattice) => Some(lattice),
+            Err(e) if dynamic_out.is_none() => {
+                println!("no dynamic leaves: {e}");
+                None
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        None
+    };
+    if let Some(rack) = rack {
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        println!("rack {rack}: the best {num_moves} moves by the leaves");
+        print_moves(
+            &mut move_generator,
+            &board_snapshot,
+            &rack_tiles,
+            num_moves,
+            None,
+        );
+        if let Some((lat, add, full_v)) = &lattice {
+            println!("rack {rack}: the best {num_moves} moves by dynamic leaves");
+            print_moves(
+                &mut move_generator,
+                &board_snapshot,
+                &rack_tiles,
+                num_moves,
+                Some(klv::DynamicLeavesRef {
+                    lat,
+                    add,
+                    full_v,
+                    min_keep: 0,
+                }),
+            );
+            println!("rack {rack}: every subrack kept, {unseen_size} tiles unseen");
+            print_rack_keeps(alphabet, &klv, lat, add, full_v, &unseen, &rack_tiles);
+        }
+    }
+    if let (Some(path), Some((lat, add, full_v))) = (dynamic_out, &lattice) {
+        let value = dynamic_leaves_of_pool(lat, add, full_v, &off_board);
+        let baseline = value[0];
+        if baseline.is_nan() {
+            return Err("the tiles not on the board cannot fill a rack".into());
+        }
+        let written = write_census_klv2(
+            lat,
+            &|idx| value[idx],
+            baseline,
+            &|idx| !value[idx].is_nan(),
+            false,
+            path,
+        )?;
+        println!(
+            "dynamic leaves: wrote {written} to {path}, keeping nothing worth {:.3}",
+            baseline / equity::SCALE as f64
+        );
     }
     Ok(())
 }
@@ -5760,5 +6142,41 @@ mod tests {
         let (eq, cnt) = decompose_contribution(&fv, 3);
         assert!((eq - 15.0).abs() < 1e-9); // (10/2) * 3
         assert_eq!(cnt, 3); // w only
+    }
+
+    #[test]
+    #[inline]
+    fn dynamic_leaves_of_a_pool_match_each_leave_drawn_alone() {
+        let lat = census::MultisetLattice::new(4, 3);
+        let add = census::AddTable::new_with_threads(&lat, 1);
+        let full_v = (0..lat.len() as i32)
+            .map(|i| i * 7919 % 1000 - 500)
+            .collect::<Vec<_>>();
+        let pool = [1u8, 2, 0, 3];
+        let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+        let value = dynamic_leaves_of_pool(&lat, &add, &full_v, &pool);
+        let mut tally = vec![0u8; lat.num_letters()];
+        let mut checked = 0;
+        for (idx, &got) in value.iter().enumerate() {
+            lat.unrank_into(idx, &mut tally);
+            if tally.iter().zip(&pool).any(|(&s, &p)| s > p) {
+                assert!(got.is_nan(), "{tally:?} does not fit the pool");
+                continue;
+            }
+            let size: usize = tally.iter().map(|&c| c as usize).sum();
+            let rest = pool
+                .iter()
+                .zip(&tally)
+                .map(|(&p, &s)| p - s)
+                .collect::<Vec<_>>();
+            let draw = (lat.rack_size() - size).min(pool_size - size);
+            let want = census::dynamic_leave_value(&lat, &add, &full_v, &rest, idx, draw);
+            assert!(
+                (got - want as f64).abs() <= 1.0,
+                "{tally:?}: {got} against {want}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 10, "only {checked} leaves fit the pool");
     }
 }
