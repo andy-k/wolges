@@ -293,6 +293,16 @@ struct SimStudyCheck {
 }
 
 #[derive(clap::Args)]
+struct Dynaleaves {
+    #[arg(help = "a --full leave table")]
+    klv: String,
+    #[arg(help = "the rack, such as AEINRST")]
+    rack: String,
+    #[arg(help = "the board, as a fen")]
+    board: String,
+}
+
+#[derive(clap::Args)]
 struct BoardStats {
     #[arg(help = "the fen file (- for stdin)")]
     boards: String,
@@ -406,6 +416,10 @@ enum Task {
     SimCompare(SimCompare),
     #[command(about = "check that a resumed decision matches the same decision run in one call")]
     SimStudyCheck(SimStudyCheck),
+    #[command(
+        about = "what the pool reweight does to one rack on one board: the static and dynamic value of every kept subrack"
+    )]
+    Dynaleaves(Dynaleaves),
     #[command(
         about = "shape of the boards in a fen file: tiles, words, mean word length, perimeter per tile, radius of gyration, holes"
     )]
@@ -651,6 +665,10 @@ fn run<N: kwg::Node + Sync + Send>(
                     "resume mismatch: split decision differs from one-shot".to_string()
                 )
             }
+        }
+        Task::Dynaleaves(a) => {
+            let klv = read_klv(&game_config, &a.klv)?;
+            inspect_dynamic_leaves(game_config, klv, &a.rack, &a.board, threads)
         }
         Task::BoardStats(a) => board_stats(game_config, &mut make_reader(&a.boards)?),
         Task::SimChunkCheck(a) => {
@@ -4532,6 +4550,114 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     } else {
         wolges::return_error!(format!("{mismatches} of {trials} chunkings disagreed"))
     }
+}
+
+#[inline]
+fn inspect_dynamic_leaves<L: kwg::Node>(
+    game_config: game_config::GameConfig,
+    klv: klv::Klv<L>,
+    rack_str: &str,
+    board_fen: &str,
+    threads: usize,
+) -> error::Returns<()> {
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    let num_letters = alphabet.len() as usize;
+    let rack_size = game_config.rack_size() as usize;
+    let mut rack = Vec::new();
+    alphabet::AlphabetReader::new_for_racks(alphabet).set_word(rack_str, &mut rack)?;
+    rack.sort_unstable();
+    if rack.len() > rack_size {
+        return Err("that is more tiles than a rack holds".into());
+    }
+    let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
+    let board_tiles = fen_parser.parse(board_fen)?;
+    let mut pool = vec![0u8; num_letters];
+    for (tile, slot) in (0u8..).zip(pool.iter_mut()) {
+        *slot = alphabet.freq(tile);
+    }
+    for &tile in board_tiles {
+        if tile != 0 {
+            let tile = if tile & 0x80 != 0 { 0 } else { tile } as usize;
+            if pool[tile] == 0 {
+                return Err("the board holds more of a tile than the bag has".into());
+            }
+            pool[tile] -= 1;
+        }
+    }
+    for &tile in &rack {
+        if pool[tile as usize] == 0 {
+            return Err("the rack holds a tile the board has already used up".into());
+        }
+        pool[tile as usize] -= 1;
+    }
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let add = census::AddTable::new_with_threads(&lat, threads);
+    let mut full_v = vec![0i32; lat.len()];
+    census::fill_lattice_leaves(&lat, &mut full_v, |tally| klv.leave_value_from_tally(tally));
+    println!("rack {rack_str}, {pool_size} tiles unseen");
+    println!("  keep                 static    dynamic     delta");
+    let mut distinct: Vec<(u8, u8)> = Vec::new();
+    for &tile in &rack {
+        match distinct.last_mut() {
+            Some((t, count)) if *t == tile => *count += 1,
+            _ => distinct.push((tile, 1)),
+        }
+    }
+    let mut kept_tally = vec![0u8; num_letters];
+    let mut rows: Vec<(usize, String, i32, i32)> = Vec::new();
+    let mut counts = vec![0u8; distinct.len()];
+    loop {
+        let mut kept = String::new();
+        let mut size = 0usize;
+        kept_tally.iter_mut().for_each(|c| *c = 0);
+        for (&(tile, _), &count) in distinct.iter().zip(counts.iter()) {
+            kept_tally[tile as usize] = count;
+            size += count as usize;
+            for _ in 0..count {
+                kept.push_str(alphabet.of_rack(tile).unwrap());
+            }
+        }
+        let s_ridx = lat.rank(&kept_tally);
+        if s_ridx != !0 {
+            let static_value = klv.leave_value_from_tally(&kept_tally);
+            let draw = (rack_size - size).min(pool_size);
+            let dynamic =
+                census::dynamic_leave_value(&lat, &add, &full_v, &pool, s_ridx as usize, draw);
+            rows.push((size, kept, static_value, dynamic));
+        }
+        let mut i = 0;
+        while i < counts.len() {
+            if counts[i] < distinct[i].1 {
+                counts[i] += 1;
+                break;
+            }
+            counts[i] = 0;
+            i += 1;
+        }
+        if i == counts.len() {
+            break;
+        }
+    }
+    rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    for (_, kept, static_value, dynamic) in rows {
+        let scale = equity::SCALE as f64;
+        if dynamic == census::UNPLAYABLE {
+            println!(
+                "  {kept:<16} {:>10.3}  undrawable",
+                static_value as f64 / scale,
+            );
+        } else {
+            println!(
+                "  {kept:<16} {:>10.3} {:>10.3} {:>9.3}",
+                static_value as f64 / scale,
+                dynamic as f64 / scale,
+                (dynamic - static_value) as f64 / scale,
+            );
+        }
+    }
+    Ok(())
 }
 
 struct BoardShape {
