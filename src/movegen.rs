@@ -2480,6 +2480,14 @@ fn gen_jumbled_place_moves<
         alphabet: &'a alphabet::Alphabet,
         num_played: u8,
         idx_left: i8,
+        alpha_path: [i32; MAX_ALPHABET_LEN + 1],
+        alpha_known: u8,
+        alpha_dead: bool,
+        alpha_bits: u64,
+        alpha_walked: u64,
+        alpha_stop: u8,
+        rack_bits: u64,
+        letter_bits: u64,
     }
     struct Accumulator {
         main_score: i32,
@@ -2489,17 +2497,110 @@ fn gen_jumbled_place_moves<
     }
 
     #[inline(always)]
+    fn tally_moved<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        letter: u8,
+    ) {
+        if letter <= env.alpha_known {
+            env.alpha_known = letter;
+            env.alpha_dead = false;
+        }
+    }
+
+    #[inline(always)]
+    fn tally_add<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        letter: u8,
+    ) {
+        env.params.used_letters_tally[letter as usize] += 1;
+        env.alpha_bits |= 1 << letter;
+        tally_moved(env, letter);
+    }
+
+    #[inline(always)]
+    fn tally_sub<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        letter: u8,
+    ) {
+        env.params.used_letters_tally[letter as usize] -= 1;
+        if env.params.used_letters_tally[letter as usize] == 0 {
+            env.alpha_bits &= !(1 << letter);
+        }
+        tally_moved(env, letter);
+    }
+
+    #[inline(always)]
+    fn rack_take<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        tile: u8,
+    ) {
+        env.params.rack_tally[tile as usize] -= 1;
+        if env.params.rack_tally[tile as usize] == 0 {
+            env.rack_bits &= !(1 << tile);
+        }
+    }
+
+    #[inline(always)]
+    fn rack_put<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+        tile: u8,
+    ) {
+        env.params.rack_tally[tile as usize] += 1;
+        env.rack_bits |= 1 << tile;
+    }
+
+    #[inline]
+    fn alpha_accepts<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
+        env: &mut Env<'_, CallbackType, N, L>,
+    ) -> bool {
+        if env.alpha_dead {
+            return false;
+        }
+        let kwg = env.params.board_snapshot.kwg;
+        let num_letters = env.params.used_letters_tally.len() as u8;
+        let below = !0u64 >> (64 - env.alpha_known as u32);
+        let above = env.alpha_walked & !below;
+        let resume = if above != 0 {
+            above.trailing_zeros() as u8
+        } else {
+            env.alpha_stop
+        };
+        let mut p = env.alpha_path[resume as usize];
+        let mut walked = env.alpha_walked & below;
+        let mut rest = env.alpha_bits & !below;
+        let mut stop = num_letters;
+        let accepted = 'walk: {
+            while rest != 0 {
+                let letter = rest.trailing_zeros() as u8;
+                rest &= rest - 1;
+                env.alpha_path[letter as usize] = p;
+                walked |= 1 << letter;
+                for _ in 0..env.params.used_letters_tally[letter as usize] {
+                    p = kwg.seek(p, letter);
+                    if p <= 0 {
+                        stop = letter;
+                        break 'walk false;
+                    }
+                }
+            }
+            env.alpha_path[num_letters as usize] = p;
+            kwg[p].accepts()
+        };
+        env.alpha_known = stop;
+        env.alpha_stop = stop;
+        env.alpha_walked = walked;
+        env.alpha_dead = stop < num_letters;
+        accepted
+    }
+
+    #[inline(always)]
     fn record_if_valid<CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L: kwg::Node>(
         env: &mut Env<'_, CallbackType, N, L>,
         acc: &Accumulator,
         idx_left: i8,
         idx_right: i8,
     ) {
-        let accepted = env
-            .params
-            .board_snapshot
-            .kwg
-            .accepts_alpha(&*env.params.used_letters_tally);
+        let accepted = alpha_accepts(env);
         if accepted {
             let score = acc.main_score * acc.word_multiplier
                 + acc.perpendicular_cumulative_score
@@ -2554,7 +2655,7 @@ fn gen_jumbled_place_moves<
             if b == 0 {
                 break;
             }
-            env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
+            tally_add(env, b & 0x7f);
             acc.main_score += env.params.face_value_scores_strip[idx as usize];
             idx += 1;
         }
@@ -2570,10 +2671,9 @@ fn gen_jumbled_place_moves<
                 // already handled '@'
             } else {
                 if this_cross_bits != 0 {
-                    // turn off bit 0 so it cannot match later
-                    this_cross_bits &= !1;
+                    this_cross_bits &= env.letter_bits;
                 } else {
-                    this_cross_bits = !1;
+                    this_cross_bits = env.letter_bits;
                     is_unique = true;
                 };
                 let new_word_multiplier = acc.word_multiplier
@@ -2596,43 +2696,47 @@ fn gen_jumbled_place_moves<
                             .wrapping_sub(env.params.multi_leaves.place_value(0)),
                     }
                 });
-                for tile in 1..env.alphabet.len() {
-                    if this_cross_bits & (1 << tile) != 0 {
-                        if env.params.rack_tally[tile as usize] > 0 {
-                            env.params.rack_tally[tile as usize] -= 1;
-                            env.params.used_letters_tally[tile as usize] += 1;
-                            let tile_value = env.alphabet.score(tile) as i32
-                                * equity::SCALE
-                                * tile_multiplier as i32;
-                            env.params.word_strip_buffer[idx as usize] = tile;
-                            play_right(
-                                env,
-                                &mut Accumulator {
-                                    main_score: acc.main_score + tile_value,
-                                    perpendicular_cumulative_score: acc
-                                        .perpendicular_cumulative_score
-                                        + perpendicular_score
-                                        + tile_value * perpendicular_word_multiplier as i32,
-                                    word_multiplier: new_word_multiplier,
-                                    leave_idx: acc.leave_idx
-                                        - env.params.multi_leaves.place_value(tile),
-                                },
-                                idx + 1,
-                                is_unique,
-                            );
-                            env.params.used_letters_tally[tile as usize] -= 1;
-                            env.params.rack_tally[tile as usize] += 1;
-                        }
-                        if let Some(blank_acc) = &opt_blank_acc
-                            && (!env.params.is_census || env.params.rack_tally[tile as usize] == 0)
-                        {
-                            env.params.rack_tally[0] -= 1;
-                            env.params.used_letters_tally[tile as usize] += 1;
-                            env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                            play_right(env, &mut Accumulator { ..*blank_acc }, idx + 1, is_unique);
-                            env.params.used_letters_tally[tile as usize] -= 1;
-                            env.params.rack_tally[0] += 1;
-                        }
+                let mut candidates = if env.rack_bits & 1 != 0 {
+                    this_cross_bits
+                } else {
+                    this_cross_bits & env.rack_bits
+                };
+                while candidates != 0 {
+                    let tile = candidates.trailing_zeros() as u8;
+                    candidates &= candidates - 1;
+                    if env.params.rack_tally[tile as usize] > 0 {
+                        rack_take(env, tile);
+                        tally_add(env, tile);
+                        let tile_value = env.alphabet.score(tile) as i32
+                            * equity::SCALE
+                            * tile_multiplier as i32;
+                        env.params.word_strip_buffer[idx as usize] = tile;
+                        play_right(
+                            env,
+                            &mut Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                                leave_idx: acc.leave_idx
+                                    - env.params.multi_leaves.place_value(tile),
+                            },
+                            idx + 1,
+                            is_unique,
+                        );
+                        tally_sub(env, tile);
+                        rack_put(env, tile);
+                    }
+                    if let Some(blank_acc) = &opt_blank_acc
+                        && (!env.params.is_census || env.params.rack_tally[tile as usize] == 0)
+                    {
+                        rack_take(env, 0);
+                        tally_add(env, tile);
+                        env.params.word_strip_buffer[idx as usize] = tile | 0x80;
+                        play_right(env, &mut Accumulator { ..*blank_acc }, idx + 1, is_unique);
+                        tally_sub(env, tile);
+                        rack_put(env, 0);
                     }
                 }
                 env.num_played -= 1;
@@ -2640,7 +2744,7 @@ fn gen_jumbled_place_moves<
         }
         for idx in orig_idx..idx {
             let b = env.params.board_strip[idx as usize];
-            env.params.used_letters_tally[(b & 0x7f) as usize] -= 1;
+            tally_sub(env, b & 0x7f);
         }
     }
 
@@ -2657,7 +2761,7 @@ fn gen_jumbled_place_moves<
             if b == 0 {
                 break;
             }
-            env.params.used_letters_tally[(b & 0x7f) as usize] += 1;
+            tally_add(env, b & 0x7f);
             acc.main_score += env.params.face_value_scores_strip[idx as usize];
             idx -= 1;
         }
@@ -2676,10 +2780,9 @@ fn gen_jumbled_place_moves<
                     // already handled '@'
                 } else {
                     if this_cross_bits != 0 {
-                        // turn off bit 0 so it cannot match later
-                        this_cross_bits &= !1;
+                        this_cross_bits &= env.letter_bits;
                     } else {
-                        this_cross_bits = !1;
+                        this_cross_bits = env.letter_bits;
                         is_unique = true;
                     }
                     let new_word_multiplier = acc.word_multiplier
@@ -2702,49 +2805,48 @@ fn gen_jumbled_place_moves<
                                 .wrapping_sub(env.params.multi_leaves.place_value(0)),
                         }
                     });
-                    for tile in 1..env.alphabet.len() {
-                        if this_cross_bits & (1 << tile) != 0 {
-                            if env.params.rack_tally[tile as usize] > 0 {
-                                env.params.rack_tally[tile as usize] -= 1;
-                                env.params.used_letters_tally[tile as usize] += 1;
-                                let tile_value = env.alphabet.score(tile) as i32
-                                    * equity::SCALE
-                                    * tile_multiplier as i32;
-                                env.params.word_strip_buffer[idx as usize] = tile;
-                                play_left(
-                                    env,
-                                    &mut Accumulator {
-                                        main_score: acc.main_score + tile_value,
-                                        perpendicular_cumulative_score: acc
-                                            .perpendicular_cumulative_score
-                                            + perpendicular_score
-                                            + tile_value * perpendicular_word_multiplier as i32,
-                                        word_multiplier: new_word_multiplier,
-                                        leave_idx: acc.leave_idx
-                                            - env.params.multi_leaves.place_value(tile),
-                                    },
-                                    idx - 1,
-                                    is_unique,
-                                );
-                                env.params.used_letters_tally[tile as usize] -= 1;
-                                env.params.rack_tally[tile as usize] += 1;
-                            }
-                            if let Some(blank_acc) = &opt_blank_acc
-                                && (!env.params.is_census
-                                    || env.params.rack_tally[tile as usize] == 0)
-                            {
-                                env.params.rack_tally[0] -= 1;
-                                env.params.used_letters_tally[tile as usize] += 1;
-                                env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                                play_left(
-                                    env,
-                                    &mut Accumulator { ..*blank_acc },
-                                    idx - 1,
-                                    is_unique,
-                                );
-                                env.params.used_letters_tally[tile as usize] -= 1;
-                                env.params.rack_tally[0] += 1;
-                            }
+                    let mut candidates = if env.rack_bits & 1 != 0 {
+                        this_cross_bits
+                    } else {
+                        this_cross_bits & env.rack_bits
+                    };
+                    while candidates != 0 {
+                        let tile = candidates.trailing_zeros() as u8;
+                        candidates &= candidates - 1;
+                        if env.params.rack_tally[tile as usize] > 0 {
+                            rack_take(env, tile);
+                            tally_add(env, tile);
+                            let tile_value = env.alphabet.score(tile) as i32
+                                * equity::SCALE
+                                * tile_multiplier as i32;
+                            env.params.word_strip_buffer[idx as usize] = tile;
+                            play_left(
+                                env,
+                                &mut Accumulator {
+                                    main_score: acc.main_score + tile_value,
+                                    perpendicular_cumulative_score: acc
+                                        .perpendicular_cumulative_score
+                                        + perpendicular_score
+                                        + tile_value * perpendicular_word_multiplier as i32,
+                                    word_multiplier: new_word_multiplier,
+                                    leave_idx: acc.leave_idx
+                                        - env.params.multi_leaves.place_value(tile),
+                                },
+                                idx - 1,
+                                is_unique,
+                            );
+                            tally_sub(env, tile);
+                            rack_put(env, tile);
+                        }
+                        if let Some(blank_acc) = &opt_blank_acc
+                            && (!env.params.is_census || env.params.rack_tally[tile as usize] == 0)
+                        {
+                            rack_take(env, 0);
+                            tally_add(env, tile);
+                            env.params.word_strip_buffer[idx as usize] = tile | 0x80;
+                            play_left(env, &mut Accumulator { ..*blank_acc }, idx - 1, is_unique);
+                            tally_sub(env, tile);
+                            rack_put(env, 0);
                         }
                     }
                     env.num_played -= 1;
@@ -2754,18 +2856,33 @@ fn gen_jumbled_place_moves<
 
         for idx in idx + 1..orig_idx + 1 {
             let b = env.params.board_strip[idx as usize];
-            env.params.used_letters_tally[(b & 0x7f) as usize] -= 1;
+            tally_sub(env, b & 0x7f);
         }
     }
 
     let alphabet = params.board_snapshot.game_config.alphabet();
     let anchor = params.anchor;
     let pass_leave_idx = params.multi_leaves.pass_leave_idx();
+    let letter_bits = (1..alphabet.len()).fold(0u64, |bits, tile| bits | 1 << tile);
+    let rack_bits = (0..alphabet.len()).fold(0u64, |bits, tile| {
+        bits | ((params.rack_tally[tile as usize] > 0) as u64) << tile
+    });
+    let alpha_bits = (1..alphabet.len()).fold(0u64, |bits, tile| {
+        bits | ((params.used_letters_tally[tile as usize] > 0) as u64) << tile
+    });
     let mut env = Env {
         params,
         alphabet,
         num_played: 0,
         idx_left: 0,
+        alpha_path: [0i32; MAX_ALPHABET_LEN + 1],
+        alpha_known: 1,
+        alpha_dead: false,
+        alpha_bits,
+        alpha_walked: 0,
+        alpha_stop: 1,
+        rack_bits,
+        letter_bits,
     };
     play_left(
         &mut env,
@@ -5108,6 +5225,29 @@ mod tests {
     }
 
     #[inline]
+    fn test_kad(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut word_buf = Vec::new();
+        let mut words = Vec::<bites::Bites>::with_capacity(TEST_WORDS.len());
+        for w in TEST_WORDS {
+            reader.set_word(w, &mut word_buf).unwrap();
+            word_buf.sort_unstable();
+            words.push(word_buf[..].into());
+        }
+        words.sort_unstable();
+        words.dedup();
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[inline]
     fn parse_test_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
         let reader = alphabet::AlphabetReader::new_for_racks(alphabet);
         let sb = rack_str.as_bytes();
@@ -5200,6 +5340,51 @@ mod tests {
         for k in 1..=6 {
             assert_eq!(valued_plays(empty, "AEST", k), all[..k], "cap of {k}");
         }
+    }
+
+    #[inline]
+    fn jumbled_hex_placements(words: &[&[u8]], rack: &[u8]) -> Vec<String> {
+        let gc = game_config::make_jumbled_hex_game_config();
+        let words = words
+            .iter()
+            .map(|w| (*w).into())
+            .collect::<Vec<bites::Bites>>();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::DawgOnly,
+                build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
+                &build::make_alphagrams(&words),
+            )
+            .unwrap(),
+        );
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let dim = gc.board_layout().dim();
+        let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            anagrams: None,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack,
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let mut out = move_generator
+            .plays
+            .iter()
+            .filter(|p| matches!(p.play, Play::Place { .. }))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .collect::<Vec<_>>();
+        out.sort_unstable();
+        out
     }
 
     #[test]
@@ -5576,6 +5761,131 @@ mod tests {
         greedy_rack[natural_a as usize] = alphabet.freq(natural_a) + 5;
         live_pool_into(&mut pool[..n], alphabet, &[], &greedy_rack);
         assert_eq!(pool[natural_a as usize], 0);
+    }
+    #[inline]
+    fn jumbled_placements_once(fen: &str, rack: &str, is_census: bool) -> Vec<String> {
+        let gc = game_config::make_jumbled_english_game_config();
+        let kwg = test_kad(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            anagrams: None,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        move_generator.working_buffer.is_census = is_census;
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack: &parse_test_rack(gc.alphabet(), rack),
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let mut out = move_generator
+            .plays
+            .iter()
+            .filter(|p| matches!(p.play, Play::Place { .. }))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .collect::<Vec<_>>();
+        out.sort_unstable();
+        out
+    }
+
+    #[inline(always)]
+    fn jumbled_placements(fen: &str, rack: &str) -> Vec<String> {
+        jumbled_placements_once(fen, rack, false)
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_opens_with_either_arrangement() {
+        assert_eq!(
+            jumbled_placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "AT"),
+            ["8G AT 4", "8G TA 4", "8H AT 4", "8H TA 4"]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_opens_with_a_blank() {
+        assert_eq!(
+            jumbled_placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "?A"),
+            [
+                "8G As 2", "8G At 2", "8G sA 2", "8G tA 2", "8H As 2", "8H At 2", "8H sA 2",
+                "8H tA 2",
+            ]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_takes_any_arrangement_of_a_word() {
+        assert_eq!(
+            jumbled_placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "S"),
+            ["8F S(SEAT) 5", "8G (SEAT)S 5", "I7 S(A) 3", "I8 (A)S 3"]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_scores_a_blank_as_zero() {
+        assert_eq!(
+            jumbled_placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "?"),
+            [
+                "8F s(SEAT) 4",
+                "8G (SEAT)s 4",
+                "G7 a(S) 1",
+                "G8 (S)a 1",
+                "I7 s(A) 1",
+                "I7 t(A) 1",
+                "I8 (A)s 1",
+                "I8 (A)t 1",
+                "J7 a(T) 1",
+                "J8 (T)a 1",
+            ]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_handles_the_widest_alphabet() {
+        let words: &[&[u8]] = &[&[1, 63], &[1, 2, 63]];
+        assert_eq!(
+            jumbled_hex_placements(words, &[1, 63]),
+            ["8G 013f 0", "8G 3f01 0", "8H 013f 0", "8H 3f01 0"]
+        );
+        let plays = jumbled_hex_placements(words, &[1, 2, 63]);
+        assert_eq!(plays.len(), 3 * 6 + 2 * 2);
+        assert!(plays.iter().all(|p| p.contains("3f")), "{plays:?}");
+    }
+
+    #[test]
+    #[inline]
+    fn jumbled_movegen_spell_once_keeps_the_real_tile() {
+        let fen = "15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15";
+        let every_way = jumbled_placements_once(fen, "?S", false);
+        let once = jumbled_placements_once(fen, "?S", true);
+        assert!(
+            every_way.iter().any(|p| p.contains('s')),
+            "nothing spelled an S with the blank, so the test proves nothing"
+        );
+        assert!(
+            !once.iter().any(|p| p.contains('s')),
+            "is_census still spent the blank on an S: {once:?}"
+        );
+        assert!(once.iter().all(|p| every_way.contains(p)));
+        let dropped = every_way
+            .iter()
+            .filter(|p| !once.contains(p))
+            .collect::<Vec<_>>();
+        assert!(!dropped.is_empty());
+        assert!(dropped.iter().all(|p| p.contains('s')), "{dropped:?}");
+        assert!(once.iter().any(|p| p.contains('t')));
     }
 
     #[test]
