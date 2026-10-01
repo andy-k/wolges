@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::matrix;
+use super::{error, matrix};
+use std::str::FromStr;
 
 #[derive(Clone)]
 pub struct Premium {
@@ -157,6 +158,81 @@ impl BoardLayout {
                 }),
             ..x
         })
+    }
+
+    #[inline]
+    pub fn new_static_from_text(s: &str) -> error::Returns<Self> {
+        let mut premiums = Vec::new();
+        let mut rows = 0usize;
+        let mut cols = None;
+        let mut star = None;
+        for line in s.lines() {
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let line = line.trim_end();
+            if let Some(grid) = line.strip_prefix('|') {
+                let grid = grid.strip_suffix('|').ok_or("a grid line ends with |")?;
+                let mut num_squares = 0usize;
+                for c in grid.chars() {
+                    premiums.push(match c {
+                        '~' => qws(),
+                        '=' => tws(),
+                        '-' => dws(),
+                        '^' => qls(),
+                        '"' => tls(),
+                        '\'' => dls(),
+                        ' ' => fvs(),
+                        '#' => del(),
+                        _ => return Err(format!("{c:?} is not a square").into()),
+                    });
+                    num_squares += 1;
+                }
+                if num_squares == 0 || *cols.get_or_insert(num_squares) != num_squares {
+                    return Err("every grid line has the first one's squares".into());
+                }
+                rows += 1;
+            } else if let Some(at) = line.strip_prefix("star ") {
+                let mut words = at.split_whitespace();
+                let (Some(row), Some(col), None) = (words.next(), words.next(), words.next())
+                else {
+                    return Err("star takes a row and a column".into());
+                };
+                if star
+                    .replace((usize::from_str(row)?, usize::from_str(col)?))
+                    .is_some()
+                {
+                    return Err("a board has one star".into());
+                }
+            } else {
+                return Err(format!("{line:?} is not a grid line or a star").into());
+            }
+        }
+        let cols = cols.ok_or("a board has grid lines")?;
+        if rows > i8::MAX as usize || cols > i8::MAX as usize {
+            return Err("a board has at most 127 rows and 127 columns".into());
+        }
+        let (star_row, star_col) = star.ok_or("a board has a star")?;
+        if star_row >= rows || star_col >= cols {
+            return Err("the star is outside the grid".into());
+        }
+        let star_premium = &premiums[star_row * cols + star_col];
+        if star_premium.word_multiplier == 0 && star_premium.tile_multiplier == 0 {
+            return Err("the star is on a punctured square".into());
+        }
+        Ok(Self::new_static(StaticBoardLayout {
+            premiums: premiums.into_boxed_slice(),
+            dim: matrix::Dim {
+                rows: rows as i8,
+                cols: cols as i8,
+            },
+            star_row: star_row as i8,
+            star_col: star_col as i8,
+            transposed_premiums: Box::new([]),
+            danger_star_across: Box::new([]),
+            danger_star_down: Box::new([]),
+            is_symmetric: false,
+        }))
     }
 
     #[inline(always)]
@@ -1150,6 +1226,21 @@ pub fn make_super_board_layout() -> BoardLayout {
     })
 }
 
+pub type MakeBoardLayout = fn() -> BoardLayout;
+
+pub const BOARD_LAYOUTS: &[(&str, MakeBoardLayout)] = &[
+    ("standard", make_standard_board_layout),
+    ("super", make_super_board_layout),
+];
+
+#[inline]
+pub fn make_board_layout_by_name(name: &str) -> Option<BoardLayout> {
+    BOARD_LAYOUTS
+        .iter()
+        .find(|(this_name, _)| *this_name == name)
+        .map(|(_, make)| make())
+}
+
 #[cfg(test)]
 #[inline]
 pub fn make_test_board_layout(
@@ -1168,4 +1259,115 @@ pub fn make_test_board_layout(
         danger_star_down: Box::new([]),
         is_symmetric: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[inline]
+    fn text_of(board_layout: &BoardLayout) -> String {
+        let dim = board_layout.dim();
+        let mut text = format!(
+            "# a comment, then a blank line\n\nstar {} {}\n",
+            board_layout.star_row(),
+            board_layout.star_col()
+        );
+        for row in 0..dim.rows {
+            text.push('|');
+            for col in 0..dim.cols {
+                let premium = &board_layout.premiums()[dim.at_row_col(row, col)];
+                text.push(match (premium.word_multiplier, premium.tile_multiplier) {
+                    (4, 1) => '~',
+                    (3, 1) => '=',
+                    (2, 1) => '-',
+                    (1, 4) => '^',
+                    (1, 3) => '"',
+                    (1, 2) => '\'',
+                    (1, 1) => ' ',
+                    (0, 0) => '#',
+                    _ => '?',
+                });
+            }
+            text.push_str("|\n");
+        }
+        text
+    }
+
+    #[inline]
+    fn same_layout(a: &BoardLayout, b: &BoardLayout) -> bool {
+        a.dim().rows == b.dim().rows
+            && a.dim().cols == b.dim().cols
+            && a.star_row() == b.star_row()
+            && a.star_col() == b.star_col()
+            && a.is_symmetric() == b.is_symmetric()
+            && a.premiums().len() == b.premiums().len()
+            && a.premiums().iter().zip(b.premiums()).all(|(p, q)| {
+                p.word_multiplier == q.word_multiplier && p.tile_multiplier == q.tile_multiplier
+            })
+    }
+
+    #[test]
+    #[inline]
+    fn every_board_reads_back_from_its_text() {
+        for board_layout in [
+            make_standard_board_layout(),
+            make_punctured_board_layout(),
+            make_super_board_layout(),
+        ] {
+            let read = BoardLayout::new_static_from_text(&text_of(&board_layout)).unwrap();
+            assert!(same_layout(&read, &board_layout));
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn every_bundled_board_is_found_by_its_name() {
+        for (i, (name, make)) in BOARD_LAYOUTS.iter().enumerate() {
+            assert!(
+                i == 0 || BOARD_LAYOUTS[i - 1].0 < *name,
+                "{name} is out of order"
+            );
+            assert!(
+                same_layout(&make_board_layout_by_name(name).unwrap(), &make()),
+                "{name}"
+            );
+        }
+        assert!(make_board_layout_by_name("round").is_none());
+    }
+
+    #[test]
+    #[inline]
+    fn a_board_file_that_cannot_be_played_is_refused() {
+        let ok = "star 0 1\n|- |\n| '|\n";
+        assert!(BoardLayout::new_static_from_text(ok).is_ok());
+        let refused = [
+            "",
+            "star 0 0\n",
+            "star 0 0\n|  |\n| |\n",
+            "star 0 0\n||\n",
+            "star 0 0\n|x|\n",
+            "star 0 0\n|  \n",
+            "star 0 0\n  |  |\n",
+            "|  |\n",
+            "star 0 0\nstar 0 1\n|  |\n",
+            "star 1\n|  |\n",
+            "star 0 x\n|  |\n",
+            "star 0 2\n|  |\n",
+            "star 1 0\n|  |\n",
+            "star 0 0\n|# |\n",
+            "hello\nstar 0 0\n|  |\n",
+        ];
+        for text in refused {
+            assert!(BoardLayout::new_static_from_text(text).is_err(), "{text:?}");
+        }
+        let widest = format!("star 0 0\n|{}|\n", " ".repeat(127));
+        assert!(BoardLayout::new_static_from_text(&widest).is_ok());
+        let too_wide = format!("star 0 0\n|{}|\n", " ".repeat(128));
+        assert!(BoardLayout::new_static_from_text(&too_wide).is_err());
+        let tallest = format!("star 0 0\n{}", "| |\n".repeat(127));
+        assert!(BoardLayout::new_static_from_text(&tallest).is_ok());
+        let too_tall = format!("star 0 0\n{}", "| |\n".repeat(128));
+        assert!(BoardLayout::new_static_from_text(&too_tall).is_err());
+    }
 }
