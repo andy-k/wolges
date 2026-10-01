@@ -116,11 +116,11 @@ impl GameConfig {
 
     // never positive
     #[inline(always)]
-    pub fn time_adjustment(&self, clock_ms: i64) -> i16 {
+    pub fn time_adjustment(&self, clock_ms: i64) -> i64 {
         match self {
             GameConfig::Static(..) => {
                 // branchless
-                (-(((!clock_ms / 60000) + 1) * 10) as i16) & -((clock_ms < 0) as i16)
+                -(((!clock_ms / 60000) + 1) * 10) & -((clock_ms < 0) as i64)
             }
         }
     }
@@ -677,4 +677,22 @@ pub fn make_jumbled_swedish_game_config() -> GameConfig {
         exchanges_allowed_per_player: i16::MAX,
         exchange_tile_limit: 7,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[inline]
+    fn a_long_overtime_is_still_a_penalty() {
+        let gc = make_english_game_config();
+        assert_eq!(gc.time_adjustment(i64::MAX), 0);
+        assert_eq!(gc.time_adjustment(0), 0);
+        assert_eq!(gc.time_adjustment(-1), -10);
+        assert_eq!(gc.time_adjustment(-60_000), -10);
+        assert_eq!(gc.time_adjustment(-60_001), -20);
+        assert_eq!(gc.time_adjustment(-3_277 * 60_000), -32_770);
+        assert!(gc.time_adjustment(i64::MIN) < -32_770);
+    }
 }
