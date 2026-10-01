@@ -8,12 +8,15 @@ use std::collections::{BTreeMap, HashMap};
 
 pub type Key = (u16, u8, u8);
 
-const CSV_TAG: &str = "winpct";
-const CSV_VERSION: &str = "2";
-
-#[derive(Default)]
 pub struct WinPctAccumulator {
     rows: BTreeMap<Key, BTreeMap<i32, u64>>,
+}
+
+impl Default for WinPctAccumulator {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WinPctAccumulator {
@@ -42,48 +45,48 @@ impl WinPctAccumulator {
         }
     }
 
-    pub fn to_csv(&self) -> String {
-        use std::fmt::Write as _;
-        let mut out = format!("{CSV_TAG},{CSV_VERSION},bag,my,opp\n");
+    pub fn to_csv<W: std::io::Write>(&self, w: W) -> crate::error::Returns<()> {
+        // a row has a pair for each delta, so rows differ in length.
+        let mut out = csv::WriterBuilder::new().flexible(true).from_writer(w);
+        let mut record = Vec::new();
         for (&(bag, my, opp), hist) in &self.rows {
             if hist.is_empty() {
                 continue;
             }
             let total: u64 = hist.values().sum();
-            let _ = write!(out, "{bag},{my},{opp},{total}");
+            record.clear();
+            record.push(bag.to_string());
+            record.push(my.to_string());
+            record.push(opp.to_string());
+            record.push(total.to_string());
             for (&delta, &count) in hist {
-                let _ = write!(out, ",{delta}:{count}");
+                record.push(format!("{delta}:{count}"));
             }
-            out.push('\n');
+            out.write_record(&record)?;
         }
-        out
+        out.flush()?;
+        Ok(())
     }
 
-    pub fn from_csv(s: &str) -> crate::error::Returns<WinPctAccumulator> {
-        let mut lines = s.lines().filter(|l| !l.trim().is_empty());
-        let header = lines
-            .next()
-            .ok_or_else(|| crate::error::new("win_pct: empty csv".into()))?;
-        let mut h = header.trim().split(',');
-        if h.next() != Some(CSV_TAG) || h.next() != Some(CSV_VERSION) {
-            return_error!("win_pct: bad csv header tag/version".into());
-        }
-        if h.next() != Some("bag") || h.next() != Some("my") || h.next() != Some("opp") {
-            return_error!("win_pct: csv header dims must be bag,my,opp".into());
-        }
+    pub fn from_csv<R: std::io::Read>(r: R) -> crate::error::Returns<WinPctAccumulator> {
         let mut acc = WinPctAccumulator::new();
-        for line in lines {
-            let mut it = line.trim().split(',');
-            let bag: u16 = it.next().unwrap_or("").parse()?;
-            let my: u8 = it.next().unwrap_or("").parse()?;
-            let opp: u8 = it.next().unwrap_or("").parse()?;
-            let total: u64 = it.next().unwrap_or("").parse()?;
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(r);
+        for record in reader.records() {
+            let record = record?;
+            let mut field = record.iter();
+            let bag: u16 = field.next().unwrap_or("").parse()?;
+            let my: u8 = field.next().unwrap_or("").parse()?;
+            let opp: u8 = field.next().unwrap_or("").parse()?;
+            let total: u64 = field.next().unwrap_or("").parse()?;
             let hist = acc.rows.entry((bag, my, opp)).or_default();
             let mut sum = 0u64;
-            for tok in it {
-                let (d, c) = tok
+            for pair in field {
+                let (d, c) = pair
                     .split_once(':')
-                    .ok_or_else(|| format!("win_pct: bad pair {tok:?}"))?;
+                    .ok_or_else(|| format!("win_pct: bad pair {pair:?}"))?;
                 let delta: i32 = d.parse()?;
                 let count: u64 = c.parse()?;
                 *hist.entry(delta).or_insert(0) += count;
@@ -149,14 +152,20 @@ impl WinPctTable {
         }
     }
 
-    pub fn from_csv(s: &str) -> crate::error::Returns<WinPctTable> {
-        Ok(WinPctAccumulator::from_csv(s)?.finalize())
+    pub fn from_csv<R: std::io::Read>(r: R) -> crate::error::Returns<WinPctTable> {
+        Ok(WinPctAccumulator::from_csv(r)?.finalize())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn csv_of(acc: &WinPctAccumulator) -> Vec<u8> {
+        let mut out = Vec::new();
+        acc.to_csv(&mut out).unwrap();
+        out
+    }
 
     const EPS: f32 = 1e-5;
 
@@ -307,10 +316,11 @@ mod tests {
             acc.record(50, 7, 7, 0, v);
             acc.record(80, 7, 6, 3, v / 2 + 3); // nonzero snapshot spread too.
         }
-        let acc2 = WinPctAccumulator::from_csv(&acc.to_csv()).unwrap();
+        acc.record(20, 3, 7, 0, 15); // a row shorter than the others.
+        let acc2 = WinPctAccumulator::from_csv(&csv_of(&acc)[..]).unwrap();
         let t = acc.finalize();
         let t2 = acc2.finalize();
-        for &(bag, my, opp) in &[(50u16, 7u8, 7u8), (80, 7, 6), (9, 9, 9)] {
+        for &(bag, my, opp) in &[(50u16, 7u8, 7u8), (80, 7, 6), (20, 3, 7), (9, 9, 9)] {
             for s in [-300, -50, -3, 0, 3, 50, 300] {
                 let (b, m, o) = (bag as usize, my as usize, opp as usize);
                 assert!(
@@ -322,13 +332,11 @@ mod tests {
     }
 
     #[test]
-    fn csv_header_is_structured() {
+    fn csv_has_no_header_row() {
         let mut acc = WinPctAccumulator::new();
         acc.record(50, 7, 7, 0, 10);
-        let csv = acc.to_csv();
-        let first = csv.lines().next().unwrap();
-        assert_eq!(first, "winpct,2,bag,my,opp");
-        assert!(!csv.lines().any(|l| l.starts_with('#')), "no '#' comments");
+        let csv = String::from_utf8(csv_of(&acc)).unwrap();
+        assert_eq!(csv.lines().next().unwrap(), "50,7,7,1,10:1");
     }
 
     #[test]
@@ -346,8 +354,8 @@ mod tests {
             b.record(12, 3, 4, 2, v); // a key only b has
             both.record(12, 3, 4, 2, v);
         }
-        let mut acc = WinPctAccumulator::from_csv(&a.to_csv()).unwrap();
-        acc.merge(&WinPctAccumulator::from_csv(&b.to_csv()).unwrap());
+        let mut acc = WinPctAccumulator::from_csv(&csv_of(&a)[..]).unwrap();
+        acc.merge(&WinPctAccumulator::from_csv(&csv_of(&b)[..]).unwrap());
         let tc = acc.finalize();
         let tb = both.finalize();
         for &(s, bag, my, opp) in &[(0, 50, 7, 7), (15, 50, 7, 7), (2, 12, 3, 4)] {
