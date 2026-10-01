@@ -266,33 +266,19 @@ struct Compare {
     pairs: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
-}
-
-#[derive(clap::Args)]
-struct SimCompare {
-    #[arg(help = "the word graph (- for stdin)")]
-    kwg: String,
-    #[arg(default_value = "-", help = "the leaves (- for none)")]
-    klv: String,
-    #[arg(default_value_t = 1_000)]
-    pairs: u64,
-    #[arg(help = "prints the one it picks if omitted")]
-    seed: Option<u64>,
-    #[arg(long, default_value_t = move_picker::DEFAULT_NUM_SIM_ITERS, help = "rollouts a move")]
-    iters: u64,
-    #[arg(long, default_value = "1", help = "rollout threads a seat")]
-    sim_threads: std::num::NonZeroUsize,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
     #[arg(
         long,
         value_enum,
-        default_value_t = SeatPicker::Simmer,
+        default_value_t = SeatPicker::Hasty,
         help = "how seat p0 picks its moves"
     )]
     p0_picker: SeatPicker,
     #[arg(
         long,
         value_enum,
-        default_value_t = SeatPicker::Simmer,
+        default_value_t = SeatPicker::Hasty,
         help = "how seat p1 picks its moves"
     )]
     p1_picker: SeatPicker,
@@ -308,6 +294,10 @@ struct SimCompare {
         help = "seat p1 reads unfinished games' win chances from this win% table"
     )]
     p1_win_pct: Option<String>,
+    #[arg(long, default_value_t = move_picker::DEFAULT_NUM_SIM_ITERS, help = "rollouts a move")]
+    iters: u64,
+    #[arg(long, default_value = "1", help = "rollout threads a seat")]
+    sim_threads: std::num::NonZeroUsize,
 }
 
 #[derive(clap::Args)]
@@ -491,12 +481,8 @@ enum Task {
     Gilles(Gilles),
     #[command(about = "census leave generation")]
     Census(Census),
-    #[command(about = "play game pairs to compare two sets of leaves")]
+    #[command(about = "play game pairs between two seats, each with its own leaves and picker")]
     Compare(Compare),
-    #[command(about = "same as compare, generating with the lean arm")]
-    CompareLean(Compare),
-    #[command(about = "play game pairs where both seats choose moves by the simmer")]
-    SimCompare(SimCompare),
     #[command(about = "check that a resumed decision matches the same decision run in one call")]
     SimStudyCheck(SimStudyCheck),
     #[command(about = "play games and write their boards as fen, one per line")]
@@ -557,11 +543,7 @@ impl Task {
     fn needs_two_players(&self) -> bool {
         matches!(
             self,
-            Task::Compare(_)
-                | Task::CompareLean(_)
-                | Task::SimCompare(_)
-                | Task::Winpct(_)
-                | Task::WinpctEval(_)
+            Task::Compare(_) | Task::Winpct(_) | Task::WinpctEval(_)
         )
     }
 }
@@ -685,32 +667,33 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::Compare(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
-            compare_leaves::<_, _, false>(game_config, kwg, klv0, klv1, a.pairs, a.seed, threads)
-        }
-        Task::CompareLean(a) => {
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
-            compare_leaves::<_, _, true>(game_config, kwg, klv0, klv1, a.pairs, a.seed, threads)
-        }
-        Task::SimCompare(a) => {
-            let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
-            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            sim_compare(
-                game_config,
-                kwg,
-                klv,
-                SimCompareParams {
-                    num_game_pairs: a.pairs,
-                    seed: a.seed,
-                    threads,
-                    num_sim_iters: a.iters,
-                    sim_threads: a.sim_threads.get(),
-                    p0_picker: a.p0_picker,
-                    p1_picker: a.p1_picker,
-                    p0_win_pct: a.p0_win_pct,
-                    p1_win_pct: a.p1_win_pct,
-                },
-            )
+            let hasty_only = matches!(a.p0_picker, SeatPicker::Hasty)
+                && matches!(a.p1_picker, SeatPicker::Hasty);
+            let params = CompareParams {
+                num_game_pairs: a.pairs,
+                seed: a.seed,
+                threads,
+                num_sim_iters: a.iters,
+                sim_threads: a.sim_threads.get(),
+                p0_picker: a.p0_picker,
+                p1_picker: a.p1_picker,
+                p0_win_pct: a.p0_win_pct,
+                p1_win_pct: a.p1_win_pct,
+            };
+            match (a.lean, hasty_only) {
+                (false, false) => {
+                    compare_seats::<_, _, false, false>(game_config, kwg, klv0, klv1, params)
+                }
+                (false, true) => {
+                    compare_seats::<_, _, false, true>(game_config, kwg, klv0, klv1, params)
+                }
+                (true, false) => {
+                    compare_seats::<_, _, true, false>(game_config, kwg, klv0, klv1, params)
+                }
+                (true, true) => {
+                    compare_seats::<_, _, true, true>(game_config, kwg, klv0, klv1, params)
+                }
+            }
         }
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
@@ -3905,22 +3888,6 @@ fn plural<'a>(n: u64, singular: &'a str, plural: &'a str) -> &'a str {
     if n == 1 { singular } else { plural }
 }
 
-#[derive(Clone, Copy)]
-struct SeatLabels {
-    p0: &'static str,
-    p1: &'static str,
-}
-
-const KLV_SEATS: SeatLabels = SeatLabels {
-    p0: "p0 (klv0)",
-    p1: "p1 (klv1)",
-};
-
-const SIM_CONFIG_SEATS: SeatLabels = SeatLabels {
-    p0: "p0 (--p0-*)",
-    p1: "p1 (--p1-*)",
-};
-
 struct GameStats {
     p0_wins: u64,
     p0_losses: u64,
@@ -3987,7 +3954,7 @@ impl GameStats {
     }
 
     #[inline]
-    fn print(&self, label: &str, seats: SeatLabels) {
+    fn print(&self, label: &str) {
         let total = self.total_games();
         if total == 0 {
             return;
@@ -4008,11 +3975,9 @@ impl GameStats {
             self.zero_scores as f64 / total as f64 * 100.0,
         );
         println!(
-            "  {}: {:.1} ({:.2}%)  {}: {:.1} ({:.2}%)",
-            seats.p0,
+            "  p0 (klv0): {:.1} ({:.2}%)  p1 (klv1): {:.1} ({:.2}%)",
             p0_total,
             p0_total / total as f64 * 100.0,
-            seats.p1,
             p1_total,
             p1_total / total as f64 * 100.0,
         );
@@ -4037,9 +4002,9 @@ impl GameStats {
             let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
             let confidence = stats::NormalDistribution::cumulative_normal_density(z) * 100.0;
             let leading = if p0_total > p1_total {
-                seats.p0
+                "p0 (klv0)"
             } else {
-                seats.p1
+                "p1 (klv1)"
             };
             println!("  {leading} leads, confidence: {confidence:.2}%");
         } else {
@@ -4112,29 +4077,23 @@ impl GamePairStats {
         self.divergent.merge(&other.divergent);
     }
 
-    fn print(&self, seats: SeatLabels) {
+    fn print(&self) {
         let all_total = self.all.total_games();
         let all_pairs = all_total / 2;
-        self.all.print(
-            &format!(
-                "{all_total} {} ({all_pairs} {}):",
-                plural(all_total, "game", "games"),
-                plural(all_pairs, "pair", "pairs"),
-            ),
-            seats,
-        );
+        self.all.print(&format!(
+            "{all_total} {} ({all_pairs} {}):",
+            plural(all_total, "game", "games"),
+            plural(all_pairs, "pair", "pairs"),
+        ));
         let div_total = self.divergent.total_games();
         if div_total > 0 && div_total < all_total {
             let div_pairs = div_total / 2;
-            self.divergent.print(
-                &format!(
-                    "\n{div_total} divergent {} ({div_pairs} {} = {:.2}%):",
-                    plural(div_total, "game", "games"),
-                    plural(div_pairs, "pair", "pairs"),
-                    div_pairs as f64 / all_pairs as f64 * 100.0,
-                ),
-                seats,
-            );
+            self.divergent.print(&format!(
+                "\n{div_total} divergent {} ({div_pairs} {} = {:.2}%):",
+                plural(div_total, "game", "games"),
+                plural(div_pairs, "pair", "pairs"),
+                div_pairs as f64 / all_pairs as f64 * 100.0,
+            ));
         }
 
         self.all.print_porcelain();
@@ -4371,202 +4330,6 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         t0.elapsed().as_secs()
     )?;
     Ok(())
-}
-
-#[inline]
-fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send, const LEAN: bool>(
-    game_config: game_config::GameConfig,
-    kwg: kwg::Kwg<N>,
-    arc_klv0: std::sync::Arc<klv::Klv<L>>,
-    arc_klv1: std::sync::Arc<klv::Klv<L>>,
-    num_game_pairs: u64,
-    seed: Option<u64>,
-    threads: usize,
-) -> error::Returns<()> {
-    let game_config = std::sync::Arc::new(game_config);
-    let kwg = std::sync::Arc::new(kwg);
-    let seed = seed.unwrap_or_else(rand::random);
-    writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
-    let num_threads = threads;
-    let claimed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let finished_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let reported_secs = std::sync::atomic::AtomicU64::new(0);
-    let t0 = std::time::Instant::now();
-
-    let arc_anagrams = if LEAN {
-        None
-    } else {
-        let dim = game_config.board_layout().dim();
-        wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
-            .and_then(|layout| wolges::anagrams::Anagrams::build(&kwg, layout))
-            .map(std::sync::Arc::new)
-    };
-
-    let arc_rack_lengths = if LEAN {
-        let dim = game_config.board_layout().dim();
-        let max_tiles = game_config.rack_size() as usize + 1;
-        wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
-            .map(|layout| wolges::anagrams::RackLengths::build(&kwg, layout, max_tiles))
-            .map(std::sync::Arc::new)
-    } else {
-        None
-    };
-
-    std::thread::scope(|s| -> error::Returns<()> {
-        let mut thread_handles = Vec::new();
-        for _ in 0..num_threads {
-            let game_config = std::sync::Arc::clone(&game_config);
-            let kwg = std::sync::Arc::clone(&kwg);
-            let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
-            let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
-            let arc_anagrams = arc_anagrams.clone();
-            let arc_rack_lengths = arc_rack_lengths.clone();
-            let claimed_pairs = std::sync::Arc::clone(&claimed_pairs);
-            let finished_pairs = std::sync::Arc::clone(&finished_pairs);
-            let reported_secs = &reported_secs;
-            thread_handles.push(s.spawn(move || {
-                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-                let mut game_state = game_state::GameState::new(&game_config);
-                let mut saved_game_state = game_state.clone();
-                let mut final_scores = vec![0i32; game_config.num_players() as usize];
-                let mut stats = GamePairStats::new();
-                let mut first_game_moves: Vec<movegen::Play> = Vec::new();
-
-                loop {
-                    let pair_idx = claimed_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if pair_idx >= num_game_pairs {
-                        break;
-                    }
-
-                    let mut rng = GameRng::from_stream(seed, pair_idx);
-                    game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                    saved_game_state.clone_from(&game_state);
-                    let saved_rng = rng.copy_state();
-
-                    let mut pair_diverged = false;
-                    let mut pair_results =
-                        [(0i32, 0i32, 0u32, game_state::CheckGameEnded::NotEnded); 2];
-
-                    for game_in_pair in 0..2u8 {
-                        if game_in_pair > 0 {
-                            game_state.clone_from(&saved_game_state);
-                            rng = saved_rng.copy_state();
-                        }
-                        let klv_swapped = game_in_pair != 0;
-                        let mut num_turns = 0u32;
-                        if !klv_swapped {
-                            first_game_moves.clear();
-                        }
-
-                        let end_reason = loop {
-                            let is_klv0_side = (game_state.turn == 0) != klv_swapped;
-                            let board_snapshot = movegen::BoardSnapshot {
-                                board_tiles: &game_state.board_tiles,
-                                game_config: &game_config,
-                                kwg: &kwg,
-                                anagrams: arc_anagrams.as_deref(),
-                                rack_lengths: arc_rack_lengths.as_deref(),
-                                klv: if is_klv0_side { &arc_klv0 } else { &arc_klv1 },
-                            };
-                            let gen_params = movegen::GenMovesParams {
-                                board_snapshot: &board_snapshot,
-                                rack: &game_state.current_player().rack,
-                                max_gen: 1,
-                                num_exchanges_by_this_player: game_state
-                                    .current_player()
-                                    .num_exchanges,
-                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                dynamic_leaves: None,
-                            };
-                            if LEAN {
-                                move_generator.gen_moves_unfiltered_lean(&gen_params);
-                            } else {
-                                move_generator.gen_moves_unfiltered(&gen_params);
-                            }
-                            let play = &move_generator.plays[0].play;
-                            if klv_swapped {
-                                if !pair_diverged
-                                    && (num_turns as usize >= first_game_moves.len()
-                                        || first_game_moves[num_turns as usize] != *play)
-                                {
-                                    pair_diverged = true;
-                                }
-                            } else {
-                                first_game_moves.push(play.clone());
-                            }
-                            game_state.play(&game_config, &mut rng, play).unwrap();
-                            num_turns += 1;
-                            let end = game_state.check_game_ended(&game_config, &mut final_scores);
-                            match end {
-                                game_state::CheckGameEnded::PlayedOut
-                                | game_state::CheckGameEnded::ZeroScores => break end,
-                                game_state::CheckGameEnded::NotEnded => {}
-                            }
-                            game_state.next_turn();
-                        };
-
-                        let (klv0_score, klv1_score) = if klv_swapped {
-                            (final_scores[1], final_scores[0])
-                        } else {
-                            (final_scores[0], final_scores[1])
-                        };
-                        pair_results[game_in_pair as usize] =
-                            (klv0_score, klv1_score, num_turns, end_reason);
-                    }
-
-                    if !pair_diverged && pair_results[0].2 != pair_results[1].2 {
-                        pair_diverged = true;
-                    }
-                    for &(klv0_score, klv1_score, num_turns, end_reason) in &pair_results {
-                        stats.add_game(
-                            klv0_score,
-                            klv1_score,
-                            num_turns,
-                            end_reason,
-                            pair_diverged,
-                        );
-                    }
-
-                    finished_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let secs = t0.elapsed().as_secs();
-                    let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
-                    if secs > prev {
-                        writeln!(
-                            boxed_stdout_or_stderr(),
-                            "After {secs}s: {} pairs",
-                            finished_pairs.load(std::sync::atomic::Ordering::Relaxed),
-                        )
-                        .ok();
-                    }
-                }
-
-                stats
-            }));
-        }
-
-        let mut combined = GamePairStats::new();
-        for handle in thread_handles {
-            let stats = handle.join().unwrap();
-            combined.merge(&stats);
-        }
-
-        println!();
-        combined.print(KLV_SEATS);
-
-        Ok(())
-    })
-}
-
-struct SimCompareParams {
-    num_game_pairs: u64,
-    seed: Option<u64>,
-    threads: usize,
-    num_sim_iters: u64,
-    sim_threads: usize,
-    p0_picker: SeatPicker,
-    p1_picker: SeatPicker,
-    p0_win_pct: Option<String>,
-    p1_win_pct: Option<String>,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -5773,12 +5536,51 @@ fn board_stats(
     Ok(())
 }
 
+struct CompareParams {
+    num_game_pairs: u64,
+    seed: Option<u64>,
+    threads: usize,
+    num_sim_iters: u64,
+    sim_threads: usize,
+    p0_picker: SeatPicker,
+    p1_picker: SeatPicker,
+    p0_win_pct: Option<String>,
+    p1_win_pct: Option<String>,
+}
+
 #[inline]
-fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
+    picker: SeatPicker,
+    game_config: &'a game_config::GameConfig,
+    kwg: &'a kwg::Kwg<N>,
+    klv: &'a klv::Klv<L>,
+    dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
+    simmer_params: move_picker::SimmerParams<'a>,
+) -> move_picker::MovePicker<'a, N, L> {
+    match picker {
+        SeatPicker::Hasty => move_picker::MovePicker::Hasty,
+        SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dynamic_leaves.unwrap()),
+        SeatPicker::Simmer => move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+            game_config,
+            kwg,
+            klv,
+            simmer_params,
+        )),
+    }
+}
+
+#[inline]
+fn compare_seats<
+    N: kwg::Node + Sync + Send,
+    L: kwg::Node + Sync + Send,
+    const LEAN: bool,
+    const HASTY_ONLY: bool,
+>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
-    arc_klv: std::sync::Arc<klv::Klv<L>>,
-    SimCompareParams {
+    arc_klv0: std::sync::Arc<klv::Klv<L>>,
+    arc_klv1: std::sync::Arc<klv::Klv<L>>,
+    CompareParams {
         num_game_pairs,
         seed,
         threads,
@@ -5788,7 +5590,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         p1_picker,
         p0_win_pct,
         p1_win_pct,
-    }: SimCompareParams,
+    }: CompareParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -5800,6 +5602,25 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
+    let arc_anagrams = if LEAN {
+        None
+    } else {
+        let dim = game_config.board_layout().dim();
+        wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
+            .and_then(|layout| wolges::anagrams::Anagrams::build(&kwg, layout))
+            .map(std::sync::Arc::new)
+    };
+
+    let arc_rack_lengths = if LEAN {
+        let dim = game_config.board_layout().dim();
+        let max_tiles = game_config.rack_size() as usize + 1;
+        wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
+            .map(|layout| wolges::anagrams::RackLengths::build(&kwg, layout, max_tiles))
+            .map(std::sync::Arc::new)
+    } else {
+        None
+    };
+
     let winpct_p0 = match &p0_win_pct {
         Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
         None => None,
@@ -5810,32 +5631,46 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     };
     let winpct_p0 = winpct_p0.as_ref();
     let winpct_p1 = winpct_p1.as_ref();
-    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> =
+    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, [Vec<i32>; 2])> =
         if matches!(p0_picker, SeatPicker::Dynamic) || matches!(p1_picker, SeatPicker::Dynamic) {
             let num_letters = game_config.alphabet().len() as usize;
             let rack_size = game_config.rack_size() as usize;
             let lat = census::MultisetLattice::new(num_letters, rack_size);
-            let full_v = full_rack_values(&lat, &arc_klv);
+            let full_v_of = |picker: SeatPicker, klv: &klv::Klv<L>| match picker {
+                SeatPicker::Dynamic => full_rack_values(&lat, klv),
+                SeatPicker::Hasty | SeatPicker::Simmer => Vec::new(),
+            };
+            let full_v = [
+                full_v_of(p0_picker, &arc_klv0),
+                full_v_of(p1_picker, &arc_klv1),
+            ];
             let add = census::AddTable::new_with_threads(&lat, num_threads);
             Some((lat, add, full_v))
         } else {
             None
         };
-    let dyn_ref = dyn_ctx
-        .as_ref()
-        .map(|(lat, add, full_v)| klv::DynamicLeavesRef {
+    let dyn_refs = dyn_ctx.as_ref().map(|(lat, add, full_v)| {
+        [0, 1].map(|seat| klv::DynamicLeavesRef {
             lat,
             add,
-            full_v: full_v.as_slice(),
+            full_v: full_v[seat].as_slice(),
             min_keep: 0,
-        });
+        })
+    });
+    let seat_line = |picker: SeatPicker, win_pct: Option<&str>| match picker {
+        SeatPicker::Simmer => format!(
+            "{} ({num_sim_iters} rollouts a move, win%={})",
+            picker_name(picker),
+            win_pct.unwrap_or("sigmoid"),
+        ),
+        SeatPicker::Hasty | SeatPicker::Dynamic => picker_name(picker).to_string(),
+    };
     writeln!(
         boxed_stdout_or_stderr(),
-        "sim-compare: {num_sim_iters} rollouts a move; p0 {} win%={}; p1 {} win%={}",
-        picker_name(p0_picker),
-        p0_win_pct.as_deref().unwrap_or("sigmoid"),
-        picker_name(p1_picker),
-        p1_win_pct.as_deref().unwrap_or("sigmoid"),
+        "compare: the {} arm; p0 {}; p1 {}",
+        if LEAN { "lean" } else { "unadorned" },
+        seat_line(p0_picker, p0_win_pct.as_deref()),
+        seat_line(p1_picker, p1_win_pct.as_deref()),
     )?;
 
     std::thread::scope(|s| -> error::Returns<()> {
@@ -5843,46 +5678,40 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         for _ in 0..num_threads {
             let game_config = std::sync::Arc::clone(&game_config);
             let kwg = std::sync::Arc::clone(&kwg);
-            let arc_klv = std::sync::Arc::clone(&arc_klv);
+            let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
+            let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
+            let arc_anagrams = arc_anagrams.clone();
+            let arc_rack_lengths = arc_rack_lengths.clone();
             let claimed_pairs = std::sync::Arc::clone(&claimed_pairs);
             let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
             thread_handles.push(s.spawn(move || {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
-
-                let mut driver_p0 = match p0_picker {
-                    SeatPicker::Hasty => move_picker::MovePicker::Hasty,
-                    SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dyn_ref.unwrap()),
-                    SeatPicker::Simmer => {
-                        move_picker::MovePicker::Simmer(move_picker::Simmer::new(
-                            &game_config,
-                            &kwg,
-                            &arc_klv,
-                            move_picker::SimmerParams {
-                                num_sim_iters,
-                                sim_threads,
-                                win_pct_table: winpct_p0,
-                            },
-                        ))
-                    }
-                };
-                let mut driver_p1 = match p1_picker {
-                    SeatPicker::Hasty => move_picker::MovePicker::Hasty,
-                    SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dyn_ref.unwrap()),
-                    SeatPicker::Simmer => {
-                        move_picker::MovePicker::Simmer(move_picker::Simmer::new(
-                            &game_config,
-                            &kwg,
-                            &arc_klv,
-                            move_picker::SimmerParams {
-                                num_sim_iters,
-                                sim_threads,
-                                win_pct_table: winpct_p1,
-                            },
-                        ))
-                    }
-                };
+                let mut driver_p0 = seat_picker(
+                    p0_picker,
+                    &game_config,
+                    &kwg,
+                    &arc_klv0,
+                    dyn_refs.map(|refs| refs[0]),
+                    move_picker::SimmerParams {
+                        num_sim_iters,
+                        sim_threads,
+                        win_pct_table: winpct_p0,
+                    },
+                );
+                let mut driver_p1 = seat_picker(
+                    p1_picker,
+                    &game_config,
+                    &kwg,
+                    &arc_klv1,
+                    dyn_refs.map(|refs| refs[1]),
+                    move_picker::SimmerParams {
+                        num_sim_iters,
+                        sim_threads,
+                        win_pct_table: winpct_p1,
+                    },
+                );
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut saved_game_state = game_state.clone();
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -5921,9 +5750,9 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 board_tiles: &game_state.board_tiles,
                                 game_config: &game_config,
                                 kwg: &kwg,
-                                anagrams: None,
-                                rack_lengths: None,
-                                klv: &arc_klv,
+                                anagrams: arc_anagrams.as_deref(),
+                                rack_lengths: arc_rack_lengths.as_deref(),
+                                klv: if is_p0_seat { &arc_klv0 } else { &arc_klv1 },
                             };
                             let driver = if is_p0_seat {
                                 &mut driver_p0
@@ -5941,13 +5770,31 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     )),
                                 ));
                             }
-                            driver.pick_a_move(
-                                &mut filtered_movegen,
-                                &mut move_generator,
-                                &board_snapshot,
-                                &game_state,
-                                &game_state.current_player().rack,
-                            );
+                            if HASTY_ONLY || matches!(driver, move_picker::MovePicker::Hasty) {
+                                let gen_params = movegen::GenMovesParams {
+                                    board_snapshot: &board_snapshot,
+                                    rack: &game_state.current_player().rack,
+                                    max_gen: 1,
+                                    num_exchanges_by_this_player: game_state
+                                        .current_player()
+                                        .num_exchanges,
+                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                    dynamic_leaves: None,
+                                };
+                                if LEAN {
+                                    move_generator.gen_moves_unfiltered_lean(&gen_params);
+                                } else {
+                                    move_generator.gen_moves_unfiltered(&gen_params);
+                                }
+                            } else {
+                                driver.pick_a_move(
+                                    &mut filtered_movegen,
+                                    &mut move_generator,
+                                    &board_snapshot,
+                                    &game_state,
+                                    &game_state.current_player().rack,
+                                );
+                            }
                             let play = &move_generator.plays[0].play;
                             if seat_swapped {
                                 if !pair_diverged
@@ -6008,7 +5855,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         }
 
         println!();
-        combined.print(SIM_CONFIG_SEATS);
+        combined.print();
 
         Ok(())
     })
