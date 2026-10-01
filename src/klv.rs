@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{census, equity, kwg};
+use super::{bites, census, equity, error, kwg};
 
 const MAX_LETTERS: usize = 64;
 
@@ -89,6 +89,80 @@ impl<L: kwg::Node> Klv<L> {
             self.leave(leave_idx)
         }
     }
+}
+
+#[inline(always)]
+pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites::Bites, f32)>> {
+    if buf.len() < 4 {
+        return Err("klv is too short for its header".into());
+    }
+    let mut r = 0;
+    let kwg_bytes_len = (kwg::read_le_u32(buf, r) as usize) * 4;
+    r += 4;
+    if buf.len() < r + kwg_bytes_len + 4 {
+        return Err("klv is too short for the kwg it declares".into());
+    }
+    let kwg = kwg::Kwg::<L>::from_bytes_alloc(&buf[r..r + kwg_bytes_len]);
+    r += kwg_bytes_len;
+    let lv_len = kwg::read_le_u32(buf, r) as usize;
+    r += 4;
+    let is_klv2 = buf.len() >= r + 4 * lv_len;
+    if buf.len() != r + lv_len * if is_klv2 { 4 } else { 2 } {
+        return Err("klv has trailing bytes after its leave values".into());
+    }
+    let mut values = Vec::with_capacity(lv_len);
+    if is_klv2 {
+        for i in 0..lv_len {
+            values.push(f32::from_bits(kwg::read_le_u32(buf, r + i * 4)));
+        }
+    } else {
+        // klv holds each value as an i16 counting 1/256 of a point.
+        for i in 0..lv_len {
+            values.push(kwg::read_le_u16(buf, r + i * 2) as i16 as f32 * (1.0 / 256.0));
+        }
+    }
+    struct Env<'a, L: kwg::Node> {
+        kwg: &'a kwg::Kwg<L>,
+        values: &'a [f32],
+        word: Vec<u8>,
+        leaves: Vec<(bites::Bites, f32)>,
+    }
+    fn iter<L: kwg::Node>(env: &mut Env<'_, L>, mut p: i32) -> error::Returns<()> {
+        loop {
+            let node = env.kwg[p];
+            env.word.push(node.tile());
+            if node.accepts() {
+                let value = *env
+                    .values
+                    .get(env.leaves.len())
+                    .ok_or("klv has fewer leave values than leaves")?;
+                env.leaves.push((env.word[..].into(), value));
+            }
+            if node.arc_index() != 0 {
+                iter(env, node.arc_index())?;
+            }
+            env.word.pop();
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+        Ok(())
+    }
+    let mut env = Env {
+        kwg: &kwg,
+        values: &values,
+        word: Vec::new(),
+        leaves: Vec::with_capacity(lv_len),
+    };
+    let root = kwg[0].arc_index();
+    if root != 0 {
+        iter(&mut env, root)?;
+    }
+    if env.leaves.len() != lv_len {
+        return Err("klv has more leave values than leaves".into());
+    }
+    Ok(env.leaves)
 }
 
 #[derive(Clone)]
@@ -581,8 +655,67 @@ impl MultiLeaves {
 }
 
 #[cfg(test)]
+#[inline]
+pub(crate) fn make_klv2(leaves: &[(&[u8], f32)]) -> Vec<u8> {
+    use super::build;
+    let words = leaves
+        .iter()
+        .map(|&(tiles, _)| tiles.into())
+        .collect::<Box<[bites::Bites]>>();
+    let leaves_kwg = build::build(
+        build::BuildContent::DawgOnly,
+        build::BuildLayout::Wolges,
+        &words,
+    )
+    .unwrap();
+    let mut bin = Vec::new();
+    bin.extend_from_slice(&((leaves_kwg.len() / 4) as u32).to_le_bytes());
+    bin.extend_from_slice(&leaves_kwg);
+    bin.extend_from_slice(&(leaves.len() as u32).to_le_bytes());
+    for &(_, value) in leaves {
+        bin.extend_from_slice(&value.to_le_bytes());
+    }
+    bin
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[inline]
+    fn read_leaves_alloc_pairs_each_value_with_its_own_leave() {
+        let leaves: &[(&[u8], f32)] = &[
+            (&[1], -1.25),
+            (&[1, 2], 27.636),
+            (&[1, 2, 2], 0.0),
+            (&[2], 3.5),
+        ];
+        let got = read_leaves_alloc::<kwg::Node22>(&make_klv2(leaves)).unwrap();
+        assert_eq!(got.len(), leaves.len());
+        for (i, &(tiles, value)) in leaves.iter().enumerate() {
+            assert_eq!(&got[i].0[..], tiles, "leave {i}");
+            assert_eq!(got[i].1, value, "value {i}");
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn read_leaves_alloc_reads_an_empty_table() {
+        assert!(
+            read_leaves_alloc::<kwg::Node22>(EMPTY_KLV_BYTES)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn read_leaves_alloc_rejects_a_table_that_fits_neither_width() {
+        let mut bin = make_klv2(&[(&[1], 1.0), (&[2], 2.0)]);
+        bin.truncate(bin.len() - 2);
+        assert!(read_leaves_alloc::<kwg::Node22>(&bin).is_err());
+    }
 
     #[inline]
     fn binom(n: u64, k: u64) -> u64 {

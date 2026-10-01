@@ -1,7 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use wolges::kwg::Node;
-use wolges::{alphabet, bites, build, error, fash, kwg, lexport, prob};
+use wolges::{alphabet, bites, build, error, fash, klv, kwg, lexport, prob};
 
 #[inline]
 fn parse_machine_words(
@@ -121,24 +121,10 @@ fn build_leaves_scaled_i16<Readable: std::io::Read>(
 }
 
 #[inline]
-fn build_leaves_f32<Readable: std::io::Read>(
-    f: Readable,
-    alph: alphabet::Alphabet,
+fn write_leaves_f32(
+    leaves_map: fash::MyHashMap<bites::Bites, f32>,
     build_layout: build::BuildLayout,
 ) -> error::Returns<Vec<u8>> {
-    let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alph);
-    let mut leaves_map = fash::MyHashMap::<bites::Bites, _>::default();
-    let mut csv_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(f);
-    let mut v = Vec::new();
-    for result in csv_reader.records() {
-        let record = result?;
-        alphabet_reader.set_word(&record[0], &mut v)?;
-        v.sort_unstable();
-        let float_leave = f32::from_str(&record[1])?;
-        if leaves_map.insert(v[..].into(), float_leave).is_some() {
-            wolges::return_error!(format!("duplicate record {}", &record[0]));
-        }
-    }
     let mut sorted_machine_words = leaves_map.keys().cloned().collect::<Box<_>>();
     sorted_machine_words.sort_unstable();
     let leaves_kwg = build::build(
@@ -187,6 +173,22 @@ fn read_leaves_f32<Readable: std::io::Read>(
         }
     }
     Ok(leaves_map)
+}
+
+#[inline]
+fn leave_as_decimal(v: f32, scratch: &mut String) -> f64 {
+    use std::fmt::Write as _;
+    scratch.clear();
+    let _ = write!(scratch, "{v}");
+    scratch.parse::<f64>().unwrap_or(v as f64)
+}
+
+#[inline]
+fn leave_at_millipoint(v: f64, scratch: &mut String) -> f32 {
+    use std::fmt::Write as _;
+    scratch.clear();
+    let _ = write!(scratch, "{v:.3}");
+    scratch.parse::<f32>().unwrap_or(v as f32)
 }
 
 #[inline]
@@ -279,11 +281,61 @@ fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
                     Ok(true)
                 }
                 "-klv2" => {
-                    make_writer(&args[3])?.write_all(&build_leaves_f32(
-                        &mut make_reader(&args[2])?,
-                        make_alphabet(),
+                    let alphabet = make_alphabet();
+                    make_writer(&args[3])?.write_all(&write_leaves_f32(
+                        read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?,
                         build_layout,
                     )?)?;
+                    Ok(true)
+                }
+                "-blend" => {
+                    if args.len() < 6 {
+                        return Err(
+                            "english-blend needs two klv files, a weight, and an output".into()
+                        );
+                    }
+                    let weight = f64::from_str(&args[4])?;
+                    if !weight.is_finite() {
+                        return Err("english-blend needs a finite weight".into());
+                    }
+                    let leaves_a =
+                        klv::read_leaves_alloc::<kwg::Node22>(&std::fs::read(&args[2])?)?;
+                    let leaves_b =
+                        klv::read_leaves_alloc::<kwg::Node22>(&std::fs::read(&args[3])?)?;
+                    let num_a = leaves_a.len();
+                    let num_b = leaves_b.len();
+                    let mut scratch = String::new();
+                    let mut mixed = fash::MyHashMap::<bites::Bites, f64>::default();
+                    for (leave, value) in leaves_b {
+                        mixed.insert(leave, leave_as_decimal(value, &mut scratch));
+                    }
+                    let mut in_both = 0usize;
+                    for (leave, value) in leaves_a {
+                        let value_a = leave_as_decimal(value, &mut scratch);
+                        mixed
+                            .entry(leave)
+                            .and_modify(|value_b| {
+                                in_both += 1;
+                                *value_b = (1.0 - weight) * value_a + weight * *value_b;
+                            })
+                            .or_insert(value_a);
+                    }
+                    let mut leaves_map = fash::MyHashMap::<bites::Bites, f32>::default();
+                    leaves_map.reserve(mixed.len());
+                    for (leave, value) in mixed.drain() {
+                        leaves_map.insert(leave, leave_at_millipoint(value, &mut scratch));
+                    }
+                    drop(mixed);
+                    writeln!(
+                        boxed_stdout_or_stderr(),
+                        "blended {in_both} leaves at weight {weight}, kept {} found only in {} and {} found only in {}",
+                        num_a - in_both,
+                        args[2],
+                        num_b - in_both,
+                        args[3],
+                    )?;
+                    make_writer(&args[5])?
+                        .write_all(&write_leaves_f32(leaves_map, build_layout)?)?;
                     Ok(true)
                 }
                 "-klv16" => {
@@ -450,6 +502,10 @@ fn main() -> error::Returns<()> {
     generate klv file (deprecated?)
   english-klv2 CSW24.csv CSW24.klv2
     generate klv2 file (preferred)
+  english-blend CSW24a.klv2 CSW24b.klv2 0.5 CSW24.klv2
+    blend two leave tables into one klv2. the weight says how much of
+    the second table to take: 0 is the first table alone, 1 the second.
+    a leave only one table lists keeps that table's value.
   english-klv16 CSW24.csv CSW24.klv16
     generate klv16 file (magpie-retro)
   english-kwg CSW24.txt CSW24.kwg
@@ -548,9 +604,11 @@ input/output files can be \"-\" (not advisable for binary files)"
 fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/CSW24.klv2",
-        build_leaves_f32(
-            Box::new(std::fs::File::open("lexsrc/CSW24.csv")?),
-            alphabet::make_english_alphabet(),
+        write_leaves_f32(
+            read_leaves_f32(
+                Box::new(std::fs::File::open("lexsrc/CSW24.csv")?),
+                &alphabet::make_english_alphabet(),
+            )?,
             build::BuildLayout::Wolges,
         )?,
     )?;
