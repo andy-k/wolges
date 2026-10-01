@@ -2135,6 +2135,22 @@ fn gen_classic_place_moves<
         let Some(found) = source.words(key, len) else {
             return;
         };
+        fit_words::<BLANKED, _, _, _>(env, found, leave_idx, blank_letter);
+    }
+
+    #[inline]
+    fn fit_words<
+        const BLANKED: bool,
+        CallbackType: FnMut(i8, &[u8], i32, i32),
+        N: kwg::Node,
+        L: kwg::Node,
+    >(
+        env: &mut Env<'_, CallbackType, N, L>,
+        found: alphagram::Words<'_>,
+        leave_idx: u32,
+        blank_letter: u8,
+    ) {
+        let len = (env.right - env.left) as u8;
         let board_strip = env.params.board_strip;
         let cross_set_strip = env.params.cross_set_strip;
         let tile_multipliers = env.params.remaining_tile_multipliers_strip;
