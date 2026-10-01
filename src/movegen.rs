@@ -2194,6 +2194,20 @@ fn gen_place_moves<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg::Node, L
     }
 }
 
+struct GenPlaceMovesAtParams<
+    'a,
+    FoundPlaceMove: FnMut(bool, i8, i8, &[u8], i32, i32),
+    N: kwg::Node,
+    L: kwg::Node,
+> {
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    working_buffer: &'a mut WorkingBuffer,
+    multi_leaves: &'a klv::MultiLeaves,
+    placement: &'a PossiblePlacement,
+    num_max_played: u8,
+    found_place_move: FoundPlaceMove,
+}
+
 #[inline]
 fn gen_place_moves_at<
     'a,
@@ -2201,13 +2215,16 @@ fn gen_place_moves_at<
     N: kwg::Node,
     L: kwg::Node,
 >(
-    board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &mut WorkingBuffer,
-    multi_leaves: &'a klv::MultiLeaves,
-    placement: &PossiblePlacement,
-    num_max_played: u8,
-    mut found_place_move: FoundPlaceMove,
+    p: GenPlaceMovesAtParams<'a, FoundPlaceMove, N, L>,
 ) {
+    let GenPlaceMovesAtParams {
+        board_snapshot,
+        working_buffer,
+        multi_leaves,
+        placement,
+        num_max_played,
+        mut found_place_move,
+    } = p;
     let dim = board_snapshot.game_config.board_layout().dim();
     let strip_range_start;
 
@@ -2630,12 +2647,17 @@ impl KurniaMoveGenerator {
         working_buffer.init(board_snapshot, rack, &|leave_value: i32| leave_value, None);
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
 
-        for _ in kurnia_gen_place_moves_iter(
-            true,
+        for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
+            want_raw: true,
             board_snapshot,
             working_buffer,
-            &multi_leaves,
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, _leave_value: i32| {
+            multi_leaves: &multi_leaves,
+            found_place_move: |down: bool,
+                               lane: i8,
+                               idx: i8,
+                               word: &[u8],
+                               score: i32,
+                               _leave_value: i32| {
                 vec_moves.push(ValuedMove {
                     equity: equity::Equity::ZERO,
                     play: Play::Place {
@@ -2647,8 +2669,8 @@ impl KurniaMoveGenerator {
                     },
                 });
             },
-            |_best_possible_equity: i32| true,
-        ) {}
+            can_accept: |_best_possible_equity: i32| true,
+        }) {}
         kurnia_gen_exchange_moves(
             board_snapshot,
             working_buffer,
@@ -2747,12 +2769,17 @@ impl KurniaMoveGenerator {
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
-        for _ in kurnia_gen_place_moves_iter(
-            false,
-            params.board_snapshot,
+        for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
+            want_raw: false,
+            board_snapshot: params.board_snapshot,
             working_buffer,
-            &multi_leaves,
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
+            multi_leaves: &multi_leaves,
+            found_place_move: |down: bool,
+                               lane: i8,
+                               idx: i8,
+                               word: &[u8],
+                               score: i32,
+                               leave_value: i32| {
                 if place_move_predicate(down, lane, idx, word, score) {
                     let other_adjustments = if num_tiles_on_board == 0 {
                         (idx..)
@@ -2788,10 +2815,10 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: i32| {
+            can_accept: |best_possible_equity: i32| {
                 threshold.get() <= equity::Equity::new(best_possible_equity)
             },
-        ) {
+        }) {
             breathe().await;
         }
         kurnia_gen_exchange_moves(
@@ -2932,12 +2959,17 @@ impl KurniaMoveGenerator {
         let multi_leaves = std::mem::take(&mut working_buffer.multi_leaves);
         let num_tiles_on_board = working_buffer.num_tiles_on_board;
 
-        for _ in kurnia_gen_place_moves_iter(
-            false,
-            params.board_snapshot,
+        for _ in kurnia_gen_place_moves_iter(KurniaIterParams {
+            want_raw: false,
+            board_snapshot: params.board_snapshot,
             working_buffer,
-            &multi_leaves,
-            |down: bool, lane: i8, idx: i8, word: &[u8], score: i32, leave_value: i32| {
+            multi_leaves: &multi_leaves,
+            found_place_move: |down: bool,
+                               lane: i8,
+                               idx: i8,
+                               word: &[u8],
+                               score: i32,
+                               leave_value: i32| {
                 if place_move_predicate(down, lane, idx, word, score) {
                     let other_adjustments = if num_tiles_on_board == 0 {
                         (idx..)
@@ -2973,10 +3005,10 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: i32| {
+            can_accept: |best_possible_equity: i32| {
                 threshold.get() <= equity::Equity::new(best_possible_equity)
             },
-        ) {}
+        }) {}
         kurnia_gen_exchange_moves(
             params.board_snapshot,
             working_buffer,
@@ -3082,6 +3114,21 @@ fn kurnia_gen_exchange_moves<
     }
 }
 
+struct KurniaIterParams<
+    'a,
+    FoundPlaceMove: 'a + FnMut(bool, i8, i8, &[u8], i32, i32),
+    CanAccept: 'a + Fn(i32) -> bool,
+    N: kwg::Node,
+    L: kwg::Node,
+> {
+    want_raw: bool,
+    board_snapshot: &'a BoardSnapshot<'a, N, L>,
+    working_buffer: &'a mut WorkingBuffer,
+    multi_leaves: &'a klv::MultiLeaves,
+    found_place_move: FoundPlaceMove,
+    can_accept: CanAccept,
+}
+
 #[inline]
 fn kurnia_gen_place_moves_iter<
     'a,
@@ -3090,13 +3137,16 @@ fn kurnia_gen_place_moves_iter<
     N: kwg::Node,
     L: kwg::Node,
 >(
-    want_raw: bool,
-    board_snapshot: &'a BoardSnapshot<'a, N, L>,
-    working_buffer: &'a mut WorkingBuffer,
-    multi_leaves: &'a klv::MultiLeaves,
-    mut found_place_move: FoundPlaceMove,
-    can_accept: CanAccept,
+    p: KurniaIterParams<'a, FoundPlaceMove, CanAccept, N, L>,
 ) -> impl 'a + Iterator {
+    let KurniaIterParams {
+        want_raw,
+        board_snapshot,
+        working_buffer,
+        multi_leaves,
+        mut found_place_move,
+        can_accept,
+    } = p;
     let game_config = &board_snapshot.game_config;
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
@@ -3294,34 +3344,35 @@ fn kurnia_gen_place_moves_iter<
     std::iter::from_fn(move || match working_buffer.found_placements.pop() {
         Some(placement) => {
             if can_accept(placement.best_possible_equity) {
-                gen_place_moves_at(
+                gen_place_moves_at(GenPlaceMovesAtParams {
                     board_snapshot,
                     working_buffer,
                     multi_leaves,
-                    &placement,
+                    placement: &placement,
                     num_max_played,
-                    &mut |down: bool,
-                          lane: i8,
-                          idx: i8,
-                          word: &[u8],
-                          score: i32,
-                          leave_value: i32| {
-                        let this_best = score + leave_value;
-                        debug_assert!(
-                            this_best <= placement.best_possible_equity,
-                            "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",
-                            this_best,
-                            placement.best_possible_equity,
-                            down,
-                            lane,
-                            idx,
-                            word,
-                            score,
-                            leave_value,
-                        );
-                        found_place_move(down, lane, idx, word, score, leave_value)
-                    },
-                );
+                    found_place_move:
+                        &mut |down: bool,
+                              lane: i8,
+                              idx: i8,
+                              word: &[u8],
+                              score: i32,
+                              leave_value: i32| {
+                            let this_best = score + leave_value;
+                            debug_assert!(
+                                this_best <= placement.best_possible_equity,
+                                "found {} when expecting up to {} for ({}, {}, {}, {:?}, {}, {})",
+                                this_best,
+                                placement.best_possible_equity,
+                                down,
+                                lane,
+                                idx,
+                                word,
+                                score,
+                                leave_value,
+                            );
+                            found_place_move(down, lane, idx, word, score, leave_value)
+                        },
+                });
                 Some(())
             } else {
                 // fuse the iterator
