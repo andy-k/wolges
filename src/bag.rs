@@ -36,14 +36,14 @@ impl Bag {
         self.tiles.extend_from_slice(&self.canonical);
     }
 
-    pub fn shuffle(&mut self, mut rng: &mut dyn Rng) {
-        self.tiles[self.fc..].shuffle(&mut rng);
+    pub fn shuffle<R: Rng + ?Sized>(&mut self, rng: &mut R) {
+        self.tiles[self.fc..].shuffle(rng);
     }
 
     #[inline(always)]
-    pub fn shuffle_n(&mut self, mut rng: &mut dyn Rng, amount: usize) {
+    pub fn shuffle_n<R: Rng + ?Sized>(&mut self, rng: &mut R, amount: usize) {
         // this "correctly" puts the shuffled amount at the end
-        let _ = self.tiles[self.fc..].partial_shuffle(&mut rng, amount);
+        let _ = self.tiles[self.fc..].partial_shuffle(rng, amount);
     }
 
     #[inline(always)]
@@ -148,7 +148,7 @@ impl Bag {
     }
 
     #[inline(always)]
-    pub fn put_back(&mut self, rng: &mut dyn Rng, tiles: &[u8]) {
+    pub fn put_back<R: Rng + ?Sized>(&mut self, rng: &mut R, tiles: &[u8]) {
         let m = tiles.len();
         if m == 0 {
             return;

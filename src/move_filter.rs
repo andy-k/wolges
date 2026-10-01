@@ -138,7 +138,7 @@ impl<'a> Tilt<'a> {
     }
 
     #[inline(always)]
-    pub fn tilt_by_rng(&mut self, rng: &mut dyn Rng, bot_level: i8) {
+    pub fn tilt_by_rng<R: Rng + ?Sized>(&mut self, rng: &mut R, bot_level: i8) {
         let lo = TILT_DENOM / 2 - bot_level as i32 * 102;
         self.tilt_to(rng.random_range(lo..TILT_DENOM), bot_level);
     }

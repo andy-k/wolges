@@ -4,6 +4,7 @@ use rand::prelude::*;
 use std::fmt::Write;
 use std::io::Write as _;
 use std::str::FromStr;
+use wolges::simmer::CopyState;
 use wolges::{
     alphabet, bites, board_layout, build, census, display, equity, error, fash, game_config,
     game_state, klv, kwg, move_filter, move_picker, movegen, play_scorer, prob, stats, win_pct,
@@ -16,6 +17,26 @@ static BASE62: &[u8; 62] = b"\
 ABCDEFGHIJKLMNOPQRSTUVWXYZ\
 abcdefghijklmnopqrstuvwxyz\
 ";
+
+// the generator the tasks draw with. another can take its place if it
+// implements Streams and CopyState.
+type GameRng = rand::rngs::ChaCha20Rng;
+
+// numbered streams of one seed: what a run's kth game draws depends on the seed
+// and k alone, whichever thread plays it.
+trait Streams: SeedableRng {
+    fn from_stream(seed: u64, stream: u64) -> Self;
+}
+
+impl Streams for rand::rngs::ChaCha20Rng {
+    // set_stream starts the stream at its first word.
+    #[inline(always)]
+    fn from_stream(seed: u64, stream: u64) -> Self {
+        let mut rng = Self::seed_from_u64(seed);
+        rng.set_stream(stream);
+        rng
+    }
+}
 
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -662,7 +683,7 @@ fn run<N: kwg::Node + Sync + Send>(
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (iters, seed) = (a.iters, a.seed);
-            let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+            let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
             game_state.reset_and_draw_tiles(&game_config, &mut rng);
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -740,7 +761,7 @@ fn run<N: kwg::Node + Sync + Send>(
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (iters, seed) = (a.iters, a.seed);
-            let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+            let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
             game_state.reset_and_draw_tiles(&game_config, &mut rng);
             let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -1067,7 +1088,6 @@ fn generate_autoplay_logs<
                 std::sync::Arc::clone(&undersampling_remediation_generation_id);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             threads.push(s.spawn(move || {
-                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut game_id = String::with_capacity(8);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
@@ -1122,7 +1142,7 @@ fn generate_autoplay_logs<
                 loop {
                     let mut num_prior_games =
                         num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    rng.set_stream(num_prior_games);
+                    let mut rng = GameRng::from_stream(seed, num_prior_games);
                     if num_prior_games >= num_games {
                         if !undersampling_remediation_thread_begun {
 
@@ -1782,7 +1802,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             let mutexed_tick = std::sync::Arc::clone(&mutexed_tick);
             let run_identifier = run_identifier.clone();
             threads.push(s.spawn(move || {
-                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let alphabet = game_config.alphabet();
@@ -1822,7 +1841,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                         break;
                     }
 
-                    rng.set_stream(num_prior_games);
+                    let mut rng = GameRng::from_stream(seed, num_prior_games);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
 
                     let mut turn_idx = 0u32;
@@ -2910,7 +2929,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             if b >= num_boards {
                                 break;
                             }
-                    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
+                    let mut rng = GameRng::seed_from_u64(census_mix64(
                         seed.wrapping_add(census_mix64(b)),
                     ));
 
@@ -3535,7 +3554,6 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let completed_moves = std::sync::Arc::clone(&completed_moves);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             threads.push(s.spawn(move || {
-                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0; game_config.num_players() as usize];
@@ -3582,7 +3600,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         num_processed_games.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         break;
                     }
-                    rng.set_stream(num_prior_games);
+                    let mut rng = GameRng::from_stream(seed, num_prior_games);
 
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                     loop {
@@ -4085,7 +4103,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
     tables: WinpctTables<'_, N, L>,
     move_generator: &mut movegen::KurniaMoveGenerator,
     game_state: &mut game_state::GameState,
-    rng: &mut rand::rngs::ChaCha20Rng,
+    rng: &mut GameRng,
     snapshots: &mut Vec<(usize, usize, usize, usize, i32)>,
     final_scores: &mut [i32],
 ) {
@@ -4159,7 +4177,6 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     std::thread::scope(|s| {
         for _ in 0..num_threads {
             s.spawn(|| {
-                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -4171,7 +4188,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                     if g >= num_games {
                         break;
                     }
-                    rng.set_stream(g);
+                    let mut rng = GameRng::from_stream(seed, g);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                     winpct_play_game(
                         WinpctTables {
@@ -4242,7 +4259,6 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     std::thread::scope(|s| {
         for _ in 0..num_threads {
             s.spawn(|| {
-                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -4253,7 +4269,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     if g >= num_games {
                         break;
                     }
-                    rng.set_stream(g);
+                    let mut rng = GameRng::from_stream(seed, g);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                     winpct_play_game(
                         WinpctTables {
@@ -4360,7 +4376,6 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send, const 
             let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
             thread_handles.push(s.spawn(move || {
-                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut saved_game_state = game_state.clone();
@@ -4374,10 +4389,10 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send, const 
                         break;
                     }
 
-                    rng.set_stream(pair_idx);
+                    let mut rng = GameRng::from_stream(seed, pair_idx);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                     saved_game_state.clone_from(&game_state);
-                    let saved_rng_state = rng.serialize_state();
+                    let saved_rng = rng.copy_state();
 
                     let mut pair_diverged = false;
                     let mut pair_results =
@@ -4386,7 +4401,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send, const 
                     for game_in_pair in 0..2u8 {
                         if game_in_pair > 0 {
                             game_state.clone_from(&saved_game_state);
-                            rng = rand::rngs::ChaCha20Rng::deserialize_state(&saved_rng_state);
+                            rng = saved_rng.copy_state();
                         }
                         let klv_swapped = game_in_pair != 0;
                         let mut num_turns = 0u32;
@@ -4533,14 +4548,14 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
 ) -> error::Returns<()> {
     let alphabet = game_config.alphabet();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
-    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+    let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
     let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
     let mut scratch = Vec::new();
     let play_one_greedy_turn = |game_state: &mut game_state::GameState,
-                                rng: &mut rand::rngs::ChaCha20Rng,
+                                rng: &mut GameRng,
                                 move_generator: &mut movegen::KurniaMoveGenerator|
      -> error::Returns<bool> {
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -4715,7 +4730,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     if iters < 2 {
         return Err("sim-chunk-check needs at least two iterations".into());
     }
-    let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+    let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -5175,9 +5190,7 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
     let mut final_scores = vec![0i32; game_config.num_players() as usize];
     let mut out = std::io::BufWriter::new(make_writer(out_path)?);
     for game in 0..num_games {
-        let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
-            seed.wrapping_add(census_mix64(game)),
-        ));
+        let mut rng = GameRng::seed_from_u64(census_mix64(seed.wrapping_add(census_mix64(game))));
         game_state.reset_and_draw_tiles(&game_config, &mut rng);
         let mut ply = 0u32;
         loop {
@@ -5444,7 +5457,6 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
             thread_handles.push(s.spawn(move || {
-                let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
 
@@ -5492,10 +5504,10 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         break;
                     }
 
-                    rng.set_stream(pair_idx);
+                    let mut rng = GameRng::from_stream(seed, pair_idx);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                     saved_game_state.clone_from(&game_state);
-                    let saved_rng_state = rng.serialize_state();
+                    let saved_rng = rng.copy_state();
 
                     let mut pair_diverged = false;
                     let mut pair_results =
@@ -5504,7 +5516,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     for game_in_pair in 0..2u8 {
                         if game_in_pair > 0 {
                             game_state.clone_from(&saved_game_state);
-                            rng = rand::rngs::ChaCha20Rng::deserialize_state(&saved_rng_state);
+                            rng = saved_rng.copy_state();
                         }
                         let seat_swapped = game_in_pair != 0;
                         let mut num_turns = 0u32;

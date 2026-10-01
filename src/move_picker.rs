@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats, win_pct};
+use rand::SeedableRng;
 
 struct Candidate {
     play_index: usize,
@@ -117,8 +118,8 @@ fn mix(decision_seed: u64, sim_iter: u64) -> u64 {
 const PRUNE_CADENCE: u64 = 16;
 
 #[inline(always)]
-fn rollout_objective<N: kwg::Node, L: kwg::Node>(
-    simmer: &mut simmer::Simmer,
+fn rollout_objective<N: kwg::Node, L: kwg::Node, R: rand::Rng + SeedableRng + simmer::CopyState>(
+    simmer: &mut simmer::Simmer<R>,
     game_config: &game_config::GameConfig,
     kwg: &kwg::Kwg<N>,
     klv: &klv::Klv<L>,
@@ -177,12 +178,18 @@ fn limit_surviving_candidates(
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
-pub struct Simmer<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool = false> {
+pub struct Simmer<
+    'a,
+    N: kwg::Node,
+    L: kwg::Node,
+    const OBSERVE: bool = false,
+    R = rand::rngs::ChaCha20Rng,
+> {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
     klv: &'a klv::Klv<L>,
     candidates: Vec<Candidate>,
-    simmer: simmer::Simmer,
+    simmer: simmer::Simmer<R>,
     num_sim_iters: u64,
     retired: Vec<Candidate>,
     iters_done: u64,
@@ -208,12 +215,37 @@ impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSER
         klv: &'a klv::Klv<L>,
         params: SimmerParams<'a>,
     ) -> Self {
+        Self::with_rng(
+            game_config,
+            kwg,
+            klv,
+            params,
+            rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
+        )
+    }
+}
+
+impl<
+    'a,
+    N: kwg::Node,
+    L: kwg::Node,
+    const OBSERVE: bool,
+    R: rand::Rng + SeedableRng + simmer::CopyState,
+> Simmer<'a, N, L, OBSERVE, R>
+{
+    pub fn with_rng(
+        game_config: &'a game_config::GameConfig,
+        kwg: &'a kwg::Kwg<N>,
+        klv: &'a klv::Klv<L>,
+        params: SimmerParams<'a>,
+        rng: R,
+    ) -> Self {
         Self {
             game_config,
             kwg,
             klv,
             candidates: Vec::new(),
-            simmer: simmer::Simmer::new(game_config),
+            simmer: simmer::Simmer::with_rng(game_config, rng),
             num_sim_iters: params.num_sim_iters,
             retired: Vec::new(),
             iters_done: 0,
@@ -387,7 +419,14 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Simmer(Simmer<'a, N, L>),
 }
 
-impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync, const OBSERVE: bool> Simmer<'a, N, L, OBSERVE> {
+impl<
+    'a,
+    N: kwg::Node + Sync,
+    L: kwg::Node + Sync,
+    const OBSERVE: bool,
+    R: rand::Rng + SeedableRng + simmer::CopyState + Sync,
+> Simmer<'a, N, L, OBSERVE, R>
+{
     #[inline]
     fn run_iterations(
         &mut self,

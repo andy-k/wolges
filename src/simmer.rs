@@ -47,10 +47,23 @@ fn set_rack_tally_from_leave(rack_tally: &mut [u8], rack: &[u8], play: &movegen:
     };
 }
 
+// a generator whose state can be copied, so each candidate's rollout draws what
+// the shared generator would have drawn. chacha's generator is not Clone.
+pub trait CopyState {
+    fn copy_state(&self) -> Self;
+}
+
+impl CopyState for rand::rngs::ChaCha20Rng {
+    #[inline(always)]
+    fn copy_state(&self) -> Self {
+        Self::deserialize_state(&self.serialize_state())
+    }
+}
+
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at KurniaMoveGenerator.)
 // This is not enforced.
-pub struct Simmer {
+pub struct Simmer<R = rand::rngs::ChaCha20Rng> {
     initial_game_state: game_state::GameState,
     pub initial_score_spread: i32,
     num_sim_plies: usize,
@@ -65,12 +78,21 @@ pub struct Simmer {
     move_generator: movegen::KurniaMoveGenerator,
     rack_tally: Box<[u8]>,
 
-    rng: rand::rngs::ChaCha20Rng,
+    rng: R,
 }
 
 impl Simmer {
     // The other methods must be called with the same game_config.
     pub fn new(game_config: &game_config::GameConfig) -> Self {
+        Self::with_rng(
+            game_config,
+            rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
+        )
+    }
+}
+
+impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
+    pub fn with_rng(game_config: &game_config::GameConfig, rng: R) -> Self {
         Self {
             initial_game_state: game_state::GameState::new(game_config),
             initial_score_spread: 0,
@@ -87,18 +109,21 @@ impl Simmer {
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
 
-            rng: rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
+            rng,
         }
     }
 
     #[inline(always)]
     pub fn reseed(&mut self, seed: u64) {
-        self.rng = rand::rngs::ChaCha20Rng::seed_from_u64(seed);
+        self.rng = R::seed_from_u64(seed);
     }
 
     #[inline(always)]
     pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
-        let mut clone = Simmer::new(game_config);
+        let mut clone = Self::with_rng(
+            game_config,
+            R::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
+        );
         clone.prepare(
             game_config,
             &self.initial_game_state,
@@ -199,7 +224,7 @@ impl Simmer {
         self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
         // a rollout that needs randomness snapshots the rng into a local copy, so the
         // shared state stays put for the next candidate.
-        let mut rollout_rng: Option<rand::rngs::ChaCha20Rng> = None;
+        let mut rollout_rng: Option<R> = None;
         let mut next_play = movegen::Play::Exchange {
             tiles: [][..].into(),
         };
@@ -235,9 +260,7 @@ impl Simmer {
             );
             self.last_seen_leave_values[self.game_state.turn as usize] =
                 klv.leave_value_from_tally(&self.rack_tally);
-            let rng = rollout_rng.get_or_insert_with(|| {
-                rand::rngs::ChaCha20Rng::deserialize_state(&self.rng.serialize_state())
-            });
+            let rng = rollout_rng.get_or_insert_with(|| self.rng.copy_state());
             self.game_state.play(game_config, rng, &next_play).unwrap();
             match self
                 .game_state
