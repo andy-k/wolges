@@ -4312,7 +4312,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 kwg: &kwg,
                                 klv: if is_klv0_side { &arc_klv0 } else { &arc_klv1 },
                             };
-                            move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                            let gen_params = movegen::GenMovesParams {
                                 board_snapshot: &board_snapshot,
                                 rack: &game_state.current_player().rack,
                                 max_gen: 1,
@@ -4321,7 +4321,8 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     .num_exchanges,
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
-                            });
+                            };
+                            move_generator.gen_moves_unfiltered(&gen_params);
                             let play = &move_generator.plays[0].play;
                             if klv_swapped {
                                 if !pair_diverged
