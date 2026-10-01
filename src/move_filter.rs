@@ -106,6 +106,7 @@ pub const TILT_DENOM: i32 = 1024;
 pub const LEAVE_SCALE_DENOM: i32 = 1024;
 
 impl<'a> Tilt<'a> {
+    #[inline(always)]
     pub fn length_importances() -> &'a [u8] {
         LENGTH_IMPORTANCES
     }

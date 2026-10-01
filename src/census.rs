@@ -12,6 +12,7 @@ pub struct MultisetLattice {
 }
 
 impl MultisetLattice {
+    #[inline(always)]
     pub fn new(num_letters: usize, rack_size: usize) -> Self {
         assert!((1..=MAX_LETTERS).contains(&num_letters));
         let n_max = rack_size + num_letters;
@@ -77,7 +78,7 @@ impl MultisetLattice {
         (self.size_offset[s] + within) as u32
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn rank_sparse(&self, s: usize, items: &[(u8, u8)]) -> u32 {
         self.rank_sparse_iter(s, items.iter().copied())
     }
@@ -106,6 +107,7 @@ impl MultisetLattice {
         (self.size_offset[s] + within) as u32
     }
 
+    #[inline]
     pub fn rank_bytes(&self, sorted_tiles: &[u8]) -> u32 {
         let mut tally = [0u8; MAX_LETTERS];
         for &t in sorted_tiles {
@@ -144,6 +146,7 @@ impl MultisetLattice {
         out[l - 1] = rem as u8;
     }
 
+    #[inline]
     pub fn tally(&self, idx: usize) -> Vec<u8> {
         let mut out = vec![0u8; self.num_letters];
         self.unrank_into(idx, &mut out);
@@ -151,6 +154,7 @@ impl MultisetLattice {
     }
 }
 
+#[inline]
 pub fn naive_best_equity(
     lat: &MultisetLattice,
     sheet: &[i32],
@@ -226,6 +230,7 @@ pub fn naive_best_equity(
     (best, kept_tiles)
 }
 
+#[inline]
 pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], out: &mut [i32]) {
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
@@ -314,6 +319,7 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
     }
 }
 
+#[inline]
 pub fn apportion_table(
     lat: &MultisetLattice,
     best: &[i32],
@@ -404,10 +410,12 @@ pub struct AddTable {
 }
 
 impl AddTable {
+    #[inline(always)]
     pub fn new(lat: &MultisetLattice) -> Self {
         Self::new_with_threads(lat, num_cpus::get())
     }
 
+    #[inline(always)]
     pub fn new_with_threads(lat: &MultisetLattice, num_threads: usize) -> Self {
         let n = lat.num_letters();
         let rows = lat.full_rack_start();
@@ -447,6 +455,7 @@ impl AddTable {
     }
 }
 
+#[inline]
 pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], dst: &mut [i32]) {
     let n = lat.num_letters();
     let lo = lat.full_rack_start();
@@ -468,6 +477,7 @@ pub fn subset_max_transform(lat: &MultisetLattice, add: &AddTable, src: &[i32], 
     }
 }
 
+#[inline]
 fn scatter_words(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -580,6 +590,7 @@ pub struct OppDenialParams<'a> {
     pub oppdenial_exact_term: &'a [f64],
 }
 
+#[inline]
 pub fn apportion_fused(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -755,6 +766,7 @@ pub fn apportion_fused(
             }
         }
 
+        #[inline]
         fn fold_zeta(&mut self, lo: usize) {
             for t in 0..self.n {
                 for idx in (0..lo).rev() {
@@ -797,6 +809,7 @@ pub fn apportion_fused(
     }
 }
 
+#[inline]
 pub fn opp_denial_marginals(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -935,6 +948,7 @@ impl DrawCtx<'_> {
     }
 }
 
+#[inline]
 pub fn opp_value_per_rack(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -1009,6 +1023,7 @@ pub fn opp_value_per_rack(
     .outer(0, rack_size, 0);
 }
 
+#[inline]
 pub fn best_equity_argmax_table(
     lat: &MultisetLattice,
     sheet: &[i32],
@@ -1111,6 +1126,7 @@ pub struct KeptArgmax<'a> {
     pub size: &'a [u8],
 }
 
+#[inline]
 pub fn opp_me2_per_rack(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -1211,6 +1227,7 @@ pub fn opp_me2_per_rack(
     .outer(0, rack_size, 0);
 }
 
+#[inline]
 pub fn entering_fused(
     lat: &MultisetLattice,
     best: &[i32],
@@ -1294,6 +1311,7 @@ pub fn entering_fused(
     }
 }
 
+#[inline]
 pub fn entering_leave_ci_fused(
     lat: &MultisetLattice,
     varr: &[f64],
@@ -1382,6 +1400,7 @@ pub fn entering_leave_ci_fused(
     }
 }
 
+#[inline]
 pub fn generate_fused(
     lat: &MultisetLattice,
     best: &[i32],
@@ -1468,6 +1487,7 @@ pub fn generate_fused(
     }
 }
 
+#[inline]
 pub fn mark_drawable_best(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -1526,6 +1546,7 @@ pub fn mark_drawable_best(
     .rec(0, rack_size, 0);
 }
 
+#[inline]
 pub fn leave_value_by_draw(
     lat: &MultisetLattice,
     best: &[i32],
@@ -1610,6 +1631,7 @@ pub fn leave_value_by_draw(
     }
 }
 
+#[inline]
 pub fn dynamic_leave_value(
     lat: &MultisetLattice,
     add: &AddTable,
@@ -1640,6 +1662,7 @@ pub fn dynamic_leave_value(
     }
 }
 
+#[inline]
 pub fn fill_lattice_leaves(
     lat: &MultisetLattice,
     out: &mut [i32],
@@ -1667,6 +1690,7 @@ fn n_choose_k(n: u64, k: u64) -> u64 {
     (num / den) as u64
 }
 
+#[inline]
 pub fn record_blank_variants(
     lat: &MultisetLattice,
     sheet: &mut [i32],
@@ -1786,6 +1810,7 @@ pub fn record_blank_variants(
 mod tests {
     use super::*;
     #[test]
+    #[inline]
     fn lattice_roundtrips_and_counts() {
         let lat = MultisetLattice::new(3, 2);
 
@@ -1798,6 +1823,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn lattice_roundtrips_english_sized() {
         let lat = MultisetLattice::new(27, 7);
         assert_eq!(lat.len(), 5_379_616);
@@ -1809,6 +1835,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn rank_sparse_matches_rank() {
         let lat = MultisetLattice::new(27, 7);
         let mut buf = vec![0u8; 27];
@@ -1829,6 +1856,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn naive_best_equity_matches_hand_calc() {
         let lat = MultisetLattice::new(2, 2);
 
@@ -1845,6 +1873,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn fast_conv_matches_naive() {
         let lat = MultisetLattice::new(4, 4);
 
@@ -1869,6 +1898,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn draw_average_weights_and_full_leave() {
         let lat = MultisetLattice::new(2, 2);
         let unseen = [1u8, 1u8];
@@ -1887,6 +1917,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn entering_fused_matches_draw() {
         let lat = MultisetLattice::new(3, 3);
         let unseen = [4u8, 3u8, 2u8];
@@ -1915,6 +1946,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn dynamic_leave_matches_draw_with_s_added() {
         let lat = MultisetLattice::new(3, 3);
         let add = AddTable::new(&lat);
@@ -1939,6 +1971,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn entering_leave_ci_matches_brute() {
         let lat = MultisetLattice::new(3, 3);
         let unseen = [4u8, 3u8, 2u8];
@@ -1998,6 +2031,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn generate_fused_matches_brute() {
         let lat = MultisetLattice::new(3, 3);
         let unseen = [4u8, 3u8, 2u8];
@@ -2064,6 +2098,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn apportion_matches_naive() {
         let lat = MultisetLattice::new(3, 3);
         let unseen = [4u8, 3u8, 2u8];
@@ -2121,6 +2156,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn mark_drawable_best_copies_drawable() {
         let lat = MultisetLattice::new(3, 3);
         let add = AddTable::new(&lat);
@@ -2143,6 +2179,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn apportion_fused_matches_split() {
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
@@ -2207,6 +2244,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn apportion_fused_null_leave_matches() {
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
@@ -2270,6 +2308,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn apportion_fused_oppdenial_rack_matches_brute() {
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
@@ -2367,6 +2406,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn opp_value_per_rack_matches_brute() {
         let lat = MultisetLattice::new(4, 3);
         let unseen = [3u8, 2u8, 4u8, 1u8];
@@ -2420,6 +2460,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn opp_me2_per_rack_me2_scale_zero_is_opp_value() {
         let lat = MultisetLattice::new(4, 3);
         let unseen = [3u8, 2u8, 4u8, 1u8];
@@ -2470,6 +2511,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn apportion_fused_oppdenial_exact_matches_brute() {
         let lat = MultisetLattice::new(4, 4);
         let unseen = [3u8, 2u8, 4u8, 1u8];
@@ -2585,6 +2627,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn opp_me2_per_rack_matches_brute() {
         let lat = MultisetLattice::new(4, 3);
         let unseen = [3u8, 2u8, 4u8, 1u8];
@@ -2694,6 +2737,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn opp_denial_marginals_matches_brute() {
         let lat = MultisetLattice::new(4, 4);
         let add = AddTable::new(&lat);
@@ -2711,6 +2755,7 @@ mod tests {
         best_equity_table(&lat, &sheet, &leave, &mut best);
         let mut marginal = vec![0f64; 4];
         opp_denial_marginals(&lat, &add, &best, &unseen, &mut marginal);
+        #[inline]
         fn binom(n: u64, k: u64) -> f64 {
             if k > n {
                 return 0.0;
@@ -2758,6 +2803,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn record_blank_variants_enumerates_designations() {
         let lat = MultisetLattice::new(4, 4);
         let key = |tally: &[u8]| lat.rank(tally) as usize;

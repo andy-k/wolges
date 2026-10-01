@@ -30,6 +30,7 @@ pub enum Alphabet {
 }
 
 impl Alphabet {
+    #[inline(always)]
     fn new_static(tiles: Vec<Tile>) -> Self {
         let num_letters = tiles.len() as u8;
         let mut same_score_tile = Box::from_iter(0..num_letters);
@@ -80,6 +81,7 @@ impl Alphabet {
         })
     }
 
+    #[inline(always)]
     pub fn new_static_from_text(s: &str) -> error::Returns<Self> {
         let mut tiles = Vec::new();
         for line_str in s.lines() {
@@ -229,6 +231,7 @@ impl Alphabet {
         }
     }
 
+    #[inline(always)]
     pub fn fmt_rack<'a>(&'a self, rack: &'a [u8]) -> WriteableRack<'a> {
         WriteableRack {
             alphabet: self,
@@ -236,10 +239,12 @@ impl Alphabet {
         }
     }
 
+    #[inline(always)]
     pub fn rack_score(&self, rack: &[u8]) -> i32 {
         rack.iter().map(|&t| self.score(t) as i32).sum::<i32>()
     }
 
+    #[inline(always)]
     pub fn scaled_rack_score(&self, rack: &[u8]) -> i32 {
         rack.iter().map(|&t| self.scaled_score(t)).sum::<i32>()
     }
@@ -251,6 +256,7 @@ pub struct WriteableRack<'a> {
 }
 
 impl std::fmt::Display for WriteableRack<'_> {
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
             // allocates, but no choice.
@@ -272,53 +278,63 @@ macro_rules! new_static_alphabet_from_file {
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Catalan
 // with QU tile instead of Q
+#[inline(always)]
 pub fn make_catalan_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/catalan.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Catalan
 // note: Ç and L·L have different scores from regular.
+#[inline(always)]
 pub fn make_super_catalan_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/super_catalan.txt")
 }
 
 // for pass-through kwg reading/building, cannot be used for games.
+#[inline(always)]
 pub fn make_decimal_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/decimal.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Dutch
+#[inline(always)]
 pub fn make_dutch_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/dutch.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#English
+#[inline(always)]
 pub fn make_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/english.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#French
 // https://en.wikipedia.org/wiki/French_orthography
+#[inline(always)]
 pub fn make_french_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/french.txt")
 }
 
 // for pass-through kwg reading/building, cannot be used for games.
+#[inline(always)]
 pub fn make_hex_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/hex.txt")
 }
 
 // http://hkcrosswordclub.com/?cat=14
+#[inline(always)]
 pub fn make_hong_kong_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/hong_kong_english.txt")
 }
 
 // https://en.wikipedia.org/wiki/Super_Scrabble
+#[inline(always)]
 pub fn make_super_english_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/super_english.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#German
+#[inline(always)]
 pub fn make_german_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/german.txt")
 }
@@ -327,6 +343,7 @@ pub fn make_german_alphabet() -> Alphabet {
 // https://en.wikipedia.org/wiki/Norwegian_orthography
 // https://unicode.org/mail-arch/unicode-ml/y2002-m01/0297.html
 // also this ordering matches system locale files
+#[inline(always)]
 pub fn make_norwegian_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/norwegian.txt")
 }
@@ -334,11 +351,13 @@ pub fn make_norwegian_alphabet() -> Alphabet {
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Polish
 // https://en.wikipedia.org/wiki/Polish_alphabet#Letters
 // https://en.wikipedia.org/wiki/Polish_phonology#Vowels
+#[inline(always)]
 pub fn make_polish_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/polish.txt")
 }
 
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Slovenian
+#[inline(always)]
 pub fn make_slovene_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/slovene.txt")
 }
@@ -346,6 +365,7 @@ pub fn make_slovene_alphabet() -> Alphabet {
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions#Spanish
 // based on Spanish-language sets sold outside North America
 // (CH/LL/RR are ambiguous and should not be supported)
+#[inline(always)]
 pub fn make_spanish_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/spanish.txt")
 }
@@ -356,6 +376,7 @@ pub fn make_spanish_alphabet() -> Alphabet {
 // Å Ä Ö are distinct letters sorted after Z; Ü collates after Y ("German y"),
 // Æ as Ä, Ø as Ö (Unicode CLDR sv: &Y<<ü, &z<å<ä<<æ<ö<<ø).
 // also this ordering matches system locale files.
+#[inline(always)]
 pub fn make_swedish_alphabet() -> Alphabet {
     new_static_alphabet_from_file!("alphabets/swedish.txt")
 }
@@ -367,6 +388,7 @@ pub struct AlphabetReader {
 
 // This is slow, but supports multi-codepoint tiles with greedy matching.
 impl AlphabetReader {
+    #[inline(always)]
     pub fn new_for_tiles(mut supported_tiles: Box<[(u8, bites::Bites)]>) -> Self {
         // sort supported tiles by first byte (asc), length (desc), and tile (asc).
         supported_tiles.sort_unstable_by(|(a_tile, a_label), (b_tile, b_label)| {
@@ -397,6 +419,7 @@ impl AlphabetReader {
     }
 
     // Recognizes [A-Z] and [a-z] identically, as well as aliases.
+    #[inline(always)]
     pub fn new_for_words(alphabet: &Alphabet) -> Self {
         let alphabet_len = alphabet.len();
         let mut cap = 0;
@@ -421,6 +444,7 @@ impl AlphabetReader {
     }
 
     // Same as new_for_words but merge tiles with same score.
+    #[inline(always)]
     pub fn new_for_word_scores(alphabet: &Alphabet) -> Self {
         let alphabet_len = alphabet.len();
         let mut cap = 0;
@@ -446,6 +470,7 @@ impl AlphabetReader {
     }
 
     // Recognizes [?A-Z] and [a-z] identically, as well as aliases.
+    #[inline(always)]
     pub fn new_for_racks(alphabet: &Alphabet) -> Self {
         let alphabet_len = alphabet.len();
         let mut cap = 0;
@@ -481,6 +506,7 @@ impl AlphabetReader {
     }
 
     // Recognizes [A-Za-z] and aliases. Play-through needs to be dealt with separately.
+    #[inline(always)]
     pub fn new_for_plays(alphabet: &Alphabet) -> Self {
         let alphabet_len = alphabet.len();
         let mut cap = 0;

@@ -48,6 +48,7 @@ impl Equity {
 }
 
 impl std::fmt::Display for Equity {
+    #[inline(always)]
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let precision = fmt.precision().unwrap_or(3);
         let v = self.0 as f64 / SCALE as f64;

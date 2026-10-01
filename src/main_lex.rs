@@ -3,6 +3,7 @@
 use wolges::kwg::Node;
 use wolges::{alphabet, bites, error, fash, game_config, kwg};
 
+#[inline(always)]
 fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) {
     struct Env<'a, N: kwg::Node> {
         a: &'a alphabet::Alphabet,
@@ -44,6 +45,7 @@ fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) {
 }
 
 // parses '#' as 0
+#[inline(always)]
 fn parse_embedded_words_board(
     alphabet_reader: &alphabet::AlphabetReader,
     s: &str,
@@ -70,6 +72,7 @@ fn parse_embedded_words_board(
 }
 
 // x.sqrt().floor(), works with usize::MAX edge case too
+#[inline(always)]
 fn isqrt(x: usize) -> usize {
     let lz = usize::leading_zeros(x);
     let mut bit = 1 << ((usize::BITS - lz - (lz == 0) as u32) >> 1);
@@ -196,6 +199,7 @@ impl EmbeddedWordsFinder {
         self.ubuf[idx] = false;
     }
 
+    #[inline(always)]
     fn find_embedded_words<M: Fn(usize) -> i8, F: FnMut(&[u8], i8), N: kwg::Node>(
         &mut self,
         params: &mut FindEmbeddedWordParams<'_, M, F, N>,
@@ -208,6 +212,7 @@ impl EmbeddedWordsFinder {
     }
 }
 
+#[inline(always)]
 fn test_find_embedded_words<'a, N: kwg::Node>(
     alphabet: &alphabet::Alphabet,
     kwg: &kwg::Kwg<N>,

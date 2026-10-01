@@ -3,6 +3,7 @@
 use wolges::kwg::Node;
 use wolges::{alphabet, bites, build, error, fash, kwg, lexport, prob};
 
+#[inline]
 fn parse_machine_words(
     alphabet_reader: &alphabet::AlphabetReader,
     giant_string: &str,
@@ -31,6 +32,7 @@ fn parse_machine_words(
     Ok(machine_words)
 }
 
+#[inline]
 fn read_machine_words(
     alphabet_reader: &alphabet::AlphabetReader,
     giant_string: &str,
@@ -41,6 +43,7 @@ fn read_machine_words(
     Ok(machine_words.into_boxed_slice())
 }
 
+#[inline]
 fn read_machine_words_sorted_by_length(
     alphabet_reader: &alphabet::AlphabetReader,
     giant_string: &str,
@@ -53,6 +56,7 @@ fn read_machine_words_sorted_by_length(
 
 use std::str::FromStr;
 
+#[inline]
 fn build_leaves_scaled_i16<Readable: std::io::Read>(
     f: Readable,
     alph: alphabet::Alphabet,
@@ -116,6 +120,7 @@ fn build_leaves_scaled_i16<Readable: std::io::Read>(
     Ok(bin)
 }
 
+#[inline]
 fn build_leaves_f32<Readable: std::io::Read>(
     f: Readable,
     alph: alphabet::Alphabet,
@@ -163,6 +168,7 @@ fn build_leaves_f32<Readable: std::io::Read>(
     Ok(bin)
 }
 
+#[inline]
 fn read_leaves_f32<Readable: std::io::Read>(
     f: Readable,
     alph: &alphabet::Alphabet,
@@ -186,6 +192,7 @@ fn read_leaves_f32<Readable: std::io::Read>(
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // support "-" to mean stdout.
+#[inline]
 fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
     Ok(if filename == "-" {
         USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -196,6 +203,7 @@ fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error
 }
 
 // when using "-" as output filename, print things to stderr.
+#[inline]
 fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
     if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
         Box::new(std::io::stderr()) as Box<dyn std::io::Write>
@@ -205,6 +213,7 @@ fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
 }
 
 // support "-" to mean stdin.
+#[inline]
 fn make_reader(filename: &str) -> Result<Box<dyn std::io::Read>, std::io::Error> {
     Ok(if filename == "-" {
         Box::new(std::io::stdin())
@@ -220,6 +229,7 @@ fn read_to_string(reader: &mut Box<dyn std::io::Read>) -> Result<String, std::io
     Ok(s)
 }
 
+#[inline]
 fn do_lang<AlphabetMaker: Fn() -> alphabet::Alphabet>(
     args: &[String],
     language_name: &str,
@@ -501,6 +511,7 @@ input/output files can be \"-\" (not advisable for binary files)"
     }
 }
 
+#[inline]
 fn old_main() -> error::Returns<()> {
     std::fs::write(
         "lexbin/CSW24.klv2",

@@ -26,6 +26,7 @@ impl WinPctAccumulator {
         }
     }
 
+    #[inline(always)]
     pub fn record(&mut self, bag: usize, my: usize, opp: usize, spread: i32, final_spread: i32) {
         let key = (bag as u16, my as u8, opp as u8);
         *self
@@ -36,6 +37,7 @@ impl WinPctAccumulator {
             .or_insert(0) += 1;
     }
 
+    #[inline(always)]
     pub fn merge(&mut self, other: &WinPctAccumulator) {
         for (key, hist) in &other.rows {
             let dst = self.rows.entry(*key).or_default();
@@ -45,6 +47,7 @@ impl WinPctAccumulator {
         }
     }
 
+    #[inline(always)]
     pub fn to_csv<W: std::io::Write>(&self, w: W) -> crate::error::Returns<()> {
         // a row has a pair for each delta, so rows differ in length.
         let mut out = csv::WriterBuilder::new().flexible(true).from_writer(w);
@@ -68,6 +71,7 @@ impl WinPctAccumulator {
         Ok(())
     }
 
+    #[inline(always)]
     pub fn from_csv<R: std::io::Read>(r: R) -> crate::error::Returns<WinPctAccumulator> {
         let mut acc = WinPctAccumulator::new();
         let mut reader = csv::ReaderBuilder::new()
@@ -101,6 +105,7 @@ impl WinPctAccumulator {
         Ok(acc)
     }
 
+    #[inline(always)]
     pub fn finalize(&self) -> WinPctTable {
         let mut rows = HashMap::with_capacity(self.rows.len());
         for (&key, hist) in &self.rows {
@@ -139,10 +144,12 @@ pub struct WinPctTable {
 }
 
 impl WinPctTable {
+    #[inline(always)]
     pub fn get(&self, spread: i32, bag: usize, my: usize, opp: usize) -> f32 {
         self.get_opt(spread, bag, my, opp).unwrap_or(0.5)
     }
 
+    #[inline(always)]
     pub fn get_opt(&self, spread: i32, bag: usize, my: usize, opp: usize) -> Option<f32> {
         match self.rows.get(&(bag as u16, my as u8, opp as u8)) {
             None => None,
@@ -170,6 +177,7 @@ mod tests {
     const EPS: f32 = 1e-5;
 
     #[test]
+    #[inline]
     fn finalize_is_monotone_symmetric_and_half_at_zero() {
         let mut acc = WinPctAccumulator::new();
         for &v in &[-30, -10, 10, 30] {
@@ -198,6 +206,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn cumulative_informs_all_leads() {
         let mut acc = WinPctAccumulator::new();
         acc.record(60, 7, 7, 0, -45); // one game swung -45 from this state.
@@ -225,6 +234,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn get_saturates_out_of_range() {
         let mut acc = WinPctAccumulator::new();
         for &v in &[-30, -10, 10, 30] {
@@ -242,6 +252,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn absent_key_is_half() {
         let mut acc = WinPctAccumulator::new();
         acc.record(50, 7, 7, 0, 10);
@@ -252,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn distinct_keys_independent() {
         let mut acc = WinPctAccumulator::new();
         for &v in &[-5, 5] {
@@ -277,6 +289,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn merge_is_additive() {
         let mut a = WinPctAccumulator::new();
         let mut b = WinPctAccumulator::new();
@@ -310,6 +323,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn csv_raw_round_trip() {
         let mut acc = WinPctAccumulator::new();
         for &v in &[-120, -40, -5, 0, 5, 40, 120] {
@@ -340,6 +354,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn combine_csvs_sums_counts() {
         let mut a = WinPctAccumulator::new();
         let mut b = WinPctAccumulator::new();

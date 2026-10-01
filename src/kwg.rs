@@ -102,6 +102,7 @@ impl<N: Node> std::ops::Index<i32> for Kwg<N> {
 }
 
 impl<N: Node> Kwg<N> {
+    #[inline(always)]
     pub fn from_bytes_alloc(buf: &[u8]) -> Self {
         let kwg_len = buf.len() / 4;
         let mut elts = Vec::with_capacity(kwg_len);
@@ -159,6 +160,7 @@ impl<N: Node> Kwg<N> {
         word_counts[p as usize]
     }
 
+    #[inline(always)]
     pub fn count_words_alloc(&self) -> Box<[u32]> {
         let mut word_counts = vec![0u32; self.0.len()];
         for p in (0..word_counts.len()).rev() {
@@ -167,6 +169,7 @@ impl<N: Node> Kwg<N> {
         word_counts.into_boxed_slice()
     }
 
+    #[inline(always)]
     pub fn compute_letter_bits(&self) -> LetterBits {
         let len = self.0.len();
         let mut letter_bits = vec![0u64; len];
@@ -192,6 +195,7 @@ impl<N: Node> Kwg<N> {
         }
     }
 
+    #[inline(always)]
     pub fn count_dawg_words_alloc(&self) -> Box<[u32]> {
         fn max_from<N: Node>(nodes: &Kwg<N>, vis: &mut [u8], mut p: i32) -> i32 {
             let mut ret = 0;
@@ -314,6 +318,7 @@ impl<N: Node> Kwg<N> {
         !0
     }
 
+    #[inline(always)]
     fn completes_alpha_cross_set(&self, mut p: i32, letters_tally: &[u8], next_letter: u8) -> bool {
         for letter in next_letter..letters_tally.len() as u8 {
             for _ in 0..letters_tally[letter as usize] {
@@ -331,6 +336,7 @@ impl<N: Node> Kwg<N> {
         self.completes_alpha_cross_set(0, letters_tally, 1)
     }
 
+    #[inline(always)]
     pub fn compute_alpha_cross_set(&self, letters_tally: &[u8]) -> u64 {
         let mut answer = 1; // always set bit 0 here
         let mut p = self[0].arc_index();

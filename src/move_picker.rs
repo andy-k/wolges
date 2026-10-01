@@ -218,6 +218,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         candidates
     }
 
+    #[inline]
     pub fn leader_summary(&self) -> (usize, f64, f64) {
         let leader = self
             .candidates
@@ -227,6 +228,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         (leader.play_index, leader.stats.mean(), leader.stats.count())
     }
 
+    #[inline]
     pub fn leaderboard(&self, top_n: usize) -> Vec<(usize, f64, f64, f64)> {
         let mut all: Vec<&Candidate> = self.candidates.iter().chain(self.retired.iter()).collect();
         all.sort_unstable_by(|a, b| b.stats.mean().total_cmp(&a.stats.mean()));
@@ -243,6 +245,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             .collect()
     }
 
+    #[inline]
     pub fn add_play(&mut self, play_index: usize) -> u64 {
         let stream_id = self.next_stream_id;
         self.next_stream_id += 1;
@@ -256,6 +259,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         stream_id
     }
 
+    #[inline]
     pub fn readmit_with_history(&mut self, stream_id: u64) -> bool {
         if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
             let candidate = self.retired.swap_remove(pos);
@@ -266,6 +270,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         }
     }
 
+    #[inline]
     pub fn readmit_fresh(&mut self, stream_id: u64) -> bool {
         if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
             let play_index = self.retired.swap_remove(pos).play_index;
@@ -276,10 +281,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
         }
     }
 
+    #[inline(always)]
     pub fn retired_stream_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.retired.iter().map(|c| c.stream_id)
     }
 
+    #[inline]
     pub fn stream_count(&self, stream_id: u64) -> Option<f64> {
         self.candidates
             .iter()
@@ -288,10 +295,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             .map(|c| c.stats.count())
     }
 
+    #[inline(always)]
     pub fn best_so_far(&self) -> usize {
         top_candidate_play_index_by_mean(&self.candidates)
     }
 
+    #[inline(always)]
     pub fn is_decided(&self) -> bool {
         leader_is_separated(&self.candidates, self.stop_delta)
     }
@@ -327,6 +336,7 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
 }
 
 impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
+    #[inline]
     fn run_iterations(
         &mut self,
         move_generator: &movegen::KurniaMoveGenerator,
@@ -474,6 +484,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
     // reduce every iteration in the same order whatever the thread count: the variance
     // combine is not associative in floating point.
     #[cfg(not(target_family = "wasm"))]
+    #[inline]
     fn run_iterations_parallel(
         &mut self,
         move_generator: &movegen::KurniaMoveGenerator,
@@ -610,6 +621,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         self.retired = retired;
     }
 
+    #[inline]
     pub fn begin_decision(
         &mut self,
         move_generator: &movegen::KurniaMoveGenerator,
@@ -626,6 +638,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         self.run_iterations(move_generator, budget, iters);
     }
 
+    #[inline]
     pub fn resume(&mut self, move_generator: &movegen::KurniaMoveGenerator, extra_iters: u64) {
         let budget = self.num_sim_iters;
         self.run_iterations(move_generator, budget, extra_iters);
@@ -677,6 +690,7 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
 mod tests {
     use super::*;
 
+    #[inline]
     fn stats_from(values: &[f64]) -> stats::Stats {
         let mut s = stats::Stats::new();
         for &v in values {
@@ -685,6 +699,7 @@ mod tests {
         s
     }
 
+    #[inline]
     fn candidate_from(play_index: usize, values: &[f64]) -> Candidate {
         Candidate {
             play_index,
@@ -696,6 +711,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn fwer_z_matches_the_gaussian_union_bound() {
         let expected = (2.0 * (1.0f64 / 0.05).ln()).sqrt();
         assert!((fwer_z(2, 0.05) - expected).abs() < 1e-12);
@@ -704,6 +720,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn leader_is_separated_only_when_the_field_is_cleared() {
         let separated = vec![
             candidate_from(0, &[19.0, 21.0].repeat(50)),
@@ -722,6 +739,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn retire_below_keeps_survivors_in_order() {
         let mut candidates = vec![
             candidate_from(0, &[20.0, 20.0].repeat(50)),

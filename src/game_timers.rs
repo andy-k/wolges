@@ -7,6 +7,7 @@ pub struct GameTimers {
 }
 
 impl GameTimers {
+    #[inline(always)]
     pub fn new(num_players: u8) -> Self {
         Self {
             instant: std::time::Instant::now(),
@@ -15,12 +16,14 @@ impl GameTimers {
         }
     }
 
+    #[inline(always)]
     pub fn reset_to(&mut self, initial_ms: i64) {
         self.clocks_ms.iter_mut().for_each(|m| *m = initial_ms);
         self.turn = -1;
         self.instant = std::time::Instant::now();
     }
 
+    #[inline(always)]
     pub fn set_turn(&mut self, new_turn: i8) {
         let new_instant = std::time::Instant::now();
         if self.turn >= 0 && (self.turn as usize) < self.clocks_ms.len() {
@@ -32,6 +35,7 @@ impl GameTimers {
         self.turn = new_turn;
     }
 
+    #[inline(always)]
     pub fn get_timer_as_at(&self, instant: std::time::Instant, turn: usize) -> i64 {
         if turn < self.clocks_ms.len() {
             self.clocks_ms[turn]

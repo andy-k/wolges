@@ -140,6 +140,7 @@ impl Kibitzer {
         }
     }
 
+    #[inline(always)]
     pub fn prepare(
         &mut self,
         game_config: &game_config::GameConfig,

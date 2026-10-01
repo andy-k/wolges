@@ -30,6 +30,7 @@ struct Coord {
 }
 
 // /^(?:\d+[A-Z]+|[A-Z]+\d+)$/i
+#[inline(always)]
 fn parse_coord_token(coord: &str, dim: &matrix::Dim) -> Option<Coord> {
     let b1 = coord.as_bytes();
     let l1 = b1.iter().take_while(|c| c.is_ascii_digit()).count();
@@ -70,6 +71,7 @@ fn parse_coord_token(coord: &str, dim: &matrix::Dim) -> Option<Coord> {
 }
 
 // /^[+-](?:0|[1-9]\d*)$/
+#[inline(always)]
 fn is_score_token(coord: &str) -> bool {
     let b = coord.as_bytes();
     if !(!b.is_empty() && (b[0] == b'+' || b[0] == b'-')) {
@@ -90,6 +92,7 @@ fn is_score_token(coord: &str) -> bool {
 }
 
 // /^-?\d+$/
+#[inline(always)]
 fn is_cum_token(coord: &str) -> bool {
     let b = coord.as_bytes();
     let b = &b[(!b.is_empty() && b[0] == b'-') as usize..];
@@ -107,6 +110,7 @@ use std::str::FromStr;
 
 impl Question {
     // not-very-strict gcg parser
+    #[inline(always)]
     fn from_gcg(
         game_config: &game_config::GameConfig,
         lexicon: &str,
@@ -385,6 +389,7 @@ impl Question {
         })
     }
 
+    #[inline(always)]
     fn from_fen(
         game_config: &game_config::GameConfig,
         lexicon: &str,
@@ -425,6 +430,7 @@ impl Question {
     }
 }
 
+#[inline(always)]
 fn run_batch(path: &str) -> error::Returns<()> {
     let game_config = game_config::make_english_game_config();
     let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
@@ -1213,6 +1219,7 @@ fn main() -> error::Returns<()> {
     solve_question(&question, 0)
 }
 
+#[inline(always)]
 fn run_cli(args: &[String]) -> error::Returns<()> {
     const USAGE: &str = "\
 usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
@@ -1266,6 +1273,7 @@ usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
     }
 }
 
+#[inline(always)]
 fn game_config_for_name(name: &str) -> Option<game_config::GameConfig> {
     Some(match name {
         "english" => game_config::make_english_game_config(),
@@ -1296,6 +1304,7 @@ fn game_config_for_name(name: &str) -> Option<game_config::GameConfig> {
     })
 }
 
+#[inline(always)]
 fn build_pruned_kwg(
     game_config: &game_config::GameConfig,
     words: &[bites::Bites],
@@ -1314,6 +1323,7 @@ fn build_pruned_kwg(
     }
 }
 
+#[inline(always)]
 fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
     // of course this should be cached
     let (kwg, game_config) = match question.lexicon.as_str() {
@@ -1333,6 +1343,7 @@ fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
     solve_position(&game_config, &kwg, question, score_diff)
 }
 
+#[inline(always)]
 fn solve_position<N: kwg::Node>(
     game_config: &game_config::GameConfig,
     kwg: &kwg::Kwg<N>,
@@ -1566,6 +1577,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[inline]
     fn from_fen_empty_board_parses() {
         let game_config = game_config::make_english_game_config();
         let dim = game_config.board_layout().dim();
@@ -1586,12 +1598,14 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn game_config_for_name_rejects_unknown() {
         assert!(game_config_for_name("english").is_some());
         assert!(game_config_for_name("BOGUS").is_none());
     }
 
     #[test]
+    #[inline]
     fn game_config_for_name_handles_jumbled_and_super() {
         assert!(matches!(
             game_config_for_name("english").unwrap().game_rules(),
@@ -1621,6 +1635,7 @@ mod tests {
     }
 
     #[test]
+    #[inline]
     fn build_pruned_kwg_matches_game_rules() {
         use wolges::kwg::Node; // arc_index is a Node trait method
         let classic = game_config::make_english_game_config();

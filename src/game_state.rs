@@ -3,6 +3,7 @@
 use super::{bag, equity, error, game_config, movegen};
 use rand::prelude::*;
 
+#[inline(always)]
 pub fn use_tiles<II: IntoIterator<Item = u8>>(
     rack: &mut Vec<u8>,
     tiles_iter: II,
@@ -107,6 +108,7 @@ impl GameState {
         self.pass_turns = 0;
     }
 
+    #[inline(always)]
     pub fn reset_and_draw_tiles(
         &mut self,
         game_config: &game_config::GameConfig,
@@ -120,6 +122,7 @@ impl GameState {
         }
     }
 
+    #[inline(always)]
     pub fn reset_and_draw_tiles_double_ended(
         &mut self,
         game_config: &game_config::GameConfig,
@@ -135,6 +138,7 @@ impl GameState {
 
     // an opponent holding a desired tile not found in bag will draw another.
     // if desired tile is missing, final rack will be shorter.
+    #[inline(always)]
     pub fn set_current_rack(&mut self, desired_rack: &[u8]) {
         self.bag
             .return_tiles(&self.players[self.turn as usize].rack);
@@ -164,10 +168,12 @@ impl GameState {
         }
     }
 
+    #[inline(always)]
     pub fn current_player(&self) -> &GamePlayer {
         &self.players[self.turn as usize]
     }
 
+    #[inline(always)]
     pub fn play(
         &mut self,
         game_config: &game_config::GameConfig,
@@ -236,12 +242,14 @@ impl GameState {
         Ok(())
     }
 
+    #[inline(always)]
     pub fn next_turn(&mut self) {
         let num_players = self.players.len() as u8;
         self.turn += 1;
         self.turn -= num_players & -((self.turn >= num_players) as i8) as u8;
     }
 
+    #[inline(always)]
     pub fn check_game_ended(
         &self,
         game_config: &game_config::GameConfig,

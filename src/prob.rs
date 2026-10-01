@@ -9,6 +9,7 @@ pub struct Pascal {
 }
 
 impl Pascal {
+    #[inline(always)]
     fn new() -> Self {
         Self {
             raw: vec![1],
@@ -16,6 +17,7 @@ impl Pascal {
         }
     }
 
+    #[inline(always)]
     fn row(&mut self, row: usize) -> &[u64] {
         while self.rows <= row {
             let start = self.rows * (self.rows - 1) / 2;
@@ -33,6 +35,7 @@ impl Pascal {
         &self.raw[start..start + row + 1]
     }
 
+    #[inline(always)]
     pub fn with_rows(num_rows: usize) -> Self {
         let mut p = Self::new();
         if num_rows > 1 {
@@ -61,6 +64,7 @@ pub struct WordProbability {
 }
 
 impl WordProbability {
+    #[inline(always)]
     pub fn new(alphabet: &alphabet::Alphabet) -> Self {
         let alphabet_freqs = (0..alphabet.len())
             .map(|tile| alphabet.freq(tile))
@@ -76,6 +80,7 @@ impl WordProbability {
         }
     }
 
+    #[inline(always)]
     pub fn word_draw_ways(&mut self, word: &[u8]) -> u64 {
         self.dp.iter_mut().for_each(|m| *m = 0);
         self.dp[0] = 1;
@@ -150,6 +155,7 @@ impl WordProbability {
     }
 
     // returns 0 rather than panicking when the draw is impossible.
+    #[inline(always)]
     pub fn completion_draw_ways(
         &self,
         full_rack_tally: &[u8],
@@ -168,6 +174,7 @@ impl WordProbability {
         v
     }
 
+    #[inline(always)]
     pub fn full_rack_draw_ways(&self, full_rack_tally: &[u8], source: &[u8]) -> u64 {
         let mut v: u64 = 1;
         for c in 0..self.alphabet_freqs.len() {

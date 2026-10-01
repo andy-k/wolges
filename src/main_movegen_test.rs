@@ -7,6 +7,7 @@ const LEXICON_LINES: usize = 2;
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // support "-" to mean stdout.
+#[inline]
 fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error> {
     Ok(if filename == "-" {
         USED_STDOUT.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -17,6 +18,7 @@ fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error
 }
 
 // when using "-" as output filename, print things to stderr.
+#[inline]
 fn boxed_stdout_or_stderr() -> Box<dyn std::io::Write> {
     if USED_STDOUT.load(std::sync::atomic::Ordering::Relaxed) {
         Box::new(std::io::stderr()) as Box<dyn std::io::Write>
@@ -174,6 +176,7 @@ fn lexicon_line(what: &str, bytes: &[u8]) -> String {
     )
 }
 
+#[inline(always)]
 fn parse_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> error::Returns<Vec<u8>> {
     let reader = alphabet::AlphabetReader::new_for_racks(alphabet);
     let sb = rack_str.as_bytes();
