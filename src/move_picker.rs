@@ -292,6 +292,24 @@ impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSER
     }
 
     #[inline]
+    pub fn retire_stream(&mut self, stream_id: u64) -> bool {
+        if self.candidates.len() < 2 {
+            return false;
+        }
+        if let Some(pos) = self
+            .candidates
+            .iter()
+            .position(|candidate| candidate.stream_id == stream_id)
+        {
+            let candidate = self.candidates.remove(pos);
+            self.retired.push(candidate);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[inline]
     pub fn readmit_with_history(&mut self, stream_id: u64) -> bool {
         if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
             let candidate = self.retired.swap_remove(pos);
@@ -316,6 +334,11 @@ impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSER
     #[inline(always)]
     pub fn retired_stream_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.retired.iter().map(|c| c.stream_id)
+    }
+
+    #[inline(always)]
+    pub fn active_stream_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.candidates.iter().map(|c| c.stream_id)
     }
 
     #[inline]
@@ -370,6 +393,10 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync, const OBSERVE: bool> Simmer<'
         budget: u64,
         count: u64,
     ) {
+        if self.candidates.len() < 2 {
+            return;
+        }
+
         #[cfg(not(target_family = "wasm"))]
         if self.sim_threads > 1 {
             self.run_iterations_parallel(move_generator, budget, count);
