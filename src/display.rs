@@ -434,3 +434,61 @@ pub fn print_game_state(
         }
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::matrix;
+
+    #[test]
+    #[inline]
+    fn every_column_name_reads_back() {
+        for col in 0..i8::MAX {
+            let name = column(col).to_string();
+            assert_eq!(
+                str_to_column_usize(name.as_bytes()),
+                Some(col as usize),
+                "{name}"
+            );
+            assert_eq!(
+                str_to_column_usize_ignore_case(name.to_ascii_lowercase().as_bytes()),
+                Some(col as usize),
+                "{name}"
+            );
+        }
+        assert_eq!(column(25).to_string(), "Z");
+        assert_eq!(column(26).to_string(), "AA");
+        assert_eq!(column(i8::MAX - 1).to_string(), "DW");
+    }
+
+    #[test]
+    #[inline]
+    fn a_board_wider_than_z_prints_and_parses_back() {
+        let alphabet = alphabet::make_english_alphabet();
+        let (rows, cols) = (3, i8::MAX);
+        let area = (rows as isize * cols as isize) as usize;
+        let board_layout = board_layout::make_test_board_layout(
+            vec![
+                board_layout::Premium {
+                    word_multiplier: 1,
+                    tile_multiplier: 1,
+                };
+                area
+            ]
+            .into_boxed_slice(),
+            matrix::Dim { rows, cols },
+            1,
+            63,
+        );
+        let dim = board_layout.dim();
+        let mut board_tiles = vec![0u8; area];
+        board_tiles[dim.at_row_col(0, 0)] = 1;
+        board_tiles[dim.at_row_col(0, 26)] = 5;
+        board_tiles[dim.at_row_col(1, 99)] = 0x80 | 19;
+        board_tiles[dim.at_row_col(2, cols - 1)] = 20;
+        let fen = BoardFenner::new(&alphabet, &board_layout, &board_tiles).to_string();
+        assert_eq!(fen, "A25E100/99s27/126T");
+        let mut fen_parser = BoardFenParser::new(&alphabet, &board_layout);
+        assert_eq!(fen_parser.parse(&fen).unwrap(), &board_tiles[..]);
+    }
+}
