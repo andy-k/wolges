@@ -3159,6 +3159,43 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         boxed_stdout_or_stderr(),
         "census: wrote klv2 to {klv_name} ({n_klv} leaves)"
     )?;
+
+    let summary_name = claim_output_path(&format!("census-summary-{census_run_epoch}.csv"))?;
+    let mut summary_out = csv::Writer::from_path(&summary_name)?;
+    let full_racks = lat.full_rack_start()..lat.len();
+    let mut total_points = 0f64;
+    let mut total_count = 0u64;
+    for idx in full_racks.clone() {
+        if accum_cnt[idx] > 0 {
+            total_points += accum_sum[idx] / equity::SCALE as f64;
+            total_count += accum_cnt[idx];
+        }
+    }
+    summary_out.serialize(("", total_points, total_count))?;
+    let mut num_racks = 0usize;
+    for idx in full_racks {
+        if accum_cnt[idx] == 0 {
+            continue;
+        }
+        lat.unrank_into(idx, &mut tally_buf);
+        leave_ser.clear();
+        for (t, &c) in tally_buf.iter().enumerate() {
+            for _ in 0..c {
+                leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
+            }
+        }
+        summary_out.serialize((
+            &leave_ser,
+            accum_sum[idx] / equity::SCALE as f64,
+            accum_cnt[idx],
+        ))?;
+        num_racks += 1;
+    }
+    summary_out.flush()?;
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "census: wrote the last generation's summary to {summary_name} ({num_racks} full racks)"
+    )?;
     Ok(())
 }
 
