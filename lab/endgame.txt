@@ -49,15 +49,21 @@ regardless of whether today's search ever stops there.
 
 BATCH-SOLVING HARVESTED POSITIONS
 
-autoplay can now harvest the bag-empty positions it plays through into a file.
-An opt-in batch mode (set WOLGES_ENDGAME_BATCH to that file's path) reads the
-harvested positions back, prunes each one's word list to what is reachable,
-solves each with solve() (silent and deterministic, from the previous entry),
-and prints only each line's index and its value -- nothing else, so a whole
-run's output can be hashed or diffed byte for byte. That makes it easy to
-bulk-time the solver over many real positions, or to catch an accidental value
-change in one pass. With the env var unset, the existing hardcoded demo
-positions run exactly as before.
+autoplay can now harvest the bag-empty positions it plays through into a file
+(--harvest with the file's path). An opt-in batch mode (--batch with that
+file's path) reads the harvested positions back, prunes each one's word list to
+what is reachable, solves each with solve() (silent and deterministic, from the
+previous entry), and prints only each line's index and its value -- nothing
+else, so a whole run's output can be hashed or diffed byte for byte. That makes
+it easy to bulk-time the solver over many real positions, or to catch an
+accidental value change in one pass. Without it, the existing hardcoded demo
+positions run exactly as before. Both commands play the game their options
+give (the options lab/leavegen.txt lists), auto with the word graph and the
+leaves as its arguments and the batch mode with the word graph after its file,
+so a harvest of any two-player game is solved in that game:
+
+  cargo run --release --bin auto -- --harvest endgames.txt CSW24.kwg CSW24.klv2
+  cargo run --release --bin endgame -- --batch endgames.txt CSW24.kwg
 
 
 TWO SEARCH SPEEDUPS
@@ -181,23 +187,25 @@ PEG-1 (and the plain empty bag) is in scope here.
 SOLVING A REAL POSITION FROM THE COMMAND LINE
 
 Everything above could only be exercised through the built-in demo positions or
-a batch file of harvested positions. A minimal command line now takes a config
-name, a word-graph file, a board (in FEN, the same compact board notation the
+a batch file of harvested positions. A minimal command line now takes a
+word-graph file, a board (in FEN, the same compact board notation the
 rest of wolges uses), and the mover's own rack, works out the opponent's tiles
 from whatever is unseen, and runs whichever solver actually applies: an
 ordinary empty-bag endgame, or the one-in-bag PEG enumeration when exactly one
-tile is left in the bag. The batch mode and the built-in demo positions are
-unchanged.
+tile is left in the bag. The batch mode plays the same game and reads the word
+graph given after its file; the built-in demo positions are unchanged.
 
-The config name (english, french, and so on) selects only the alphabet, board
-layout, and tile set, never a particular word list, so any word graph built for
-that language works without recompiling; the file argument is that graph. The
-name also carries the board variant: a jumbled- prefix for the anagram game,
-where any arrangement of a rack's letters counts as a word and the word graph
-is an alphagram dawg rather than a spell-it-out gaddawg; a super- prefix for
-the 21x21 board; and the two combine as jumbled-super-. A -big suffix (as in
-jumbled-dutch-big) reads a word graph that uses the wider 24-bit node index,
-for word lists too large to fit the usual layout.
+The game is English on the standard board unless options say otherwise: the
+same --preset, --tiles, --board, --rack-size, --jumbled, --players,
+--bingo-bonus, --zeros-to-end, --passes-to-end, --exchange-limit and
+--exchanges that leave takes (lab/leavegen.txt). The game selects only the
+alphabet, board layout, and tile set, never a particular word list, so any word
+graph built for that game works without recompiling; the file argument is that
+graph. --jumbled plays the anagram game, where any arrangement of a rack's
+letters counts as a word and the word graph is an alphagram dawg rather than a
+spell-it-out gaddawg. --kbwg reads a word graph that uses the wider 24-bit node
+index, for word lists too large to fit the usual layout. The solver plays two
+seats, so a game of any other number of players is refused.
 
 By default the result covers only the tiles still to be played: the win, draw,
 or loss and the point margin describe the rest of the game, not the game so

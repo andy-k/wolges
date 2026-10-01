@@ -6,6 +6,8 @@ use wolges::{
     kwg, matrix, movegen, play_scorer,
 };
 
+mod game_args;
+
 // this is reusing most of main_json, but main_json is the most current code.
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -431,9 +433,11 @@ impl Question {
 }
 
 #[inline(always)]
-fn run_batch(path: &str) -> error::Returns<()> {
-    let game_config = game_config::make_english_game_config();
-    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+fn run_batch<N: kwg::Node>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    path: &str,
+) -> error::Returns<()> {
     let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
@@ -499,14 +503,72 @@ fn run_batch(path: &str) -> error::Returns<()> {
     Ok(())
 }
 
-fn main() -> error::Returns<()> {
-    if let Ok(batch_path) = std::env::var("WOLGES_ENDGAME_BATCH") {
-        return run_batch(&batch_path);
-    }
+#[derive(clap::Parser)]
+#[command(about = "solve an endgame position; with no arguments, solve the built-in examples")]
+struct Cli {
+    #[arg(long, help = "the word graph is a kbwg")]
+    kbwg: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "kwg_file",
+        conflicts_with_all = ["fen", "rack"],
+        help = "solve each line of FILE (board fen, both racks, player to move, tab-separated) \
+                and print its index and value"
+    )]
+    batch: Option<String>,
+    #[arg(help = "path to a word graph built for the game")]
+    kwg_file: Option<String>,
+    #[arg(help = "board in FEN notation (quote it -- it contains '/')")]
+    fen: Option<String>,
+    #[arg(help = "your tiles, e.g. ADENOOO (? for a blank)")]
+    rack: Option<String>,
+    #[arg(
+        allow_negative_numbers = true,
+        default_value_t = 0,
+        help = "how many points you are AHEAD of the opponent right now (negative if you are \
+                behind)"
+    )]
+    score_diff: i32,
+    #[command(flatten)]
+    game: game_args::GameArgs,
+}
 
-    let args = std::env::args().collect::<Vec<_>>();
-    if args.len() > 1 {
-        return run_cli(&args);
+fn main() -> error::Returns<()> {
+    let cli: Cli = clap::Parser::parse();
+    let game_config = cli.game.make_game_config()?;
+    if game_config.num_players() != 2 {
+        wolges::return_error!(
+            "the endgame solver plays two seats, so it needs exactly 2 players".to_string()
+        );
+    }
+    match (cli.batch, cli.kwg_file, cli.fen, cli.rack) {
+        (Some(batch_path), Some(kwg_path), None, None) => {
+            let kwg_bytes = std::fs::read(&kwg_path)?;
+            return if cli.kbwg {
+                let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+                refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
+                run_batch(game_config, kwg, &batch_path)
+            } else {
+                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+                refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
+                run_batch(game_config, kwg, &batch_path)
+            };
+        }
+        (None, Some(kwg_path), Some(fen), Some(rack)) => {
+            return run_cli(
+                &game_config,
+                cli.kbwg,
+                &kwg_path,
+                &fen,
+                &rack,
+                cli.score_diff,
+            );
+        }
+        (None, None, None, None) => {}
+        _ => wolges::return_error!(
+            "give a word graph and a fen and a rack, or --batch and a word graph".to_string()
+        ),
     }
 
     let data = [
@@ -1225,58 +1287,25 @@ fn main() -> error::Returns<()> {
 }
 
 #[inline(always)]
-fn run_cli(args: &[String]) -> error::Returns<()> {
-    const USAGE: &str = "\
-usage: endgame <config> <kwg-file> <fen> <rack> [score-diff]
-  config:     english, catalan, dutch, french, german, norwegian,
-              polish, slovene, spanish, or swedish -- the alphabet, board
-              layout, and tile set the kwg-file was built for, NOT a
-              particular word list. Prefix jumbled- for the anagram variant
-              (needs a .kad alphagram dawg) and/or super- for the 21x21
-              board; suffix -big for a .kbwg (24-bit, e.g. a Dutch word list
-              too large for a plain .kwg), e.g. jumbled-dutch-big
-  kwg-file:   path to a word graph built for that config
-  fen:        board in FEN notation (quote it -- it contains '/')
-  rack:       your tiles, e.g. ADENOOO (? for a blank)
-  score-diff: how many points you are AHEAD of the opponent right now
-              (negative if you are behind), default 0";
-    if args.len() != 5 && args.len() != 6 {
-        wolges::return_error!(format!(
-            "expected 4 or 5 arguments, got {}\n{USAGE}",
-            args.len() - 1,
-        ));
-    }
-    let config_name = &args[1];
-    let kwg_path = &args[2];
-    let fen = &args[3];
-    let rack = &args[4];
-    let score_diff = if args.len() == 6 {
-        let Ok(score_diff) = args[5].parse::<i32>() else {
-            wolges::return_error!(format!("invalid score-diff {:?}\n{USAGE}", args[5]));
-        };
-        score_diff
-    } else {
-        0
-    };
-
-    let (base_name, big) = match config_name.strip_suffix("-big") {
-        Some(base) => (base, true),
-        None => (config_name.as_str(), false),
-    };
-    let Some(game_config) = game_config_for_name(base_name) else {
-        wolges::return_error!(format!("invalid config {config_name:?}\n{USAGE}"));
-    };
-    let question = Question::from_fen(&game_config, config_name, fen, rack)?;
+fn run_cli(
+    game_config: &game_config::GameConfig,
+    kbwg: bool,
+    kwg_path: &str,
+    fen: &str,
+    rack: &str,
+    score_diff: i32,
+) -> error::Returns<()> {
+    let question = Question::from_fen(game_config, kwg_path, fen, rack)?;
     let kwg_bytes = std::fs::read(kwg_path)?;
 
-    if big {
+    if kbwg {
         let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
-        refuse_a_wider_graph(&kwg, &game_config, kwg_path)?;
-        solve_position(&game_config, &kwg, &question, score_diff)
+        refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
+        solve_position(game_config, &kwg, &question, score_diff)
     } else {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
-        refuse_a_wider_graph(&kwg, &game_config, kwg_path)?;
-        solve_position(&game_config, &kwg, &question, score_diff)
+        refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
+        solve_position(game_config, &kwg, &question, score_diff)
     }
 }
 
@@ -1293,37 +1322,6 @@ fn refuse_a_wider_graph<N: kwg::Node>(
     wolges::return_error!(format!(
         "{kwg_path} has tiles past this game's {alphabet_len}",
     ));
-}
-
-#[inline(always)]
-fn game_config_for_name(name: &str) -> Option<game_config::GameConfig> {
-    Some(match name {
-        "english" => game_config::make_english_game_config(),
-        "jumbled-english" => game_config::make_jumbled_english_game_config(),
-        "super-english" => game_config::make_super_english_game_config(),
-        "jumbled-super-english" => game_config::make_jumbled_super_english_game_config(),
-        "catalan" => game_config::make_catalan_game_config(),
-        "jumbled-catalan" => game_config::make_jumbled_catalan_game_config(),
-        "super-catalan" => game_config::make_super_catalan_game_config(),
-        "jumbled-super-catalan" => game_config::make_jumbled_super_catalan_game_config(),
-        "dutch" => game_config::make_dutch_game_config(),
-        "jumbled-dutch" => game_config::make_jumbled_dutch_game_config(),
-        "french" => game_config::make_french_game_config(),
-        "jumbled-french" => game_config::make_jumbled_french_game_config(),
-        "german" => game_config::make_german_game_config(),
-        "jumbled-german" => game_config::make_jumbled_german_game_config(),
-        "norwegian" => game_config::make_norwegian_game_config(),
-        "jumbled-norwegian" => game_config::make_jumbled_norwegian_game_config(),
-        "polish" => game_config::make_polish_game_config(),
-        "jumbled-polish" => game_config::make_jumbled_polish_game_config(),
-        "slovene" => game_config::make_slovene_game_config(),
-        "jumbled-slovene" => game_config::make_jumbled_slovene_game_config(),
-        "spanish" => game_config::make_spanish_game_config(),
-        "jumbled-spanish" => game_config::make_jumbled_spanish_game_config(),
-        "swedish" => game_config::make_swedish_game_config(),
-        "jumbled-swedish" => game_config::make_jumbled_swedish_game_config(),
-        _ => return None,
-    })
 }
 
 #[inline(always)]
@@ -1621,39 +1619,8 @@ mod tests {
 
     #[test]
     #[inline]
-    fn game_config_for_name_rejects_unknown() {
-        assert!(game_config_for_name("english").is_some());
-        assert!(game_config_for_name("BOGUS").is_none());
-    }
-
-    #[test]
-    #[inline]
-    fn game_config_for_name_handles_jumbled_and_super() {
-        assert!(matches!(
-            game_config_for_name("english").unwrap().game_rules(),
-            game_config::GameRules::Classic
-        ));
-        assert!(matches!(
-            game_config_for_name("jumbled-english")
-                .unwrap()
-                .game_rules(),
-            game_config::GameRules::Jumbled
-        ));
-        assert!(matches!(
-            game_config_for_name("jumbled-super-english")
-                .unwrap()
-                .game_rules(),
-            game_config::GameRules::Jumbled
-        ));
-
-        let super_english = game_config_for_name("super-english").unwrap();
-        assert!(matches!(
-            super_english.game_rules(),
-            game_config::GameRules::Classic
-        ));
-        assert_eq!(super_english.board_layout().dim().rows, 21);
-
-        assert!(game_config_for_name("english-big").is_none());
+    fn the_command_line_is_well_formed() {
+        <Cli as clap::CommandFactory>::command().debug_assert();
     }
 
     #[test]
