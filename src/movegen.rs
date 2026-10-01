@@ -1888,12 +1888,12 @@ fn gen_jumbled_place_moves<
         idx_left: i8,
         idx_right: i8,
     ) {
-        if env
+        let accepted = env
             .params
             .board_snapshot
             .kwg
-            .accepts_alpha(&*env.params.used_letters_tally)
-        {
+            .accepts_alpha(&*env.params.used_letters_tally);
+        if accepted {
             let score = acc.main_score * acc.word_multiplier
                 + acc.perpendicular_cumulative_score
                 + env
@@ -2154,13 +2154,14 @@ fn gen_jumbled_place_moves<
     let alphabet = params.board_snapshot.game_config.alphabet();
     let anchor = params.anchor;
     let pass_leave_idx = params.multi_leaves.pass_leave_idx();
+    let mut env = Env {
+        params,
+        alphabet,
+        num_played: 0,
+        idx_left: 0,
+    };
     play_left(
-        &mut Env {
-            params,
-            alphabet,
-            num_played: 0,
-            idx_left: 0,
-        },
+        &mut env,
         &mut Accumulator {
             main_score: 0,
             perpendicular_cumulative_score: 0,
@@ -2582,13 +2583,16 @@ impl Clone for KurniaMoveGenerator {
 }
 
 impl KurniaMoveGenerator {
+    #[inline(always)]
     pub fn new(game_config: &game_config::GameConfig) -> Self {
         Self {
             working_buffer: WorkingBuffer::new(game_config),
             plays: Vec::new(),
         }
     }
+}
 
+impl KurniaMoveGenerator {
     #[inline(always)]
     pub fn num_tiles_in_bag(&self) -> i16 {
         self.working_buffer.num_tiles_in_bag
