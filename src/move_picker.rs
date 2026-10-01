@@ -45,7 +45,11 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node>(
 ) -> (f64, i32, f64) {
     let game_ended = simmer.simulate(game_config, kwg, klv, play);
     let final_spread = simmer.final_equity_spread();
-    let win_prob = simmer.compute_win_prob(game_ended, final_spread, table);
+    let win_prob = if simmer.wants_win_prob() {
+        simmer.compute_win_prob(game_ended, final_spread, table)
+    } else {
+        0.0
+    };
     let sim_spread = final_spread - simmer.initial_score_spread;
     let objective = simmer::sim_objective(
         sim_spread,
@@ -635,7 +639,8 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         game_state: &game_state::GameState,
         iters: u64,
     ) {
-        self.simmer.prepare(self.game_config, game_state, 2);
+        self.simmer
+            .prepare(self.game_config, game_state, 2, self.observe);
         self.candidates = self.take_candidates(move_generator.plays.len());
         self.next_stream_id = self.candidates.len() as u64;
         self.retired.clear();
