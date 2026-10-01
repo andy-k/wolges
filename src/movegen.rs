@@ -2517,12 +2517,28 @@ impl Play {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum PassPolicy {
+    OnlyWhenForced,
+    AsACandidate,
+}
+
+impl PassPolicy {
+    #[inline(always)]
+    fn emits_unconditionally(self) -> bool {
+        match self {
+            PassPolicy::OnlyWhenForced => false,
+            PassPolicy::AsACandidate => true,
+        }
+    }
+}
+
 pub struct GenMovesParams<'a, N: kwg::Node, L: kwg::Node> {
     pub board_snapshot: &'a BoardSnapshot<'a, N, L>,
     pub rack: &'a [u8],
     pub max_gen: usize,
     pub num_exchanges_by_this_player: i16,
-    pub always_include_pass: bool,
+    pub pass_policy: PassPolicy,
     pub dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
 }
 
@@ -2575,7 +2591,7 @@ impl KurniaMoveGenerator {
         board_snapshot: &'a BoardSnapshot<'a, N, L>,
         rack: &'a [u8],
         num_exchanges_by_this_player: i16,
-        always_include_pass: bool,
+        pass_policy: PassPolicy,
     ) {
         self.plays.clear();
         let mut vec_moves = std::mem::take(&mut self.plays);
@@ -2617,7 +2633,7 @@ impl KurniaMoveGenerator {
                 });
             },
         );
-        if always_include_pass || vec_moves.is_empty() {
+        if pass_policy.emits_unconditionally() || vec_moves.is_empty() {
             vec_moves.push(ValuedMove {
                 equity: equity::Equity::ZERO,
                 play: Play::Exchange {
@@ -2758,7 +2774,7 @@ impl KurniaMoveGenerator {
                 );
             },
         );
-        if params.always_include_pass || found_moves.is_empty() {
+        if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
             push_move(
                 &mut found_moves,
                 &mut equity_predicate,
@@ -2906,7 +2922,7 @@ impl KurniaMoveGenerator {
                 );
             },
         );
-        if params.always_include_pass || found_moves.is_empty() {
+        if params.pass_policy.emits_unconditionally() || found_moves.is_empty() {
             push_move(
                 &mut found_moves,
                 &mut equity_predicate,

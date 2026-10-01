@@ -239,7 +239,7 @@ fn main() -> error::Returns<()> {
         rack: &game_state.current_player().rack,
         max_gen: 5,
         num_exchanges_by_this_player: game_state.current_player().num_exchanges,
-        always_include_pass: false,
+        pass_policy: movegen::PassPolicy::OnlyWhenForced,
         dynamic_leaves: None,
     });
 

@@ -493,7 +493,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         &board_snapshot,
                         &current_ply_buffer.racks[which_player],
                         0, // TODO: use game_state to track this
-                        true,
+                        movegen::PassPolicy::AsACandidate,
                     );
                 } else {
                     // simulate hasty blunders
@@ -504,7 +504,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                             rack: &current_ply_buffer.racks[which_player],
                             max_gen: 1,
                             num_exchanges_by_this_player: 0, // TODO: use game_state to track this
-                            always_include_pass: false,
+                            pass_policy: movegen::PassPolicy::OnlyWhenForced,
                             dynamic_leaves: None,
                         });
                 }
@@ -902,7 +902,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             kwg,
             klv,
         };
-        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover as usize], 0, true);
+        mg.gen_moves_raw_all_unsorted(
+            &snapshot,
+            &racks[mover as usize],
+            0,
+            movegen::PassPolicy::AsACandidate,
+        );
 
         let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
 
@@ -994,7 +999,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             kwg,
             klv,
         };
-        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover as usize], 0, true);
+        mg.gen_moves_raw_all_unsorted(
+            &snapshot,
+            &racks[mover as usize],
+            0,
+            movegen::PassPolicy::AsACandidate,
+        );
 
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &mg.plays {
@@ -1192,7 +1202,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             },
             mover_rack,
             0,
-            true,
+            movegen::PassPolicy::AsACandidate,
         );
         let mut candidates: Vec<PegMove> = Vec::with_capacity(mg.plays.len() + 1);
         candidates.push(PegMove::Pass);
@@ -1449,7 +1459,12 @@ mod tests {
             kwg,
             klv,
         };
-        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover], 0, true);
+        mg.gen_moves_raw_all_unsorted(
+            &snapshot,
+            &racks[mover],
+            0,
+            movegen::PassPolicy::AsACandidate,
+        );
 
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &mg.plays {
@@ -1515,7 +1530,12 @@ mod tests {
             kwg,
             klv,
         };
-        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover], 0, true);
+        mg.gen_moves_raw_all_unsorted(
+            &snapshot,
+            &racks[mover],
+            0,
+            movegen::PassPolicy::AsACandidate,
+        );
 
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &mg.plays {
@@ -1581,7 +1601,12 @@ mod tests {
             kwg,
             klv,
         };
-        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover], 0, true);
+        mg.gen_moves_raw_all_unsorted(
+            &snapshot,
+            &racks[mover],
+            0,
+            movegen::PassPolicy::AsACandidate,
+        );
         let mut places: Vec<movegen::Play> = Vec::new();
         for vm in &mg.plays {
             if let movegen::Play::Place { .. } = &vm.play {
@@ -2044,7 +2069,12 @@ mod tests {
                             kwg: &kwg,
                             klv: &klv,
                         };
-                        mg.gen_moves_raw_all_unsorted(&snapshot, &racks[mover], 0, true);
+                        mg.gen_moves_raw_all_unsorted(
+                            &snapshot,
+                            &racks[mover],
+                            0,
+                            movegen::PassPolicy::AsACandidate,
+                        );
                         let found = mg.plays.iter().any(|vm| {
                             if let movegen::Play::Place {
                                 down: d2,
@@ -2319,7 +2349,7 @@ mod tests {
                 kwg: &kwg,
                 klv: &klv,
             };
-            mg.gen_moves_raw_all_unsorted(&snap, mover_rack, 0, true);
+            mg.gen_moves_raw_all_unsorted(&snap, mover_rack, 0, movegen::PassPolicy::AsACandidate);
             let mut cands: Vec<Option<movegen::Play>> = vec![None]; // None = pass
             for vm in &mg.plays {
                 if let movegen::Play::Place { .. } = &vm.play {
