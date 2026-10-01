@@ -344,7 +344,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         count: u64,
     ) {
         #[cfg(not(target_family = "wasm"))]
-        if self.sim_threads > 1 {
+        if self.sim_threads > 1 && self.allocator == Allocator::RoundRobin {
             self.run_iterations_parallel(move_generator, budget, count);
             return;
         }
