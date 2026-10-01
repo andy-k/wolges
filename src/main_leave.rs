@@ -197,6 +197,17 @@ struct Census {
     boards: String,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(
+        long,
+        value_name = "SNAPSHOT",
+        help = "continue from this census-gen-<stamp>-<generation>.klv2"
+    )]
+    resume: Option<String>,
+    #[arg(
+        long,
+        help = "also write the full-length leaves (what dynamic leaves read)"
+    )]
+    full: bool,
 }
 
 #[derive(clap::Args)]
@@ -469,7 +480,19 @@ fn run<N: kwg::Node + Sync + Send>(
             let board_counts = parse_board_counts(&a.boards)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
-            generate_census_leaves(game_config, kwg, klv0, klv1, board_counts, a.seed, threads)
+            generate_census_leaves(
+                game_config,
+                kwg,
+                klv0,
+                klv1,
+                CensusParams {
+                    board_counts,
+                    seed: a.seed,
+                    threads,
+                    resume: a.resume,
+                    full: a.full,
+                },
+            )
         }
         Task::Compare(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -707,43 +730,6 @@ fn env_flag(name: &str, default: bool) -> bool {
     env_parse::<u64>(name, default as u64) != 0
 }
 
-#[derive(Clone, Copy)]
-enum Apportion {
-    FullRack,
-    Entering,
-}
-
-#[inline]
-fn wolges_apportion() -> error::Returns<Apportion> {
-    match std::env::var("WOLGES_APPORTION").ok().as_deref() {
-        None | Some("full-rack") => Ok(Apportion::FullRack),
-        Some("entering") => Ok(Apportion::Entering),
-        Some(other) => {
-            Err(format!("WOLGES_APPORTION must be full-rack or entering, got {other:?}").into())
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum CiReport {
-    Off,
-    Rack,
-    Leave,
-}
-
-#[inline]
-fn wolges_census_ci_report() -> error::Returns<CiReport> {
-    match std::env::var("WOLGES_CENSUS_CI_REPORT").ok().as_deref() {
-        None | Some("off") => Ok(CiReport::Off),
-        Some("rack") => Ok(CiReport::Rack),
-        Some("leave") => Ok(CiReport::Leave),
-        Some(other) => Err(format!(
-            "WOLGES_CENSUS_CI_REPORT must be off, rack, or leave, got {other:?}"
-        )
-        .into()),
-    }
-}
-
 struct SelfPlayParams {
     num_games: u64,
     min_samples: u64,
@@ -776,11 +762,6 @@ fn generate_autoplay_logs<
     let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
 
     let full_rack_forcing = env_flag("WOLGES_AUTOPLAY_FULL_RACK_FORCING", false);
-
-    let entering = match wolges_apportion()? {
-        Apportion::Entering => true,
-        Apportion::FullRack => false,
-    };
 
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
 
@@ -841,48 +822,6 @@ fn generate_autoplay_logs<
     let seed = seed.unwrap_or_else(rand::random);
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = threads;
-
-    let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0)
-        != 0;
-    let dynamic_min_keep = std::env::var("WOLGES_DYNAMIC_LEAVES_MIN_KEEP")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(2);
-    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> =
-        if dynamic_leaves_on {
-            let num_letters = game_config.alphabet().len() as usize;
-            let rack_size = game_config.rack_size() as usize;
-            let lat = census::MultisetLattice::new(num_letters, rack_size);
-            let add = census::AddTable::new_with_threads(&lat, num_threads);
-            let mut full_v = vec![0i32; lat.len()];
-            census::fill_lattice_leaves(&lat, &mut full_v, |tally| {
-                arc_klv0.leave_value_from_tally(tally)
-            });
-            Some((lat, add, full_v))
-        } else {
-            None
-        };
-    let dyn_ref = dyn_ctx
-        .as_ref()
-        .map(|(lat, add, full_v)| klv::DynamicLeavesRef {
-            lat,
-            add,
-            full_v: full_v.as_slice(),
-            min_keep: dynamic_min_keep,
-        });
-    writeln!(
-        boxed_stdout_or_stderr(),
-        "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
-        dynamic_leaves_on as u8,
-        if dynamic_leaves_on {
-            "dynamic leaves on for the klv0 side; needs a --full (len 1-7) klv0"
-        } else {
-            "off, static leaves"
-        },
-    )?;
 
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
@@ -1042,17 +981,6 @@ fn generate_autoplay_logs<
                 let mut batched_csv_log = csv::Writer::from_writer(Vec::new());
                 let mut batched_csv_game = csv::Writer::from_writer(Vec::new());
                 let mut thread_full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-
-                let mut last_kept: Vec<Option<Vec<u8>>> = if SUMMARIZE && entering {
-                    vec![None; game_config.num_players() as usize]
-                } else {
-                    Vec::new()
-                };
-                let mut aft_rack_entering = if SUMMARIZE && entering {
-                    Vec::with_capacity(game_config.rack_size() as usize)
-                } else {
-                    Vec::new()
-                };
 
                 let mut thread_rare_subrack_map =
                     fash::MyHashMap::<bites::Bites, Cumulate>::default();
@@ -1360,9 +1288,6 @@ fn generate_autoplay_logs<
                     game_id.push(BASE62[(num_prior_games / 62 % 62) as usize] as char);
                     game_id.push(BASE62[(num_prior_games % 62) as usize] as char);
                     game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                    if SUMMARIZE && entering {
-                        last_kept.iter_mut().for_each(|slot| *slot = None);
-                    }
                     loop {
                         num_moves += 1;
 
@@ -1418,7 +1343,6 @@ fn generate_autoplay_logs<
                                     unseen_tally: &opp_unseen,
                                     num_blanks_eff,
                                     rack_size: game_config.rack_size() as usize,
-                                    blank_cap: game_config.rack_size() as usize,
                                 },
                                 &mut opp_movegen_rack,
                                 &mut opp_blank_deltas,
@@ -1599,7 +1523,7 @@ fn generate_autoplay_logs<
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                            dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
+                            dynamic_leaves: None,
                         });
 
                         let plays = &move_generator.plays;
@@ -1710,45 +1634,7 @@ fn generate_autoplay_logs<
                         if SUMMARIZE && old_bag_len > 0 {
 
                             let rounded_equity = knob.apply(play.equity, &cur_rack_as_vec);
-                            if entering {
-
-                                if let Some(l) = &last_kept[old_turn as usize]
-                                    && !l.is_empty()
-                                {
-                                    pool_one(&mut thread_full_rack_map, &l[..], rounded_equity);
-                                }
-
-                                aft_rack_entering.clone_from(&cur_rack_as_vec);
-                                match &play.play {
-                                    movegen::Play::Exchange { tiles } => {
-                                        game_state::use_tiles(
-                                            &mut aft_rack_entering,
-                                            tiles.iter().copied(),
-                                        )
-                                        .unwrap();
-                                    }
-                                    movegen::Play::Place { word, .. } => {
-                                        game_state::use_tiles(
-                                            &mut aft_rack_entering,
-                                            word.iter().filter_map(|&tile| {
-                                                if tile != 0 {
-                                                    Some(tile & !((tile as i8) >> 7) as u8)
-                                                } else {
-                                                    None
-                                                }
-                                            }),
-                                        )
-                                        .unwrap();
-                                    }
-                                }
-                                aft_rack_entering.sort_unstable();
-                                match &mut last_kept[old_turn as usize] {
-                                    Some(v) => v.clone_from(&aft_rack_entering),
-                                    slot => *slot = Some(aft_rack_entering.clone()),
-                                }
-                            } else {
-                                pool_one(&mut thread_full_rack_map, &cur_rack_as_vec[..], rounded_equity);
-                            }
+                            pool_one(&mut thread_full_rack_map, &cur_rack_as_vec[..], rounded_equity);
                         }
 
                         if WRITE_LOGS {
@@ -2172,46 +2058,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         None
     };
 
-    let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0)
-        != 0;
-    let dynamic_min_keep = std::env::var("WOLGES_DYNAMIC_LEAVES_MIN_KEEP")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(2);
-    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> =
-        if dynamic_leaves_on {
-            let num_letters = game_config.alphabet().len() as usize;
-            let lat = census::MultisetLattice::new(num_letters, rack_size as usize);
-            let add = census::AddTable::new_with_threads(&lat, num_threads);
-            let mut full_v = vec![0i32; lat.len()];
-            census::fill_lattice_leaves(&lat, &mut full_v, |tally| {
-                arc_klv0.leave_value_from_tally(tally)
-            });
-            Some((lat, add, full_v))
-        } else {
-            None
-        };
-    let dyn_ref = dyn_ctx
-        .as_ref()
-        .map(|(lat, add, full_v)| klv::DynamicLeavesRef {
-            lat,
-            add,
-            full_v: full_v.as_slice(),
-            min_keep: dynamic_min_keep,
-        });
-    writeln!(
-        boxed_stdout_or_stderr(),
-        "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
-        dynamic_leaves_on as u8,
-        if dynamic_leaves_on {
-            "dynamic leaves on for the klv0 side; needs a --full (len 1-7) klv0"
-        } else {
-            "off, static leaves"
-        },
-    )?;
     writeln!(
         boxed_stdout_or_stderr(),
         "gilles: rack_size={rack_size} num_tiles={num_tiles} snapshot_pool={pool_min}..={pool_max} group_size={group_size} draws={num_draws} stride={turn_stride} min_samples={min_samples} samples_per_snapshot={samples_per_snapshot} min_undersampled={min_undersampled} growth_cap={growth_cap} reserve={reserve_enabled} reserve_budget={reserve_budget} real_rack={real_rack_mode}"
@@ -2602,7 +2448,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                             unseen_tally: &unseen_tally,
                                             num_blanks_eff,
                                             rack_size: rack_size as usize,
-                                            blank_cap: rack_size as usize,
                                         },
                                         &mut opp_movegen_rack,
                                         &mut opp_blank_deltas,
@@ -2874,7 +2719,6 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     unseen_tally: &unseen_tally,
                                     num_blanks_eff,
                                     rack_size: rack_size as usize,
-                                    blank_cap: rack_size as usize,
                                 },
                                 &mut opp_movegen_rack,
                                 &mut opp_blank_deltas,
@@ -2939,7 +2783,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             max_gen: 1,
                             num_exchanges_by_this_player: game_state.current_player().num_exchanges,
                             pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                            dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
+                            dynamic_leaves: None,
                         });
 
                         if real_rack_here {
@@ -3619,7 +3463,6 @@ struct SpellPool<'a> {
     unseen_tally: &'a [u8],
     num_blanks_eff: usize,
     rack_size: usize,
-    blank_cap: usize,
 }
 
 #[inline]
@@ -3848,12 +3691,10 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         unseen_tally,
         num_blanks_eff,
         rack_size,
-        blank_cap,
     } = pool;
     movegen_rack.clear();
     for (t, &c) in unseen_tally.iter().enumerate() {
-        let cap = if t == 0 { blank_cap } else { rack_size };
-        for _ in 0..(c as usize).min(cap) {
+        for _ in 0..(c as usize).min(rack_size) {
             movegen_rack.push(t as u8);
         }
     }
@@ -3898,25 +3739,6 @@ fn build_sheet_spell_once<N: kwg::Node, L: kwg::Node>(
         |_equity, _play| false,
     );
     n_cand
-}
-
-#[derive(Clone, Copy)]
-enum Scatter {
-    Off,
-    On,
-    Auto,
-}
-
-#[inline]
-fn wolges_census_scatter() -> error::Returns<Scatter> {
-    match std::env::var("WOLGES_CENSUS_SCATTER").ok().as_deref() {
-        None | Some("auto") => Ok(Scatter::Auto),
-        Some("off") => Ok(Scatter::Off),
-        Some("on") => Ok(Scatter::On),
-        Some(other) => {
-            Err(format!("WOLGES_CENSUS_SCATTER must be off, on, or auto, got {other:?}").into())
-        }
-    }
 }
 
 type SheetCacheSlot = std::sync::Mutex<Option<(Vec<i32>, Vec<u8>)>>;
@@ -4002,15 +3824,27 @@ fn write_census_klv2(
     Ok(leave_values.len())
 }
 
+struct CensusParams {
+    board_counts: Vec<u64>,
+    seed: Option<u64>,
+    threads: usize,
+    resume: Option<String>,
+    full: bool,
+}
+
 #[inline]
 fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
-    board_counts: Vec<u64>,
-    seed: Option<u64>,
-    threads: usize,
+    CensusParams {
+        board_counts,
+        seed,
+        threads,
+        resume,
+        full,
+    }: CensusParams,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let alphabet = game_config.alphabet();
@@ -4019,31 +3853,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let num_tiles: usize = (0..alphabet.len()).map(|t| alphabet.freq(t) as usize).sum();
     let racks_tiles = game_config.num_players() as usize * rack_size;
 
-    let pool_max = env_usize("WOLGES_POOL_MAX", num_tiles.saturating_sub(racks_tiles));
-
-    let min_pool = racks_tiles + 1;
-    let pool_min = {
-        let req = env_usize("WOLGES_POOL_MIN", min_pool);
-        if req < min_pool {
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "census: raising pool_min {req} -> {min_pool} (a smaller unseen pool \
-                 implies an empty bag = endgame, where the klv leave is unused)"
-            )?;
-            min_pool
-        } else {
-            req
-        }
-    };
-    let blank_cap = env_usize("WOLGES_CENSUS_BLANK_CAP", rack_size);
+    let pool_max = num_tiles.saturating_sub(racks_tiles);
+    let pool_min = racks_tiles + 1;
     let low_tiles = num_tiles.saturating_sub(pool_max);
     let high_tiles = num_tiles.saturating_sub(pool_min);
-    let verify = env_flag("WOLGES_CENSUS_VERIFY", false);
-
-    let full_rack = match wolges_apportion()? {
-        Apportion::FullRack => true,
-        Apportion::Entering => false,
-    };
 
     let winpct_table: Option<win_pct::WinPctTable> = if env_flag("WOLGES_WINPCT", false) {
         let Ok(path) = std::env::var("WOLGES_WINPCT_TABLE") else {
@@ -4063,71 +3876,16 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let winpct_blend = env_parse::<f64>("WOLGES_WINPCT_BLEND", 1.0);
 
-    let entering_push = env_flag("WOLGES_CENSUS_ENTERING_PUSH", false);
-
-    let per_game = env_flag("WOLGES_CENSUS_PER_GAME", false);
-
     let gens = board_counts.len();
 
     let max_boards = board_counts.iter().copied().max().unwrap_or(1).max(1);
     let multigen = gens > 1;
 
-    let batch_size = (env_usize("WOLGES_CENSUS_BATCH", board_counts[0] as usize) as u64).max(1);
-    let alpha = env_parse::<f64>("WOLGES_CENSUS_ALPHA", 0.5);
-    let sgd = !multigen && batch_size < board_counts[0];
-
-    let rack_summary = full_rack && !sgd && env_flag("WOLGES_CENSUS_RACK_SUMMARY", false);
-    let impossible_ok = env_flag("WOLGES_IMPOSSIBLE_OK", true);
-
-    let global_apportion = rack_summary
-        || (full_rack && !sgd && !multigen && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION", false));
-
-    let ga_drawable = (rack_summary && !impossible_ok)
-        || (global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_APPORTION_DRAWABLE", false));
-
-    let global_weights =
-        full_rack && !global_apportion && env_flag("WOLGES_CENSUS_GLOBAL_WEIGHTS", false);
-
-    let opening_samples = rack_summary && env_flag("WOLGES_OPENING_SAMPLES", false);
-
-    let opening_weight = env_usize("WOLGES_OPENING_WEIGHT", 1).max(1) as u64;
-
-    let ci_report_level = match wolges_census_ci_report()? {
-        CiReport::Off => 0usize,
-        CiReport::Rack => 1,
-        CiReport::Leave => 2,
-    };
-    let ci_conf = env_parse::<f64>("WOLGES_CENSUS_CI_CONF", 0.999);
-    let ci_conf = if ci_conf > 0.0 && ci_conf < 1.0 {
-        ci_conf
-    } else {
-        0.999
-    };
-
-    let ci_target_mp = env_usize("WOLGES_CENSUS_CI_TARGET", 500) as f64;
-
-    let ci_stop_frac = env_parse::<f64>("WOLGES_CENSUS_CI_STOP_FRAC", 0.0);
-    let ci_stop_frac = if ci_stop_frac > 0.0 && ci_stop_frac <= 1.0 {
-        ci_stop_frac
-    } else {
-        0.0
-    };
-    let ci_stop_every = env_usize("WOLGES_CENSUS_CI_STOP_EVERY", 64).max(1) as u64;
-
-    let ci_stop = ci_stop_frac > 0.0 && full_rack && rack_summary && !sgd && !multigen;
-
-    let ci_report = full_rack && (ci_report_level != 0 || ci_stop);
-
-    let sheet_reuse = multigen && !per_game && env_flag("WOLGES_CENSUS_SHEET_REUSE", true);
+    let sheet_reuse = multigen;
 
     let (live_after, sheet_cache_len) = census_sheet_reuse_plan(&board_counts);
 
     let sheet_cache_len = if sheet_reuse { sheet_cache_len } else { 0 };
-
-    let persist_gens = multigen && env_flag("WOLGES_CENSUS_PERSIST_GENS", true);
-    let resume = multigen && env_flag("WOLGES_CENSUS_RESUME", false);
-
-    let num_buckets = env_usize("WOLGES_CENSUS_BUCKETS", 0);
 
     let lat = census::MultisetLattice::new(num_letters, rack_size);
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
@@ -4139,7 +3897,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         lat.len(),
     )?;
 
-    let add_table = if full_rack {
+    let add_table = {
         let t = std::time::Instant::now();
         let at = census::AddTable::new_with_threads(&lat, threads);
         writeln!(
@@ -4148,18 +3906,12 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             lat.full_rack_start(),
             t.elapsed(),
         )?;
-        Some(at)
-    } else {
-        None
+        at
     };
 
-    let zeta_pool_min = env_usize("WOLGES_CENSUS_ZETA_POOL", 36);
+    let zeta_pool_min = 36;
 
-    let scatter = match wolges_census_scatter()? {
-        Scatter::Off => false,
-        Scatter::On => true,
-        Scatter::Auto => lat.len() <= 12_000_000,
-    };
+    let scatter = lat.len() <= 12_000_000;
 
     let oppdenial_leave = env_parse::<f64>("WOLGES_OPPDENIAL_LEAVE", 0.0);
 
@@ -4172,43 +3924,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
 
-    let withhold_budget = env_usize("WOLGES_CENSUS_WITHHOLD", 0);
-    let withhold_tally: Vec<u8> = if withhold_budget > 0 && !per_game {
-        let mut tiles: Vec<usize> = (0..num_letters).filter(|&t| base_freqs[t] > 0).collect();
-        tiles.sort_by_key(|&t| base_freqs[t]);
-        let mut wt = vec![0u8; num_letters];
-        for &t in tiles.iter().take(withhold_budget) {
-            wt[t] = 1;
-        }
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census: withholding {} rarest tiles from the bag for rare-rack coverage",
-            wt.iter().filter(|&&c| c > 0).count(),
-        )?;
-        wt
-    } else {
-        Vec::new()
-    };
-
-    let withhold_frac = env_parse::<f64>("WOLGES_CENSUS_WITHHOLD_FRAC", 1.0);
-    let withhold_frac = if withhold_frac > 0.0 {
-        withhold_frac
-    } else {
-        1.0
-    };
-    let withhold_period = if withhold_frac >= 1.0 {
-        1
-    } else {
-        (1.0 / withhold_frac).round().max(1.0) as usize
-    };
-    if !withhold_tally.is_empty() && withhold_period > 1 {
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census: withhold fraction {:.3} -> 1 in {} boards (phase-balanced) is a withhold board",
-            withhold_frac,
-            withhold_period,
-        )?;
-    }
     let seed = seed.unwrap_or_else(rand::random);
 
     let mut leave_cur = vec![0i32; lat.len()];
@@ -4218,57 +3933,42 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         *slot = arc_klv0.leave_value_from_tally(&tally_buf);
     }
 
-    let mut start_gen = 0usize;
-    let census_run_epoch;
-    let mut resumed: Option<(String, usize, std::path::PathBuf)> = None;
-    if resume && let Ok(rd) = std::fs::read_dir(".") {
-        for e in rd.flatten() {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if let Some((rid, gg)) = name
-                .strip_prefix("census-gen-")
-                .and_then(|r| r.strip_suffix(".klv2"))
-                .and_then(|r| r.split_once('-'))
-                && u64::from_str_radix(rid, 16).is_ok()
-                && let Ok(gg) = gg.parse::<usize>()
-                && resumed
-                    .as_ref()
-                    .is_none_or(|(br, bg, _)| (gg, rid) > (*bg, br.as_str()))
-            {
-                resumed = Some((rid.to_owned(), gg, e.path()));
-            }
-        }
-    }
-    if let Some((rid, num, path)) = resumed {
+    let (start_gen, census_run_epoch) = if let Some(path) = resume {
+        let name = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some((rid, num)) = name
+            .strip_prefix("census-gen-")
+            .and_then(|r| r.strip_suffix(".klv2"))
+            .and_then(|r| r.split_once('-'))
+            .filter(|(rid, _)| u64::from_str_radix(rid, 16).is_ok())
+            .and_then(|(rid, gg)| Some((rid.to_owned(), gg.parse::<usize>().ok()?)))
+        else {
+            wolges::return_error!(format!(
+                "--resume wants a census-gen-<stamp>-<generation>.klv2 snapshot, got {path}"
+            ))
+        };
         let bytes = std::fs::read(&path)?;
         let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes);
         for (idx, slot) in leave_cur.iter_mut().enumerate() {
             lat.unrank_into(idx, &mut tally_buf);
             *slot = resume_klv.leave_value_from_tally(&tally_buf);
         }
-        start_gen = num;
-        census_run_epoch = rid;
         writeln!(
             boxed_stdout_or_stderr(),
-            "census: resuming from {} (gen {num} done) -> starting gen {}",
-            path.display(),
+            "census: resuming from {path} (gen {num} done) -> starting gen {}",
             num + 1
         )?;
+        (num, rid)
     } else {
-        if resume {
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "census: resume requested but no census-gen-*.klv2 found; fresh start"
-            )?;
-        }
-        census_run_epoch = run_stamp();
-    }
+        (0, run_stamp())
+    };
 
     if start_gen >= gens {
         return Err(format!(
             "census resume: {start_gen} generation(s) already completed but the \
-             spec has only {gens}; extend the board-count spec or remove \
-             census-gen-*.klv2"
+             spec has only {gens}; extend the board-count spec"
         )
         .into());
     }
@@ -4276,42 +3976,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let leave_lock = std::sync::RwLock::new(leave_cur);
 
     let num_threads = threads.max(1).min(max_boards as usize);
-
-    let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0)
-        != 0;
-    let dynamic_min_keep = std::env::var("WOLGES_DYNAMIC_LEAVES_MIN_KEEP")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(2);
-    let dyn_ctx: Option<(census::AddTable, Vec<i32>)> = if dynamic_leaves_on {
-        let add = census::AddTable::new_with_threads(&lat, num_threads);
-        let mut full_v = vec![0i32; lat.len()];
-        census::fill_lattice_leaves(&lat, &mut full_v, |tally| {
-            arc_klv0.leave_value_from_tally(tally)
-        });
-        Some((add, full_v))
-    } else {
-        None
-    };
-    let dyn_ref = dyn_ctx.as_ref().map(|(add, full_v)| klv::DynamicLeavesRef {
-        lat: &lat,
-        add,
-        full_v: full_v.as_slice(),
-        min_keep: dynamic_min_keep,
-    });
-    writeln!(
-        boxed_stdout_or_stderr(),
-        "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
-        dynamic_leaves_on as u8,
-        if dynamic_leaves_on {
-            "dynamic leaves on for the klv0 side; needs a --full (len 1-7) klv0"
-        } else {
-            "off, static leaves"
-        },
-    )?;
 
     let lat_len = lat.len();
 
@@ -4326,40 +3990,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     };
     let next_board = std::sync::atomic::AtomicU64::new(0);
 
-    let stop_now = std::sync::atomic::AtomicBool::new(false);
-
-    let ci_check_at = std::sync::atomic::AtomicU64::new(ci_stop_every);
-
     let shared = std::sync::Mutex::new((
         vec![0f64; lat_len],
         vec![0u64; lat_len],
         0u64,
         0u64,
-        if sgd || multigen {
+        if multigen {
             vec![false; lat_len]
         } else {
             Vec::new()
         },
     ));
 
-    let ci_sumsq = std::sync::Mutex::new(if ci_report {
-        vec![0f64; lat_len]
-    } else {
-        Vec::new()
-    });
-
-    let ci_scratch: std::sync::Mutex<(Vec<f64>, Vec<f64>, Vec<f64>)> =
-        std::sync::Mutex::new((Vec::new(), Vec::new(), Vec::new()));
-
     let barrier = std::sync::Barrier::new(num_threads);
-
-    let pool_hist: Vec<std::sync::atomic::AtomicU64> = if per_game {
-        (0..=num_tiles)
-            .map(|_| std::sync::atomic::AtomicU64::new(0))
-            .collect()
-    } else {
-        Vec::new()
-    };
 
     let sheet_cache: Vec<SheetCacheSlot> = (0..sheet_cache_len)
         .map(|_| std::sync::Mutex::new(None))
@@ -4379,76 +4022,56 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                 let mut blank_deltas = Vec::<(u8, i32)>::new();
 
-                let mut best = if full_rack {
-                    Vec::new()
-                } else {
-                    vec![census::UNPLAYABLE; lat_len]
-                };
                 let mut contrib = vec![census::UNPLAYABLE; lat_len];
 
-                let mut num_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
-                let mut den_board = if full_rack { vec![0f64; lat_len] } else { Vec::new() };
+                let mut num_board = vec![0f64; lat_len];
+                let mut den_board = vec![0f64; lat_len];
 
-                let mut maxsheet = if full_rack { vec![0i32; lat_len] } else { Vec::new() };
+                let mut maxsheet = vec![0i32; lat_len];
 
                 let opp_term = oppdenial_leave != 0.0 || oppdenial_rack != 0.0;
 
-                let mut oppdenial_leave_best = if full_rack
-                    && (opp_term || oppdenial_exact != 0.0 || global_apportion || winpct_table.is_some())
+                let mut oppdenial_leave_best = if opp_term
+                    || oppdenial_exact != 0.0
+                    || winpct_table.is_some()
                 {
                     vec![census::UNPLAYABLE; lat_len]
                 } else {
                     Vec::new()
                 };
-                let mut oppdenial_leave_marginal = if full_rack && opp_term {
+                let mut oppdenial_leave_marginal = if opp_term {
                     vec![0f64; num_letters]
                 } else {
                     Vec::new()
                 };
 
-                let mut oppdenial_exact_kept_idx = if full_rack && oppdenial_exact != 0.0 {
+                let mut oppdenial_exact_kept_idx = if oppdenial_exact != 0.0 {
                     vec![0u32; lat_len]
                 } else {
                     Vec::new()
                 };
-                let mut oppdenial_exact_kept_size = if full_rack && oppdenial_exact != 0.0 {
+                let mut oppdenial_exact_kept_size = if oppdenial_exact != 0.0 {
                     vec![0u8; lat_len]
                 } else {
                     Vec::new()
                 };
-                let mut oppdenial_exact_term = if full_rack && oppdenial_exact != 0.0 {
+                let mut oppdenial_exact_term = if oppdenial_exact != 0.0 {
                     vec![0f64; lat_len]
                 } else {
                     Vec::new()
                 };
 
-                let mut num_e = if !full_rack && entering_push {
-                    vec![0i128; lat_len]
-                } else {
-                    Vec::new()
-                };
-                let mut den_e = if !full_rack && entering_push {
-                    vec![0i128; lat_len]
-                } else {
-                    Vec::new()
-                };
                 let mut tally_buf = vec![0u8; num_letters];
                 let mut unseen_tally = vec![0u8; num_letters];
-                let mut unseen_pool = Vec::<u8>::new();
                 let mut movegen_rack = Vec::<u8>::new();
-                let mut verify_rack = Vec::<u8>::new();
                 let mut final_scores = vec![0; game_config.num_players() as usize];
-
-                let mut open_buf = Vec::<(u32, i32)>::new();
 
 
                 let mut value_board = |move_generator: &mut movegen::KurniaMoveGenerator,
                                        game_state: &game_state::GameState,
-                                       rng: &mut rand::rngs::ChaCha20Rng,
                                        leave: &[i32],
                                        null_leave: bool,
                                        log_first: bool,
-                                       do_verify: bool,
                                        cache_slot: Option<&SheetCacheSlot>,
                                        reuse: bool,
                                        cur_boards: u64| {
@@ -4472,12 +4095,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
                     sheet.iter_mut().for_each(|v| *v = 0);
 
-                    let sheet_pool: &[u8] = if global_weights || (rack_summary && impossible_ok) {
-                        &base_freqs
-                    } else {
-                        &unseen_tally
-                    };
-                    let num_blanks_eff = (sheet_pool[0] as usize).min(blank_cap);
+                    let num_blanks_eff = (unseen_tally[0] as usize).min(rack_size);
                     let ts = std::time::Instant::now();
 
                     let n_cand = build_sheet_spell_once(
@@ -4490,10 +4108,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             lat: &lat,
                         },
                         SpellPool {
-                            unseen_tally: sheet_pool,
+                            unseen_tally: &unseen_tally,
                             num_blanks_eff,
                             rack_size,
-                            blank_cap,
                         },
                         &mut movegen_rack,
                         &mut blank_deltas,
@@ -4514,287 +4131,136 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
 
                     let ts = std::time::Instant::now();
-                    if !full_rack {
-                        census::best_equity_table(&lat, &sheet, leave, &mut best);
-                        if log_first {
-                            writeln!(boxed_stdout_or_stderr(), "  step2 best_equity_table: {:?}", ts.elapsed()).ok();
-                        }
-                    }
+                    num_board.iter_mut().for_each(|x| *x = 0.0);
+                    den_board.iter_mut().for_each(|x| *x = 0.0);
 
-
-                    if do_verify {
-                        unseen_pool.clear();
-                        for (t, &c) in unseen_tally.iter().enumerate() {
-                            for _ in 0..c {
-                                unseen_pool.push(t as u8);
-                            }
-                        }
-                        let mut ok = 0u32;
-                        let mut bad = 0u32;
-                        if unseen_pool.len() >= rack_size {
-                            for _ in 0..32 {
-
-                                for i in 0..rack_size {
-                                    let j = rng.random_range(i..unseen_pool.len());
-                                    unseen_pool.swap(i, j);
-                                }
-                                verify_rack.clear();
-                                verify_rack.extend_from_slice(&unseen_pool[..rack_size]);
-                                verify_rack.sort_unstable();
-                                let rr = lat.rank_bytes(&verify_rack);
-                                if rr == !0 {
-                                    continue;
-                                }
-                                let board_snapshot = &movegen::BoardSnapshot {
-                                    board_tiles: &game_state.board_tiles,
-                                    game_config: &game_config,
-                                    kwg: &kwg,
-                                    klv: &arc_klv0,
-                                };
-                                move_generator.gen_moves_unfiltered(
-                                    &movegen::GenMovesParams {
-                                        board_snapshot,
-                                        rack: &verify_rack,
-                                        max_gen: 1,
-                                        num_exchanges_by_this_player: 0,
-                                        pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                        dynamic_leaves: None,
-                                    },
-                                );
-                                let engine_mp = (move_generator.plays[0].equity.as_f64()
-                                    * equity::SCALE as f64)
-                                    .round()
-                                    as i32;
-                                let census_mp = if full_rack {
-
-                                    tally_buf.iter_mut().for_each(|x| *x = 0);
-                                    for &t in &verify_rack {
-                                        tally_buf[t as usize] += 1;
-                                    }
-                                    census::naive_best_equity(
-                                        &lat, &sheet, leave, &tally_buf,
-                                    )
-                                    .0
-                                } else {
-                                    best[rr as usize]
-                                };
-                                if engine_mp == census_mp {
-                                    ok += 1;
-                                } else {
-                                    bad += 1;
-                                    if bad <= 5 {
-                                        writeln!(boxed_stdout_or_stderr(),
-                                            "  census VERIFY mismatch rack {:?}: engine {} census {}",
-                                            verify_rack, engine_mp, census_mp,).ok();
-                                    }
-                                }
-                            }
-                        }
-                        writeln!(boxed_stdout_or_stderr(),
-                            "census VERIFY: {ok} ok, {bad} mismatch (null-klv/engine invariant)").ok();
-                    }
-
-
-                    let ts = std::time::Instant::now();
-                    if full_rack && !global_apportion {
-                        num_board.iter_mut().for_each(|x| *x = 0.0);
-                        den_board.iter_mut().for_each(|x| *x = 0.0);
-
-                        let weight_pool: &[u8] = if global_weights {
-                            &base_freqs
-                        } else {
-                            &unseen_tally
-                        };
-                        let pool: usize = weight_pool.iter().map(|&c| c as usize).sum();
-                        if let Some(wp_table) = winpct_table.as_ref() {
-
-                            census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                            let u: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                            let bag = u.saturating_sub(2 * rack_size);
-                            winpct_remap(
-                                wp_table,
-                                &mut oppdenial_leave_best,
-                                full_rack_start,
-                                bag,
-                                rack_size,
-                                rack_size,
-                                winpct_blend,
-                            );
-                            census::apportion_table(
-                                &lat,
-                                &oppdenial_leave_best,
-                                weight_pool,
-                                &mut num_board,
-                                &mut den_board,
-                            );
-                        } else {
-
-                        let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
-                        if opp_term || oppdenial_exact_board {
-                            if oppdenial_exact_board {
-                                census::best_equity_argmax_table(
-                                    &lat,
-                                    &sheet,
-                                    leave,
-                                    &mut oppdenial_leave_best,
-                                    &mut oppdenial_exact_kept_idx,
-                                    &mut oppdenial_exact_kept_size,
-                                );
-                            } else {
-                                census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                            }
-                        }
-                        if opp_term {
-                            census::opp_denial_marginals(
-                                &lat,
-                                add_table.as_ref().unwrap(),
-                                &oppdenial_leave_best,
-                                &unseen_tally,
-                                &mut oppdenial_leave_marginal,
-                            );
-                        }
-                        if oppdenial_exact_board {
-
-                            oppdenial_exact_term.iter_mut().for_each(|x| *x = 0.0);
-                            census::opp_me2_per_rack(
-                                &lat,
-                                add_table.as_ref().unwrap(),
-                                &oppdenial_leave_best,
-                                &census::KeptArgmax {
-                                    idx: &oppdenial_exact_kept_idx,
-                                    size: &oppdenial_exact_kept_size,
-                                },
-                                &unseen_tally,
-                                oppdenial_exact_me2,
-                                &mut oppdenial_exact_term,
-                            );
-                        } else if oppdenial_exact != 0.0 && log_first {
-                            writeln!(boxed_stdout_or_stderr(),
-                                "  oppdenial_exact: pool {pool} > {oppdenial_exact_pool_max}, skipping the term this board").ok();
-                        }
-                        census::apportion_fused(
-                            &lat,
-                            add_table.as_ref().unwrap(),
-                            &census::ApportionBoard {
-                                sheet: &sheet,
-                                leave,
-                                unseen: weight_pool,
-                            },
-                            census::ApportionOut {
-                                num: &mut num_board,
-                                den: &mut den_board,
-                            },
-                            &mut maxsheet,
-                            census::ApportionMode {
-                                zeta: pool >= zeta_pool_min,
-                                null_leave,
-                                scatter,
-                            },
-                            &census::OppDenialParams {
-                                oppdenial_rack,
-                                marginal: if oppdenial_rack != 0.0 {
-                                    &oppdenial_leave_marginal
-                                } else {
-                                    &[]
-                                },
-                                oppdenial_exact: if oppdenial_exact_board { oppdenial_exact } else { 0.0 },
-                                oppdenial_exact_term: if oppdenial_exact_board {
-                                    &oppdenial_exact_term
-                                } else {
-                                    &[]
-                                },
-                            },
-                        );
-                        }
-                        for (idx, slot) in contrib.iter_mut().enumerate() {
-                            *slot = if den_board[idx] > 0.0 {
-                                let mut v = (num_board[idx] / den_board[idx]).round() as i32;
-                                if oppdenial_leave != 0.0 {
-
-                                    lat.unrank_into(idx, &mut tally_buf);
-                                    let mut d = 0.0f64;
-                                    for (t, &c) in tally_buf.iter().enumerate() {
-                                        d += c as f64 * oppdenial_leave_marginal[t];
-                                    }
-                                    v += (oppdenial_leave * d).round() as i32;
-                                }
-                                v
-                            } else {
-                                census::UNPLAYABLE
-                            };
-                        }
-                    } else if full_rack && global_apportion {
+                    let pool: usize = unseen_tally.iter().map(|&c| c as usize).sum();
+                    if let Some(wp_table) = winpct_table.as_ref() {
 
                         census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
-                        if let Some(wp_table) = winpct_table.as_ref() {
+                        let u: usize = unseen_tally.iter().map(|&c| c as usize).sum();
+                        let bag = u.saturating_sub(2 * rack_size);
+                        winpct_remap(
+                            wp_table,
+                            &mut oppdenial_leave_best,
+                            full_rack_start,
+                            bag,
+                            rack_size,
+                            rack_size,
+                            winpct_blend,
+                        );
+                        census::apportion_table(
+                            &lat,
+                            &oppdenial_leave_best,
+                            &unseen_tally,
+                            &mut num_board,
+                            &mut den_board,
+                        );
+                    } else {
 
-                            let u: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-                            let bag = u.saturating_sub(2 * rack_size);
-                            winpct_remap(
-                                wp_table,
-                                &mut oppdenial_leave_best,
-                                full_rack_start,
-                                bag,
-                                rack_size,
-                                rack_size,
-                                winpct_blend,
-                            );
-                        }
-                        contrib.iter_mut().for_each(|x| *x = census::UNPLAYABLE);
-                        if ga_drawable {
-
-                            census::mark_drawable_best(
+                    let oppdenial_exact_board = oppdenial_exact != 0.0 && pool <= oppdenial_exact_pool_max;
+                    if opp_term || oppdenial_exact_board {
+                        if oppdenial_exact_board {
+                            census::best_equity_argmax_table(
                                 &lat,
-                                add_table.as_ref().unwrap(),
-                                &oppdenial_leave_best,
-                                &unseen_tally,
-                                &mut contrib,
+                                &sheet,
+                                leave,
+                                &mut oppdenial_leave_best,
+                                &mut oppdenial_exact_kept_idx,
+                                &mut oppdenial_exact_kept_size,
                             );
                         } else {
-
-                            contrib[full_rack_start..]
-                                .iter_mut()
-                                .zip(oppdenial_leave_best[full_rack_start..].iter())
-                                .for_each(|(slot, &b)| *slot = b);
+                            census::best_equity_table(&lat, &sheet, leave, &mut oppdenial_leave_best);
                         }
-                    } else if entering_push {
+                    }
+                    if opp_term {
+                        census::opp_denial_marginals(
+                            &lat,
+                            &add_table,
+                            &oppdenial_leave_best,
+                            &unseen_tally,
+                            &mut oppdenial_leave_marginal,
+                        );
+                    }
+                    if oppdenial_exact_board {
 
-                        num_e.iter_mut().for_each(|x| *x = 0);
-                        den_e.iter_mut().for_each(|x| *x = 0);
-                        census::entering_fused(&lat, &best, &unseen_tally, &mut num_e, &mut den_e);
-                        for (idx, slot) in contrib.iter_mut().enumerate() {
-                            *slot = if den_e[idx] != 0 {
-                                (num_e[idx] / den_e[idx]) as i32
+                        oppdenial_exact_term.iter_mut().for_each(|x| *x = 0.0);
+                        census::opp_me2_per_rack(
+                            &lat,
+                            &add_table,
+                            &oppdenial_leave_best,
+                            &census::KeptArgmax {
+                                idx: &oppdenial_exact_kept_idx,
+                                size: &oppdenial_exact_kept_size,
+                            },
+                            &unseen_tally,
+                            oppdenial_exact_me2,
+                            &mut oppdenial_exact_term,
+                        );
+                    } else if oppdenial_exact != 0.0 && log_first {
+                        writeln!(boxed_stdout_or_stderr(),
+                            "  oppdenial_exact: pool {pool} > {oppdenial_exact_pool_max}, skipping the term this board").ok();
+                    }
+                    census::apportion_fused(
+                        &lat,
+                        &add_table,
+                        &census::ApportionBoard {
+                            sheet: &sheet,
+                            leave,
+                            unseen: &unseen_tally,
+                        },
+                        census::ApportionOut {
+                            num: &mut num_board,
+                            den: &mut den_board,
+                        },
+                        &mut maxsheet,
+                        census::ApportionMode {
+                            zeta: pool >= zeta_pool_min,
+                            null_leave,
+                            scatter,
+                        },
+                        &census::OppDenialParams {
+                            oppdenial_rack,
+                            marginal: if oppdenial_rack != 0.0 {
+                                &oppdenial_leave_marginal
                             } else {
-                                census::UNPLAYABLE
-                            };
-                        }
-                    } else {
-                        for (idx, slot) in contrib.iter_mut().enumerate() {
-                            lat.unrank_into(idx, &mut tally_buf);
-                            *slot = census::leave_value_by_draw(
-                                &lat,
-                                &best,
-                                &unseen_tally,
-                                &tally_buf,
-                            );
-                        }
+                                &[]
+                            },
+                            oppdenial_exact: if oppdenial_exact_board { oppdenial_exact } else { 0.0 },
+                            oppdenial_exact_term: if oppdenial_exact_board {
+                                &oppdenial_exact_term
+                            } else {
+                                &[]
+                            },
+                        },
+                    );
+                    }
+                    for (idx, slot) in contrib.iter_mut().enumerate() {
+                        *slot = if den_board[idx] > 0.0 {
+                            let mut v = (num_board[idx] / den_board[idx]).round() as i32;
+                            if oppdenial_leave != 0.0 {
+
+                                lat.unrank_into(idx, &mut tally_buf);
+                                let mut d = 0.0f64;
+                                for (t, &c) in tally_buf.iter().enumerate() {
+                                    d += c as f64 * oppdenial_leave_marginal[t];
+                                }
+                                v += (oppdenial_leave * d).round() as i32;
+                            }
+                            v
+                        } else {
+                            census::UNPLAYABLE
+                        };
                     }
                     if log_first {
                         writeln!(boxed_stdout_or_stderr(),
-                            "  step3 {}: {:?}",
-                            if full_rack { "full-rack" } else { "draw-average" },
+                            "  step3 full-rack: {:?}",
                             ts.elapsed(),).ok();
                     }
 
 
                     let mut g = shared.lock().unwrap();
                     let (sum, cnt, completed, valued, _ever) = &mut *g;
-                    let mut sq = if ci_report {
-                        Some(ci_sumsq.lock().unwrap())
-                    } else {
-                        None
-                    };
                     for idx in 0..lat_len {
                         let v = contrib[idx];
                         if v != census::UNPLAYABLE {
@@ -4803,9 +4269,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                             sum[idx] += v as f64;
                             cnt[idx] += 1;
-                            if let Some(sq) = sq.as_mut() {
-                                sq[idx] += (v as f64) * (v as f64);
-                            }
                         }
                     }
                     *completed += 1;
@@ -4819,7 +4282,6 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 };
 
 
-                let mut batch_start = 0u64;
                 let mut gen_idx = start_gen;
 
                 let mut num_boards = board_counts[gen_idx];
@@ -4827,67 +4289,41 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                 let mut prior_max_boards = 0usize;
                 loop {
 
-                    let batch_end = if sgd {
-                        (batch_start + batch_size).min(num_boards)
-                    } else {
-                        num_boards
-                    };
-
                     {
                         let leave = leave_lock.read().unwrap();
 
                         let null_leave = leave.iter().all(|&x| x == 0);
                         loop {
-                            if ci_stop && stop_now.load(std::sync::atomic::Ordering::Relaxed) {
-                                break;
-                            }
                             let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if b >= batch_end {
+                            if b >= num_boards {
                                 break;
                             }
                     let mut rng = rand::rngs::ChaCha20Rng::seed_from_u64(census_mix64(
                         seed.wrapping_add(census_mix64(b)),
                     ));
 
-                    if per_game {
+                    let reuse_board = sheet_reuse && (b as usize) < prior_max_boards;
+                    if !reuse_board {
 
-                        use std::sync::atomic::Ordering::Relaxed;
-                        let goal = 1 + (pool_min..=pool_max)
-                            .map(|p| pool_hist[p].load(Relaxed))
-                            .min()
-                            .unwrap_or(0);
-                        let deepest = (pool_min..=pool_max)
-                            .find(|&p| pool_hist[p].load(Relaxed) < goal)
-                            .unwrap_or(pool_min);
+                    let target = if high_tiles <= low_tiles {
+                        low_tiles
+                    } else {
+
+                        low_tiles + (b as usize % (high_tiles - low_tiles + 1))
+                    };
+
+                    let mut tries = 0u32;
+                    let reached = loop {
                         game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                        let mut logged = false;
+                        let mut got = false;
                         loop {
                             let fill =
                                 game_state.board_tiles.iter().filter(|&&t| t != 0).count();
-                            let pool = num_tiles - fill;
-                            if pool < deepest {
-                                break; // no under-goal bucket remains below (and pool
+                            if fill >= target {
 
+                                got = fill <= high_tiles;
+                                break;
                             }
-                            if pool <= pool_max && pool_hist[pool].load(Relaxed) < goal {
-                                pool_hist[pool].fetch_add(1, Relaxed);
-
-                                let lf = b == 0 && !logged;
-                                logged |= lf;
-                                value_board(
-                                    &mut move_generator,
-                                    &game_state,
-                                    &mut rng,
-                                    &leave,
-                                    null_leave,
-                                    lf,
-                                    verify && lf,
-                                    None, // per-game path never reuses (sheet_reuse gates on !per_game)
-                                    false,
-                                    num_boards,
-                                );
-                            }
-
                             game_state.players[game_state.turn as usize]
                                 .rack
                                 .sort_unstable();
@@ -4909,7 +4345,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                     .current_player()
                                     .num_exchanges,
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
+                                dynamic_leaves: None,
                             });
                             game_state
                                 .play(&game_config, &mut rng, &move_generator.plays[0].play)
@@ -4918,389 +4354,119 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 game_state.check_game_ended(&game_config, &mut final_scores);
                             game_state.next_turn();
                             if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
-                                break; // game ended; this game is done.
+                                break; // game ended before the window; try a fresh game.
                             }
                         }
-                    } else {
+                        if got {
+                            break true;
+                        }
+                        tries += 1;
+                        if tries >= 1_000_000 {
+                            break false;
+                        }
+                    };
+                    if !reached {
+                        writeln!(boxed_stdout_or_stderr(),
+                            "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping").ok();
+                        continue;
+                    }
+                    } // end of the !reuse_board game replay
+                    value_board(
+                        &mut move_generator,
+                        &game_state,
+                        &leave,
+                        null_leave,
+                        b == 0,
 
-                        let reuse_board = sheet_reuse && (b as usize) < prior_max_boards;
-                        if !reuse_board {
-
-                        let target = if high_tiles <= low_tiles {
-                            low_tiles
-                        } else if num_buckets >= 2 {
-
-                            let span = high_tiles - low_tiles;
-                            let j = b as usize % num_buckets;
-                            low_tiles + (j * span + (num_buckets - 1) / 2) / (num_buckets - 1)
+                        if sheet_reuse
+                            && (reuse_board || (b as usize) < live_after[gen_idx])
+                        {
+                            Some(&sheet_cache[b as usize])
                         } else {
-
-                            low_tiles + (b as usize % (high_tiles - low_tiles + 1))
-                        };
-
-                        let phase_buckets = if high_tiles <= low_tiles {
-                            1
-                        } else if num_buckets >= 2 {
-                            num_buckets
-                        } else {
-                            high_tiles - low_tiles + 1
-                        };
-                        let do_withhold = !withhold_tally.is_empty()
-                            && (b as usize / phase_buckets).is_multiple_of(withhold_period);
-                        let mut tries = 0u32;
-                        let reached = loop {
-                            if !do_withhold {
-                                game_state
-                                    .reset_and_draw_tiles_double_ended(&game_config, &mut rng);
-                            } else {
-
-                                game_state.reset();
-                                game_state.bag.shuffle(&mut rng);
-                                for (t, &c) in withhold_tally.iter().enumerate() {
-                                    for _ in 0..c {
-                                        game_state.bag.remove_tile(t as u8);
-                                    }
-                                }
-                                let rsz = game_config.rack_size() as usize;
-                                let bag = &mut game_state.bag;
-                                let players = &mut game_state.players;
-                                for (i, player) in players.iter_mut().enumerate() {
-                                    bag.replenish(&mut player.rack, rsz, i);
-                                }
-                            }
-                            let mut got = false;
-                            if opening_samples {
-
-                                open_buf.clear();
-                            }
-                            loop {
-                                let fill =
-                                    game_state.board_tiles.iter().filter(|&&t| t != 0).count();
-                                if fill >= target {
-
-                                    got = fill <= high_tiles;
-                                    break;
-                                }
-                                game_state.players[game_state.turn as usize]
-                                    .rack
-                                    .sort_unstable();
-                                let board_snapshot = &movegen::BoardSnapshot {
-                                    board_tiles: &game_state.board_tiles,
-                                    game_config: &game_config,
-                                    kwg: &kwg,
-                                    klv: if game_state.turn == 0 {
-                                        &arc_klv0
-                                    } else {
-                                        &arc_klv1
-                                    },
-                                };
-                                move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
-                                    board_snapshot,
-                                    rack: &game_state.current_player().rack,
-                                    max_gen: 1,
-                                    num_exchanges_by_this_player: game_state
-                                        .current_player()
-                                        .num_exchanges,
-                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                    dynamic_leaves: if game_state.turn == 0 { dyn_ref } else { None },
-                                });
-                                if opening_samples
-                                    && game_state.current_player().rack.len() == rack_size
-                                {
-
-                                    let rank = lat.rank_bytes(&game_state.current_player().rack);
-                                    if rank != !0 {
-                                        open_buf.push((rank, move_generator.plays[0].equity.raw()));
-                                    }
-                                }
-                                game_state
-                                    .play(&game_config, &mut rng, &move_generator.plays[0].play)
-                                    .unwrap();
-                                let ended =
-                                    game_state.check_game_ended(&game_config, &mut final_scores);
-                                game_state.next_turn();
-                                if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
-                                    break; // game ended before the window; try a fresh game.
-                                }
-                            }
-                            if got {
-                                break true;
-                            }
-                            tries += 1;
-                            if tries >= 1_000_000 {
-                                break false;
-                            }
-                        };
-                        if !reached {
-                            writeln!(boxed_stdout_or_stderr(),
-                                "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping").ok();
-                            continue;
-                        }
-                        } // end of the !reuse_board game replay
-                        value_board(
-                            &mut move_generator,
-                            &game_state,
-                            &mut rng,
-                            &leave,
-                            null_leave,
-                            b == 0,
-                            verify && b == 0 && !reuse_board,
-
-                            if sheet_reuse
-                                && (reuse_board || (b as usize) < live_after[gen_idx])
-                            {
-                                Some(&sheet_cache[b as usize])
-                            } else {
-                                None
-                            },
-                            reuse_board,
-                            num_boards,
-                        );
-                        if opening_samples && !open_buf.is_empty() {
-
-                            let mut g = shared.lock().unwrap();
-                            let (sum, cnt, _completed, valued, _ever) = &mut *g;
-                            for &(rank, milli) in &open_buf {
-                                let idx = rank as usize;
-                                if cnt[idx] == 0 {
-                                    *valued += 1;
-                                }
-                                sum[idx] += milli as f64 * opening_weight as f64;
-                                cnt[idx] += opening_weight;
-                            }
-                        }
+                            None
+                        },
+                        reuse_board,
+                        num_boards,
+                    );
+                    }
                     }
 
-                    if ci_stop {
-                        let completed = {
-                            let g = shared.lock().unwrap();
-                            g.2
-                        };
+                    if multigen {
+                        if barrier.wait().is_leader() {
 
-                        let due = ci_check_at.load(std::sync::atomic::Ordering::Relaxed);
-                        if completed >= due
-                            && ci_check_at
-                                .compare_exchange(
-                                    due,
-                                    due + ci_stop_every,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                )
-                                .is_ok()
-                        {
-
-                            let (frac, n_boards) = {
-                                let g = shared.lock().unwrap();
-                                let sq = ci_sumsq.lock().unwrap();
-                                let mut scratch = ci_scratch.lock().unwrap();
-                                let (sum, cnt, comp, _, _) = &*g;
-                                let z = stats::NormalDistribution::reverse_ci(ci_conf);
-                                let (varr, den, w2v) = &mut *scratch;
-                                if varr.len() != lat_len {
-                                    *varr = vec![0.0f64; lat_len];
-                                    *den = vec![0.0f64; lat_len];
-                                    *w2v = vec![0.0f64; lat_len];
-                                }
-                                for v in varr[..full_rack_start].iter_mut() {
-                                    *v = -1.0;
-                                }
-                                for idx in full_rack_start..lat_len {
-                                    let n = cnt[idx];
-                                    varr[idx] = if n >= 2 {
-                                        let var = ((sq[idx] - sum[idx] * sum[idx] / n as f64)
-                                            / (n as f64 - 1.0))
-                                            .max(0.0);
-                                        var / n as f64
-                                    } else if n == 1 {
-                                        0.0
-                                    } else {
-                                        -1.0
-                                    };
-                                }
-                                for idx in 0..lat_len {
-                                    den[idx] = 0.0;
-                                    w2v[idx] = 0.0;
-                                }
-                                census::entering_leave_ci_fused(
-                                    &lat,
-                                    varr,
-                                    &base_freqs,
-                                    den,
-                                    w2v,
-                                );
-                                let mut total = 0usize;
-                                let mut under = 0usize;
-                                for idx in 0..full_rack_start {
-                                    if den[idx] > 0.0 {
-                                        total += 1;
-                                        let ci_half =
-                                            z * (w2v[idx] / (den[idx] * den[idx])).sqrt();
-                                        if ci_half <= ci_target_mp {
-                                            under += 1;
-                                        }
-                                    }
-                                }
-                                let frac = if total > 0 {
-                                    under as f64 / total as f64
+                            {
+                                let mut g = shared.lock().unwrap();
+                                let (sum, cnt, completed, valued, ever) = &mut *g;
+                                let mut lv = leave_lock.write().unwrap();
+                                let base = if cnt[empty_rank] > 0 {
+                                    sum[empty_rank] / cnt[empty_rank] as f64
                                 } else {
                                     0.0
                                 };
-                                (frac, *comp)
-                            };
-                            writeln!(boxed_stdout_or_stderr(),
-                                "census CI-stop check: {n_boards} boards, {:.1}% of leaves \
-                                 within target {:.0} mp (need {:.1}%)",
-                                100.0 * frac,
-                                ci_target_mp,
-                                100.0 * ci_stop_frac,).ok();
-                            if frac >= ci_stop_frac {
-                                stop_now.store(true, std::sync::atomic::Ordering::Relaxed);
-                                writeln!(boxed_stdout_or_stderr(),
-                                    "census CI-stop: target met at {n_boards} boards; stopping.").ok();
-                            }
-                        }
-                    }
-                    }
-                    }
-
-                    if sgd {
-                        if barrier.wait().is_leader() {
-                            let mut g = shared.lock().unwrap();
-                            let (sum, cnt, _completed, _valued, ever) = &mut *g;
-                            let mut lv = leave_lock.write().unwrap();
-                            let base = if cnt[empty_rank] > 0 {
-                                sum[empty_rank] / cnt[empty_rank] as f64
-                            } else {
-                                0.0
-                            };
-                            for idx in 0..lat_len {
-                                if cnt[idx] > 0 {
-                                    ever[idx] = true;
-                                    let centered = sum[idx] / cnt[idx] as f64 - base;
-                                    lv[idx] = ((1.0 - alpha) * lv[idx] as f64 + alpha * centered)
-                                        .round() as i32;
+                                for idx in 0..lat_len {
+                                    if cnt[idx] > 0 {
+                                        ever[idx] = true;
+                                        lv[idx] = (sum[idx] / cnt[idx] as f64 - base)
+                                            .round()
+                                            as i32;
+                                    }
                                 }
-                                sum[idx] = 0.0;
-                                cnt[idx] = 0;
+                                writeln!(boxed_stdout_or_stderr(),
+                                    "census: gen {}/{} done ({} of {} leaves valued)",
+                                    gen_idx + 1,
+                                    gens,
+                                    *valued,
+                                    lat_len,).ok();
+                                if gen_idx + 1 < gens {
+
+                                    for idx in 0..lat_len {
+                                        sum[idx] = 0.0;
+                                        cnt[idx] = 0;
+                                    }
+                                    *completed = 0;
+                                    *valued = 0;
+                                    next_board
+                                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                                }
                             }
-                            next_board.store(batch_end, std::sync::atomic::Ordering::Relaxed);
+
+                            {
+                                let g = shared.lock().unwrap();
+                                let lv = leave_lock.read().unwrap();
+                                let desired =
+                                    format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
+                                let p = claim_output_path(&desired).unwrap_or(desired);
+                                match write_census_klv2(
+                                    &lat,
+                                    &|i| lv[i] as f64,
+                                    0.0,
+                                    &|i| g.4[i],
+                                    true, // resume snapshots stay full
+                                    &p,
+                                ) {
+                                    Ok(nk) => { writeln!(boxed_stdout_or_stderr(),
+     "census: persisted gen {} -> {p} ({nk} leaves)",
+                                        gen_idx + 1).ok(); },
+                                    Err(e) => { writeln!(boxed_stdout_or_stderr(),
+     "census: gen {} klv2 persist failed: {e}",
+                                        gen_idx + 1).ok(); },
+                                }
+                            }
+
+                            for slot in sheet_cache.iter().skip(live_after[gen_idx]) {
+                                *slot.lock().unwrap() = None;
+                            }
                         }
                         barrier.wait();
-                    }
-                    batch_start = batch_end;
-                    if batch_start >= num_boards {
+                        if gen_idx + 1 < gens {
 
-                        if multigen {
-                            if barrier.wait().is_leader() {
-
-                                {
-                                    let mut g = shared.lock().unwrap();
-                                    let (sum, cnt, completed, valued, ever) = &mut *g;
-                                    let mut lv = leave_lock.write().unwrap();
-                                    if rack_summary {
-
-                                        let mut rmean = vec![census::UNPLAYABLE; lat_len];
-                                        for idx in full_rack_start..lat_len {
-                                            if cnt[idx] > 0 {
-                                                rmean[idx] =
-                                                    (sum[idx] / cnt[idx] as f64).round() as i32;
-                                            }
-                                        }
-                                        let mut gnum = vec![0f64; lat_len];
-                                        let mut gden = vec![0f64; lat_len];
-                                        census::generate_fused(
-                                            &lat, &rmean, &base_freqs, &mut gnum, &mut gden,
-                                        );
-                                        let gbase = if gden[empty_rank] != 0.0 {
-                                            gnum[empty_rank] / gden[empty_rank]
-                                        } else {
-                                            0.0
-                                        };
-                                        for idx in 0..lat_len {
-                                            if gden[idx] != 0.0 {
-                                                ever[idx] = true;
-                                                lv[idx] = (gnum[idx] / gden[idx] - gbase).round()
-                                                    as i32;
-                                            }
-                                        }
-                                    } else {
-                                        let base = if cnt[empty_rank] > 0 {
-                                            sum[empty_rank] / cnt[empty_rank] as f64
-                                        } else {
-                                            0.0
-                                        };
-                                        for idx in 0..lat_len {
-                                            if cnt[idx] > 0 {
-                                                ever[idx] = true;
-                                                lv[idx] = (sum[idx] / cnt[idx] as f64 - base)
-                                                    .round()
-                                                    as i32;
-                                            }
-                                        }
-                                    }
-                                    writeln!(boxed_stdout_or_stderr(),
-                                        "census: gen {}/{} done ({} of {} leaves valued)",
-                                        gen_idx + 1,
-                                        gens,
-                                        *valued,
-                                        lat_len,).ok();
-                                    if gen_idx + 1 < gens {
-
-                                        for idx in 0..lat_len {
-                                            sum[idx] = 0.0;
-                                            cnt[idx] = 0;
-                                        }
-                                        *completed = 0;
-                                        *valued = 0;
-                                        next_board
-                                            .store(0, std::sync::atomic::Ordering::Relaxed);
-                                        for h in &pool_hist {
-                                            h.store(0, std::sync::atomic::Ordering::Relaxed);
-                                        }
-                                    }
-                                }
-
-                                if persist_gens {
-                                    let g = shared.lock().unwrap();
-                                    let lv = leave_lock.read().unwrap();
-                                    let desired =
-                                        format!("census-gen-{census_run_epoch}-{:02}.klv2", gen_idx + 1);
-                                    let p = claim_output_path(&desired).unwrap_or(desired);
-                                    match write_census_klv2(
-                                        &lat,
-                                        &|i| lv[i] as f64,
-                                        0.0,
-                                        &|i| g.4[i],
-                                        true, // resume snapshots stay full
-                                        &p,
-                                    ) {
-                                        Ok(nk) => { writeln!(boxed_stdout_or_stderr(),
-     "census: persisted gen {} -> {p} ({nk} leaves)",
-                                            gen_idx + 1).ok(); },
-                                        Err(e) => { writeln!(boxed_stdout_or_stderr(),
-     "census: gen {} klv2 persist failed: {e}",
-                                            gen_idx + 1).ok(); },
-                                    }
-                                }
-
-                                if sheet_reuse {
-                                    for slot in sheet_cache.iter().skip(live_after[gen_idx]) {
-                                        *slot.lock().unwrap() = None;
-                                    }
-                                }
-                            }
-                            barrier.wait();
-                            if gen_idx + 1 < gens {
-
-                                prior_max_boards = prior_max_boards.max(num_boards as usize);
-                                gen_idx += 1;
-                                num_boards = board_counts[gen_idx];
-                                batch_start = 0;
-                                continue;
-                            }
+                            prior_max_boards = prior_max_boards.max(num_boards as usize);
+                            gen_idx += 1;
+                            num_boards = board_counts[gen_idx];
+                            continue;
                         }
-                        break;
                     }
+                    break;
                 }
             });
         }
@@ -5309,215 +4475,19 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
     let leave_final = leave_lock.into_inner().unwrap();
 
-    if ci_report {
-        let sumsq = ci_sumsq.into_inner().unwrap();
-        let z = stats::NormalDistribution::reverse_ci(ci_conf);
-        let mut ci_halves = Vec::new();
-        let mut boards_needed = Vec::new();
-        let mut n_under = 0usize;
-        let mut sum_n = 0u64;
-
-        let report_lo = if rack_summary { full_rack_start } else { 0 };
-        for idx in report_lo..lat_len {
-            let n = accum_cnt[idx];
-            if n >= 2 {
-                let var = ((sumsq[idx] - accum_sum[idx] * accum_sum[idx] / n as f64)
-                    / (n as f64 - 1.0))
-                    .max(0.0);
-                let ci_half = z * (var / n as f64).sqrt();
-                if ci_half <= ci_target_mp {
-                    n_under += 1;
-                }
-
-                boards_needed.push(n as f64 * (ci_half / ci_target_mp.max(1.0)).powi(2));
-                ci_halves.push(ci_half);
-                sum_n += n;
-            }
-        }
-        ci_halves.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        boards_needed.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let pctl = |v: &[f64], p: f64| -> f64 {
-            if v.is_empty() {
-                0.0
-            } else {
-                v[(((v.len() - 1) as f64) * p) as usize]
-            }
-        };
-        let m = ci_halves.len();
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census CI report (conf {:.3}, z {:.3}, {m} entries with n>=2, avg n {:.1}):",
-            ci_conf,
-            z,
-            if m > 0 { sum_n as f64 / m as f64 } else { 0.0 },
-        )?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "  per-entry CI half-width (mp): p50 {:.1}  p90 {:.1}  p99 {:.1}  max {:.1}",
-            pctl(&ci_halves, 0.5),
-            pctl(&ci_halves, 0.9),
-            pctl(&ci_halves, 0.99),
-            ci_halves.last().copied().unwrap_or(0.0),
-        )?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "  {:.1}% of entries within target {:.0} mp at the current count; \
-             boards to pin a fraction: p50 {:.0}  p90 {:.0}  p99 {:.0}",
-            if m > 0 {
-                100.0 * n_under as f64 / m as f64
-            } else {
-                0.0
-            },
-            ci_target_mp,
-            pctl(&boards_needed, 0.5),
-            pctl(&boards_needed, 0.9),
-            pctl(&boards_needed, 0.99),
-        )?;
-
-        if ci_report_level >= 2 && rack_summary {
-            let mut varr = vec![-1.0f64; lat_len]; // -1 = never valued -> excluded
-            for idx in full_rack_start..lat_len {
-                let n = accum_cnt[idx];
-                varr[idx] = if n >= 2 {
-                    let var = ((sumsq[idx] - accum_sum[idx] * accum_sum[idx] / n as f64)
-                        / (n as f64 - 1.0))
-                        .max(0.0);
-                    var / n as f64
-                } else if n == 1 {
-                    0.0 // single sample: across-board variance unknown, treated as 0
-                } else {
-                    -1.0 // never valued
-                };
-            }
-            let mut den = vec![0.0f64; lat_len];
-            let mut w2v = vec![0.0f64; lat_len];
-            census::entering_leave_ci_fused(&lat, &varr, &base_freqs, &mut den, &mut w2v);
-            let mut leave_ci = Vec::new();
-            let mut leave_scale = Vec::new();
-            let mut leave_under = 0usize;
-            for idx in 0..full_rack_start {
-                if den[idx] > 0.0 {
-                    let ci_half = z * (w2v[idx] / (den[idx] * den[idx])).sqrt();
-                    if ci_half <= ci_target_mp {
-                        leave_under += 1;
-                    }
-                    leave_ci.push(ci_half);
-
-                    leave_scale.push((ci_half / ci_target_mp.max(1.0)).powi(2));
-                }
-            }
-            leave_ci.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-            leave_scale.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-            let lm = leave_ci.len();
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "  leave-level CI ({lm} leaves, draw-ways-propagated):"
-            )?;
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "    half-width (mp): p50 {:.2}  p90 {:.2}  p99 {:.2}  max {:.2}",
-                pctl(&leave_ci, 0.5),
-                pctl(&leave_ci, 0.9),
-                pctl(&leave_ci, 0.99),
-                leave_ci.last().copied().unwrap_or(0.0),
-            )?;
-            writeln!(
-                boxed_stdout_or_stderr(),
-                "    {:.1}% of leaves within target {:.0} mp; board-scale x_current to pin a \
-                 fraction: p50 {:.3}  p90 {:.3}  p99 {:.3}",
-                if lm > 0 {
-                    100.0 * leave_under as f64 / lm as f64
-                } else {
-                    0.0
-                },
-                ci_target_mp,
-                pctl(&leave_scale, 0.5),
-                pctl(&leave_scale, 0.9),
-                pctl(&leave_scale, 0.99),
-            )?;
-        }
-    }
-
-    let (ga_num, ga_den) = if global_apportion && !rack_summary {
-        let mut vr = vec![census::UNPLAYABLE; lat_len];
-        for idx in full_rack_start..lat_len {
-            if accum_cnt[idx] > 0 {
-                vr[idx] = (accum_sum[idx] / accum_cnt[idx] as f64).round() as i32;
-            }
-        }
-        let mut gn = vec![0i128; lat_len];
-        let mut gd = vec![0i128; lat_len];
-        census::entering_fused(&lat, &vr, &base_freqs, &mut gn, &mut gd);
-        (gn, gd)
-    } else {
-        (Vec::new(), Vec::new())
-    };
-
     let value_mp = |idx: usize| -> f64 {
-        if sgd || multigen {
+        if multigen {
             leave_final[idx] as f64
-        } else if global_apportion {
-            if ga_den[idx] != 0 {
-                (ga_num[idx] / ga_den[idx]) as f64
-            } else {
-                0.0
-            }
         } else if accum_cnt[idx] > 0 {
             accum_sum[idx] / accum_cnt[idx] as f64
         } else {
             0.0
         }
     };
-    if rack_summary && !multigen {
-        let summary_name = claim_output_path(&format!("census-summary-{census_run_epoch}.csv"))?;
-        let mut sw = csv::Writer::from_path(&summary_name)?;
-        let mut tally_buf = vec![0u8; num_letters];
-        let mut leave_ser = String::new();
-
-        let globally_possible = |idx: usize, tally: &mut [u8]| -> bool {
-            lat.unrank_into(idx, tally);
-            (0..num_letters).all(|t| tally[t] <= base_freqs[t])
-        };
-        let mut tot_e = 0f64;
-        let mut tot_c = 0u64;
-        for idx in full_rack_start..lat.len() {
-            if accum_cnt[idx] > 0 && globally_possible(idx, &mut tally_buf) {
-                tot_e += accum_sum[idx] / equity::SCALE as f64;
-                tot_c += accum_cnt[idx];
-            }
-        }
-        sw.serialize(("", tot_e, tot_c))?;
-        let mut nrows = 0usize;
-        for idx in full_rack_start..lat.len() {
-            if accum_cnt[idx] == 0 || !globally_possible(idx, &mut tally_buf) {
-                continue;
-            }
-            leave_ser.clear();
-            for (t, &c) in tally_buf.iter().enumerate() {
-                for _ in 0..c {
-                    leave_ser.push_str(alphabet.of_rack(t as u8).unwrap());
-                }
-            }
-            sw.serialize((
-                &leave_ser,
-                accum_sum[idx] / equity::SCALE as f64,
-                accum_cnt[idx],
-            ))?;
-            nrows += 1;
-        }
-        sw.flush()?;
-        writeln!(
-            boxed_stdout_or_stderr(),
-            "census: wrote autoplay-faithful summary ({nrows} full racks) to {summary_name} in {}s",
-            t0.elapsed().as_secs(),
-        )?;
-        return Ok(());
-    }
     let baseline = value_mp(empty_rank);
     let out_name = claim_output_path(&format!("census-leaves-{census_run_epoch}.csv"))?;
 
-    let emit_full = env_flag("WOLGES_FULL", false);
-    let max_keep = if emit_full {
+    let max_keep = if full {
         rack_size
     } else {
         rack_size.saturating_sub(1)
@@ -5525,10 +4495,8 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     let mut rows: Vec<(usize, String, f64)> = Vec::new();
     let mut leave_ser = String::new();
     for idx in 0..lat.len() {
-        let valued = if sgd || multigen {
+        let valued = if multigen {
             ever[idx]
-        } else if global_apportion {
-            ga_den[idx] != 0
         } else {
             accum_cnt[idx] > 0
         };
@@ -5566,13 +4534,13 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let klv_name = claim_output_path(&format!("census-leaves-{census_run_epoch}.klv2"))?;
     let is_valued = |idx: usize| {
-        if sgd || multigen {
+        if multigen {
             ever[idx]
         } else {
             accum_cnt[idx] > 0
         }
     };
-    let n_klv = write_census_klv2(&lat, &value_mp, baseline, &is_valued, emit_full, &klv_name)?;
+    let n_klv = write_census_klv2(&lat, &value_mp, baseline, &is_valued, full, &klv_name)?;
     writeln!(
         boxed_stdout_or_stderr(),
         "census: wrote klv2 to {klv_name} ({n_klv} leaves)"

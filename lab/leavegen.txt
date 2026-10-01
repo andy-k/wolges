@@ -29,12 +29,11 @@ boards to settle the leaves, then one generation of 2048 boards to pin them
 down (3x256 is shorthand for three of them), iterated from the null starting
 tables (the two "-"). Every default is already the one to ship. Those counts
 are measured on this English word list, not universal constants; a different
-tile set wants its own sweep, and the adaptive stop described below is not the
-shortcut around it that it looks like. The census builds faster than plain
-self-play or board sampling and plays at least as well, which is why it is the
-one to reach for. Those alternatives, and every lever that turned out not to
-help, are described below; the best current way to run each method is collected
-at the end of this file.
+tile set wants its own sweep. The census builds faster than plain self-play or
+board sampling and plays at least as well, which is why it is the one to reach
+for. Those alternatives, and every lever that turned out not to help, are
+described below; the best current way to run each method is collected at the
+end of this file.
 
 The last generation's board count is the number that matters, and it is the
 only reason this costs more than the older recommendation of 4x256 (four
@@ -635,35 +634,31 @@ play-and-keep split -- pins down what the answer must be, and the fast version
 that fills the whole catalog is checked against that reference in the tests, so
 the fast path is proven right before it is trusted.
 
-Third, it values each leave. You keep some tiles; the bag then draws the rest
-of your rack back up to a full rack. For every way that draw could come out,
-look up the best that completed rack can do, and average those -- weighting
-each possible draw by how many ways it can actually come out of the unseen
-tiles, so likely draws count more than unlikely ones (drawing without
-replacement: the kept tiles are themselves already gone from the pool, and the
-completion is drawn from what remains). That weighted average is the leave's
-value: the worth of walking into a turn holding exactly those tiles, given
-everything still unseen. A full-length leave -- the full rack kept, that is, a
-pass -- draws nothing and takes its own best-rack value straight through. A
-leave the board's unseen tiles cannot complete at all is left unvalued on that
-board.
+Third, it values each leave. Take every full rack the board could deal, find
+the best it can do, weight it by how likely that rack is to be drawn from the
+unseen tiles, and hand a share of that value to every subrack the rack contains
+-- so a leave's value is the total, over every full rack that contains it, of
+that rack's weighted value. Each subrack keeps a running numerator and
+denominator, and the leave is the numerator over the denominator. This is the
+complete attribution: every subrack of every rack is credited, including the
+heavy tiles a player rarely chooses to play but that still shape a rack's
+future. A full-length leave -- the full rack kept, that is, a pass -- is
+contained only in itself and takes its own best-rack value straight through. A
+leave that no rack the board can deal contains is left unvalued on that board.
 
-The result is exactly the worth of holding that leave, measured for every leave
-on the board rather than estimated from the racks that happened to come up.
-Each board contributes a running total and count per leave; after all the
-boards, every leave's average is taken, the whole table is shifted so the empty
-leave is worth zero (its value is the average best full-rack equity -- the
-natural baseline), and a (leave, value) row is written per leave. Rare
-holdings, which one board may not be able to complete, get covered by piling up
-boards: more boards mean less noise and more of the uncommon board situations
-reached.
+The result is measured exactly for every leave on the board rather than
+estimated from the racks that happened to come up. Each board contributes a
+running total and count per leave; after all the boards, every leave's average
+is taken, the whole table is shifted so the empty leave is worth zero (its
+value is the average best full-rack equity -- the natural baseline), and a
+(leave, value) row is written per leave. Rare holdings, which one board may not
+be able to complete, get covered by piling up boards: more boards mean less
+noise and more of the uncommon board situations reached.
 
 The table is written without the full-length leaves by default. Keeping a full
 rack (a pass) is almost never the best move mid-game, and the empty-bag endgame
 is scored with its own penalty rather than from the leave table, so dropping
-those rows gives a smaller, play-identical file; WOLGES_FULL=1 keeps them.
-
-New knobs: WOLGES_FULL.
+those rows gives a smaller, play-identical file; --full keeps them.
 
 
 EXCHANGING, AND WHY GOOD LEAVES FAN OUT
@@ -747,45 +742,6 @@ margin. Whether its exact per-board values play stronger than board sampling or
 the autoplay baseline, and by how much, is not something a fresh head-to-head
 settles at this point; the honest claim is the runtime one.
 
-New knobs: WOLGES_CENSUS_BLANK_CAP, WOLGES_CENSUS_VERIFY.
-
-
-TWO WAYS TO ATTRIBUTE A BOARD'S VALUE: ENTERING VS FULL-RACK
-
-There are two honest ways to turn a board's play values into leave values, and
-the census can do either. They are selected by a knob, WOLGES_APPORTION.
-(Autoplay reads the same knob for a related choice: whether to record the full
-rack it drew or only the leave carried into the turn.)
-
-Entering attribution values a leave by the worth of walking into a turn holding
-exactly that leave: average the best play of every full rack you could complete
-that leave to, weighted by the ways(R, S) draw count from before. This credits
-only the leave carried into the turn -- and it is exactly the value the census
-has been computing all along.
-
-Full-rack apportionment is the exhaustive analog of what the sampled board
-method already does. Take every full rack the board could deal, find the best
-it can do, weight it by how likely that rack is to be drawn, and hand a share
-of that value to every subrack the rack contains -- so a leave's value is the
-total, over every full rack that contains it, of that rack's weighted value.
-Each subrack keeps a running numerator and denominator, and the leave is the
-numerator over the denominator. The census does this over every rack on the
-board exactly, not by sampling. It is worth trying because it is the complete
-attribution: every subrack of every rack is credited, including the heavy tiles
-a player rarely chooses to play but that still shape a rack's future, rather
-than only the leave that happened to be carried in.
-
-Full-rack apportionment is the new alternative here, opt-in with
-WOLGES_APPORTION=full-rack; a plain census run still gives the entering value.
-Having both lets the two be compared head to head on identical boards. The
-verdict, measured on CSW24 in our own self-play, is that they come out
-essentially even: the entering table scored 50.0791 percent of games at one
-million game pairs (about 0.08 pp above an even split) and 50.0296 at ten
-million pairs (about 0.03 pp), a real but negligible edge for entering. So the
-choice between them is not about play strength.
-
-New knobs: WOLGES_APPORTION.
-
 
 CHOOSING BOARDS ACROSS THE GAME
 
@@ -819,10 +775,7 @@ English game two full seven-tile racks hold fourteen tiles, so the pool window
 is floored at fifteen -- one more than fourteen. (Stated the other way, that is
 a board no fuller than eighty-five of a hundred tiles down; at eighty-six the
 bag is empty.) These figures come from the game's own tile count and rack size,
-not hardcoded, so the guard holds for any variant. A window setting that would
-push past the floor is raised back to it with a warning rather than quietly
-producing endgame-polluted leaves; the normal window is well inside the floor,
-so a usual run is unchanged.
+not hardcoded, so the guard holds for any variant.
 
 One subtlety: a single move can lay down several tiles at once, so a game
 played toward a target fill can overshoot it by up to a rackful. Capping the
@@ -845,67 +798,6 @@ around. Every level then gets the same number of boards, so the leaves average
 over an even mix of fill levels -- the same average as random targeting, but
 less noise. Each worker still seeds its own games, so the boards stay
 independent and the run stays reproducible.
-
-WOLGES_CENSUS_BUCKETS coarsens that cycle to a fixed number of evenly spaced
-levels instead of every single one -- for example eleven levels, roughly ten
-percent of the window apart. Coarser steps collect more boards per level, which
-is less noisy when the board count is low, and because the spacing is a
-fraction of the window it picks out the same stages of the game whatever the
-board size, so a normal English board and a larger variant are sampled at
-matching stages. It changes only how the sampling is spaced, not the leaves it
-settles on; left at its default (every fill level) the run is byte-identical.
-
-
-ONE REAL GAME PER WORKER (OPTIONAL)
-
-The default sampler plays a fresh game to one chosen fill, values that single
-board, and starts over -- independent draws, evenly spaced across the window.
-That even spacing does not match how much of a real game is actually spent at
-each fill. WOLGES_CENSUS_PER_GAME turns on another way: each worker
-greedy-plays one real game and values every board along it whose fill falls in
-the window -- consecutive positions from the same game -- stopping once the
-board fills past the window rather than playing the game out. The boards then
-follow the mix a real game actually visits, closer to what our own self-play
-sees, and each position is reused rather than replayed from scratch, so it is
-cheaper too. In this mode the board count counts games, and a game yields
-however many in-window boards it happens to pass through; the fill jumps
-several tiles per move, so a narrow window catches few positions -- open the
-window wide.
-
-Left as it is, this mode follows how often a game naturally sits at each pool
-size, so common fill levels pile up and rare ones stay thin. It can also aim
-for even coverage while still reusing one game's positions: a running tally,
-shared across workers, counts how many samples each pool size has so far, and
-each game samples only the positions that land on the sizes currently furthest
-behind, so the thin buckets catch up. It stops a game early once the board has
-filled past the lowest size still behind -- the pool only shrinks as tiles go
-down, so no later position can help. Because that shared tally is updated
-without locking, exactly which positions get sampled depends on how the workers
-interleave, so this even-coverage per-game path is not bit-for-bit repeatable;
-the leaves still settle to the same answer regardless. The plain
-reset-and-cycle mode remains the reproducible one.
-
-
-UPDATING THE LEAVES AS THE RUN GOES
-
-Normally the census values a whole run of boards and only then produces the
-leaves; to improve them you run the whole thing again with those leaves fed
-back in, until they reproduce themselves (the leaves that come out match the
-leaves that went in). WOLGES_CENSUS_BATCH adds a way to improve them during a
-single run. It sets how many boards form a batch (the default is all of them --
-one batch, exactly the plain behavior). With a smaller batch, the workers value
-a batch using the current leaves, and then, at a gathering point, the leaves
-are nudged part of the way toward what that batch found before the next batch
-starts. WOLGES_CENSUS_ALPHA is how far -- half by default, so the leaves move
-halfway toward each batch's findings. Because every batch after the first
-values its boards with already-improved leaves, a run settles on the same final
-leaves in far fewer boards than re-running whole passes does. With fixed batch
-boundaries the update combines the same way whichever worker applies it, so
-this stays reproducible in the reset-and-cycle mode. Left at the default it is
-byte-identical.
-
-New knobs: WOLGES_CENSUS_ALPHA, WOLGES_CENSUS_BATCH, WOLGES_CENSUS_BUCKETS,
-WOLGES_CENSUS_PER_GAME.
 
 
 THE BLANK MODEL: SPELL EACH WORD ONCE
@@ -950,21 +842,17 @@ every split and gives bit-for-bit the same values. It helps most on the
 big-pool boards that dominate the wall clock, and can cost a little on the
 smallest pools and on the very largest alphabets (where the table of possible
 racks is several times bigger, so the extra scattered writes outweigh the
-saving). So it is on by default only where it pays: WOLGES_CENSUS_SCATTER takes
-off, on, or auto, and auto (the default) turns it on for the common alphabets
-and the big pools and off elsewhere.
+saving). So it is on only where it pays: for the common alphabets and the big
+pools, and off elsewhere.
 
 The rest of the sheet-and-valuation speedups are byte-identical reshuffles: the
 two full-rack passes are fused into one (each rack visited once, dropping a
 large per-worker value table), only the racks the board can actually deal are
 built (a big win late in the game, when most racks are undrawable), and on a
 full bag the per-rack hand-out of value is replaced by a fixed-cost set of
-passes over the table (WOLGES_CENSUS_ZETA_POOL sets the unseen-pool size at
-which the build switches to that path, default thirty-six for English). None of
-these change the leaves; they are why the census can be both exact and fast,
-which is its selling point over sampling.
-
-New knobs: WOLGES_CENSUS_SCATTER, WOLGES_CENSUS_ZETA_POOL.
+passes over the table (the build switches to that path at an unseen pool of
+thirty-six tiles). None of these change the leaves; they are why the census can
+be both exact and fast, which is its selling point over sampling.
 
 
 CREDITING WHAT THE OPPONENT CANNOT DRAW
@@ -1084,57 +972,7 @@ help: in a fresh head-to-head the full correction (1.0) beats it 50.13 to 49.87
 (confidence 100), so dropping the holder's-recovery half is a small negative,
 not a win. The knob stays at 1.0.
 
-New knobs: WOLGES_OPPDENIAL_EXACT_ME2.
-
-
-COVERING RARE-TILE LEAVES BY HOLDING TILES BACK
-
-A separate coverage experiment, kept in the same recorded-dead-end spirit. The
-census can only value a leave on boards where all of that leave's tiles are
-still unseen. The single-copy tiles -- the Q, Z, J -- are usually played before
-the sampling window opens, so racks that need them are rarely drawable and
-their leaves get little or no coverage: on a small board sample a Q-rack's
-leave can go unmeasured entirely.
-
-WOLGES_CENSUS_WITHHOLD = B (default 0, off) holds the B rarest tiles out of the
-bag for the whole game, so they stay unseen and turn up in the boards the
-census studies, and the racks that need them finally get covered. It is the
-same reserved-tile idea the board sampler already uses. It is off by default
-because it is a quality trade, not a free win: a board that withholds the Q
-never places the Q, which shifts the mix of boards being studied away from real
-play.
-
-WOLGES_CENSUS_WITHHOLD_FRAC = f, a fraction in (0, 1] (default 1.0, every
-board), softens that shift. Below 1.0 only every (1/f)-th board is a withhold
-board and the rest are dealt naturally, and the withhold boards are picked
-spaced evenly across the game's fill levels rather than bunched in one, so the
-common leaves keep an honest board mix while the rare tail still gets some
-coverage. At the default 1.0 every board withholds, which is the plain behavior
-above.
-
-Verdict. Census with the withhold on against census with it off, one million
-pairs, our-vs-our: 50.0436, confidence 89.1. That is a hair above an even
-split, but the gap is barely over the 0.035 pp noise floor and the confidence
-sits below the two-standard-error (about 98 percent) bar, so it reads as
-roughly a tie rather than a real gain. The extra rare-tail coverage does not
-clearly pay for the shifted board mix. Both withhold knobs stay off by default.
-
-New knobs: WOLGES_CENSUS_WITHHOLD, WOLGES_CENSUS_WITHHOLD_FRAC,
-WOLGES_OPPDENIAL_LEAVE_MARGINAL.
-
-
-CHOOSING THE DEFAULT ATTRIBUTION
-
-Since the two attributions come out even on CSW24 -- entering held a negligible
-edge at ten million game pairs (50.0296, about 0.03 pp) -- the choice is
-settled on design grounds, not on play strength. Full-rack is the fuller, more
-natural attribution: it credits every subrack the census already computes, in
-one inline pass over the board, and it is what every run worth shipping
-selected by hand. The old default was entering, so a plain census run silently
-produced the narrower leaves, an easy mistake to walk into. The default is
-flipped: a plain run now gives full-rack, and entering becomes opt-in with
-WOLGES_APPORTION=entering. A plain run is byte-identical to an explicit
-WOLGES_APPORTION=full-rack run.
+New knobs: WOLGES_OPPDENIAL_EXACT_ME2, WOLGES_OPPDENIAL_LEAVE_MARGINAL.
 
 
 FORCING FULL RARE RACKS
@@ -1234,225 +1072,24 @@ on uneven specifications; the leaves are identical, because each board seeds
 its own randomness from its own slot, so the result never depends on how many
 threads happened to run.
 
-A census can also resume from per-generation snapshot files, picking up at the
-generation after the last one saved. If the specification given on resume asks
-for fewer generations than the snapshots already on disk, the resume index
-would run off the end of the specification and a worker would panic. It now
-stops with a clear error -- extend the specification or remove the snapshots --
-instead of crashing. Fresh runs are unaffected.
+A census can also resume from a per-generation snapshot file (--resume),
+picking up at the generation after the one it saved. If the specification given
+on resume holds no more generations than the snapshot has already done, the
+resume index would run off the end of the specification and a worker would
+panic. It now stops with a clear error -- extend the specification -- instead
+of crashing. Fresh runs are unaffected.
 
 Finally, the census window's bounds -- the range of unseen-pool sizes it
-studies --
-are derived from the game configuration rather than hand-picked for the English
-game, so they carry over to any tile-set. The low end is the endgame floor
-established earlier: one more than the tiles both players hold at once, the
-smallest pool that still leaves a non-empty bag (below it the bag is empty and
-the leave table is not consulted). The high end is the tile count minus the
-tiles both players hold (boards with at least that many tiles already played).
-For the classic two-player English game this widens the default window from an
-unseen pool of 21 to 28 tiles out to 15 to 86. The method actually supports
-every board but the all-empty one; the default stops short of the near-empty
-opening boards because the value of leaves there is unsettled. WOLGES_POOL_MIN
-and WOLGES_POOL_MAX still override, and a too-small WOLGES_POOL_MIN is raised
-to the floor with a warning rather than silently valuing endgame boards whose
-leaves are never used.
-
-
-WEIGHTING FULL RACKS BY THE WHOLE BAG
-
-The full-rack census only credits a rack on boards where its tiles are still in
-the bag, so a rack full of rare or high-value tiles is valued only on early,
-near-full boards -- a thin, lopsided sample. As a step toward making the census
-comparable to self-play, WOLGES_CENSUS_GLOBAL_WEIGHTS (default off, and off is
-byte-for-byte the same table) scores every rack by its odds of being drawn from
-the full starting bag, the same for every board no matter how picked-over this
-one is, and it also values racks this board could not deal at all, since their
-tiles can still be played somewhere. It builds each board's play-value sheet
-over the whole bag so a depleted rack still gets a real best play, and weights
-each rack by the whole-bag draw odds instead of this board's leftover pool.
-
-It comes out a no-op. A rack's best value on a board does not depend on the
-pool, so racks that were already drawable here keep the exact same value; only
-board-impossible racks are newly added, and those are a small, rarely-decisive
-share of the table. In our own head-to-head leave compare reports 49.9996 at
-confidence 50.5 -- an even split, no measurable difference. Kept opt-in as a
-recorded dead-end.
-
-New knobs: WOLGES_CENSUS_GLOBAL_WEIGHTS.
-
-
-A SELF-PLAY-SHAPED RACK SUMMARY
-
-The full-rack census and the self-play sampler build the same kind of table two
-different ways, and the one difference that remains is how each weights a rack.
-The census weights a full rack by the number of ways the pool can deal all of
-that rack's tiles at once and apportions that value onto every leave the rack
-contains. The self-play sampler logs each rack it draws once, and
-leave generate later weights each rack only by ways(R, S), the draw-ways of
-its missing tiles. WOLGES_CENSUS_RACK_SUMMARY (default off, byte-identical)
-pins that one difference down: it values each full rack once per board (its
-exact best play, with no full-rack draw weight), averages across boards, and
-then, instead of apportioning and writing a klv, writes the census result in
-exactly the file the self-play sampler produces -- a total row, then one row
-per rack of the rack, its total best-play value in points, and the number of
-boards. Feeding that to leave generate reproduces the self-play pipeline but
-with the exact per-board best in place of sampled racks, so whatever gap
-remains between the two tables is exactly this full-rack draw weighting.
-
-Coverage matches the forcing path from the start. With WOLGES_IMPOSSIBLE_OK on
-(the default) the rack summary stops restricting to drawable racks, builds each
-board's play sheet over the whole bag so a board-impossible rack still gets a
-real best play, and at the end drops only the racks impossible even from the
-full bag (needing more of a tile than exists, such as seven of the same rare
-tile), whose completions are zero and which leave generate would discard
-anyway. Set WOLGES_IMPOSSIBLE_OK=0 for drawable racks only.
-
-The rack summary is not the stronger table. In our own head-to-head against the
-default full-rack census leave compare reports 49.9842 at confidence 67.2 --
-a tie, if anything a hair behind. So the full-rack draw weighting the census
-does by default is not costing it anything; the two roads to a leave table
-arrive at the same quality. Kept opt-in.
-
-New knobs: WOLGES_CENSUS_RACK_SUMMARY.
-
-
-REAL OPENING RACKS IN THE SUMMARY
-
-The rack summary values every rack on every board inside the operating window,
-but that window never lands on the near-empty opening boards -- the one place
-its coverage falls short of the self-play sampler, which plays whole games from
-the very first move. WOLGES_OPENING_SAMPLES (default off, and only meaningful
-with the rack summary on) grafts the missing opening coverage on: while the
-sampler greedily plays each board's game up to its target board, it records the
-real rack actually held at every earlier turn as one extra summary row, valued
-by that turn's greedy best play. The target board itself is still valued
-exactly by the census and its own rack is never recorded, so nothing is
-double-counted. WOLGES_OPENING_WEIGHT (default 1) counts each opening row that
-many times: a rack already carries one value per board, hundreds of them, so a
-single weight-1 opening row barely moves its average, and the weight lets you
-turn the opening signal up to see whether giving it more say helps.
-
-It does not. In our own head-to-head no opening weight beats the plain
-uniform-board rack summary; the best result is a tie. The opening mix is not
-the gap between the census and self-play. Kept opt-in as a recorded dead-end. A
-fresh head-to-head bears this out: opening off versus on is a coin flip at the
-natural weight of 1 (49.9991, confidence 51) and still a tie even with the
-opening signal amplified 256-fold (49.9923, confidence 56).
-
-New knobs: WOLGES_OPENING_SAMPLES, WOLGES_OPENING_WEIGHT.
-
-
-HOW MANY BOARDS IS ENOUGH -- THE CONFIDENCE INTERVAL
-
-The census values a fixed number of boards. Is that too many, or too few?
-Answering it needs a confidence interval on each measured value (the range the
-true value likely sits in): a range around the average, wide enough that the
-true average -- the number you would get from every board rather than a sample
-of them -- is very likely inside it. The interval's width is what matters. It
-says how much the reported value could still wobble if you had happened to
-sample a different set of boards; a narrow interval means the average is well
-pinned down, a wide one means it is not. This is the same idea as the
-confidence on a compare result, applied to a single value rather than to a win
-share.
-
-WOLGES_CENSUS_CI_REPORT switches on a diagnostic that measures this and changes
-no leaves (off, the census is byte-identical). It accepts three values: off
-(the default), rack, and leave; any other value stops with a clear error. On
-rack it keeps, for each rack, a running total and a running total of squares of
-the best-play values it saw across boards -- kept off the hot path and not
-allocated at all unless the diagnostic is on -- and from those computes how
-much the value bounces from board to board. The half-width of each interval is
-that board-to-board bounce turned into a range through the same normal-curve
-model the compare uses: the per-board bounce, divided by the square root of the
-number of boards (so the interval narrows as more boards are sampled), times a
-multiplier read off the normal curve for the chosen confidence.
-WOLGES_CENSUS_CI_CONF sets that confidence (default 0.999).
-WOLGES_CENSUS_CI_TARGET sets a target width in millipoints -- thousandths of a
-point -- with a default of 500, which is half a point. At the end the census
-prints, to standard error, the range of the intervals and, for each value not
-inside the target, an estimate of how many boards it would take to get there
-(the width shrinks with the square root of the board count, so reaching a
-target width of a given size takes a predictable multiple of the boards sampled
-so far).
-
-One caution the diagnostic cannot escape: the interval tells you how tightly
-you have measured an average, not whether it is the right average to measure. A
-wrong mix of boards would still report a tight interval, just around a wrong
-number.
-
-The finding, on the English game: aiming for a tight interval on each
-individual rack wants far more boards than the census actually samples, because
-a single rack's best play is noisy from board to board. But the table does not
-store rack values; it stores leaves, and a leave is an average over many racks,
-so it is far more pinned down than any one rack. WOLGES_CENSUS_CI_REPORT=leave
-reports the tighter, correct target: it apportions each rack's board-to-board
-bounce down onto the leaves through the very same completion weighting the
-leave generate decompose uses, so a leave's interval is the wobble of its own
-weighted average. (An exact routine walks every rack-and-kept-combination pair
-to do this, checked against a slow brute-force computation by a unit test.) The
-confidence and target knobs apply the same way, and rack still prints the
-per-rack report. The leaves come out several times tighter than the racks, so
-aiming at the per-leave interval needs far fewer boards than a per-rack target
-would demand. That per-leave interval is the accuracy target worth chasing: it
-reports, honestly, how tightly the leaves themselves have been measured.
-
-New knobs: WOLGES_CENSUS_CI_CONF, WOLGES_CENSUS_CI_REPORT,
-WOLGES_CENSUS_CI_TARGET.
-
-
-STOPPING ONCE THE LEAVES HAVE SETTLED
-
-Given a per-leave interval, the census no longer has to grind out a preset
-board count. Often about half the boards already produce settled, same-quality
-leaves, and the rest is wasted work. WOLGES_CENSUS_CI_STOP_FRAC (default 0.0,
-which is off and byte-identical to the fixed count) is the fraction of leaves
-that must sit inside their target interval before the pass stops early; any
-value above zero turns the stop on. Every WOLGES_CENSUS_CI_STOP_EVERY boards
-(default 64) exactly one worker runs the per-leave interval check; once the
-fraction inside reaches the target it raises a shared flag and every worker
-breaks out of the board loop. It is a single global stop, not a per-leave one
--- one sampled board values every rack, so there is no way to stop measuring
-one leave while another keeps going; a single threshold ends the whole pass.
-The board count on the command line stays a hard cap, so if the target is never
-reached the pass still ends there, exactly as before. The stop is available on
-the rack-summary path, which is what tracks the per-rack bounce the leave
-intervals are built from.
-
-In a fresh head-to-head the adaptive stop ended well short of the fixed count
-and showed no meaningful quality difference. Against a 2048-board cap the stop
-met its target and ended at 576 boards, and the table it built ties the
-full-cap table (50.01, confidence 60). This is a cost feature, not a
-leave-quality change: the same table, in a fraction of the boards. (The
-accuracy check that drives the stop reuses one set of scratch buffers across
-checks instead of rebuilding catalog-sized arrays each time, so turning the
-stop on does not thrash memory; with the stop off the buffers stay empty and
-nothing is allocated.)
-
-New knobs: WOLGES_CENSUS_CI_STOP_EVERY, WOLGES_CENSUS_CI_STOP_FRAC.
-
-
-A SELF-ITERATING RACK SUMMARY
-
-The rack summary began as a single pass that had to hand its file to a separate
-leave generate step to turn per-rack values into per-leave values. The
-ordinary apportioning census already iterates on its own -- each pass sharpens
-the leaves, and the next pass re-values the racks under the sharper leaves
-until the leaves reproduce themselves when fed back in -- but the rack summary
-could not, because it handed the per-leave breakdown off to the external step.
-It now does that breakdown in-process, so it can run several passes by itself.
-An exact routine apportions each valued rack's average down onto every kept
-combination with the same completion weighting leave generate uses, centered
-so that keeping nothing is worth zero -- a value-carrying twin of the per-leave
-interval routine, and likewise checked against a brute force by a unit test. At
-each generation boundary the rack-summary census builds its leaves this way,
-the next pass values racks under them, and the last pass writes the klv
-directly. A single-generation run still writes the summary file, so that path
-is unchanged. With WOLGES_IMPOSSIBLE_OK on the exhaustive census reaches every
-globally-possible leave, so a multi-pass run matches the full table the
-external leave generate would produce; without it, a sparse drawable-only run
-leaves the leaves it never reached at their prior value. As with the
-apportioning multi-pass, it never smooths or fills in leaves it did not
-measure.
+studies -- are derived from the game configuration rather than hand-picked for
+the English game, so they carry over to any tile-set. The low end is the
+endgame floor established earlier: one more than the tiles both players hold at
+once, the smallest pool that still leaves a non-empty bag (below it the bag is
+empty and the leave table is not consulted). The high end is the tile count
+minus the tiles both players hold (boards with at least that many tiles already
+played). For the classic two-player English game this widens the default window
+from an unseen pool of 21 to 28 tiles out to 15 to 86. The method actually
+supports every board but the all-empty one; the default stops short of the
+near-empty opening boards because the value of leaves there is unsettled.
 
 
 VALUING A PLAY BY ITS CHANCE OF WINNING
@@ -1699,32 +1336,6 @@ table, read a little less statically, plays measurably better.
 New knobs: WOLGES_DYNAMIC_LEAVES, WOLGES_DYNAMIC_LEAVES_MIN_KEEP.
 
 
-DYNAMIC LEAVES REACH THE SAMPLERS' OWN MOVE CHOICE
-
-The pool-aware reweight described above -- replacing a kept subrack's static
-leave value with the live-pool completion average of a full-rack table -- was
-only wired into leave compare, the head-to-head harness. The samplers that
-actually build leave tables in the first place (autoplay, gilles, census) still
-chose which move to play at each self-play turn using the flat static klv, even
-when WOLGES_DYNAMIC_LEAVES was set.
-
-The same optional reweight context, built once per run and gated on that same
-knob, is now threaded into the greedy trajectory-advancing move choice of all
-three samplers, so turning the knob on changes which moves they actually play
-(and therefore which boards and racks they sample), not only which move
-leave compare picks. With the knob off, no context is built and every site
-passes none through, so a bare run generates leaves exactly as before.
-
-The reweight needs a full-length (kept racks of size one through seven, not
-just the usual six-or-fewer a leave keeps) table to read full-rack values from;
-running this against anything shorter than a --full klv collapses the dynamic
-block back to static. For census specifically this changes only which board
-trajectories get sampled -- its leave values still come from the exhaustive
-per-board pass described earlier in this file, not from the move it happens to
-play -- so there the effect is a shift in which boards get sampled, not a
-change in how any leave is valued.
-
-
 BEST CURRENT WAY TO RUN EACH METHOD
 
 This section stays current: whatever the defaults have become, it shows how to
@@ -1759,24 +1370,7 @@ counts are measured on this English word list, not universal constants, so a
 different tile set wants its own sweep rather than these numbers taken on
 faith.
 
-The adaptive stop (WOLGES_CENSUS_CI_STOP_FRAC, in the confidence-interval
-section earlier in this file) looks like the way to avoid that sweep: it ends a
-run once the leaves have settled to a target width rather than at a preset
-count. Do not reach for it expecting a free lunch. Asked to stop once nine
-leaves in ten had settled, it stopped after 576 boards and produced a table
-that lost to 3x256,2048 by about 0.14 of a percentage point -- a real loss, not
-noise. Settling by that measure is evidently not the same as playing as well,
-so a stop wants a far stricter fraction than nine in ten, and wants checking
-against a fixed-count table before being trusted. Note also that the stop
-requires WOLGES_CENSUS_RACK_SUMMARY=1, which makes the census write a rack
-summary to decompose rather than a table directly, and that it runs as a single
-generation -- so it reads from an already-settled table rather than the null
-one, since one generation never iterates the leaves. That measurement changed
-two things at once (the stop and the rack summary), so which of them cost the
-0.14 is not yet pinned down.
-
-WOLGES_POOL_* shift the board window; for dynamic leaves add WOLGES_FULL=1 to
-keep the full-length values.
+For dynamic leaves add --full to keep the full-length values.
 
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
@@ -1836,13 +1430,9 @@ Every run:
   extension on a clash, so no run ever clobbers another's output.
 
 Shared across builders:
-  WOLGES_APPORTION (full-rack or entering; default full-rack) -- how a board's
-    value becomes leave values; read by the census and by autoplay's recording:
-      full-rack  credit every subrack of each rack (the complete attribution)
-      entering   credit only the leave carried into the turn
   WOLGES_IMPOSSIBLE_OK (0 or 1; default 1) -- whether to value a rack the board
-    cannot currently deal; read by autoplay's forcing, board sampling's draw
-    source, and the rack-summary census:
+    cannot currently deal; read by autoplay's forcing and board sampling's
+    draw source:
       1  force the rack's tiles onto the board, so rare racks still get covered
       0  record only what the board could really deal
   WOLGES_OPPDENIAL_EXACT (a decimal weight; default 0.0, off) -- weight on the
@@ -1901,85 +1491,10 @@ Board sampling (gilles):
     WOLGES_POOL_MIN, 75 EN) -- high edge of the snapshot window.
   WOLGES_POOL_MIN (a whole number of tiles; default a quarter of the tile
     count, 25 EN) -- low edge of the snapshot window, counted in tiles not yet
-    on the board. The census reads the same variable with its own default
-    window.
+    on the board.
 
 Census:
-  It also reads the shared knobs above and the board window WOLGES_POOL_MIN /
-  WOLGES_POOL_MAX (listed under board sampling, but with the census's own
-  default window). Its own knobs:
-  WOLGES_CENSUS_ALPHA (a decimal from 0 to 1; default 0.5) -- how far the
-    leaves move toward each batch's findings; meaningful only with a batch
-    smaller than the run.
-  WOLGES_CENSUS_BATCH (a whole number of boards; default all boards, one batch)
-    -- boards per online-update batch; a smaller batch nudges the leaves toward
-    each batch's findings mid-run.
-  WOLGES_CENSUS_BLANK_CAP (a whole number; default a full rack's worth) -- cap
-    on blanks in the sheet's unseen pool, to measure the blank cost on its own.
-  WOLGES_CENSUS_BUCKETS (a whole number; default 0, every fill level) --
-    coarsen the fill-level cycle to this many evenly spaced levels; changes
-    only the spacing, not the leaves.
-  WOLGES_CENSUS_CI_CONF (a decimal probability from 0 to 1; default 0.999) --
-    confidence level for the interval.
-  WOLGES_CENSUS_CI_REPORT (off, rack, or leave; default off) -- a diagnostic
-    that changes no leaves and also estimates the boards needed to reach a
-    target width:
-      off    no report
-      rack   report how tightly each rack has been measured
-      leave  report how tightly each leave has been measured (several times
-             tighter -- the real target)
-  WOLGES_CENSUS_CI_STOP_EVERY (a whole number of boards; default 64) -- boards
-    between adaptive-stop checks.
-  WOLGES_CENSUS_CI_STOP_FRAC (a decimal fraction; default 0.0, off) -- fraction
-    of leaves that must sit inside their target interval before the pass stops
-    early; the command-line board count stays a hard cap. 0.0 disables the
-    early stop.
-  WOLGES_CENSUS_CI_TARGET (a whole number of millipoints; default 500) --
-    target interval width in millipoints (thousandths of a point).
-  WOLGES_CENSUS_GLOBAL_WEIGHTS (0 or 1; default 0) -- how racks are weighted.
-    Measured a no-op:
-      1  weight every rack by full-starting-bag draw odds, and value
-         board-impossible racks too
-      0  weight by this board's leftover pool
-  WOLGES_CENSUS_PER_GAME (0 or 1; default 0) -- how boards are chosen:
-      1  value every in-window board along one real game per worker (the board
-         count then counts games)
-      0  play a fresh game per board
-  WOLGES_CENSUS_RACK_SUMMARY (0 or 1; default 0) -- the output form; isolates
-    the full-rack draw weighting. Measured a tie:
-      1  value each full rack once per board and write the self-play summary
-         file
-      0  apportion and write a klv directly
-  WOLGES_CENSUS_SCATTER (off, on, or auto; default auto) -- how the census
-    finds each rack's best play; the values are identical, speed only:
-      off   search each rack's play-and-keep splits
-      on    scatter each playable word's score onto the racks that could play
-            it
-      auto  on for the common alphabets and big pools, off elsewhere
-  WOLGES_CENSUS_VERIFY (0 or 1; default 0) -- whether to cross-check the census
-    against the live move generator on the first board:
-      1  run the cross-check
-      0  skip it
-  WOLGES_CENSUS_WITHHOLD (a whole number of tiles; default 0, off) -- hold this
-    many of the rarest tiles out of the bag for the whole game so rare-tile
-    racks appear in the sampled boards; 0 disables it. A recorded dead-end.
-  WOLGES_CENSUS_WITHHOLD_FRAC (a decimal in (0, 1]; default 1.0, every board)
-    -- fraction of boards that withhold; below 1.0, only every (1/f)-th board
-    does, spaced across the fill levels.
-  WOLGES_CENSUS_ZETA_POOL (a whole number, a pool size; default 36 EN) --
-    unseen-pool size at or above which the full-rack hand-out uses fixed-cost
-    table passes; speed only.
-  WOLGES_FULL (0 or 1; default 0) -- whether to keep the full-length leave rows
-    (a value for the whole rack, not just a shorter leave); a full-length table
-    is what dynamic leaves read:
-      1  also write the full-length values
-      0  drop them, giving a smaller, play-identical file
-  WOLGES_OPENING_SAMPLES (0 or 1; default 0; only with the rack summary on) --
-    whether to add opening-board coverage. A dead-end:
-      1  also record the real rack held at each earlier turn
-      0  record only the target boards
-  WOLGES_OPENING_WEIGHT (a whole number; default 1) -- how many times each
-    opening row is counted.
+  It also reads the shared knobs above.
 
 Autoplay:
   It also reads the shared knobs above. Its own knob:
