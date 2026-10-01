@@ -177,7 +177,9 @@ impl BoardLayout {
             }
             let line = line.trim_end();
             if let Some(grid) = line.strip_prefix('|') {
-                let grid = grid.strip_suffix('|').ok_or("a grid line ends with |")?;
+                let Some(grid) = grid.strip_suffix('|') else {
+                    return_error!(format!("{line:?} is a grid line that does not end with |"));
+                };
                 let mut num_squares = 0usize;
                 for c in grid.chars() {
                     premiums.push(match c {
@@ -189,41 +191,45 @@ impl BoardLayout {
                         '\'' => dls(),
                         ' ' => fvs(),
                         '#' => del(),
-                        _ => return Err(format!("{c:?} is not a square").into()),
+                        _ => return_error!(format!("{c:?} is not a square")),
                     });
                     num_squares += 1;
                 }
                 if num_squares == 0 || *cols.get_or_insert(num_squares) != num_squares {
-                    return Err("every grid line has the first one's squares".into());
+                    return_error!("every grid line has the first one's squares".into());
                 }
                 rows += 1;
             } else if let Some(at) = line.strip_prefix("star ") {
                 let mut words = at.split_whitespace();
                 let (Some(row), Some(col), None) = (words.next(), words.next(), words.next())
                 else {
-                    return Err("star takes a row and a column".into());
+                    return_error!("star takes a row and a column".into());
                 };
-                if star
-                    .replace((usize::from_str(row)?, usize::from_str(col)?))
-                    .is_some()
-                {
-                    return Err("a board has one star".into());
+                let index = |s: &str| {
+                    usize::from_str(s).map_err(|e| error::new(format!("star {s:?}: {e}")))
+                };
+                if star.replace((index(row)?, index(col)?)).is_some() {
+                    return_error!("a board has one star".into());
                 }
             } else {
-                return Err(format!("{line:?} is not a grid line or a star").into());
+                return_error!(format!("{line:?} is not a grid line or a star"));
             }
         }
-        let cols = cols.ok_or("a board has grid lines")?;
+        let Some(cols) = cols else {
+            return_error!("a board has grid lines".into());
+        };
         if rows > i8::MAX as usize || cols > i8::MAX as usize {
-            return Err("a board has at most 127 rows and 127 columns".into());
+            return_error!("a board has at most 127 rows and 127 columns".into());
         }
-        let (star_row, star_col) = star.ok_or("a board has a star")?;
+        let Some((star_row, star_col)) = star else {
+            return_error!("a board has a star".into());
+        };
         if star_row >= rows || star_col >= cols {
-            return Err("the star is outside the grid".into());
+            return_error!("the star is outside the grid".into());
         }
         let star_premium = &premiums[star_row * cols + star_col];
         if star_premium.word_multiplier == 0 && star_premium.tile_multiplier == 0 {
-            return Err("the star is on a punctured square".into());
+            return_error!("the star is on a punctured square".into());
         }
         Ok(Self::new_static(StaticBoardLayout {
             premiums: premiums.into_boxed_slice(),
@@ -1254,7 +1260,15 @@ pub fn make_board_layout_from(
 ) -> error::Returns<BoardLayout> {
     match make_board_layout_by_name(name_or_path) {
         Some(board_layout) => Ok(board_layout),
-        None => BoardLayout::new_static_from_text(&read_file(name_or_path)?),
+        None => {
+            let text = read_file(name_or_path).map_err(|e| {
+                error::new(format!(
+                    "{name_or_path:?} is not a bundled board or a readable file: {e}"
+                ))
+            })?;
+            Ok(BoardLayout::new_static_from_text(&text)
+                .map_err(|e| error::new(format!("{name_or_path}: {e}")))?)
+        }
     }
 }
 
@@ -1386,6 +1400,11 @@ mod tests {
         assert!(BoardLayout::new_static_from_text(&tallest).is_ok());
         let too_tall = format!("star 0 0\n{}", "| |\n".repeat(128));
         assert!(BoardLayout::new_static_from_text(&too_tall).is_err());
+        let e = BoardLayout::new_static_from_text("star 0 x\n|  |\n")
+            .err()
+            .unwrap();
+        assert_eq!(e.to_string(), "star \"x\": invalid digit found in string");
+        assert_eq!(format!("{e:?}"), e.to_string());
     }
 
     #[test]
@@ -1394,6 +1413,7 @@ mod tests {
         let read_file = |path: &str| -> error::Returns<String> {
             match path {
                 "tiny.txt" => Ok("star 0 1\n|- |\n| '|\n".into()),
+                "starless.txt" => Ok("|- |\n| '|\n".into()),
                 _ => Err(format!("no file {path}").into()),
             }
         };
@@ -1408,6 +1428,18 @@ mod tests {
                 .cols,
             2
         );
-        assert!(make_board_layout_from("round", &read_file).is_err());
+        let unread = make_board_layout_from("round", &read_file)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            unread.starts_with("\"round\" is not a bundled board"),
+            "{unread}"
+        );
+        let unparsed = make_board_layout_from("starless.txt", &read_file)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(unparsed.starts_with("starless.txt: "), "{unparsed}");
     }
 }

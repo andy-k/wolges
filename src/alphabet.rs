@@ -423,7 +423,15 @@ pub fn make_alphabet_from(
 ) -> error::Returns<Alphabet> {
     match make_alphabet_by_name(name_or_path) {
         Some(alphabet) => Ok(alphabet),
-        None => Alphabet::new_static_from_text(&read_file(name_or_path)?),
+        None => {
+            let text = read_file(name_or_path).map_err(|e| {
+                error::new(format!(
+                    "{name_or_path:?} is not bundled tiles or a readable file: {e}"
+                ))
+            })?;
+            Ok(Alphabet::new_static_from_text(&text)
+                .map_err(|e| error::new(format!("{name_or_path}: {e}")))?)
+        }
     }
 }
 
@@ -677,12 +685,25 @@ mod tests {
         let read_file = |path: &str| -> error::Returns<String> {
             match path {
                 "few.txt" => Ok(tiles_text(5, 3)),
+                "dear.txt" => Ok(tiles_text(5, 33)),
                 _ => Err(format!("no file {path}").into()),
             }
         };
         let english = make_alphabet_from("english", &read_file).unwrap();
         assert_eq!(english.len(), make_english_alphabet().len());
         assert_eq!(make_alphabet_from("few.txt", &read_file).unwrap().len(), 5);
-        assert!(make_alphabet_from("klingon", &read_file).is_err());
+        let unread = make_alphabet_from("klingon", &read_file)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            unread.starts_with("\"klingon\" is not bundled tiles"),
+            "{unread}"
+        );
+        let unparsed = make_alphabet_from("dear.txt", &read_file)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(unparsed.starts_with("dear.txt: "), "{unparsed}");
     }
 }
