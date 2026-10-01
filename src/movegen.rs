@@ -75,6 +75,70 @@ struct MultiJump {
     right_idx: i8,
 }
 
+const SHADOW_SCORES_INLINE: usize = 8;
+
+#[derive(Clone, Default)]
+struct ShadowScores {
+    inline: [i32; SHADOW_SCORES_INLINE],
+    len: u8,
+    spill: Vec<i32>,
+}
+
+impl ShadowScores {
+    #[inline(always)]
+    fn clear(&mut self) {
+        self.len = 0;
+        self.spill.clear();
+    }
+
+    #[inline(always)]
+    fn is_empty(&self) -> bool {
+        self.len == 0 && self.spill.is_empty()
+    }
+
+    #[inline(always)]
+    fn as_slice(&self) -> &[i32] {
+        if self.spill.is_empty() {
+            &self.inline[..self.len as usize]
+        } else {
+            &self.spill
+        }
+    }
+
+    #[inline(always)]
+    fn insert_sorted(&mut self, score: i32) {
+        if !self.spill.is_empty() {
+            let at = self.spill.partition_point(|&x| x <= score);
+            self.spill.insert(at, score);
+            return;
+        }
+        let len = self.len as usize;
+        if len < SHADOW_SCORES_INLINE {
+            let at = self.inline[..len].partition_point(|&x| x <= score);
+            self.inline.copy_within(at..len, at + 1);
+            self.inline[at] = score;
+            self.len = self.len.wrapping_add(1);
+            return;
+        }
+        self.spill.extend_from_slice(&self.inline[..len]);
+        let at = self.spill.partition_point(|&x| x <= score);
+        self.spill.insert(at, score);
+        self.len = 0;
+    }
+
+    #[inline(always)]
+    fn copy_from(&mut self, other: &ShadowScores) {
+        if other.spill.is_empty() {
+            self.inline = other.inline;
+            self.len = other.len;
+            self.spill.clear();
+        } else {
+            self.spill.clone_from(&other.spill);
+            self.len = 0;
+        }
+    }
+}
+
 // WorkingBuffer can only be reused for the same game_config and kwg.
 // (The kwg is partially cached in cached_cross_set.)
 // WorkingBuffer can also be reset for reuse with another kwg by calling
@@ -123,10 +187,10 @@ struct WorkingBuffer {
     subracks_by_played: Vec<u32>,
     found_placements: Vec<PossiblePlacement>,
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
-    used_tile_scores_shadowl: Vec<i32>, // rack.len() (for shadow_play_left, premultiplied by SCALE)
-    used_tile_scores_shadowr: Vec<i32>, // rack.len() (for shadow_play_right, premultiplied by SCALE)
-    rack_tally_shadowl: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_left)
-    rack_tally_shadowr: Box<[u8]>,      // 27 for ?A-Z (for shadow_play_right)
+    used_tile_scores_shadowl: ShadowScores, // for shadow_play_left, premultiplied by SCALE
+    used_tile_scores_shadowr: ShadowScores, // for shadow_play_right, premultiplied by SCALE
+    rack_tally_shadowl: Box<[u8]>, // 27 for ?A-Z (for shadow_play_left)
+    rack_tally_shadowr: Box<[u8]>, // 27 for ?A-Z (for shadow_play_right)
     word_source_fits_config: bool,
     is_census: bool,
 }
@@ -384,8 +448,8 @@ impl WorkingBuffer {
             subracks_by_played: Vec::new(),
             found_placements: Vec::new(),
             used_letters_tally: Vec::new(),
-            used_tile_scores_shadowl: Vec::new(),
-            used_tile_scores_shadowr: Vec::new(),
+            used_tile_scores_shadowl: ShadowScores::default(),
+            used_tile_scores_shadowr: ShadowScores::default(),
             rack_tally_shadowl: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             rack_tally_shadowr: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
             is_census: false,
@@ -618,11 +682,7 @@ impl WorkingBuffer {
             }
         }
         self.used_tile_scores_shadowl.clear();
-        self.used_tile_scores_shadowl
-            .reserve(self.num_tiles_on_rack as usize);
         self.used_tile_scores_shadowr.clear();
-        self.used_tile_scores_shadowr
-            .reserve(self.num_tiles_on_rack as usize);
     }
 
     #[inline]
@@ -1011,8 +1071,8 @@ struct GenPlacePlacementsParams<'a> {
     board_strip: &'a [u8],
     alphabet: &'a alphabet::Alphabet,
     rack_tally: &'a mut [u8],
-    used_tile_scores_shadowl: &'a mut Vec<i32>,
-    used_tile_scores_shadowr: &'a mut Vec<i32>,
+    used_tile_scores_shadowl: &'a mut ShadowScores,
+    used_tile_scores_shadowr: &'a mut ShadowScores,
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
@@ -1234,9 +1294,9 @@ fn gen_place_placements_impl<
         ranked: u128,
     ) {
         let used_tile_scores = if env.params.used_tile_scores_shadowr.is_empty() {
-            &env.params.used_tile_scores_shadowl
+            env.params.used_tile_scores_shadowl.as_slice()
         } else {
-            &env.params.used_tile_scores_shadowr
+            env.params.used_tile_scores_shadowr.as_slice()
         };
         let mut best_scoring = 0;
         let mut to_assign = num_played - used_tile_scores.len() as u8;
@@ -1295,6 +1355,7 @@ fn gen_place_placements_impl<
         deferred: u128,
         low_end: usize,
         ranked: u128,
+        stale_rack: bool,
     }
 
     #[inline(always)]
@@ -1302,7 +1363,7 @@ fn gen_place_placements_impl<
         env: &mut Env<'_>,
         mut acc: Accumulator,
         walk: ShadowRightWalk,
-    ) {
+    ) -> bool {
         let ShadowRightWalk {
             mut idx,
             mut is_unique,
@@ -1312,13 +1373,19 @@ fn gen_place_placements_impl<
             mut deferred,
             mut low_end,
             mut ranked,
+            stale_rack,
         } = walk;
-        env.params
-            .used_tile_scores_shadowr
-            .clone_from(env.params.used_tile_scores_shadowl);
-        env.params
-            .rack_tally_shadowr
-            .clone_from_slice(env.params.rack_tally_shadowl);
+        if !env.params.used_tile_scores_shadowl.is_empty() {
+            env.params
+                .used_tile_scores_shadowr
+                .copy_from(env.params.used_tile_scores_shadowl);
+        }
+        if stale_rack {
+            env.params
+                .rack_tally_shadowr
+                .clone_from_slice(env.params.rack_tally_shadowl);
+        }
+        let mut took_a_tile = false;
         loop {
             if idx < env.rightmost {
                 // tail-recurse placing current sequence of tiles in one go
@@ -1360,6 +1427,7 @@ fn gen_place_placements_impl<
                     // consume the square and the tile.
                     // rack_bits will turn off if the tile is depleted.
                     env.params.rack_tally_shadowr[tile as usize] -= 1;
+                    took_a_tile = true;
                     // this is (rack_tally[tile] == 0 ? matching_bits : 0).
                     rack_bits ^= matching_bits
                         & (-((env.params.rack_tally_shadowr[tile as usize] == 0) as i64)) as u64;
@@ -1373,12 +1441,9 @@ fn gen_place_placements_impl<
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
                     let tile_score = env.params.alphabet.scaled_score(tile);
-                    env.params.used_tile_scores_shadowr.insert(
-                        env.params
-                            .used_tile_scores_shadowr
-                            .partition_point(|&x| x <= tile_score),
-                        tile_score,
-                    );
+                    env.params
+                        .used_tile_scores_shadowr
+                        .insert_sorted(tile_score);
                     let tile_value = tile_score
                         * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
                     acc.main_score += tile_value;
@@ -1413,6 +1478,7 @@ fn gen_place_placements_impl<
             idx += 1;
         }
         env.params.used_tile_scores_shadowr.clear(); // use shadowl in shadow_record
+        took_a_tile
     }
 
     #[inline(always)]
@@ -1431,6 +1497,7 @@ fn gen_place_placements_impl<
             .unwrap()
             * env.strider_len;
         let mut num_played = 0;
+        let mut stale_rack = true;
         env.params.used_tile_scores_shadowl.clear();
         let mut rack_bits = env.params.rack_bits;
         env.params
@@ -1463,7 +1530,7 @@ fn gen_place_placements_impl<
 
             // can switch direction only after using the anchor square
             if idx < env.anchor {
-                shadow_play_right::<PER_SPAN>(
+                stale_rack = shadow_play_right::<PER_SPAN>(
                     env,
                     Accumulator { ..acc },
                     ShadowRightWalk {
@@ -1475,6 +1542,7 @@ fn gen_place_placements_impl<
                         deferred,
                         low_end,
                         ranked,
+                        stale_rack,
                     },
                 );
             }
@@ -1503,6 +1571,7 @@ fn gen_place_placements_impl<
                     // consume the square and the tile.
                     // rack_bits will turn off if the tile is depleted.
                     env.params.rack_tally_shadowl[tile as usize] -= 1;
+                    stale_rack = true;
                     // this is (rack_tally[tile] == 0 ? matching_bits : 0).
                     rack_bits ^= matching_bits
                         & (-((env.params.rack_tally_shadowl[tile as usize] == 0) as i64)) as u64;
@@ -1516,12 +1585,9 @@ fn gen_place_placements_impl<
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
                     let tile_score = env.params.alphabet.scaled_score(tile);
-                    env.params.used_tile_scores_shadowl.insert(
-                        env.params
-                            .used_tile_scores_shadowl
-                            .partition_point(|&x| x <= tile_score),
-                        tile_score,
-                    );
+                    env.params
+                        .used_tile_scores_shadowl
+                        .insert_sorted(tile_score);
                     let tile_value = tile_score
                         * env.params.remaining_tile_multipliers_strip[idx as usize] as i32;
                     acc.main_score += tile_value;
