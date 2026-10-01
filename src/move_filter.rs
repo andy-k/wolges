@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{equity, game_config, klv, kwg, movegen, prob};
+use super::{game_config, klv, kwg, movegen, prob};
 use rand::prelude::*;
 
 #[derive(Clone)]
@@ -214,20 +214,23 @@ impl GenMoves<'_> {
                         pass_policy: movegen::PassPolicy::OnlyWhenForced,
                         dynamic_leaves,
                     },
-                    |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
-                        limited_vocab_checker.words_placed_are_ok(
-                            board_snapshot,
-                            down,
-                            lane,
-                            idx,
-                            word,
-                            |word: &[u8]| tilt.word_is_ok(word),
-                        )
+                    movegen::PlacePredicate::Dyn(
+                        &mut |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
+                            limited_vocab_checker.words_placed_are_ok(
+                                board_snapshot,
+                                down,
+                                lane,
+                                idx,
+                                word,
+                                |word: &[u8]| tilt.word_is_ok(word),
+                            )
+                        },
+                    ),
+                    klv::AdjustLeave::Scaled {
+                        scale: leave_scale,
+                        denom: LEAVE_SCALE_DENOM,
                     },
-                    |leave_value: i32| {
-                        (leave_value as i64 * leave_scale as i64 / LEAVE_SCALE_DENOM as i64) as i32
-                    },
-                    |_equity: equity::Equity, _play: &movegen::Play| true,
+                    movegen::EquityPredicate::AcceptAll,
                 );
                 tilt.limited_vocab_checker = limited_vocab_checker;
             }
@@ -256,20 +259,21 @@ impl GenMoves<'_> {
             Self::Unfiltered => {
                 move_generator.gen_moves_filtered(
                     &params,
-                    |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| false,
-                    |leave_value: i32| leave_value,
-                    |_equity: equity::Equity, _play: &movegen::Play| true,
+                    movegen::PlacePredicate::RejectAll,
+                    klv::AdjustLeave::Identity,
+                    movegen::EquityPredicate::AcceptAll,
                 );
             }
             Self::Tilt { tilt, bot_level: _ } => {
                 let leave_scale = tilt.leave_scale;
                 move_generator.gen_moves_filtered(
                     &params,
-                    |_down: bool, _lane: i8, _idx: i8, _word: &[u8], _score: i32| false,
-                    |leave_value: i32| {
-                        (leave_value as i64 * leave_scale as i64 / LEAVE_SCALE_DENOM as i64) as i32
+                    movegen::PlacePredicate::RejectAll,
+                    klv::AdjustLeave::Scaled {
+                        scale: leave_scale,
+                        denom: LEAVE_SCALE_DENOM,
                     },
-                    |_equity: equity::Equity, _play: &movegen::Play| true,
+                    movegen::EquityPredicate::AcceptAll,
                 );
             }
         }
