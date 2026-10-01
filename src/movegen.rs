@@ -385,6 +385,7 @@ struct WorkingBuffer {
     subracks_by_played: Vec<u32>,
     found_placements: Vec<PossiblePlacement>,
     placement_order: Vec<(i32, u32)>,
+    placement_scratch: Vec<(i32, u32)>,
     used_letters_tally: Vec<u8>, // 27 for ?A-Z, ? is always 0, jumbled mode only
     used_tile_scores_shadowl: ShadowScores, // for shadow_play_left, premultiplied by SCALE
     used_tile_scores_shadowr: ShadowScores, // for shadow_play_right, premultiplied by SCALE
@@ -448,6 +449,7 @@ impl Clone for WorkingBuffer {
             subracks_by_played: self.subracks_by_played.clone(),
             found_placements: self.found_placements.clone(),
             placement_order: self.placement_order.clone(),
+            placement_scratch: self.placement_scratch.clone(),
             used_letters_tally: self.used_letters_tally.clone(),
             used_tile_scores_shadowl: self.used_tile_scores_shadowl.clone(),
             used_tile_scores_shadowr: self.used_tile_scores_shadowr.clone(),
@@ -517,6 +519,7 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.subracks_by_played);
         self.found_placements.clone_from(&source.found_placements);
         self.placement_order.clone_from(&source.placement_order);
+        self.placement_scratch.clone_from(&source.placement_scratch);
         self.used_letters_tally
             .clone_from(&source.used_letters_tally);
         self.used_tile_scores_shadowl
@@ -616,6 +619,7 @@ impl WorkingBuffer {
             subracks_by_played: Vec::new(),
             found_placements: Vec::new(),
             placement_order: Vec::new(),
+            placement_scratch: Vec::new(),
             used_letters_tally: Vec::new(),
             used_tile_scores_shadowl: ShadowScores::new(),
             used_tile_scores_shadowr: ShadowScores::new(),
@@ -4875,6 +4879,62 @@ fn kurnia_gen_place_moves_iter_lean<
     })
 }
 
+const PLACEMENT_BUCKETS: usize = 64;
+
+// range b is pairs[starts[b]..starts[b + 1]].
+#[inline]
+fn bucket_by_equity(
+    pairs: &mut Vec<(i32, u32)>,
+    scratch: &mut Vec<(i32, u32)>,
+    starts: &mut [u32; PLACEMENT_BUCKETS + 1],
+) {
+    let mut min = i32::MAX;
+    let mut max = i32::MIN;
+    for &(equity, _) in pairs.iter() {
+        min = min.min(equity);
+        max = max.max(equity);
+    }
+    let range = max.abs_diff(min);
+    let shift =
+        (u32::BITS - range.leading_zeros()).saturating_sub(PLACEMENT_BUCKETS.trailing_zeros());
+    let bucket = |equity: i32| (equity.abs_diff(min) >> shift) as usize;
+    *starts = [0; PLACEMENT_BUCKETS + 1];
+    for &(equity, _) in pairs.iter() {
+        starts[bucket(equity) + 1] += 1;
+    }
+    for b in 0..PLACEMENT_BUCKETS {
+        starts[b + 1] += starts[b];
+    }
+    let mut next = [0u32; PLACEMENT_BUCKETS];
+    next.copy_from_slice(&starts[..PLACEMENT_BUCKETS]);
+    scratch.clear();
+    scratch.resize(pairs.len(), (0, 0));
+    for &pair in pairs.iter() {
+        let b = bucket(pair.0);
+        scratch[next[b] as usize] = pair;
+        next[b] += 1;
+    }
+    std::mem::swap(pairs, scratch);
+}
+
+#[inline]
+fn sort_next_range(
+    pairs: &mut [(i32, u32)],
+    starts: &[u32; PLACEMENT_BUCKETS + 1],
+    bucket: &mut usize,
+) -> usize {
+    let len = pairs.len();
+    while *bucket > 0 {
+        *bucket -= 1;
+        let from = starts[*bucket] as usize;
+        if from < len {
+            pairs[from..].sort_unstable_by_key(|&(equity, _)| equity);
+            return from;
+        }
+    }
+    0
+}
+
 #[inline]
 fn kurnia_gen_place_moves_iter<
     'a,
@@ -5085,13 +5145,26 @@ fn kurnia_gen_place_moves_iter<
             .enumerate()
             .map(|(i, p)| (p.best_possible_equity, i as u32)),
     );
+    let mut starts = [0u32; PLACEMENT_BUCKETS + 1];
+    let mut bucket = PLACEMENT_BUCKETS;
+    let mut sorted_from = 0;
     if !want_raw {
-        placement_order.sort_unstable_by_key(|&(equity, _)| equity);
+        bucket_by_equity(
+            &mut placement_order,
+            &mut working_buffer.placement_scratch,
+            &mut starts,
+        );
+        sorted_from = sort_next_range(&mut placement_order, &starts, &mut bucket);
     }
     working_buffer.found_placements = found_placements;
     working_buffer.placement_order = placement_order;
     std::iter::from_fn(move || match working_buffer.placement_order.pop() {
         Some((equity, idx)) => {
+            let len = working_buffer.placement_order.len();
+            if len == sorted_from && len != 0 {
+                sorted_from =
+                    sort_next_range(&mut working_buffer.placement_order, &starts, &mut bucket);
+            }
             if can_accept(equity) {
                 let placement = working_buffer.found_placements[idx as usize];
                 gen_place_moves_at(GenPlaceMovesAtParams {
