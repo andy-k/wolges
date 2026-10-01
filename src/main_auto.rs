@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex};
 use wolges::{
-    alphabet, bag, bites, build, display, equity, error, fash, game_config, game_state,
+    alphabet, anagrams, bag, bites, build, display, equity, error, fash, game_config, game_state,
     game_timers, klv, kwg, move_filter, move_picker, movegen, play_scorer, stats,
 };
 
@@ -114,6 +114,7 @@ fn do_it<N: kwg::Node + Sync>(
     let mut fen_parser =
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+    let anagrams = anagrams::Anagrams::build_for_config(kwg, game_config);
 
     let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {
         tilt: move_filter::Tilt::new(game_config, kwg, move_filter::Tilt::length_importances()),
@@ -181,7 +182,7 @@ fn do_it<N: kwg::Node + Sync>(
             board_tiles: &game_state.board_tiles,
             game_config,
             kwg,
-            anagrams: None,
+            anagrams: anagrams.as_ref(),
             klv,
         };
         let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
@@ -307,7 +308,7 @@ fn do_it<N: kwg::Node + Sync>(
                 board_tiles: &game_state.board_tiles,
                 game_config,
                 kwg,
-                anagrams: None,
+                anagrams: anagrams.as_ref(),
                 klv,
             };
 
