@@ -2889,12 +2889,15 @@ fn gen_classic_place_moves<
         }
         let source = env.source;
         if subrack.blanks >= 2 {
+            let key_holds = env.layout.holds(key);
             let mut first = e.blank_ok & !1;
             while first != 0 {
                 let l1 = first.trailing_zeros() as u8;
                 first &= first - 1;
                 let key1 = key + env.layout.place_value(l1);
-                if !env.layout.holds(key1) {
+                if !(key_holds && env.layout.count_in(key, l1) < env.layout.max_count(l1))
+                    && !env.layout.holds(key1)
+                {
                     continue;
                 }
                 source.blank_groups(alphagram::Fitted(key1), len, e.blank_ok, |tile, at| {

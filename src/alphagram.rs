@@ -140,6 +140,12 @@ impl KeyLayout {
     }
 
     #[inline(always)]
+    pub fn count_in(&self, key: u128, tile: u8) -> u8 {
+        let width = u8::BITS - self.max_count[tile as usize].leading_zeros();
+        ((key >> self.shift[tile as usize]) & ((1u128 << width) - 1)) as u8
+    }
+
+    #[inline(always)]
     pub fn bits(&self) -> u32 {
         self.bits
     }
