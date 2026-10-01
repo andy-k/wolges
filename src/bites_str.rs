@@ -13,7 +13,7 @@ impl BitesStr {
         } else {
             // Heap: 0..8 = pointer, 8..16 = length (little endian), msb is set.
             ret[0..8].copy_from_slice(
-                &(Box::leak(Box::<str>::from(given)).as_ptr() as u64).to_le_bytes(),
+                &(Box::into_raw(Box::<str>::from(given)) as *mut u8 as u64).to_le_bytes(),
             );
             ret[8..16].copy_from_slice(&(given.len() as u64 | !(!0 >> 1)).to_le_bytes());
         }
