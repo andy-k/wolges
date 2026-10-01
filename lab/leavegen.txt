@@ -1630,14 +1630,14 @@ RECORDING AND GRADING THE TABLE
 Two command-line tools build and check the table.
 
   cargo run --release --bin leave -- \
-    english-winpct CSW24.kwg leave.klv2 1000000
+    english-winpct CSW24.kwg leave.klv2 win_pct.csv 1000000
 
 plays that many greedy self-play games with the given leave table ("-" for the
-null table) and writes the raw win% table. At every turn it snapshots the
-mover's view -- bag size, both rack sizes, and the lead in whole points -- and
-after the game folds each snapshot's eventual swing into the tally. Games are
-seeded by game number, so the same seed and game count reproduce the same table
-no matter how many threads run it.
+null table) and writes the raw win% table to win_pct.csv. At every turn it
+snapshots the mover's view -- bag size, both rack sizes, and the lead in whole
+points -- and after the game folds each snapshot's eventual swing into the
+tally. Games are seeded by game number, so the same seed and game count
+reproduce the same table no matter how many threads run it.
 
   cargo run --release --bin leave -- \
     english-winpct-eval CSW24.kwg leave.klv2 table.csv 1000000
@@ -1733,13 +1733,14 @@ A trustworthy table needs many games, and one process is slow, so a table can
 be recorded on several seeds or machines and merged:
 
   cargo run --release --bin leave -- \
-    english-winpct-combine win_pct.csv part1.csv part2.csv [...]
+    english-winpct-combine <( cat part1.csv part2.csv ) win_pct.csv
 
-The first argument is the output ("-" for standard output); the rest are input
-files. The merge adds the per-count-state tallies together. Because those are
-integer counts, combining is exact -- there is no rounding error from having
-split the work, which averaging finished tables would introduce. This mirrors
-english-resummarize, which combines the samplers' rack summaries the same way.
+The first argument is the input, the tables concatenated ("-" for standard
+input); the second is the output ("-" for standard output). The merge adds the
+per-count-state tallies together. Because those are integer counts, combining
+is exact -- there is no rounding error from having split the work, which
+averaging finished tables would introduce. This mirrors english-resummarize,
+which combines the samplers' rack summaries the same way.
 
 
 REWEIGHTING LEAVES FOR THE LIVE POOL (dynamic leaves)
