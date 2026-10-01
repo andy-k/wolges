@@ -467,6 +467,11 @@ fn run_batch(path: &str) -> error::Returns<()> {
         let player = player_str.parse::<u8>().map_err(|e| {
             error::new(format!("line {line_index}: bad player {player_str:?}: {e}"))
         })?;
+        if player > 1 {
+            wolges::return_error!(format!(
+                "line {line_index}: bad player {player_str:?}: the player to move is 0 or 1"
+            ));
+        }
 
         let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
         move_generator.gen_remaining_words(
