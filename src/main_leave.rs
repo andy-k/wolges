@@ -6687,6 +6687,22 @@ fn plural<'a>(n: u64, singular: &'a str, plural: &'a str) -> &'a str {
     if n == 1 { singular } else { plural }
 }
 
+#[derive(Clone, Copy)]
+struct SeatLabels {
+    p0: &'static str,
+    p1: &'static str,
+}
+
+const KLV_SEATS: SeatLabels = SeatLabels {
+    p0: "p0 (klv0)",
+    p1: "p1 (klv1)",
+};
+
+const SIM_CONFIG_SEATS: SeatLabels = SeatLabels {
+    p0: "p0 (WOLGES_SIM_P0_*)",
+    p1: "p1 (WOLGES_SIM_P1_*)",
+};
+
 struct GameStats {
     p0_wins: u64,
     p0_losses: u64,
@@ -6753,7 +6769,7 @@ impl GameStats {
     }
 
     #[inline]
-    fn print(&self, label: &str) {
+    fn print(&self, label: &str, seats: SeatLabels) {
         let total = self.total_games();
         if total == 0 {
             return;
@@ -6774,9 +6790,11 @@ impl GameStats {
             self.zero_scores as f64 / total as f64 * 100.0,
         );
         println!(
-            "  p0 (klv0): {:.1} ({:.2}%)  p1 (klv1): {:.1} ({:.2}%)",
+            "  {}: {:.1} ({:.2}%)  {}: {:.1} ({:.2}%)",
+            seats.p0,
             p0_total,
             p0_total / total as f64 * 100.0,
+            seats.p1,
             p1_total,
             p1_total / total as f64 * 100.0,
         );
@@ -6801,9 +6819,9 @@ impl GameStats {
             let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
             let confidence = stats::NormalDistribution::cumulative_normal_density(z) * 100.0;
             let leading = if p0_total > p1_total {
-                "p0 (klv0)"
+                seats.p0
             } else {
-                "p1 (klv1)"
+                seats.p1
             };
             println!("  {leading} leads, confidence: {confidence:.2}%");
         } else {
@@ -6876,23 +6894,29 @@ impl GamePairStats {
         self.divergent.merge(&other.divergent);
     }
 
-    fn print(&self) {
+    fn print(&self, seats: SeatLabels) {
         let all_total = self.all.total_games();
         let all_pairs = all_total / 2;
-        self.all.print(&format!(
-            "{all_total} {} ({all_pairs} {}):",
-            plural(all_total, "game", "games"),
-            plural(all_pairs, "pair", "pairs"),
-        ));
+        self.all.print(
+            &format!(
+                "{all_total} {} ({all_pairs} {}):",
+                plural(all_total, "game", "games"),
+                plural(all_pairs, "pair", "pairs"),
+            ),
+            seats,
+        );
         let div_total = self.divergent.total_games();
         if div_total > 0 && div_total < all_total {
             let div_pairs = div_total / 2;
-            self.divergent.print(&format!(
-                "\n{div_total} divergent {} ({div_pairs} {} = {:.2}%):",
-                plural(div_total, "game", "games"),
-                plural(div_pairs, "pair", "pairs"),
-                div_pairs as f64 / all_pairs as f64 * 100.0,
-            ));
+            self.divergent.print(
+                &format!(
+                    "\n{div_total} divergent {} ({div_pairs} {} = {:.2}%):",
+                    plural(div_total, "game", "games"),
+                    plural(div_pairs, "pair", "pairs"),
+                    div_pairs as f64 / all_pairs as f64 * 100.0,
+                ),
+                seats,
+            );
         }
 
         let porcelain = std::env::var("WOLGES_COMPARE_PORCELAIN")
@@ -7665,7 +7689,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         }
 
         println!();
-        combined.print();
+        combined.print(KLV_SEATS);
 
         Ok(())
     })
@@ -7962,7 +7986,7 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         }
 
         println!();
-        combined.print();
+        combined.print(SIM_CONFIG_SEATS);
 
         Ok(())
     })
