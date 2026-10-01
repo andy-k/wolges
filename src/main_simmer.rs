@@ -222,6 +222,7 @@ fn main() -> error::Returns<()> {
     let smaller_kwg_bytes = build::build(
         build::BuildContent::Gaddawg,
         build::BuildLayout::Wolges,
+        build::BuildOrder::Sorted,
         &vec_of_words.into_boxed_slice(),
     )?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());

@@ -2545,6 +2545,7 @@ fn write_census_klv2(
     let leaves_kwg = build::build(
         build::BuildContent::DawgOnly,
         build::BuildLayout::Wolges,
+        build::BuildOrder::Sorted,
         &sorted_words,
     )?;
     let leave_values = sorted_words

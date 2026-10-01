@@ -123,9 +123,8 @@ impl<N: Node> Kwg<N> {
             if p > 0 {
                 loop {
                     let node = self[p];
-                    let t = node.tile();
-                    if t >= tile {
-                        return if t == tile { p } else { -1 };
+                    if node.tile() == tile {
+                        return p;
                     }
                     if node.is_end() {
                         return -1;
@@ -438,6 +437,7 @@ mod tests {
             &build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &out,
             )
             .unwrap(),

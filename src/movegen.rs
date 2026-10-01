@@ -1846,123 +1846,147 @@ fn gen_classic_place_moves_lean<
             return;
         }
 
-        node = env.params.board_snapshot.kwg[p];
-        if node.tile() == 0 {
-            // assume idx < env.params.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
-            env.idx_left = idx + 1;
-            play_right::<SPELL_ONCE, _, _, _>(env, acc, p, env.params.anchor + 1, is_unique);
-            if node.is_end() {
-                return;
-            }
-            p += 1;
-        }
+        let turnaround_is_unique = is_unique;
 
+        let mut this_cross_bits = 0;
         if idx >= env.params.leftmost {
-            let mut this_cross_bits = env.params.cross_set_strip[idx as usize].bits;
-            if this_cross_bits == 1 {
-                // already handled '@'
-                return;
-            } else if this_cross_bits != 0 {
-                // turn off bit 0 so it cannot match later
-                this_cross_bits &= !1;
-            } else {
+            let bits = env.params.cross_set_strip[idx as usize].bits;
+            if bits == 0 {
                 this_cross_bits = !1;
                 is_unique = true;
+            } else if bits != 1 {
+                // turn off bit 0 so it cannot match later
+                this_cross_bits = bits & !1;
             }
-            let new_word_multiplier = acc.word_multiplier
-                * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
-            let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
-            let perpendicular_word_multiplier =
-                env.params.perpendicular_word_multipliers_strip[idx as usize];
-            let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
-            env.num_played += 1;
-            let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
-                if SPELL_ONCE {
-                    Accumulator {
-                        main_score: 0,
-                        perpendicular_cumulative_score: 0,
-                        word_multiplier: 0,
-                        leave_idx: 0,
-                    }
-                } else {
-                    let tile_value = env.alphabet.scaled_score(0) * tile_multiplier as i32;
-                    Accumulator {
-                        main_score: acc.main_score + tile_value,
-                        perpendicular_cumulative_score: acc.perpendicular_cumulative_score
-                            + perpendicular_score
-                            + tile_value * perpendicular_word_multiplier as i32,
-                        word_multiplier: new_word_multiplier,
-                        leave_idx: acc
-                            .leave_idx
-                            .wrapping_sub(env.params.multi_leaves.place_value(0)),
-                    }
-                }
-            });
+        }
+
+        if this_cross_bits == 0 {
+            let mut turnaround_p = p;
             loop {
-                let node = env.params.board_snapshot.kwg[p];
-                let tile = node.tile();
-                if this_cross_bits & (1 << tile) != 0 {
-                    let will_descend =
-                        env.params.rack_tally[tile as usize] > 0 || opt_blank_acc.is_some();
-                    if will_descend {
-                        env.params.board_snapshot.kwg.prefetch(node.arc_index());
-                    }
-                    if env.params.rack_tally[tile as usize] > 0 {
-                        env.params.rack_tally[tile as usize] -= 1;
-                        env.params.word_strip_buffer[idx as usize] = tile;
-                        play_left::<SPELL_ONCE, _, _, _>(
-                            env,
-                            &mut if SPELL_ONCE {
-                                Accumulator {
-                                    main_score: 0,
-                                    perpendicular_cumulative_score: 0,
-                                    word_multiplier: 0,
-                                    leave_idx: 0,
-                                }
-                            } else {
-                                let tile_value = env.alphabet.score(tile) as i32
-                                    * equity::SCALE
-                                    * tile_multiplier as i32;
-                                Accumulator {
-                                    main_score: acc.main_score + tile_value,
-                                    perpendicular_cumulative_score: acc
-                                        .perpendicular_cumulative_score
-                                        + perpendicular_score
-                                        + tile_value * perpendicular_word_multiplier as i32,
-                                    word_multiplier: new_word_multiplier,
-                                    leave_idx: acc
-                                        .leave_idx
-                                        .wrapping_sub(env.params.multi_leaves.place_value(tile)),
-                                }
-                            },
-                            p,
-                            idx - 1,
-                            is_unique,
-                        );
-                        env.params.rack_tally[tile as usize] += 1;
-                    }
-                    if let Some(blank_acc) = &opt_blank_acc
-                        && (!SPELL_ONCE || env.params.rack_tally[tile as usize] == 0)
-                    {
-                        env.params.rack_tally[0] -= 1;
-                        env.params.word_strip_buffer[idx as usize] = tile | 0x80;
-                        play_left::<SPELL_ONCE, _, _, _>(
-                            env,
-                            &mut Accumulator { ..*blank_acc },
-                            p,
-                            idx - 1,
-                            is_unique,
-                        );
-                        env.params.rack_tally[0] += 1;
-                    }
+                node = env.params.board_snapshot.kwg[turnaround_p];
+                if node.tile() == 0 {
+                    // assume idx < env.params.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
+                    env.idx_left = idx + 1;
+                    play_right::<SPELL_ONCE, _, _, _>(
+                        env,
+                        acc,
+                        turnaround_p,
+                        env.params.anchor + 1,
+                        turnaround_is_unique,
+                    );
+                    break;
                 }
                 if node.is_end() {
                     break;
                 }
-                p += 1;
+                turnaround_p += 1;
             }
-            env.num_played -= 1;
+            return;
         }
+
+        let new_word_multiplier =
+            acc.word_multiplier * env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+        let tile_multiplier = env.params.remaining_tile_multipliers_strip[idx as usize];
+        let perpendicular_word_multiplier =
+            env.params.perpendicular_word_multipliers_strip[idx as usize];
+        let perpendicular_score = env.params.perpendicular_scores_strip[idx as usize];
+        env.num_played += 1;
+        let opt_blank_acc = (env.params.rack_tally[0] > 0).then(|| {
+            if SPELL_ONCE {
+                Accumulator {
+                    main_score: 0,
+                    perpendicular_cumulative_score: 0,
+                    word_multiplier: 0,
+                    leave_idx: 0,
+                }
+            } else {
+                let tile_value = env.alphabet.scaled_score(0) * tile_multiplier as i32;
+                Accumulator {
+                    main_score: acc.main_score + tile_value,
+                    perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                        + perpendicular_score
+                        + tile_value * perpendicular_word_multiplier as i32,
+                    word_multiplier: new_word_multiplier,
+                    leave_idx: acc
+                        .leave_idx
+                        .wrapping_sub(env.params.multi_leaves.place_value(0)),
+                }
+            }
+        });
+        loop {
+            let node = env.params.board_snapshot.kwg[p];
+            let tile = node.tile();
+            if tile == 0 {
+                env.num_played -= 1;
+                env.idx_left = idx + 1;
+                play_right::<SPELL_ONCE, _, _, _>(
+                    env,
+                    acc,
+                    p,
+                    env.params.anchor + 1,
+                    turnaround_is_unique,
+                );
+                env.num_played += 1;
+            } else if this_cross_bits & (1 << tile) != 0 {
+                let will_descend =
+                    env.params.rack_tally[tile as usize] > 0 || opt_blank_acc.is_some();
+                if will_descend {
+                    env.params.board_snapshot.kwg.prefetch(node.arc_index());
+                }
+                if env.params.rack_tally[tile as usize] > 0 {
+                    env.params.rack_tally[tile as usize] -= 1;
+                    env.params.word_strip_buffer[idx as usize] = tile;
+                    play_left::<SPELL_ONCE, _, _, _>(
+                        env,
+                        &mut if SPELL_ONCE {
+                            Accumulator {
+                                main_score: 0,
+                                perpendicular_cumulative_score: 0,
+                                word_multiplier: 0,
+                                leave_idx: 0,
+                            }
+                        } else {
+                            let tile_value = env.alphabet.score(tile) as i32
+                                * equity::SCALE
+                                * tile_multiplier as i32;
+                            Accumulator {
+                                main_score: acc.main_score + tile_value,
+                                perpendicular_cumulative_score: acc.perpendicular_cumulative_score
+                                    + perpendicular_score
+                                    + tile_value * perpendicular_word_multiplier as i32,
+                                word_multiplier: new_word_multiplier,
+                                leave_idx: acc
+                                    .leave_idx
+                                    .wrapping_sub(env.params.multi_leaves.place_value(tile)),
+                            }
+                        },
+                        p,
+                        idx - 1,
+                        is_unique,
+                    );
+                    env.params.rack_tally[tile as usize] += 1;
+                }
+                if let Some(blank_acc) = &opt_blank_acc
+                    && (!SPELL_ONCE || env.params.rack_tally[tile as usize] == 0)
+                {
+                    env.params.rack_tally[0] -= 1;
+                    env.params.word_strip_buffer[idx as usize] = tile | 0x80;
+                    play_left::<SPELL_ONCE, _, _, _>(
+                        env,
+                        &mut Accumulator { ..*blank_acc },
+                        p,
+                        idx - 1,
+                        is_unique,
+                    );
+                    env.params.rack_tally[0] += 1;
+                }
+            }
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+        env.num_played -= 1;
     }
 
     let alphabet = params.board_snapshot.game_config.alphabet();
@@ -4545,35 +4569,44 @@ fn gen_remaining_connected_words<
             return;
         }
 
-        node = env.params.kwg[p];
-        if node.tile() == 0 {
-            // assume idx < env.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
-            env.idx_left = idx + 1;
-            play_right(env, p, env.anchor + 1);
-            if node.is_end() {
-                return;
+        let mut turnaround_p = p;
+        loop {
+            node = env.params.kwg[turnaround_p];
+            if node.tile() == 0 {
+                // assume idx < env.anchor, because tile 0 does not occur at start in well-formed kwg gaddawg
+                env.idx_left = idx + 1;
+                play_right(env, turnaround_p, env.anchor + 1);
+                if node.is_end() && turnaround_p == p {
+                    return;
+                }
+                break;
             }
-            p += 1;
+            if node.is_end() {
+                break;
+            }
+            turnaround_p += 1;
         }
 
         if idx >= 0 {
             loop {
                 let node = env.params.kwg[p];
                 let tile = node.tile();
-                if env.params.rack_tally[tile as usize] > 0 {
-                    env.params.rack_tally[tile as usize] -= 1;
-                    env.num_played += 1;
-                    env.params.word_strip_buffer[idx as usize] = tile;
-                    play_left(env, p, idx - 1);
-                    env.num_played -= 1;
-                    env.params.rack_tally[tile as usize] += 1;
-                } else if env.params.rack_tally[0] > 0 {
-                    env.params.rack_tally[0] -= 1;
-                    env.num_played += 1;
-                    env.params.word_strip_buffer[idx as usize] = tile; // not blanked for kwg.
-                    play_left(env, p, idx - 1);
-                    env.num_played -= 1;
-                    env.params.rack_tally[0] += 1;
+                if tile != 0 {
+                    if env.params.rack_tally[tile as usize] > 0 {
+                        env.params.rack_tally[tile as usize] -= 1;
+                        env.num_played += 1;
+                        env.params.word_strip_buffer[idx as usize] = tile;
+                        play_left(env, p, idx - 1);
+                        env.num_played -= 1;
+                        env.params.rack_tally[tile as usize] += 1;
+                    } else if env.params.rack_tally[0] > 0 {
+                        env.params.rack_tally[0] -= 1;
+                        env.num_played += 1;
+                        env.params.word_strip_buffer[idx as usize] = tile; // not blanked for kwg.
+                        play_left(env, p, idx - 1);
+                        env.num_played -= 1;
+                        env.params.rack_tally[0] += 1;
+                    }
                 }
                 if node.is_end() {
                     break;
@@ -4807,6 +4840,7 @@ mod tests {
             &build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &words,
             )
             .unwrap(),
@@ -4835,6 +4869,7 @@ mod tests {
             &build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &words,
             )
             .unwrap(),
@@ -5045,6 +5080,7 @@ mod tests {
             &build::build(
                 build::BuildContent::Gaddawg,
                 build::BuildLayout::Wolges,
+                build::BuildOrder::Sorted,
                 &words,
             )
             .unwrap(),
@@ -5148,6 +5184,92 @@ mod tests {
 
     #[test]
     #[inline]
+    fn reordered_kwg_generates_the_same_plays() {
+        static WORDS: &[&str] = &[
+            "AE", "AH", "AI", "AL", "AN", "AR", "AS", "AT", "EAR", "EAT", "ERA", "ETA", "HAE",
+            "HAT", "HEAR", "HEART", "HEAT", "HEATER", "HER", "HERS", "LEA", "LEAN", "LEARN",
+            "LEARNS", "LEAST", "NEAR", "NEAT", "RAT", "RATE", "REAL", "SEAT", "SHEAR", "STEAL",
+            "TEA", "TEAL", "TEAR", "TEARS", "THE", "THEN", "THERE", "TREAT",
+        ];
+        let gc = game_config::make_english_game_config();
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut word_buf = Vec::new();
+        let words = WORDS
+            .iter()
+            .map(|w| {
+                reader.set_word(w, &mut word_buf).unwrap();
+                word_buf[..].into()
+            })
+            .collect::<Vec<bites::Bites>>();
+
+        let mut plays_from = |build_order| {
+            let kwg_bytes = build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                build_order,
+                &words,
+            )
+            .unwrap();
+            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+            let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+            let mut board_tiles = vec![0u8; gc.board_layout().dim().rows as usize * 15];
+            reader.set_word("HEAT", &mut word_buf).unwrap();
+            for (i, &tile) in word_buf.iter().enumerate() {
+                board_tiles[7 * 15 + 5 + i] = tile;
+            }
+            let board_snapshot = BoardSnapshot {
+                board_tiles: &board_tiles,
+                game_config: &gc,
+                kwg: &kwg,
+                anagrams: None,
+                klv: &klv,
+            };
+            let mut move_generator = KurniaMoveGenerator::new(&gc);
+            reader.set_word("AERSTLN", &mut word_buf).unwrap();
+            let mut rack = word_buf.clone();
+            rack.sort_unstable();
+            move_generator.gen_moves_unfiltered(&GenMovesParams {
+                board_snapshot: &board_snapshot,
+                rack: &rack,
+                max_gen: usize::MAX,
+                num_exchanges_by_this_player: 0,
+                pass_policy: PassPolicy::OnlyWhenForced,
+                dynamic_leaves: None,
+            });
+            move_generator
+                .plays
+                .iter()
+                .map(|vm| (vm.equity, vm.play.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        let sort_key = |(equity, play): &(equity::Equity, Play)| match play {
+            Play::Exchange { tiles } => (*equity, 0u8, 0i8, 0i8, tiles.to_vec(), 0i32),
+            Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score,
+            } => (*equity, 1 + *down as u8, *lane, *idx, word.to_vec(), *score),
+        };
+        let mut sorted = plays_from(build::BuildOrder::Sorted);
+        let mut reordered = plays_from(build::BuildOrder::Reordered);
+        assert!(sorted.len() > 100, "the test needs plays to compare");
+        assert_eq!(sorted.len(), reordered.len());
+        sorted.sort_by_key(sort_key);
+        reordered.sort_by_key(sort_key);
+        assert!(
+            sorted
+                .iter()
+                .zip(reordered.iter())
+                .all(|(a, b)| a.0 == b.0 && a.1 == b.1),
+            "a reordered kwg generated different plays"
+        );
+    }
+
+    #[test]
+    #[inline]
     fn cross_set_score_cache_distinguishes_blank_from_natural_tile() {
         let gc = game_config::make_english_game_config();
         let alphabet = gc.alphabet();
@@ -5158,6 +5280,7 @@ mod tests {
         let kwg_bytes = build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             &words,
         )
         .unwrap();

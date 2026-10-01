@@ -198,6 +198,11 @@ pub enum BuildLayout {
     Wolges, // small, faster to movegen, dawg-first then frequent-first. recommended default.
 }
 
+pub enum BuildOrder {
+    Sorted,
+    Reordered,
+}
+
 // zero-cost type-safety
 struct IsEnd(bool);
 struct Accepts(bool);
@@ -669,11 +674,269 @@ fn gen_top_indexes(states: &[State], head_indexes: &[u32]) -> Vec<u32> {
     top_indexes
 }
 
+#[inline]
+fn is_sublist(states: &[State], mut a: u32, mut b: u32) -> bool {
+    while a != 0 {
+        let a_state = &states[a as usize];
+        loop {
+            if b == 0 {
+                return false;
+            }
+            let b_state = &states[b as usize];
+            if b_state.tile > a_state.tile {
+                return false;
+            }
+            b = b_state.next_index;
+            if b_state.tile == a_state.tile {
+                if b_state.accepts != a_state.accepts || b_state.arc_index != a_state.arc_index {
+                    return false;
+                }
+                break;
+            }
+        }
+        a = a_state.next_index;
+    }
+    true
+}
+
+#[inline]
+fn reorder_states(
+    states: &[State],
+    build_content: &BuildContent,
+    dawg_start_state: u32,
+    gaddag_start_state: u32,
+) -> (Vec<State>, u32, u32) {
+    #[inline(always)]
+    fn entry_key(state: &State) -> u64 {
+        ((state.arc_index as u64) << 9) | ((state.accepts as u64) << 8) | state.tile as u64
+    }
+
+    let states_len = states.len();
+    let to_end_lens = gen_to_end_lens(states);
+
+    let mut is_head = vec![false; states_len];
+    for state in states.iter().skip(1) {
+        is_head[state.arc_index as usize] = true;
+    }
+    for root in [dawg_start_state, gaddag_start_state] {
+        is_head[root as usize] = true;
+    }
+    is_head[0] = false;
+
+    let mut has_dawg = vec![false; states_len];
+    if let BuildContent::Gaddawg = build_content {
+        let mut in_dawg = vec![false; states_len];
+        in_dawg[dawg_start_state as usize] = true;
+        for p in (1..states_len).rev() {
+            if in_dawg[p] {
+                in_dawg[states[p].arc_index as usize] = true;
+                in_dawg[states[p].next_index as usize] = true;
+            }
+        }
+        for p in 1..states_len {
+            has_dawg[p] = in_dawg[p] || has_dawg[states[p].next_index as usize];
+        }
+    }
+
+    let mut movable = Vec::new();
+    for p in 1..states_len {
+        if is_head[p] && !has_dawg[p] {
+            movable.push(p as u32);
+        }
+    }
+
+    let mut entry_indexes = fash::MyHashMap::<u64, u32>::default();
+    let mut entry_counts = Vec::<u32>::new();
+    for &head in movable.iter() {
+        let mut p = head;
+        while p != 0 {
+            let num_entries = entry_counts.len() as u32;
+            let entry_index = *entry_indexes
+                .entry(entry_key(&states[p as usize]))
+                .or_insert(num_entries);
+            if entry_index == num_entries {
+                entry_counts.push(0);
+            }
+            entry_counts[entry_index as usize] += 1;
+            p = states[p as usize].next_index;
+        }
+    }
+    let mut postings_starts = Vec::with_capacity(entry_counts.len() + 1);
+    let mut num_postings = 0u32;
+    for &entry_count in entry_counts.iter() {
+        postings_starts.push(num_postings);
+        num_postings += entry_count;
+    }
+    postings_starts.push(num_postings);
+    let mut postings = vec![0u32; num_postings as usize];
+    let mut postings_fill = postings_starts.clone();
+    let mut rarest_entries = Vec::with_capacity(movable.len());
+    for (i, &head) in movable.iter().enumerate() {
+        let mut rarest_entry = 0;
+        let mut rarest_count = !0;
+        let mut p = head;
+        while p != 0 {
+            let entry_index = entry_indexes[&entry_key(&states[p as usize])];
+            postings[postings_fill[entry_index as usize] as usize] = i as u32;
+            postings_fill[entry_index as usize] += 1;
+            let entry_count = entry_counts[entry_index as usize];
+            if entry_count < rarest_count {
+                rarest_count = entry_count;
+                rarest_entry = entry_index;
+            }
+            p = states[p as usize].next_index;
+        }
+        rarest_entries.push(rarest_entry);
+    }
+
+    let mut by_len = Vec::from_iter(0..movable.len() as u32);
+    by_len.sort_unstable_by_key(|&i| {
+        let head = movable[i as usize];
+        (!to_end_lens[head as usize], head)
+    });
+
+    struct Absorber<'a> {
+        states: &'a [State],
+        movable: &'a [u32],
+        to_end_lens: &'a [u32],
+        postings: &'a [u32],
+        postings_starts: &'a [u32],
+        rarest_entries: &'a [u32],
+        tried: Vec<u32>, // stamped with the list being placed
+        stamp: u32,
+    }
+    impl Absorber<'_> {
+        fn absorb(&mut self, tails: &mut [u32], i: u32) -> bool {
+            let head = self.movable[i as usize];
+            let len = self.to_end_lens[head as usize];
+            let rarest_entry = self.rarest_entries[i as usize] as usize;
+            for k in self.postings_starts[rarest_entry] as usize
+                ..self.postings_starts[rarest_entry + 1] as usize
+            {
+                let j = self.postings[k];
+                if j == i || self.tried[j as usize] == self.stamp {
+                    continue;
+                }
+                let host = self.movable[j as usize];
+                if self.to_end_lens[host as usize] <= len || !is_sublist(self.states, head, host) {
+                    continue;
+                }
+                self.tried[j as usize] = self.stamp;
+                if tails[j as usize] == !0 || self.absorb(tails, tails[j as usize]) {
+                    tails[j as usize] = i;
+                    return true;
+                }
+            }
+            false
+        }
+    }
+    let mut tails = vec![!0u32; movable.len()];
+    let mut absorber = Absorber {
+        states,
+        movable: &movable,
+        to_end_lens: &to_end_lens,
+        postings: &postings,
+        postings_starts: &postings_starts,
+        rarest_entries: &rarest_entries,
+        tried: vec![!0u32; movable.len()],
+        stamp: 0,
+    };
+    for &i in by_len.iter() {
+        absorber.stamp = i;
+        absorber.absorb(&mut tails, i);
+    }
+
+    let mut order_starts = vec![0u32; states_len]; // 0 = keep the order it has.
+    let mut order_cells = vec![0u32]; // index 0 stands for "no order of its own".
+    for &i in by_len.iter().rev() {
+        let tail = tails[i as usize];
+        if tail == !0 {
+            continue;
+        }
+        let head = movable[i as usize];
+        let tail_head = movable[tail as usize];
+        order_starts[head as usize] = order_cells.len() as u32;
+        let mut p = head;
+        let mut q = tail_head;
+        while p != 0 {
+            let p_state = &states[p as usize];
+            while q != 0 && states[q as usize].tile < p_state.tile {
+                q = states[q as usize].next_index;
+            }
+            if q != 0 && states[q as usize].tile == p_state.tile {
+                q = states[q as usize].next_index;
+            } else {
+                order_cells.push(p);
+            }
+            p = p_state.next_index;
+        }
+        let tail_order_start = order_starts[tail_head as usize] as usize;
+        if tail_order_start != 0 {
+            order_cells.extend_from_within(
+                tail_order_start..tail_order_start + to_end_lens[tail_head as usize] as usize,
+            );
+        } else {
+            let mut p = tail_head;
+            while p != 0 {
+                order_cells.push(p);
+                p = states[p as usize].next_index;
+            }
+        }
+    }
+
+    let mut new_states = Vec::with_capacity(states_len);
+    new_states.push(states[0].clone());
+    let mut states_finder = fash::MyHashMap::default();
+    states_finder.insert(states[0].clone(), 0);
+    let mut state_maker = StateMaker {
+        states: &mut new_states,
+        states_finder: &mut states_finder,
+    };
+    let mut new_heads = vec![0u32; states_len];
+    let mut transitions = Vec::new();
+    for p in 1..states_len {
+        if !is_head[p] {
+            continue;
+        }
+        transitions.clear();
+        let order_start = order_starts[p] as usize;
+        if order_start != 0 {
+            for &cell in order_cells[order_start..order_start + to_end_lens[p] as usize].iter() {
+                let state = &states[cell as usize];
+                transitions.push(Transition {
+                    tile: state.tile,
+                    accepts: state.accepts,
+                    arc_index: new_heads[state.arc_index as usize],
+                });
+            }
+        } else {
+            let mut q = p as u32;
+            while q != 0 {
+                let state = &states[q as usize];
+                transitions.push(Transition {
+                    tile: state.tile,
+                    accepts: state.accepts,
+                    arc_index: new_heads[state.arc_index as usize],
+                });
+                q = state.next_index;
+            }
+        }
+        new_heads[p] = state_maker.make_state(&transitions);
+    }
+
+    (
+        new_states,
+        new_heads[dawg_start_state as usize],
+        new_heads[gaddag_start_state as usize],
+    )
+}
+
 // machine_words must be sorted and unique.
 #[inline]
 fn do_build<const VARIANT: u8>(
     build_content: BuildContent,
     build_layout: BuildLayout,
+    build_order: BuildOrder,
     machine_words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
     // The sink state always exists.
@@ -698,6 +961,16 @@ fn do_build<const VARIANT: u8>(
             &gen_machine_drowwords(machine_words),
             dawg_start_state,
             true,
+        ),
+    };
+
+    let (states, dawg_start_state, gaddag_start_state) = match build_order {
+        BuildOrder::Sorted => (states, dawg_start_state, gaddag_start_state),
+        BuildOrder::Reordered => reorder_states(
+            &states,
+            &build_content,
+            dawg_start_state,
+            gaddag_start_state,
         ),
     };
 
@@ -777,18 +1050,20 @@ fn do_build<const VARIANT: u8>(
 pub fn build(
     build_content: BuildContent,
     build_layout: BuildLayout,
+    build_order: BuildOrder,
     machine_words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
-    do_build::<1>(build_content, build_layout, machine_words)
+    do_build::<1>(build_content, build_layout, build_order, machine_words)
 }
 
 #[inline(always)]
 pub fn build_big(
     build_content: BuildContent,
     build_layout: BuildLayout,
+    build_order: BuildOrder,
     machine_words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
-    do_build::<2>(build_content, build_layout, machine_words)
+    do_build::<2>(build_content, build_layout, build_order, machine_words)
 }
 
 #[cfg(test)]
@@ -824,26 +1099,120 @@ mod tests {
         }
     }
 
+    fn collect_gaddag_words<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        p: i32,
+        rev: &mut Vec<u8>,
+        out: &mut Vec<bites::Bites>,
+    ) {
+        let mut i = p;
+        loop {
+            let node = kwg[i];
+            if node.tile() == 0 {
+                let mut suffixes = Vec::new();
+                collect_dawg_words(kwg, node.arc_index(), &mut Vec::new(), &mut suffixes);
+                for suffix in suffixes.iter() {
+                    let mut word = rev.clone();
+                    word.reverse();
+                    word.extend_from_slice(suffix);
+                    out.push(word[..].into());
+                }
+            } else {
+                rev.push(node.tile());
+                if node.accepts() {
+                    let mut word = rev.clone();
+                    word.reverse();
+                    out.push(word[..].into());
+                }
+                if node.arc_index() != 0 {
+                    collect_gaddag_words(kwg, node.arc_index(), rev, out);
+                }
+                rev.pop();
+            }
+            if node.is_end() {
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    fn collect_dawg_tiles<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        p: i32,
+        seen: &mut [bool],
+        out: &mut Vec<u8>,
+    ) {
+        if p <= 0 || seen[p as usize] {
+            return;
+        }
+        let mut i = p;
+        loop {
+            seen[i as usize] = true;
+            let node = kwg[i];
+            out.push(node.tile());
+            if node.arc_index() != 0 {
+                collect_dawg_tiles(kwg, node.arc_index(), seen, out);
+            }
+            if node.is_end() {
+                break;
+            }
+            i += 1;
+        }
+    }
+
     #[inline]
-    fn round_trip_dawg(layout: BuildLayout, words: &[&str]) {
+    fn build_kwg(
+        layout: BuildLayout,
+        order: BuildOrder,
+        words: &[&str],
+    ) -> (Vec<bites::Bites>, kwg::Kwg<kwg::Node22>) {
         let machine_words: Vec<bites::Bites> = words
             .iter()
             .map(|w| w.bytes().collect::<Vec<u8>>()[..].into())
             .collect();
-        let bytes = build(BuildContent::Gaddawg, layout, &machine_words).unwrap();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes);
-        let mut got = Vec::new();
-        collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
-        got.sort_unstable();
+        let bytes = build(BuildContent::Gaddawg, layout, order, &machine_words).unwrap();
+        (
+            machine_words,
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes),
+        )
+    }
+
+    #[inline(always)]
+    fn round_trip_dawg(layout: BuildLayout, words: &[&str]) {
+        round_trip_ordered(layout, BuildOrder::Sorted, words);
+    }
+
+    #[inline]
+    fn round_trip_ordered(layout: BuildLayout, order: BuildOrder, words: &[&str]) {
+        let (machine_words, kwg) = build_kwg(layout, order, words);
         let mut expected = machine_words.clone();
         expected.sort_unstable();
         expected.dedup();
+
+        let mut got = Vec::new();
+        collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
+        got.sort_unstable();
         assert_eq!(got, expected);
+
+        let mut got_gaddag = Vec::new();
+        if kwg[1].arc_index() != 0 {
+            collect_gaddag_words(&kwg, kwg[1].arc_index(), &mut Vec::new(), &mut got_gaddag);
+        }
+        got_gaddag.sort_unstable();
+        got_gaddag.dedup();
+        assert_eq!(got_gaddag, expected);
     }
 
     static WORD_LIST: &[&str] = &[
         "AA", "AAH", "AAHED", "AAL", "AALS", "AAS", "AB", "ABA", "ABAC", "ABS", "ABY", "CAB",
         "CAD", "CAT", "CATS", "ZAP", "ZAPS", "ZED", "ZOO",
+    ];
+
+    static LONGER_WORD_LIST: &[&str] = &[
+        "AE", "AH", "AI", "AL", "AN", "AR", "AS", "AT", "EAR", "EAT", "ERA", "ETA", "HAE", "HAT",
+        "HEAR", "HEART", "HEAT", "HEATER", "HER", "HERS", "LEA", "LEAN", "LEARN", "LEARNS",
+        "LEAST", "NEAR", "NEAT", "RAT", "RATE", "REAL", "SEAT", "SHEAR", "STEAL", "TEA", "TEAL",
+        "TEAR", "TEARS", "THE", "THEN", "THERE", "TREAT",
     ];
 
     #[test]
@@ -874,11 +1243,23 @@ mod tests {
     #[inline]
     fn empty_graph_constants_are_what_the_builder_writes() {
         assert_eq!(
-            &build(BuildContent::Gaddawg, BuildLayout::Wolges, &[]).unwrap()[..],
+            &build(
+                BuildContent::Gaddawg,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                &[]
+            )
+            .unwrap()[..],
             kwg::EMPTY_KWG_BYTES,
         );
         assert_eq!(
-            &build_big(BuildContent::Gaddawg, BuildLayout::Wolges, &[]).unwrap()[..],
+            &build_big(
+                BuildContent::Gaddawg,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                &[]
+            )
+            .unwrap()[..],
             kwg::EMPTY_KBWG_BYTES,
         );
     }
@@ -886,7 +1267,13 @@ mod tests {
     #[test]
     #[inline]
     fn empty_leaves_constant_is_what_the_format_says() {
-        let dawg = build(BuildContent::DawgOnly, BuildLayout::Wolges, &[]).unwrap();
+        let dawg = build(
+            BuildContent::DawgOnly,
+            BuildLayout::Wolges,
+            BuildOrder::Sorted,
+            &[],
+        )
+        .unwrap();
         let mut expected = Vec::new();
         expected.extend_from_slice(&((dawg.len() / 4) as u32).to_le_bytes());
         expected.extend_from_slice(&dawg);
@@ -954,21 +1341,41 @@ mod tests {
             assert!(len >= 2, "{name}: an alphabet is a blank and some tiles");
             let words = words_over_tiles(len);
 
-            let bytes = build(BuildContent::Gaddawg, BuildLayout::Wolges, &words)
-                .unwrap_or_else(|e| panic!("{name}: kwg refused {len} tiles: {e}"));
+            let bytes = build(
+                BuildContent::Gaddawg,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap_or_else(|e| panic!("{name}: kwg refused {len} tiles: {e}"));
             assert_eq!(words_in_graph::<kwg::Node22>(&bytes), words, "{name}: kwg");
 
-            let bytes = build(BuildContent::DawgOnly, BuildLayout::Wolges, &words)
-                .unwrap_or_else(|e| panic!("{name}: dawg refused {len} tiles: {e}"));
+            let bytes = build(
+                BuildContent::DawgOnly,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap_or_else(|e| panic!("{name}: dawg refused {len} tiles: {e}"));
             assert_eq!(words_in_graph::<kwg::Node22>(&bytes), words, "{name}: dawg");
 
-            let bytes = build_big(BuildContent::Gaddawg, BuildLayout::Wolges, &words)
-                .unwrap_or_else(|e| panic!("{name}: kbwg refused {len} tiles: {e}"));
+            let bytes = build_big(
+                BuildContent::Gaddawg,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                &words,
+            )
+            .unwrap_or_else(|e| panic!("{name}: kbwg refused {len} tiles: {e}"));
             assert_eq!(words_in_graph::<kwg::Node24>(&bytes), words, "{name}: kbwg");
 
             let alphagrams = make_alphagrams(&words);
-            let bytes = build(BuildContent::DawgOnly, BuildLayout::Wolges, &alphagrams)
-                .unwrap_or_else(|e| panic!("{name}: kad refused {len} tiles: {e}"));
+            let bytes = build(
+                BuildContent::DawgOnly,
+                BuildLayout::Wolges,
+                BuildOrder::Sorted,
+                &alphagrams,
+            )
+            .unwrap_or_else(|e| panic!("{name}: kad refused {len} tiles: {e}"));
             assert_eq!(
                 words_in_graph::<kwg::Node22>(&bytes),
                 alphagrams.to_vec(),
@@ -1015,5 +1422,84 @@ mod tests {
             .collect::<Vec<_>>();
         in_matrix.sort_unstable();
         assert_eq!(in_matrix, on_disk, "the matrix and the crate disagree");
+    }
+
+    #[test]
+    #[inline]
+    fn round_trip_reordered() {
+        round_trip_ordered(BuildLayout::Wolges, BuildOrder::Reordered, WORD_LIST);
+        round_trip_ordered(BuildLayout::Legacy, BuildOrder::Reordered, WORD_LIST);
+        round_trip_ordered(BuildLayout::MagpieMerged, BuildOrder::Reordered, WORD_LIST);
+        round_trip_ordered(BuildLayout::Wolges, BuildOrder::Reordered, &[]);
+        round_trip_ordered(BuildLayout::Wolges, BuildOrder::Reordered, &["HELLO"]);
+    }
+
+    #[test]
+    #[inline]
+    fn reordered_gaddawg_keeps_its_dawg() {
+        let (_, sorted) = build_kwg(BuildLayout::Wolges, BuildOrder::Sorted, LONGER_WORD_LIST);
+        let (_, reordered) =
+            build_kwg(BuildLayout::Wolges, BuildOrder::Reordered, LONGER_WORD_LIST);
+
+        let mut sorted_tiles = Vec::new();
+        collect_dawg_tiles(
+            &sorted,
+            sorted[0].arc_index(),
+            &mut vec![false; sorted.0.len()],
+            &mut sorted_tiles,
+        );
+        let mut reordered_tiles = Vec::new();
+        collect_dawg_tiles(
+            &reordered,
+            reordered[0].arc_index(),
+            &mut vec![false; reordered.0.len()],
+            &mut reordered_tiles,
+        );
+        assert_eq!(sorted_tiles, reordered_tiles);
+
+        let mut num_descents = 0;
+        for i in 1..reordered.0.len() - 1 {
+            if !reordered[i as i32].is_end()
+                && reordered[i as i32].tile() > reordered[i as i32 + 1].tile()
+            {
+                num_descents += 1;
+            }
+        }
+        assert!(num_descents > 0, "nothing was reordered");
+
+        let mut num_moved_turnarounds = 0;
+        for i in 2..reordered.0.len() {
+            if reordered[i as i32].tile() == 0 && !reordered[i as i32 - 1].is_end() {
+                num_moved_turnarounds += 1;
+            }
+        }
+        assert!(
+            num_moved_turnarounds > 0,
+            "no turnaround tile moved off the front of its list"
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn reordered_dawg_only_round_trips() {
+        let machine_words: Vec<bites::Bites> = WORD_LIST
+            .iter()
+            .map(|w| w.bytes().collect::<Vec<u8>>()[..].into())
+            .collect();
+        let bytes = build(
+            BuildContent::DawgOnly,
+            BuildLayout::Wolges,
+            BuildOrder::Reordered,
+            &machine_words,
+        )
+        .unwrap();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes);
+        let mut got = Vec::new();
+        collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
+        got.sort_unstable();
+        let mut expected = machine_words.clone();
+        expected.sort_unstable();
+        expected.dedup();
+        assert_eq!(got, expected);
     }
 }

@@ -197,6 +197,7 @@ fn do_it<N: kwg::Node + Sync>(
         let smaller_kwg_bytes = build::build(
             build::BuildContent::Gaddawg,
             build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
             &vec_of_words.into_boxed_slice(),
         )?;
         println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
@@ -337,6 +338,7 @@ fn do_it<N: kwg::Node + Sync>(
                     let smaller_kwg_bytes = build::build(
                         build::BuildContent::Gaddawg,
                         build::BuildLayout::Wolges,
+                        build::BuildOrder::Sorted,
                         &vec_of_words.into_boxed_slice(),
                     )?;
                     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());

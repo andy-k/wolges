@@ -292,14 +292,34 @@ fn iter_dawg<
         R: WgReader,
     >(
         env: &mut Env<'_, F, In, Out, A, R>,
-        mut p: usize,
+        first_p: usize,
     ) -> error::Returns<()> {
         let l = env.s.len();
+        let mut prev_tile = 0u8;
+        let mut took_any = false;
         loop {
-            if p >= env.r.len(env.b) {
-                return Err("out of bounds".into());
+            let mut p = first_p;
+            let mut next_p = !0usize;
+            loop {
+                if p >= env.r.len(env.b) {
+                    return Err("out of bounds".into());
+                }
+                let t = env.r.tile(env.b, p);
+                if (!took_any || t > prev_tile) && (next_p == !0 || t < env.r.tile(env.b, next_p)) {
+                    next_p = p;
+                }
+                if env.r.is_end(env.b, p) {
+                    break;
+                }
+                p += 1;
             }
+            if next_p == !0 {
+                break;
+            }
+            let p = next_p;
             let t = env.r.tile(env.b, p);
+            prev_tile = t;
+            took_any = true;
             if A::is_verbatim() {
                 env.a.label(env.s, t)?;
             } else if t == 0 {
@@ -319,10 +339,6 @@ fn iter_dawg<
                 (env.on_out)(b)?;
             }
             env.s.truncate(l);
-            if env.r.is_end(env.b, p) {
-                break;
-            }
-            p += 1;
         }
         Ok(())
     }
