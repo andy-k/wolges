@@ -194,7 +194,7 @@ fn main() -> error::Returns<()> {
         }
     };
 
-    let mut rng = rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng)?;
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::try_from_rng(&mut rand::rngs::SysRng)?;
     let mut game_state = game_state::GameState::new(&game_config);
     // temp hardcode
     game_state.players[0].score = equity::scale_score(16);

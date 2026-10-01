@@ -126,7 +126,7 @@ impl Question {
         let plays_alphabet_reader = alphabet::AlphabetReader::new_for_plays(alphabet);
         let racks_alphabet_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
         let dim = game_config.board_layout().dim();
-        let mut rng = rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng)
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::try_from_rng(&mut rand::rngs::SysRng)
             .map_err(|e| error::new(format!("{}", e)))?;
         let mut game_state = game_state::GameState::new(game_config);
         game_state.reset_and_draw_tiles(game_config, &mut rng);

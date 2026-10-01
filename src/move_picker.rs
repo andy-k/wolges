@@ -183,7 +183,7 @@ pub struct Simmer<
     N: kwg::Node,
     L: kwg::Node,
     const OBSERVE: bool = false,
-    R = rand::rngs::ChaCha20Rng,
+    R = simmer::DefaultRng,
 > {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
@@ -220,7 +220,7 @@ impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSER
             kwg,
             klv,
             params,
-            rand::rngs::ChaCha20Rng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
+            simmer::DefaultRng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
         )
     }
 }

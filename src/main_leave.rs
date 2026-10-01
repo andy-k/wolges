@@ -20,7 +20,7 @@ abcdefghijklmnopqrstuvwxyz\
 
 // the generator the tasks draw with. another can take its place if it
 // implements Streams and CopyState.
-type GameRng = rand::rngs::ChaCha20Rng;
+type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
 
 // numbered streams of one seed: what a run's kth game draws depends on the seed
 // and k alone, whichever thread plays it.
@@ -35,6 +35,15 @@ impl Streams for rand::rngs::ChaCha20Rng {
         let mut rng = Self::seed_from_u64(seed);
         rng.set_stream(stream);
         rng
+    }
+}
+
+impl Streams for rand_xoshiro::Xoshiro256PlusPlus {
+    // xoshiro has no streams, so each one seeds from a mix of the seed and its
+    // number.
+    #[inline(always)]
+    fn from_stream(seed: u64, stream: u64) -> Self {
+        Self::seed_from_u64(census_mix64(seed) ^ stream)
     }
 }
 
