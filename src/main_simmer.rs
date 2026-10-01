@@ -2,7 +2,7 @@
 
 use wolges::{
     alphabet, bites, build, display, error, fash, game_config, game_state, klv, kwg, move_picker,
-    movegen, simmer,
+    movegen,
 };
 
 // most of this is copied from main_endgame.
@@ -244,24 +244,14 @@ fn main() -> error::Returns<()> {
         dynamic_leaves: None,
     });
 
-    let mut driver = move_picker::Simmer::new(
+    let mut driver = move_picker::Simmer::<_, _, true>::new(
         &game_config,
         &smaller_kwg,
         &klv,
         move_picker::SimmerParams {
             num_sim_iters: 10000,
-            allocator: move_picker::Allocator::RoundRobin,
-            stop_rule: move_picker::StopRule::FixedCap,
-            stop_delta: None,
-            observe: true,
             sim_threads: 1,
             win_pct_table: None,
-            config: simmer::SimmerConfig {
-                descale: true,
-                w_no_out: 10.0,
-                w_out: 10000.0,
-                win_prob_source: simmer::WinProbSource::Sigmoid,
-            },
         },
     );
 

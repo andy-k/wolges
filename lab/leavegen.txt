@@ -167,13 +167,11 @@ this test gets. So a gap under about 0.035 pp at a million pairs is noise no
 matter which way its sign happens to fall.
 
 A table played against itself scores 50.00 by symmetry, which is the
-calibration check. Setting WOLGES_COMPARE_PORCELAIN to a nonzero value appends
-a machine-readable block after the normal output -- one NAME VALUE per line
-(each table's share, the win percent, the draws, the confidence, which side
-leads, and the game and pair counts) -- so a script reads the first table's
-share directly instead of pattern-matching the human-readable line.
-
-New knobs: WOLGES_COMPARE_PORCELAIN.
+calibration check. leave compare also appends a machine-readable block after
+the normal output -- one NAME VALUE per line (each table's share, the win
+percent, the draws, the confidence, which side leads, and the game and pair
+counts) -- so a script reads the first table's share directly instead of
+pattern-matching the human-readable line.
 
 Every number below is a fresh leave compare run of our own tables against our
 own tables.
@@ -870,13 +868,13 @@ None of this is new arithmetic. It is the same draw-average the exact per-board
 census already computes, run over one rack's kept subracks instead of a whole
 board's -- a thin wrapper on machinery the census already trusts.
 
-Two things keep the cost down. A smallest-keep floor (default two, so keeping
-nothing or a single tile stays static) skips the tiniest keeps. Those keeps
-play almost the whole rack, the plays that lean on the leave the least, and
-they are also the ones with the most tiles to draw back, so they cost the most
-to reweight for the least return -- skipping them removes the bulk of the work.
-A kept subrack with nothing left to complete it (the pool cannot fill the rack)
-simply keeps its static value.
+Two things keep the cost down. A smallest-keep floor (two, so keeping nothing
+or a single tile stays static) skips the tiniest keeps. Those keeps play almost
+the whole rack, the plays that lean on the leave the least, and they are also
+the ones with the most tiles to draw back, so they cost the most to reweight
+for the least return -- skipping them removes the bulk of the work. A kept
+subrack with nothing left to complete it (the pool cannot fill the rack) simply
+keeps its static value.
 
 The reweight overwrites the move generator's leave table in place, so it is
 paid once per move and every reader downstream is pool-aware for free: each
@@ -888,14 +886,10 @@ full-length table -- one with a value for every whole rack, not just the six or
 fewer tiles an ordinary leave keeps -- the kind leave generate writes with
 full racks turned on.
 
-A pair of players isolates the effect. leave compare, given the same
-full-length table to both seats, can turn the reweight on for one seat only:
-
-  WOLGES_DYNAMIC_LEAVES=1 cargo run --release --bin leave -- \
-    compare CSW24.kwg full.klv2 full.klv2 50000
-
-Player zero values its midgame leaves against the live pool; player one reads
-the static table. The two tables are identical, so the win rate measures one
+A pair of players isolated the effect: leave compare, given the same
+full-length table to both seats, with the reweight on for player zero only.
+Player zero valued its midgame leaves against the live pool; player one read
+the static table. The two tables were identical, so the win rate measured one
 thing -- whether pool-aware leaves play stronger than the very same leaves read
 flat.
 
@@ -916,8 +910,6 @@ The pool reweight feeds each move real information the static table never had
 -- which tiles are actually still drawable -- and that can and does change
 which leave looks best as the pool empties. It is the one place a static table,
 read a little less statically, plays measurably better.
-
-New knobs: WOLGES_DYNAMIC_LEAVES, WOLGES_DYNAMIC_LEAVES_MIN_KEEP.
 
 
 BEST CURRENT WAY TO RUN EACH METHOD
@@ -1011,16 +1003,3 @@ Every run:
   started within the same 1/65536 second share a stamp; every file is created
   without overwriting an existing one, inserting a _1 (then _2) before the
   extension on a clash, so no run ever clobbers another's output.
-
-Compare and dynamic leaves:
-  WOLGES_COMPARE_PORCELAIN (0 or 1; default 0) -- leave compare's output;
-    changes no table:
-      1  append a machine-readable result block after the normal output
-      0  print the human-readable output only
-  WOLGES_DYNAMIC_LEAVES (0 or 1; default 0) -- in leave compare it applies to
-    player zero only; needs a full-length table:
-      1  reweight the midgame leave table against the live pool before valuing
-         any play
-      0  read the static table
-  WOLGES_DYNAMIC_LEAVES_MIN_KEEP (a whole number; default 2) -- smallest kept
-    subrack that gets reweighted.

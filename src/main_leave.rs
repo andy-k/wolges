@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::{
     alphabet, bites, build, census, display, equity, error, fash, game_config, game_state, klv,
-    kwg, move_filter, move_picker, movegen, play_scorer, prob, simmer, stats, win_pct,
+    kwg, move_filter, move_picker, movegen, play_scorer, prob, stats, win_pct,
 };
 
 mod game_args;
@@ -248,6 +248,22 @@ struct SimCompare {
     pairs: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(long, default_value_t = move_picker::DEFAULT_NUM_SIM_ITERS, help = "rollouts a move")]
+    iters: u64,
+    #[arg(long, default_value = "1", help = "rollout threads a seat")]
+    sim_threads: std::num::NonZeroUsize,
+    #[arg(
+        long,
+        value_name = "TABLE",
+        help = "seat p0 reads unfinished games' win chances from this win% table"
+    )]
+    p0_win_pct: Option<String>,
+    #[arg(
+        long,
+        value_name = "TABLE",
+        help = "seat p1 reads unfinished games' win chances from this win% table"
+    )]
+    p1_win_pct: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -503,7 +519,20 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimCompare(a) => {
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.klv)?);
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            sim_compare(game_config, kwg, klv, a.pairs, a.seed, threads)
+            sim_compare(
+                game_config,
+                kwg,
+                klv,
+                SimCompareParams {
+                    num_game_pairs: a.pairs,
+                    seed: a.seed,
+                    threads,
+                    num_sim_iters: a.iters,
+                    sim_threads: a.sim_threads.get(),
+                    p0_win_pct: a.p0_win_pct,
+                    p1_win_pct: a.p1_win_pct,
+                },
+            )
         }
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
@@ -526,24 +555,14 @@ fn run<N: kwg::Node + Sync + Send>(
                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
             });
-            let mut driver = move_picker::Simmer::new(
+            let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
-                    allocator: move_picker::Allocator::RoundRobin,
-                    stop_rule: move_picker::StopRule::FixedCap,
-                    stop_delta: None,
-                    observe: false,
                     sim_threads: 1,
                     win_pct_table: None,
-                    config: simmer::SimmerConfig {
-                        descale: true,
-                        w_no_out: 10.0,
-                        w_out: 10000.0,
-                        win_prob_source: simmer::WinProbSource::Sigmoid,
-                    },
                 },
             );
             driver.reseed(seed);
@@ -592,24 +611,14 @@ fn run<N: kwg::Node + Sync + Send>(
                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                 dynamic_leaves: None,
             });
-            let mut driver = move_picker::Simmer::new(
+            let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
-                    allocator: move_picker::Allocator::RoundRobin,
-                    stop_rule: move_picker::StopRule::FixedCap,
-                    stop_delta: None,
-                    observe: false,
                     sim_threads: 1,
                     win_pct_table: None,
-                    config: simmer::SimmerConfig {
-                        descale: true,
-                        w_no_out: 10.0,
-                        w_out: 10000.0,
-                        win_prob_source: simmer::WinProbSource::Sigmoid,
-                    },
                 },
             );
             driver.reseed(seed);
@@ -3522,8 +3531,8 @@ const KLV_SEATS: SeatLabels = SeatLabels {
 };
 
 const SIM_CONFIG_SEATS: SeatLabels = SeatLabels {
-    p0: "p0 (WOLGES_SIM_P0_*)",
-    p1: "p1 (WOLGES_SIM_P1_*)",
+    p0: "p0 (--p0-*)",
+    p1: "p1 (--p1-*)",
 };
 
 struct GameStats {
@@ -3742,14 +3751,7 @@ impl GamePairStats {
             );
         }
 
-        let porcelain = std::env::var("WOLGES_COMPARE_PORCELAIN")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0)
-            != 0;
-        if porcelain {
-            self.all.print_porcelain();
-        }
+        self.all.print_porcelain();
     }
 }
 
@@ -4005,49 +4007,6 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let dynamic_leaves_on = std::env::var("WOLGES_DYNAMIC_LEAVES")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0)
-        != 0;
-    let dynamic_min_keep = std::env::var("WOLGES_DYNAMIC_LEAVES_MIN_KEEP")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(2);
-
-    let dyn_ctx: Option<(census::MultisetLattice, census::AddTable, Vec<i32>)> =
-        if dynamic_leaves_on {
-            let num_letters = game_config.alphabet().len() as usize;
-            let rack_size = game_config.rack_size() as usize;
-            let lat = census::MultisetLattice::new(num_letters, rack_size);
-            let add = census::AddTable::new_with_threads(&lat, num_threads);
-            let mut full_v = vec![0i32; lat.len()];
-            census::fill_lattice_leaves(&lat, &mut full_v, |tally| {
-                arc_klv0.leave_value_from_tally(tally)
-            });
-            Some((lat, add, full_v))
-        } else {
-            None
-        };
-    let dyn_ref = dyn_ctx
-        .as_ref()
-        .map(|(lat, add, full_v)| klv::DynamicLeavesRef {
-            lat,
-            add,
-            full_v: full_v.as_slice(),
-            min_keep: dynamic_min_keep,
-        });
-    writeln!(
-        boxed_stdout_or_stderr(),
-        "WOLGES_DYNAMIC_LEAVES={} WOLGES_DYNAMIC_LEAVES_MIN_KEEP={dynamic_min_keep} ({})",
-        dynamic_leaves_on as u8,
-        if dynamic_leaves_on {
-            "dynamic leaves on for the klv0 (player 0) side"
-        } else {
-            "off, static leaves both sides"
-        },
-    )?;
-
     std::thread::scope(|s| -> error::Returns<()> {
         let mut thread_handles = Vec::new();
         for _ in 0..num_threads {
@@ -4109,7 +4068,7 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     .current_player()
                                     .num_exchanges,
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                dynamic_leaves: if is_klv0_side { dyn_ref } else { None },
+                                dynamic_leaves: None,
                             });
                             let play = &move_generator.plays[0].play;
                             if klv_swapped {
@@ -4184,72 +4143,14 @@ fn compare_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     })
 }
 
-#[inline]
-fn sim_compare_seat_config(prefix: &str) -> simmer::SimmerConfig {
-    let mut config = simmer::SimmerConfig {
-        descale: true,
-        w_no_out: 10.0,
-        w_out: 10000.0,
-        win_prob_source: simmer::WinProbSource::Sigmoid,
-    };
-    if let Some(descale) = std::env::var(format!("{prefix}DESCALE"))
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        config.descale = descale != 0;
-    }
-
-    if let Some("table") = std::env::var(format!("{prefix}WINPROB")).ok().as_deref() {
-        config.win_prob_source = simmer::WinProbSource::Table;
-    }
-    config
-}
-
-#[inline]
-fn win_prob_source_name(source: simmer::WinProbSource) -> &'static str {
-    match source {
-        simmer::WinProbSource::Sigmoid => "sigmoid",
-        simmer::WinProbSource::Table => "table",
-    }
-}
-
-#[inline]
-fn sim_compare_allocator(prefix: &str) -> move_picker::Allocator {
-    match std::env::var(format!("{prefix}ALLOCATOR")).ok().as_deref() {
-        Some("adaptive") => move_picker::Allocator::Adaptive,
-        _ => move_picker::Allocator::RoundRobin,
-    }
-}
-
-#[inline]
-fn allocator_name(allocator: move_picker::Allocator) -> &'static str {
-    match allocator {
-        move_picker::Allocator::RoundRobin => "round-robin",
-        move_picker::Allocator::Adaptive => "adaptive",
-    }
-}
-
-#[inline]
-fn sim_compare_stop_rule(prefix: &str) -> move_picker::StopRule {
-    match std::env::var(format!("{prefix}STOP")).ok().as_deref() {
-        Some("confidence") => move_picker::StopRule::Confidence,
-        _ => move_picker::StopRule::FixedCap,
-    }
-}
-
-#[inline]
-fn sim_compare_stop_delta(prefix: &str) -> Option<f64> {
-    std::env::var(format!("{prefix}STOP_DELTA"))
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-}
-
-#[inline]
-fn stop_rule_name(stop_rule: move_picker::StopRule) -> &'static str {
-    match stop_rule {
-        move_picker::StopRule::FixedCap => "fixed-cap",
-        move_picker::StopRule::Confidence => "confidence",
-    }
+struct SimCompareParams {
+    num_game_pairs: u64,
+    seed: Option<u64>,
+    threads: usize,
+    num_sim_iters: u64,
+    sim_threads: usize,
+    p0_win_pct: Option<String>,
+    p1_win_pct: Option<String>,
 }
 
 #[inline]
@@ -4257,9 +4158,15 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     arc_klv: std::sync::Arc<klv::Klv<L>>,
-    num_game_pairs: u64,
-    seed: Option<u64>,
-    threads: usize,
+    SimCompareParams {
+        num_game_pairs,
+        seed,
+        threads,
+        num_sim_iters,
+        sim_threads,
+        p0_win_pct,
+        p1_win_pct,
+    }: SimCompareParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -4271,42 +4178,21 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let num_sim_iters = std::env::var("WOLGES_SIM_ITERS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(1_000);
-
-    let sim_driver_threads = std::env::var("WOLGES_SIM_DRIVER_THREADS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1);
-    let config_p0 = sim_compare_seat_config("WOLGES_SIM_P0_");
-    let config_p1 = sim_compare_seat_config("WOLGES_SIM_P1_");
-    let allocator_p0 = sim_compare_allocator("WOLGES_SIM_P0_");
-    let allocator_p1 = sim_compare_allocator("WOLGES_SIM_P1_");
-    let stop_p0 = sim_compare_stop_rule("WOLGES_SIM_P0_");
-    let stop_p1 = sim_compare_stop_rule("WOLGES_SIM_P1_");
-    let stop_delta_p0 = sim_compare_stop_delta("WOLGES_SIM_P0_");
-    let stop_delta_p1 = sim_compare_stop_delta("WOLGES_SIM_P1_");
-
-    let winpct_table: Option<win_pct::WinPctTable> = match std::env::var("WOLGES_SIM_WINPCT_TABLE")
-    {
-        Ok(path) => Some(win_pct::WinPctTable::from_csv(make_reader(&path)?)?),
-        Err(_) => None,
+    let winpct_p0 = match &p0_win_pct {
+        Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
+        None => None,
     };
-    let winpct_table_ref = winpct_table.as_ref();
+    let winpct_p1 = match &p1_win_pct {
+        Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
+        None => None,
+    };
+    let winpct_p0 = winpct_p0.as_ref();
+    let winpct_p1 = winpct_p1.as_ref();
     writeln!(
         boxed_stdout_or_stderr(),
-        "WOLGES_SIM_ITERS={num_sim_iters} winpct_table={} P0.descale={} P0.alloc={} P0.stop={} P0.winprob={} P1.descale={} P1.alloc={} P1.stop={} P1.winprob={}",
-        winpct_table_ref.is_some() as u8,
-        config_p0.descale as u8,
-        allocator_name(allocator_p0),
-        stop_rule_name(stop_p0),
-        win_prob_source_name(config_p0.win_prob_source),
-        config_p1.descale as u8,
-        allocator_name(allocator_p1),
-        stop_rule_name(stop_p1),
-        win_prob_source_name(config_p1.win_prob_source),
+        "sim-compare: {num_sim_iters} rollouts a move; p0 win%={}; p1 win%={}",
+        p0_win_pct.as_deref().unwrap_or("sigmoid"),
+        p1_win_pct.as_deref().unwrap_or("sigmoid"),
     )?;
 
     std::thread::scope(|s| -> error::Returns<()> {
@@ -4329,13 +4215,8 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     &arc_klv,
                     move_picker::SimmerParams {
                         num_sim_iters,
-                        allocator: allocator_p0,
-                        stop_rule: stop_p0,
-                        stop_delta: stop_delta_p0,
-                        observe: false,
-                        sim_threads: sim_driver_threads,
-                        win_pct_table: winpct_table_ref,
-                        config: config_p0,
+                        sim_threads,
+                        win_pct_table: winpct_p0,
                     },
                 ));
                 let mut driver_p1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
@@ -4344,13 +4225,8 @@ fn sim_compare<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     &arc_klv,
                     move_picker::SimmerParams {
                         num_sim_iters,
-                        allocator: allocator_p1,
-                        stop_rule: stop_p1,
-                        stop_delta: stop_delta_p1,
-                        observe: false,
-                        sim_threads: sim_driver_threads,
-                        win_pct_table: winpct_table_ref,
-                        config: config_p1,
+                        sim_threads,
+                        win_pct_table: winpct_p1,
                     },
                 ));
                 let mut game_state = game_state::GameState::new(&game_config);

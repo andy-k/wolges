@@ -24,15 +24,6 @@ fn mix(decision_seed: u64, sim_iter: u64) -> u64 {
 
 const PRUNE_CADENCE: u64 = 16;
 
-const DEFAULT_STOP_DELTA: f64 = 0.05;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Allocator {
-    RoundRobin,
-
-    Adaptive,
-}
-
 #[inline(always)]
 fn rollout_objective<N: kwg::Node, L: kwg::Node>(
     simmer: &mut simmer::Simmer,
@@ -50,46 +41,9 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node>(
         0.0
     };
     let sim_spread = final_spread - simmer.initial_score_spread;
-    let objective = simmer::sim_objective(
-        sim_spread,
-        win_prob,
-        simmer.win_prob_weightage(),
-        simmer.config().descale,
-    );
+    let objective = simmer::sim_objective(sim_spread, win_prob, simmer.win_prob_weightage());
 
     (objective, sim_spread, win_prob)
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum StopRule {
-    FixedCap,
-
-    Confidence,
-}
-
-#[inline(always)]
-fn fwer_z(num_survivors: usize, delta: f64) -> f64 {
-    (2.0 * ((num_survivors - 1) as f64 / delta).ln()).sqrt()
-}
-
-#[inline(always)]
-fn leader_is_separated(candidates: &[Candidate], delta: f64) -> bool {
-    let num_survivors = candidates.len();
-    if num_survivors < 2 {
-        return true;
-    }
-    let z = fwer_z(num_survivors, delta);
-    let leader_idx = candidates
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
-        .unwrap()
-        .0;
-    let leader_low = candidates[leader_idx].stats.ci_max(-z);
-    candidates
-        .iter()
-        .enumerate()
-        .all(|(i, candidate)| i == leader_idx || leader_low >= candidate.stats.ci_max(z))
 }
 
 #[inline(always)]
@@ -131,20 +85,16 @@ fn limit_surviving_candidates(
 // Simmer can only be reused for the same game_config and kwg.
 // (Refer to note at simmer::Simmer.)
 // This is not enforced.
-pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
+pub struct Simmer<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool = false> {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
     klv: &'a klv::Klv<L>,
     candidates: Vec<Candidate>,
     simmer: simmer::Simmer,
     num_sim_iters: u64,
-    allocator: Allocator,
-    stop_rule: StopRule,
-    stop_delta: f64,
     retired: Vec<Candidate>,
     iters_done: u64,
     next_stream_id: u64,
-    observe: bool,
     win_pct_table: Option<&'a win_pct::WinPctTable>,
     #[cfg(not(target_family = "wasm"))]
     sim_threads: usize,
@@ -154,16 +104,11 @@ pub struct Simmer<'a, N: kwg::Node, L: kwg::Node> {
 
 pub struct SimmerParams<'a> {
     pub num_sim_iters: u64,
-    pub allocator: Allocator,
-    pub stop_rule: StopRule,
-    pub stop_delta: Option<f64>,
-    pub observe: bool,
     pub sim_threads: usize,
     pub win_pct_table: Option<&'a win_pct::WinPctTable>,
-    pub config: simmer::SimmerConfig,
 }
 
-impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
+impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSERVE> {
     pub fn new(
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
@@ -175,18 +120,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
             kwg,
             klv,
             candidates: Vec::new(),
-            simmer: simmer::Simmer::new(game_config, params.config),
+            simmer: simmer::Simmer::new(game_config),
             num_sim_iters: params.num_sim_iters,
-            allocator: params.allocator,
-            stop_rule: params.stop_rule,
-            stop_delta: params
-                .stop_delta
-                .unwrap_or(DEFAULT_STOP_DELTA)
-                .clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON),
             retired: Vec::new(),
             iters_done: 0,
             next_stream_id: 0,
-            observe: params.observe,
             win_pct_table: params.win_pct_table,
             #[cfg(not(target_family = "wasm"))]
             sim_threads: params.sim_threads,
@@ -300,11 +238,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> Simmer<'a, N, L> {
     pub fn best_so_far(&self) -> usize {
         top_candidate_play_index_by_mean(&self.candidates)
     }
-
-    #[inline(always)]
-    pub fn is_decided(&self) -> bool {
-        leader_is_separated(&self.candidates, self.stop_delta)
-    }
 }
 
 #[inline(always)]
@@ -336,7 +269,7 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Simmer(Simmer<'a, N, L>),
 }
 
-impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
+impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync, const OBSERVE: bool> Simmer<'a, N, L, OBSERVE> {
     #[inline]
     fn run_iterations(
         &mut self,
@@ -345,7 +278,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         count: u64,
     ) {
         #[cfg(not(target_family = "wasm"))]
-        if self.sim_threads > 1 && self.allocator == Allocator::RoundRobin {
+        if self.sim_threads > 1 {
             self.run_iterations_parallel(move_generator, budget, count);
             return;
         }
@@ -358,100 +291,21 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
             self.simmer.restore_prepared(&self.prepared_pristine);
             self.simmer.reseed(mix(self.decision_seed, sim_iter));
             self.simmer.prepare_iteration();
-            // until the first prune every candidate must gather samples, or the prune sees
-            // count-zero arms whose interval is NaN and empties the field.
-            let effective_allocator = if sim_iter <= PRUNE_CADENCE {
-                Allocator::RoundRobin
-            } else {
-                self.allocator
-            };
-            match effective_allocator {
-                Allocator::RoundRobin => {
-                    for candidate in candidates.iter_mut() {
-                        let (value, sim_spread, win_prob) = rollout_objective(
-                            &mut self.simmer,
-                            self.game_config,
-                            self.kwg,
-                            self.klv,
-                            &move_generator.plays[candidate.play_index].play,
-                            self.win_pct_table,
-                        );
-                        candidate.stats.update(value);
-                        if self.observe {
-                            candidate
-                                .equity_stats
-                                .update(simmer::spread_points(sim_spread));
-                            candidate.win_rate_stats.update(win_prob);
-                        }
-                    }
-                }
-                Allocator::Adaptive => {
-                    let leader_idx = candidates
-                        .iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| a.stats.mean().total_cmp(&b.stats.mean()))
-                        .unwrap()
-                        .0;
-                    let leader_mean = candidates[leader_idx].stats.mean();
-                    let leader_var = candidates[leader_idx].stats.variance();
-                    let leader_n = candidates[leader_idx].stats.count();
-
-                    let mut challenger_idx = leader_idx;
-                    let mut best_gap = f64::INFINITY;
-                    for (i, candidate) in candidates.iter().enumerate() {
-                        if i == leader_idx {
-                            continue;
-                        }
-                        let n_c = candidate.stats.count();
-                        let gap = if n_c < 2.0 || leader_n < 2.0 {
-                            0.0
-                        } else {
-                            let denom =
-                                (leader_var / leader_n + candidate.stats.variance() / n_c).sqrt();
-                            if denom > 0.0 {
-                                (leader_mean - candidate.stats.mean()) / denom
-                            } else {
-                                0.0
-                            }
-                        };
-                        if gap < best_gap {
-                            best_gap = gap;
-                            challenger_idx = i;
-                        }
-                    }
-
-                    let floor_idx = candidates
-                        .iter()
-                        .enumerate()
-                        .min_by(|(_, a), (_, b)| a.stats.count().total_cmp(&b.stats.count()))
-                        .unwrap()
-                        .0;
-
-                    let mut to_sample = [leader_idx, challenger_idx, floor_idx];
-                    to_sample.sort_unstable();
-                    let mut prev = usize::MAX;
-                    for &idx in &to_sample {
-                        if idx == prev {
-                            continue;
-                        }
-                        prev = idx;
-                        let play_index = candidates[idx].play_index;
-                        let (value, sim_spread, win_prob) = rollout_objective(
-                            &mut self.simmer,
-                            self.game_config,
-                            self.kwg,
-                            self.klv,
-                            &move_generator.plays[play_index].play,
-                            self.win_pct_table,
-                        );
-                        candidates[idx].stats.update(value);
-                        if self.observe {
-                            candidates[idx]
-                                .equity_stats
-                                .update(simmer::spread_points(sim_spread));
-                            candidates[idx].win_rate_stats.update(win_prob);
-                        }
-                    }
+            for candidate in candidates.iter_mut() {
+                let (value, sim_spread, win_prob) = rollout_objective(
+                    &mut self.simmer,
+                    self.game_config,
+                    self.kwg,
+                    self.klv,
+                    &move_generator.plays[candidate.play_index].play,
+                    self.win_pct_table,
+                );
+                candidate.stats.update(value);
+                if OBSERVE {
+                    candidate
+                        .equity_stats
+                        .update(simmer::spread_points(sim_spread));
+                    candidate.win_rate_stats.update(win_prob);
                 }
             }
             if sim_iter % PRUNE_CADENCE == 0 {
@@ -470,12 +324,6 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                     1 + 2 * prune_periods_remaining as usize,
                 );
                 if candidates.len() < 2 {
-                    break;
-                }
-
-                if self.stop_rule == StopRule::Confidence
-                    && leader_is_separated(&candidates, self.stop_delta)
-                {
                     break;
                 }
             }
@@ -500,7 +348,6 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         const Z: f64 = 1.96; // 95% confidence interval
         let num_threads = self.sim_threads;
         let decision_seed = self.decision_seed;
-        let observe = self.observe;
         let game_config = self.game_config;
         let kwg = self.kwg;
         let klv = self.klv;
@@ -539,7 +386,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                         let mut objective = Vec::with_capacity(span * num_candidates);
                         let mut equity = Vec::new();
                         let mut win_rate = Vec::new();
-                        if observe {
+                        if OBSERVE {
                             equity.reserve(span * num_candidates);
                             win_rate.reserve(span * num_candidates);
                         }
@@ -558,7 +405,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                                     win_pct_table,
                                 );
                                 objective.push(value);
-                                if observe {
+                                if OBSERVE {
                                     equity.push(simmer::spread_points(sim_spread));
                                     win_rate.push(win_prob);
                                 }
@@ -575,13 +422,13 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
             let mut block_objective: Vec<f64> = Vec::with_capacity(block_len * num_candidates);
             let mut block_equity: Vec<f64> = Vec::new();
             let mut block_win_rate: Vec<f64> = Vec::new();
-            if observe {
+            if OBSERVE {
                 block_equity.reserve(block_len * num_candidates);
                 block_win_rate.reserve(block_len * num_candidates);
             }
             for (objective, equity, win_rate) in thread_rows {
                 block_objective.extend(objective);
-                if observe {
+                if OBSERVE {
                     block_equity.extend(equity);
                     block_win_rate.extend(win_rate);
                 }
@@ -590,7 +437,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                 for iteration in 0..block_len {
                     let k = iteration * num_candidates + candidate_index;
                     candidate.stats.update(block_objective[k]);
-                    if observe {
+                    if OBSERVE {
                         candidate.equity_stats.update(block_equity[k]);
                         candidate.win_rate_stats.update(block_win_rate[k]);
                     }
@@ -614,11 +461,6 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
                 if candidates.len() < 2 {
                     break;
                 }
-                if self.stop_rule == StopRule::Confidence
-                    && leader_is_separated(&candidates, self.stop_delta)
-                {
-                    break;
-                }
             }
         }
         self.candidates = candidates;
@@ -633,7 +475,7 @@ impl<'a, N: kwg::Node + Sync, L: kwg::Node + Sync> Simmer<'a, N, L> {
         iters: u64,
     ) {
         self.simmer
-            .prepare(self.game_config, game_state, 2, self.observe);
+            .prepare(self.game_config, game_state, 2, OBSERVE);
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
         self.candidates = self.take_candidates(move_generator.plays.len());
@@ -714,34 +556,6 @@ mod tests {
             equity_stats: stats::Stats::new(),
             win_rate_stats: stats::Stats::new(),
         }
-    }
-
-    #[test]
-    #[inline]
-    fn fwer_z_matches_the_gaussian_union_bound() {
-        let expected = (2.0 * (1.0f64 / 0.05).ln()).sqrt();
-        assert!((fwer_z(2, 0.05) - expected).abs() < 1e-12);
-
-        assert!(fwer_z(100, 0.05) > fwer_z(2, 0.05));
-    }
-
-    #[test]
-    #[inline]
-    fn leader_is_separated_only_when_the_field_is_cleared() {
-        let separated = vec![
-            candidate_from(0, &[19.0, 21.0].repeat(50)),
-            candidate_from(1, &[9.0, 11.0].repeat(50)),
-        ];
-        assert!(leader_is_separated(&separated, 0.05));
-
-        let overlapping = vec![
-            candidate_from(0, &[9.1, 11.1].repeat(50)),
-            candidate_from(1, &[9.0, 11.0].repeat(50)),
-        ];
-        assert!(!leader_is_separated(&overlapping, 0.05));
-
-        let one = vec![candidate_from(0, &[10.0, 10.0])];
-        assert!(leader_is_separated(&one, 0.05));
     }
 
     #[test]
