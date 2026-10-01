@@ -1,2 +1,2 @@
-[build]
+[target.'cfg(not(target_family = "wasm"))']
 rustflags = ["-C", "target-cpu=native"]
