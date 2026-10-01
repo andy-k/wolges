@@ -210,6 +210,7 @@ fn main() -> error::Returns<()> {
             game_config: &game_config,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         },
         |word: &[u8]| {
@@ -236,6 +237,7 @@ fn main() -> error::Returns<()> {
         game_config: &game_config,
         kwg: &smaller_kwg,
         anagrams: None,
+        rack_lengths: None,
         klv: &klv,
     };
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {

@@ -897,6 +897,7 @@ pub struct BoardSnapshot<'a, N: kwg::Node, L: kwg::Node> {
     pub game_config: &'a game_config::GameConfig,
     pub kwg: &'a kwg::Kwg<N>,
     pub anagrams: Option<&'a anagrams::Anagrams>,
+    pub rack_lengths: Option<&'a anagrams::RackLengths>,
     pub klv: &'a klv::Klv<L>,
 }
 
@@ -1226,6 +1227,7 @@ struct GenPlacePlacementsParams<'a> {
     perpendicular_word_multipliers_strip: &'a [i8],
     perpendicular_scores_strip: &'a [i32],
     rack_bits: u64,
+    feasible_lengths: u64,
     descending_scores: &'a [i32],
     aggregated_word_multipliers: &'a mut Vec<i32>,
     precomputed_square_multiplier_buffer: &'a mut Vec<i32>,
@@ -1240,6 +1242,61 @@ struct GenPlacePlacementsParams<'a> {
     num_max_played: u8,
     rack_tally_shadowl: &'a mut [u8],
     rack_tally_shadowr: &'a mut [u8],
+}
+
+fn feasible_word_lengths<const USE_TABLE: bool>(
+    anagrams: Option<&anagrams::Anagrams>,
+    rack_lengths: Option<&anagrams::RackLengths>,
+    rack_tally: &[u8],
+) -> u64 {
+    if rack_tally[0] > 0 {
+        return !0;
+    }
+    match (anagrams.filter(|_| USE_TABLE), rack_lengths) {
+        (Some(a), _) => rack_subset_lengths(a.layout(), rack_tally, |key, len| {
+            a.words(alphagram::Fitted(key), len).is_some()
+        }),
+        (None, Some(r)) => rack_subset_lengths(r.layout(), rack_tally, |key, _| r.contains(key)),
+        (None, None) => !0,
+    }
+}
+
+#[inline]
+fn rack_subset_lengths(
+    layout: &alphagram::KeyLayout,
+    rack_tally: &[u8],
+    spells: impl Fn(u128, u8) -> bool,
+) -> u64 {
+    let mut tiles = [(0u8, 0u128); MAX_ALPHABET_LEN];
+    let mut n = 0;
+    for (tile, &count) in rack_tally.iter().enumerate().skip(1) {
+        if count != 0 {
+            tiles[n] = (count, layout.place_value(tile as u8));
+            n += 1;
+        }
+    }
+    fn rec(
+        of: &[(u8, u128)],
+        len: u8,
+        key: u128,
+        found: &mut u64,
+        spells: &impl Fn(u128, u8) -> bool,
+    ) {
+        let Some((&(count, place_value), rest)) = of.split_first() else {
+            if len >= 2 && *found & 1 << len == 0 && spells(key, len) {
+                *found |= 1 << len;
+            }
+            return;
+        };
+        let mut k_key = key;
+        for k in 0..=count {
+            rec(rest, len + k, k_key, found, spells);
+            k_key += place_value;
+        }
+    }
+    let mut found = 0u64;
+    rec(&tiles[..n], 0, 0, &mut found, &spells);
+    found | 3
 }
 
 #[inline]
@@ -1454,6 +1511,7 @@ fn gen_place_placements_impl<
         main_score: i32,                     // main_played_through_score
         perpendicular_cumulative_score: i32, // perpendicular_additional_score
         word_multiplier: i32,
+        crossed_board_tiles: bool,
     }
 
     #[inline(always)]
@@ -1480,6 +1538,15 @@ fn gen_place_placements_impl<
         low_end: usize,
         ranked: u128,
     ) {
+        debug_assert_eq!(
+            env.params.board_strip[idx_left as usize..idx_right as usize]
+                .iter()
+                .all(|&t| t == 0),
+            !acc.crossed_board_tiles
+        );
+        if !acc.crossed_board_tiles && env.params.feasible_lengths & 1 << num_played == 0 {
+            return;
+        }
         let used_tile_scores = if env.params.used_tile_scores_shadowr.is_empty() {
             env.params.used_tile_scores_shadowl.as_slice()
         } else {
@@ -1591,6 +1658,7 @@ fn gen_place_placements_impl<
                 // tail-recurse placing current sequence of tiles in one go
                 let multi_jump = &env.params.multi_jumps_buffer[idx as usize];
                 acc.main_score += multi_jump.right_score;
+                acc.crossed_board_tiles |= multi_jump.right_idx != idx;
                 idx = multi_jump.right_idx;
             }
             // tiles have been placed from idx_left to idx - 1.
@@ -1708,6 +1776,7 @@ fn gen_place_placements_impl<
                 // tail-recurse placing current sequence of tiles in one go
                 let multi_jump = &env.params.multi_jumps_buffer[idx as usize];
                 acc.main_score += multi_jump.left_score;
+                acc.crossed_board_tiles |= multi_jump.left_idx != idx;
                 idx = multi_jump.left_idx;
             }
             // tiles have been placed from env.anchor to idx + 1.
@@ -1852,6 +1921,7 @@ fn gen_place_placements_impl<
                     main_score: 0,
                     perpendicular_cumulative_score: 0,
                     word_multiplier: 1,
+                    crossed_board_tiles: false,
                 },
                 env.anchor,
                 single_tile_plays,
@@ -4719,6 +4789,11 @@ fn kurnia_gen_place_moves_iter_lean<
     }
     working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
 
+    let feasible_lengths = feasible_word_lengths::<false>(
+        board_snapshot.anagrams,
+        board_snapshot.rack_lengths,
+        &working_buffer.rack_tally,
+    );
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
@@ -4749,6 +4824,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_across_plays
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
+                feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
@@ -4812,6 +4888,7 @@ fn kurnia_gen_place_moves_iter_lean<
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_down_plays
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
+                feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
@@ -5007,6 +5084,11 @@ fn kurnia_gen_place_moves_iter<
     }
     working_buffer.init_after_cross_sets(board_snapshot, dirty_cols, dirty_rows);
 
+    let feasible_lengths = feasible_word_lengths::<true>(
+        board_snapshot.anagrams,
+        board_snapshot.rack_lengths,
+        &working_buffer.rack_tally,
+    );
     let mut found_placements = std::mem::take(&mut working_buffer.found_placements);
     found_placements.clear();
     let mut placement_order = std::mem::take(&mut working_buffer.placement_order);
@@ -5037,6 +5119,7 @@ fn kurnia_gen_place_moves_iter<
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_across_plays
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
+                feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
@@ -5100,6 +5183,7 @@ fn kurnia_gen_place_moves_iter<
                 perpendicular_scores_strip: &working_buffer.perpendicular_scores_for_down_plays
                     [strip_range_start..strip_range_end],
                 rack_bits: working_buffer.rack_bits,
+                feasible_lengths,
                 descending_scores: &working_buffer.descending_scores,
                 aggregated_word_multipliers: &mut working_buffer.aggregated_word_multipliers,
                 precomputed_square_multiplier_buffer: &mut working_buffer
@@ -5687,6 +5771,7 @@ mod tests {
                 game_config: &gc,
                 kwg: &kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             };
             let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -5733,6 +5818,7 @@ mod tests {
         let dim = gc.board_layout().dim();
         let layout = alphagram::KeyLayout::of(gc.alphabet(), dim.rows.max(dim.cols) as u8).unwrap();
         let held = anagrams::Anagrams::build(&kwg, layout.clone()).unwrap();
+        let rack_lengths = anagrams::RackLengths::build(&kwg, layout, gc.rack_size() as usize + 1);
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         for max_gen in [1usize, 5, 100_000] {
@@ -5748,6 +5834,7 @@ mod tests {
                             game_config: gc,
                             kwg: &kwg,
                             anagrams,
+                            rack_lengths: anagrams.is_none().then_some(&rack_lengths),
                             klv: &klv,
                         };
                         let mut move_generator = KurniaMoveGenerator::new(gc);
@@ -5902,6 +5989,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -5935,6 +6023,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -5995,6 +6084,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -6056,6 +6146,7 @@ mod tests {
                 game_config: &gc,
                 kwg: &kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             };
             let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -6125,6 +6216,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
 
@@ -6403,6 +6495,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let mut move_generator = KurniaMoveGenerator::new(&gc);
@@ -6538,6 +6631,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let empty_snapshot = BoardSnapshot {
@@ -6545,6 +6639,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let plays = |move_generator: &mut KurniaMoveGenerator| {
@@ -6591,6 +6686,7 @@ mod tests {
                 game_config: &gc,
                 kwg: &kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             };
             move_generator.gen_moves_unfiltered(&GenMovesParams {
@@ -6734,6 +6830,7 @@ mod tests {
                     game_config: &gc,
                     kwg: &kwg,
                     anagrams,
+                    rack_lengths: None,
                     klv: &klv,
                 };
                 let transposed_board_snapshot = BoardSnapshot {
@@ -6741,6 +6838,7 @@ mod tests {
                     game_config: &transposed_gc,
                     kwg: &kwg,
                     anagrams,
+                    rack_lengths: None,
                     klv: &klv,
                 };
                 let fresh = place_plays(
@@ -6843,6 +6941,7 @@ mod tests {
             game_config: &gc,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let plays = place_plays(

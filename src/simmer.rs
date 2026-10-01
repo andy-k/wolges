@@ -214,6 +214,7 @@ impl Simmer {
                             game_config,
                             kwg,
                             anagrams: None,
+                            rack_lengths: None,
                             klv,
                         },
                         rack: &self.game_state.current_player().rack,

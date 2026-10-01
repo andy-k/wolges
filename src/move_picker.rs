@@ -723,6 +723,7 @@ mod tests {
             game_config,
             kwg: &kwg,
             anagrams: None,
+            rack_lengths: None,
             klv: &klv,
         };
         let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);

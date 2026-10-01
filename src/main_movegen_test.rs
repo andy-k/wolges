@@ -311,6 +311,11 @@ fn main() -> error::Returns<()> {
 
     let anagrams = wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config)
         .ok_or("this alphabet does not lay out a key")?;
+    let rack_lengths = wolges::anagrams::RackLengths::build(
+        &kwg,
+        anagrams.layout().clone(),
+        game_config.rack_size() as usize + 1,
+    );
 
     let mut disagreements = 0usize;
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
@@ -324,6 +329,7 @@ fn main() -> error::Returns<()> {
                 game_config: &game_config,
                 kwg: &kwg,
                 anagrams: table,
+                rack_lengths: table.is_none().then_some(&rack_lengths),
                 klv: &klv,
             };
             let params = movegen::GenMovesParams {

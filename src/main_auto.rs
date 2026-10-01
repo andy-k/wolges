@@ -183,6 +183,7 @@ fn do_it<N: kwg::Node + Sync>(
             game_config,
             kwg,
             anagrams: anagrams.as_ref(),
+            rack_lengths: None,
             klv,
         };
         let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
@@ -219,6 +220,7 @@ fn do_it<N: kwg::Node + Sync>(
             board_snapshot: &movegen::BoardSnapshot {
                 kwg: &smaller_kwg,
                 anagrams: None,
+                rack_lengths: None,
                 ..*board_snapshot
             },
             rack: test_rack,
@@ -309,6 +311,7 @@ fn do_it<N: kwg::Node + Sync>(
                 game_config,
                 kwg,
                 anagrams: anagrams.as_ref(),
+                rack_lengths: None,
                 klv,
             };
 
@@ -349,6 +352,7 @@ fn do_it<N: kwg::Node + Sync>(
                         board_snapshot: &movegen::BoardSnapshot {
                             kwg: &smaller_kwg,
                             anagrams: None,
+                            rack_lengths: None,
                             ..*board_snapshot
                         },
                         rack: &game_state.current_player().rack,

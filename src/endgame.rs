@@ -493,6 +493,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 game_config: self.game_config,
                 kwg: self.kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &self.klv,
             };
             let mut state_eval = StateEval {
@@ -801,6 +802,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     game_config: self.game_config,
                     kwg: self.kwg,
                     anagrams: None,
+                    rack_lengths: None,
                     klv: &self.klv,
                 }),
                 width = self.game_config.rack_size() as usize - rack.len(),
@@ -921,6 +923,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             game_config: gc,
             kwg,
             anagrams: None,
+            rack_lengths: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -1019,6 +1022,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             game_config: gc,
             kwg,
             anagrams: None,
+            rack_lengths: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -1224,6 +1228,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 game_config: gc,
                 kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             },
             mover_rack,
@@ -1493,6 +1498,7 @@ mod tests {
             game_config: gc,
             kwg,
             anagrams: None,
+            rack_lengths: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -1565,6 +1571,7 @@ mod tests {
             game_config: gc,
             kwg,
             anagrams: None,
+            rack_lengths: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -1637,6 +1644,7 @@ mod tests {
             game_config: gc,
             kwg,
             anagrams: None,
+            rack_lengths: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -2143,6 +2151,7 @@ mod tests {
                             game_config: &gc,
                             kwg: &kwg,
                             anagrams: None,
+                            rack_lengths: None,
                             klv: &klv,
                         };
                         mg.gen_moves_raw_all_unsorted(
@@ -2431,6 +2440,7 @@ mod tests {
                 game_config: &gc,
                 kwg: &kwg,
                 anagrams: None,
+                rack_lengths: None,
                 klv: &klv,
             };
             mg.gen_moves_raw_all_unsorted(&snap, mover_rack, 0, movegen::PassPolicy::AsACandidate);

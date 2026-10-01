@@ -238,6 +238,7 @@ fn main() -> error::Returns<()> {
         game_config: &game_config,
         kwg: &kwg,
         anagrams: None,
+        rack_lengths: None,
         klv: &klv,
     };
 
