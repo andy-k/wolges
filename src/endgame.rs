@@ -492,6 +492,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 board_tiles: &current_ply_buffer.board_tiles,
                 game_config: self.game_config,
                 kwg: self.kwg,
+                anagrams: None,
                 klv: &self.klv,
             };
             let mut state_eval = StateEval {
@@ -799,6 +800,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     board_tiles,
                     game_config: self.game_config,
                     kwg: self.kwg,
+                    anagrams: None,
                     klv: &self.klv,
                 }),
                 width = self.game_config.rack_size() as usize - rack.len(),
@@ -918,6 +920,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             board_tiles: board,
             game_config: gc,
             kwg,
+            anagrams: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -1015,6 +1018,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             board_tiles: board,
             game_config: gc,
             kwg,
+            anagrams: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -1219,6 +1223,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 board_tiles: board,
                 game_config: gc,
                 kwg,
+                anagrams: None,
                 klv: &klv,
             },
             mover_rack,
@@ -1486,6 +1491,7 @@ mod tests {
             board_tiles: board,
             game_config: gc,
             kwg,
+            anagrams: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -1557,6 +1563,7 @@ mod tests {
             board_tiles: board,
             game_config: gc,
             kwg,
+            anagrams: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -1628,6 +1635,7 @@ mod tests {
             board_tiles: board,
             game_config: gc,
             kwg,
+            anagrams: None,
             klv,
         };
         mg.gen_moves_raw_all_unsorted(
@@ -2133,6 +2141,7 @@ mod tests {
                             board_tiles: &board,
                             game_config: &gc,
                             kwg: &kwg,
+                            anagrams: None,
                             klv: &klv,
                         };
                         mg.gen_moves_raw_all_unsorted(
@@ -2420,6 +2429,7 @@ mod tests {
                 board_tiles: board,
                 game_config: &gc,
                 kwg: &kwg,
+                anagrams: None,
                 klv: &klv,
             };
             mg.gen_moves_raw_all_unsorted(&snap, mover_rack, 0, movegen::PassPolicy::AsACandidate);

@@ -209,6 +209,7 @@ fn main() -> error::Returns<()> {
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
+            anagrams: None,
             klv: &klv,
         },
         |word: &[u8]| {
@@ -233,6 +234,7 @@ fn main() -> error::Returns<()> {
         board_tiles: &game_state.board_tiles,
         game_config: &game_config,
         kwg: &smaller_kwg,
+        anagrams: None,
         klv: &klv,
     };
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {

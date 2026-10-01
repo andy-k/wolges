@@ -338,6 +338,7 @@ impl Question {
                     board_tiles: &game_state.board_tiles,
                     game_config,
                     kwg: &empty_kwg,
+                    anagrams: None,
                     klv: &empty_klv,
                 };
                 match ps.validate_play(board_snapshot, &game_state, &play) {
@@ -483,6 +484,7 @@ fn run_batch<N: kwg::Node>(
                 board_tiles: &board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
+                anagrams: None,
                 klv: &empty_klv,
             },
             |word: &[u8]| {
@@ -1476,6 +1478,7 @@ fn solve_position<N: kwg::Node>(
             board_tiles: &board_tiles,
             game_config,
             kwg,
+            anagrams: None,
             klv: &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
         },
         |word: &[u8]| {
