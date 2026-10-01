@@ -57,6 +57,7 @@ struct CrossSetComputation {
 
 #[derive(Clone)]
 struct PossiblePlacement {
+    num_played: u8,
     down: bool,
     lane: i8,
     anchor: i8,
@@ -112,10 +113,12 @@ struct WorkingBuffer {
     aggregated_word_multipliers: Vec<i32>, // sorted, unique, O(n) insertion but n is tiny.
     precomputed_square_multiplier_buffer: Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: Vec<i8>,
+    square_ranks_buffer: Vec<u8>,
     multi_jumps_buffer: Box<[MultiJump]>, // max(r, c)
     best_leave_values: Vec<i32>,          // rack.len() + 1
     placement_scores: Vec<i32>,
     shadow_scores: Vec<i32>,
+    span_out: Vec<(i8, i8, u8, i32)>,
     subracks: Vec<Subrack>,
     subracks_by_played: Vec<u32>,
     found_placements: Vec<PossiblePlacement>,
@@ -180,10 +183,12 @@ impl Clone for WorkingBuffer {
             indexes_to_descending_square_multiplier_buffer: self
                 .indexes_to_descending_square_multiplier_buffer
                 .clone(),
+            square_ranks_buffer: self.square_ranks_buffer.clone(),
             multi_jumps_buffer: self.multi_jumps_buffer.clone(),
             best_leave_values: self.best_leave_values.clone(),
             placement_scores: self.placement_scores.clone(),
             shadow_scores: self.shadow_scores.clone(),
+            span_out: self.span_out.clone(),
             subracks: self.subracks.clone(),
             subracks_by_played: self.subracks_by_played.clone(),
             found_placements: self.found_placements.clone(),
@@ -254,11 +259,14 @@ impl Clone for WorkingBuffer {
             .clone_from(&source.precomputed_square_multiplier_buffer);
         self.indexes_to_descending_square_multiplier_buffer
             .clone_from(&source.indexes_to_descending_square_multiplier_buffer);
+        self.square_ranks_buffer
+            .clone_from(&source.square_ranks_buffer);
         self.multi_jumps_buffer
             .clone_from(&source.multi_jumps_buffer);
         self.best_leave_values.clone_from(&source.best_leave_values);
         self.placement_scores.clone_from(&source.placement_scores);
         self.shadow_scores.clone_from(&source.shadow_scores);
+        self.span_out.clone_from(&source.span_out);
         self.subracks.clone_from(&source.subracks);
         self.subracks_by_played
             .clone_from(&source.subracks_by_played);
@@ -357,6 +365,7 @@ impl WorkingBuffer {
             aggregated_word_multipliers: Vec::new(),
             precomputed_square_multiplier_buffer: Vec::new(),
             indexes_to_descending_square_multiplier_buffer: Vec::new(),
+            square_ranks_buffer: Vec::new(),
             multi_jumps_buffer: vec![
                 MultiJump {
                     left_score: 0,
@@ -370,6 +379,7 @@ impl WorkingBuffer {
             best_leave_values: Vec::new(),
             placement_scores: Vec::new(),
             shadow_scores: Vec::new(),
+            span_out: Vec::new(),
             subracks: Vec::new(),
             subracks_by_played: Vec::new(),
             found_placements: Vec::new(),
@@ -1003,7 +1013,6 @@ struct GenPlacePlacementsParams<'a> {
     rack_tally: &'a mut [u8],
     used_tile_scores_shadowl: &'a mut Vec<i32>,
     used_tile_scores_shadowr: &'a mut Vec<i32>,
-    shadow_strip_buffer: &'a mut [u8], // not really storing letters here
     cross_set_strip: &'a [CrossSet],
     remaining_word_multipliers_strip: &'a [i8],
     remaining_tile_multipliers_strip: &'a [i8],
@@ -1014,16 +1023,50 @@ struct GenPlacePlacementsParams<'a> {
     aggregated_word_multipliers: &'a mut Vec<i32>,
     precomputed_square_multiplier_buffer: &'a mut Vec<i32>,
     indexes_to_descending_square_multiplier_buffer: &'a mut Vec<i8>,
+    square_ranks_buffer: &'a mut Vec<u8>,
     multi_jumps_buffer: &'a mut [MultiJump],
     best_leave_values: &'a [i32],
     shadow_scores: &'a mut Vec<i32>,
+    span_out: &'a mut Vec<(i8, i8, u8, i32)>,
+    per_span: bool,
     num_max_played: u8,
     rack_tally_shadowl: &'a mut [u8],
     rack_tally_shadowr: &'a mut [u8],
 }
 
 #[inline]
-fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32])>(
+fn gen_place_placements<
+    'a,
+    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32], u8),
+>(
+    params: &'a mut GenPlacePlacementsParams<'a>,
+    single_tile_plays: bool,
+    want_raw: bool,
+    possible_strip_placement_callback: PossibleStripPlacementCallbackType,
+) {
+    if params.per_span {
+        gen_place_placements_impl::<true, _>(
+            params,
+            single_tile_plays,
+            want_raw,
+            possible_strip_placement_callback,
+        )
+    } else {
+        gen_place_placements_impl::<false, _>(
+            params,
+            single_tile_plays,
+            want_raw,
+            possible_strip_placement_callback,
+        )
+    }
+}
+
+#[inline]
+fn gen_place_placements_impl<
+    'a,
+    const PER_SPAN: bool,
+    PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32], u8),
+>(
     params: &'a mut GenPlacePlacementsParams<'a>,
     single_tile_plays: bool,
     want_raw: bool,
@@ -1067,6 +1110,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         params
             .indexes_to_descending_square_multiplier_buffer
             .resize(vec_size, 0);
+        params.square_ranks_buffer.resize(vec_size, 0);
         for (k, low_end) in params
             .aggregated_word_multipliers
             .iter()
@@ -1094,6 +1138,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 precomputed_square_multiplier_slice[b as usize]
                     .cmp(&precomputed_square_multiplier_slice[a as usize])
             });
+            let square_ranks_slice = &mut params.square_ranks_buffer[low_end..high_end];
+            for (rank, &j) in indexes_to_descending_square_multiplier_slice[..left]
+                .iter()
+                .enumerate()
+            {
+                square_ranks_slice[j as usize] = rank as u8;
+            }
         }
 
         // precompute the multi jumps. (code is similar to cross set computation.)
@@ -1159,12 +1210,28 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
     }
 
     #[inline(always)]
-    fn shadow_record(
+    fn ranked_from(env: &Env<'_>, deferred: u128, low_end: usize) -> u128 {
+        let square_ranks_slice =
+            &env.params.square_ranks_buffer[low_end..low_end + env.strider_len];
+        let mut remaining = deferred;
+        let mut ranked = 0u128;
+        while remaining != 0 {
+            let square = remaining.trailing_zeros() as usize;
+            remaining &= remaining - 1;
+            ranked |= 1u128 << square_ranks_slice[square];
+        }
+        ranked
+    }
+
+    #[inline(always)]
+    fn shadow_record<const PER_SPAN: bool>(
         env: &mut Env<'_>,
         acc: &Accumulator,
         idx_left: i8,
         idx_right: i8,
         num_played: u8,
+        low_end: usize,
+        ranked: u128,
     ) {
         let used_tile_scores = if env.params.used_tile_scores_shadowr.is_empty() {
             &env.params.used_tile_scores_shadowl
@@ -1177,12 +1244,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // if a square requiring [B] is encountered while holding a B, the B
             // must go there. if a square requiring [A,B] is encountered earlier,
             // that square must be A, but this is not currently implemented.
-            let low_end = env
-                .params
-                .aggregated_word_multipliers
-                .binary_search(&acc.word_multiplier)
-                .unwrap()
-                * env.strider_len;
             let high_end = low_end + env.strider_len;
             let precomputed_square_multiplier_slice =
                 &env.params.precomputed_square_multiplier_buffer[low_end..high_end];
@@ -1192,26 +1253,27 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 .descending_scores
                 .iter()
                 .filter(|&score| used_tile_scores_iter.next_if_eq(&score).is_none());
-            for &idx in
-                &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end]
-            {
-                if idx_left <= idx
-                    && idx < idx_right
-                    && env.params.shadow_strip_buffer[idx as usize] == 0
-                {
-                    best_scoring += *desc_scores_iter.next().unwrap()
-                        * precomputed_square_multiplier_slice[idx as usize];
-                    to_assign -= 1;
-                    if to_assign == 0 {
-                        break;
-                    }
-                }
+            let indexes_to_descending_square_multiplier_slice =
+                &env.params.indexes_to_descending_square_multiplier_buffer[low_end..high_end];
+            let mut remaining = ranked;
+            while to_assign != 0 && remaining != 0 {
+                let idx = indexes_to_descending_square_multiplier_slice
+                    [remaining.trailing_zeros() as usize];
+                remaining &= remaining - 1;
+                best_scoring += *desc_scores_iter.next().unwrap()
+                    * precomputed_square_multiplier_slice[idx as usize];
+                to_assign -= 1;
             }
         }
         let equity = acc.main_score * acc.word_multiplier
             + acc.perpendicular_cumulative_score
             + best_scoring
             + env.params.best_leave_values[num_played as usize];
+        if PER_SPAN {
+            env.params
+                .span_out
+                .push((idx_left, idx_right, num_played, equity));
+        }
         if equity > env.best_possible_equity {
             env.best_possible_equity = equity;
         }
@@ -1230,16 +1292,26 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
         idx_left: i8,
         num_played: u8,
         rack_bits: u64,
+        deferred: u128,
+        low_end: usize,
+        ranked: u128,
     }
 
     #[inline(always)]
-    fn shadow_play_right(env: &mut Env<'_>, mut acc: Accumulator, walk: ShadowRightWalk) {
+    fn shadow_play_right<const PER_SPAN: bool>(
+        env: &mut Env<'_>,
+        mut acc: Accumulator,
+        walk: ShadowRightWalk,
+    ) {
         let ShadowRightWalk {
             mut idx,
             mut is_unique,
             idx_left,
             mut num_played,
             mut rack_bits,
+            mut deferred,
+            mut low_end,
+            mut ranked,
         } = walk;
         env.params
             .used_tile_scores_shadowr
@@ -1258,7 +1330,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // here idx <= env.rightmost.
             // check if [idx_left, idx) is a thing
             if idx > env.anchor + 1 && num_played > !is_unique as u8 && idx - idx_left >= 2 {
-                shadow_record(env, &acc, idx_left, idx, num_played);
+                shadow_record::<PER_SPAN>(env, &acc, idx_left, idx, num_played, low_end, ranked);
             }
             if num_played >= env.params.num_max_played {
                 break;
@@ -1273,6 +1345,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here.
                 is_unique = true;
+                deferred |= 1u128 << (idx as u32);
+                ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
@@ -1298,7 +1372,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // case 2: multiple tiles fit, but they all have the same score.
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
-                    env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
                     let tile_score = env.params.alphabet.scaled_score(tile);
                     env.params.used_tile_scores_shadowr.insert(
                         env.params
@@ -1317,7 +1390,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
                     // defer to greedy algorithm.
-                    env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
+                    deferred |= 1u128 << (idx as u32);
+                    ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
                     acc.perpendicular_cumulative_score +=
                         env.params.perpendicular_scores_strip[idx as usize];
                 }
@@ -1325,14 +1399,37 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 break;
             }
             num_played += 1;
-            acc.word_multiplier *= env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            if word_multiplier != 1 {
+                acc.word_multiplier *= word_multiplier;
+                low_end = env
+                    .params
+                    .aggregated_word_multipliers
+                    .binary_search(&acc.word_multiplier)
+                    .unwrap()
+                    * env.strider_len;
+                ranked = ranked_from(env, deferred, low_end);
+            }
             idx += 1;
         }
         env.params.used_tile_scores_shadowr.clear(); // use shadowl in shadow_record
     }
 
     #[inline(always)]
-    fn shadow_play_left(env: &mut Env<'_>, mut acc: Accumulator, mut idx: i8, mut is_unique: bool) {
+    fn shadow_play_left<const PER_SPAN: bool>(
+        env: &mut Env<'_>,
+        mut acc: Accumulator,
+        mut idx: i8,
+        mut is_unique: bool,
+    ) {
+        let mut deferred = 0u128;
+        let mut ranked = 0u128;
+        let mut low_end = env
+            .params
+            .aggregated_word_multipliers
+            .binary_search(&acc.word_multiplier)
+            .unwrap()
+            * env.strider_len;
         let mut num_played = 0;
         env.params.used_tile_scores_shadowl.clear();
         let mut rack_bits = env.params.rack_bits;
@@ -1350,7 +1447,15 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             // here idx >= env.leftmost - 1.
             // check if [idx + 1, env.anchor + 1) is a thing
             if num_played > !is_unique as u8 && env.anchor - idx >= 2 {
-                shadow_record(env, &acc, idx + 1, env.anchor + 1, num_played);
+                shadow_record::<PER_SPAN>(
+                    env,
+                    &acc,
+                    idx + 1,
+                    env.anchor + 1,
+                    num_played,
+                    low_end,
+                    ranked,
+                );
             }
             if num_played >= env.params.num_max_played {
                 break;
@@ -1358,7 +1463,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
 
             // can switch direction only after using the anchor square
             if idx < env.anchor {
-                shadow_play_right(
+                shadow_play_right::<PER_SPAN>(
                     env,
                     Accumulator { ..acc },
                     ShadowRightWalk {
@@ -1367,6 +1472,9 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                         idx_left: idx + 1,
                         num_played,
                         rack_bits,
+                        deferred,
+                        low_end,
+                        ranked,
                     },
                 );
             }
@@ -1380,6 +1488,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             if this_cross_bits & 1 == 0 {
                 // nothing hooks here.
                 is_unique = true;
+                deferred |= 1u128 << (idx as u32);
+                ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
             } else if this_cross_bits != 1 {
                 // something hooks here and there is a valid letter.
                 // this_cross_bits has bit 1 set, so blank is always allowed.
@@ -1405,7 +1515,6 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // case 2: multiple tiles fit, but they all have the same score.
                     // consume the square, but not the tile.
                     // rack_bits remains unchanged because assignment is tentative.
-                    env.params.shadow_strip_buffer[idx as usize] = 1; // hide this square from greedy algorithm.
                     let tile_score = env.params.alphabet.scaled_score(tile);
                     env.params.used_tile_scores_shadowl.insert(
                         env.params
@@ -1424,7 +1533,8 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                     // case 3: multiple tiles fit, and they have different scores.
                     // rack_bits remains unchanged because assignment is tentative.
                     // defer to greedy algorithm.
-                    env.params.shadow_strip_buffer[idx as usize] = 0; // let greedy algorithm fill this square.
+                    deferred |= 1u128 << (idx as u32);
+                    ranked |= 1u128 << env.params.square_ranks_buffer[low_end + idx as usize];
                     acc.perpendicular_cumulative_score +=
                         env.params.perpendicular_scores_strip[idx as usize];
                 }
@@ -1432,13 +1542,26 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 break;
             }
             num_played += 1;
-            acc.word_multiplier *= env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            let word_multiplier = env.params.remaining_word_multipliers_strip[idx as usize] as i32;
+            if word_multiplier != 1 {
+                acc.word_multiplier *= word_multiplier;
+                low_end = env
+                    .params
+                    .aggregated_word_multipliers
+                    .binary_search(&acc.word_multiplier)
+                    .unwrap()
+                    * env.strider_len;
+                ranked = ranked_from(env, deferred, low_end);
+            }
             idx -= 1;
         }
     }
 
     #[inline(always)]
-    fn gen_places_from<PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32])>(
+    fn gen_places_from<
+        const PER_SPAN: bool,
+        PossibleStripPlacementCallbackType: FnMut(i8, i8, i8, i32, &[i32], u8),
+    >(
         env: &mut Env<'_>,
         single_tile_plays: bool,
         want_raw: bool,
@@ -1451,11 +1574,13 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 env.rightmost,
                 i32::MAX,
                 &[],
+                0,
             );
         } else {
             env.best_possible_equity = i32::MIN;
+            env.params.span_out.clear();
             env.params.shadow_scores.fill(i32::MIN);
-            shadow_play_left(
+            shadow_play_left::<PER_SPAN>(
                 env,
                 Accumulator {
                     main_score: 0,
@@ -1466,13 +1591,28 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                 single_tile_plays,
             );
             if env.best_possible_equity != i32::MIN {
-                possible_strip_placement_callback(
-                    env.anchor,
-                    env.leftmost,
-                    env.rightmost,
-                    env.best_possible_equity,
-                    env.params.shadow_scores,
-                );
+                if PER_SPAN {
+                    for i in 0..env.params.span_out.len() {
+                        let (left, right, num_played, equity) = env.params.span_out[i];
+                        possible_strip_placement_callback(
+                            env.anchor,
+                            left,
+                            right,
+                            equity,
+                            env.params.shadow_scores,
+                            num_played,
+                        );
+                    }
+                } else {
+                    possible_strip_placement_callback(
+                        env.anchor,
+                        env.leftmost,
+                        env.rightmost,
+                        env.best_possible_equity,
+                        env.params.shadow_scores,
+                        0,
+                    );
+                }
             }
         }
     }
@@ -1488,7 +1628,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
             env.anchor = leftmost - 1;
             env.leftmost = 0;
             env.rightmost = rightmost;
-            gen_places_from(
+            gen_places_from::<PER_SPAN, _>(
                 &mut env,
                 single_tile_plays,
                 want_raw,
@@ -1509,7 +1649,7 @@ fn gen_place_placements<'a, PossibleStripPlacementCallbackType: FnMut(i8, i8, i8
                         env.anchor = anchor;
                         env.leftmost = leftmost;
                         env.rightmost = rightmost;
-                        gen_places_from(
+                        gen_places_from::<PER_SPAN, _>(
                             &mut env,
                             single_tile_plays,
                             want_raw,
@@ -1550,6 +1690,7 @@ struct GenPlaceMovesParams<'a, CallbackType: FnMut(i8, &[u8], i32, i32), N: kwg:
     anchor: i8,
     leftmost: i8,
     rightmost: i8,
+    span_num_played: u8,
     callback: CallbackType,
     multi_leaves: &'a klv::MultiLeaves,
     num_tiles_in_bag: i16,
@@ -2392,6 +2533,9 @@ fn gen_classic_place_moves<
         if left > 0 && env.params.board_strip[left as usize - 1] != 0 {
             continue;
         }
+        if env.params.span_num_played != 0 && left != leftmost {
+            continue;
+        }
         let mut e = left_extent;
         for right in anchor + 1..=rightmost {
             if right > anchor + 1 {
@@ -2405,6 +2549,9 @@ fn gen_classic_place_moves<
                 continue;
             }
             if e.num_played == 1 && !single_tile_plays && e.free_squares == 0 {
+                continue;
+            }
+            if env.params.span_num_played != 0 && right != rightmost {
                 continue;
             }
             env.left = left;
@@ -3033,6 +3180,7 @@ fn gen_place_moves_at_lean<
             anchor: placement.anchor,
             leftmost: placement.leftmost,
             rightmost: placement.rightmost,
+            span_num_played: placement.num_played,
             callback: |idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 found_place_move(
                     placement.down,
@@ -3154,6 +3302,7 @@ fn gen_place_moves_at<
             anchor: placement.anchor,
             leftmost: placement.leftmost,
             rightmost: placement.rightmost,
+            span_num_played: placement.num_played,
             callback: |idx: i8, word: &[u8], score: i32, leave_value: i32| {
                 found_place_move(
                     placement.down,
@@ -4152,8 +4301,6 @@ fn kurnia_gen_place_moves_iter_lean<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                shadow_strip_buffer: &mut working_buffer.word_buffer_for_across_plays
-                    [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
@@ -4174,12 +4321,15 @@ fn kurnia_gen_place_moves_iter_lean<
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
+                square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
                 shadow_scores: &mut working_buffer.shadow_scores,
+                span_out: &mut working_buffer.span_out,
+                per_span: false,
             },
             true,
             want_raw,
@@ -4187,10 +4337,12 @@ fn kurnia_gen_place_moves_iter_lean<
              leftmost: i8,
              rightmost: i8,
              best_possible_equity: i32,
-             best_possible_score: &[i32]| {
+             best_possible_score: &[i32],
+             num_played: u8| {
                 let scores_at = placement_scores.len() as u32;
                 placement_scores.extend_from_slice(best_possible_score);
                 found_placements.push(PossiblePlacement {
+                    num_played,
                     down: false,
                     lane: row,
                     anchor,
@@ -4213,8 +4365,6 @@ fn kurnia_gen_place_moves_iter_lean<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                shadow_strip_buffer: &mut working_buffer.word_buffer_for_down_plays
-                    [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
@@ -4233,12 +4383,15 @@ fn kurnia_gen_place_moves_iter_lean<
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
+                square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
                 shadow_scores: &mut working_buffer.shadow_scores,
+                span_out: &mut working_buffer.span_out,
+                per_span: false,
             },
             false,
             want_raw,
@@ -4246,10 +4399,12 @@ fn kurnia_gen_place_moves_iter_lean<
              leftmost: i8,
              rightmost: i8,
              best_possible_equity: i32,
-             best_possible_score: &[i32]| {
+             best_possible_score: &[i32],
+             num_played: u8| {
                 let scores_at = placement_scores.len() as u32;
                 placement_scores.extend_from_slice(best_possible_score);
                 found_placements.push(PossiblePlacement {
+                    num_played,
                     down: true,
                     lane: col,
                     anchor,
@@ -4429,8 +4584,6 @@ fn kurnia_gen_place_moves_iter<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                shadow_strip_buffer: &mut working_buffer.word_buffer_for_across_plays
-                    [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_across_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
@@ -4451,12 +4604,15 @@ fn kurnia_gen_place_moves_iter<
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
+                square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
                 shadow_scores: &mut working_buffer.shadow_scores,
+                span_out: &mut working_buffer.span_out,
+                per_span: true,
             },
             true,
             want_raw,
@@ -4464,10 +4620,12 @@ fn kurnia_gen_place_moves_iter<
              leftmost: i8,
              rightmost: i8,
              best_possible_equity: i32,
-             best_possible_score: &[i32]| {
+             best_possible_score: &[i32],
+             num_played: u8| {
                 let scores_at = placement_scores.len() as u32;
                 placement_scores.extend_from_slice(best_possible_score);
                 found_placements.push(PossiblePlacement {
+                    num_played,
                     down: false,
                     lane: row,
                     anchor,
@@ -4490,8 +4648,6 @@ fn kurnia_gen_place_moves_iter<
                 rack_tally: &mut working_buffer.rack_tally,
                 used_tile_scores_shadowl: &mut working_buffer.used_tile_scores_shadowl,
                 used_tile_scores_shadowr: &mut working_buffer.used_tile_scores_shadowr,
-                shadow_strip_buffer: &mut working_buffer.word_buffer_for_down_plays
-                    [strip_range_start..strip_range_end], // repurpose
                 cross_set_strip: &working_buffer.cross_set_for_down_plays
                     [strip_range_start..strip_range_end],
                 remaining_word_multipliers_strip: &working_buffer
@@ -4510,12 +4666,15 @@ fn kurnia_gen_place_moves_iter<
                     .precomputed_square_multiplier_buffer,
                 indexes_to_descending_square_multiplier_buffer: &mut working_buffer
                     .indexes_to_descending_square_multiplier_buffer,
+                square_ranks_buffer: &mut working_buffer.square_ranks_buffer,
                 multi_jumps_buffer: &mut working_buffer.multi_jumps_buffer,
                 best_leave_values: &working_buffer.best_leave_values,
                 num_max_played,
                 rack_tally_shadowl: &mut working_buffer.rack_tally_shadowl,
                 rack_tally_shadowr: &mut working_buffer.rack_tally_shadowr,
                 shadow_scores: &mut working_buffer.shadow_scores,
+                span_out: &mut working_buffer.span_out,
+                per_span: true,
             },
             false,
             want_raw,
@@ -4523,10 +4682,12 @@ fn kurnia_gen_place_moves_iter<
              leftmost: i8,
              rightmost: i8,
              best_possible_equity: i32,
-             best_possible_score: &[i32]| {
+             best_possible_score: &[i32],
+             num_played: u8| {
                 let scores_at = placement_scores.len() as u32;
                 placement_scores.extend_from_slice(best_possible_score);
                 found_placements.push(PossiblePlacement {
+                    num_played,
                     down: true,
                     lane: col,
                     anchor,
