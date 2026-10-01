@@ -245,7 +245,6 @@ fn main() -> error::Returns<()> {
 
     let mut driver = move_picker::Simmer::new(&game_config, &smaller_kwg, &klv);
     driver.set_observe(true);
-    driver.set_verbose(false);
     driver.set_num_sim_iters(10000);
 
     let chunk = 50u64;
