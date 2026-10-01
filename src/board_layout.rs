@@ -160,6 +160,11 @@ impl BoardLayout {
         })
     }
 
+    // a board as text: one grid line per row, starting and ending with |, each
+    // square between the bars one of ~ 4W, = 3W, - 2W, ^ 4L, " 3L, ' 2L, a
+    // space for a plain square and # for a punctured one; and one line "star
+    // ROW COL" (counted from 0) for the starting square. A line starting with #
+    // is a comment and a blank line is ignored.
     #[inline]
     pub fn new_static_from_text(s: &str) -> error::Returns<Self> {
         let mut premiums = Vec::new();
@@ -1241,6 +1246,18 @@ pub fn make_board_layout_by_name(name: &str) -> Option<BoardLayout> {
         .map(|(_, make)| make())
 }
 
+// a bundled board layout by its name, else the text read_file returns for it.
+#[inline]
+pub fn make_board_layout_from(
+    name_or_path: &str,
+    read_file: &impl Fn(&str) -> error::Returns<String>,
+) -> error::Returns<BoardLayout> {
+    match make_board_layout_by_name(name_or_path) {
+        Some(board_layout) => Ok(board_layout),
+        None => BoardLayout::new_static_from_text(&read_file(name_or_path)?),
+    }
+}
+
 #[cfg(test)]
 #[inline]
 pub fn make_test_board_layout(
@@ -1369,5 +1386,28 @@ mod tests {
         assert!(BoardLayout::new_static_from_text(&tallest).is_ok());
         let too_tall = format!("star 0 0\n{}", "| |\n".repeat(128));
         assert!(BoardLayout::new_static_from_text(&too_tall).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_board_is_a_name_or_else_a_file() {
+        let read_file = |path: &str| -> error::Returns<String> {
+            match path {
+                "tiny.txt" => Ok("star 0 1\n|- |\n| '|\n".into()),
+                _ => Err(format!("no file {path}").into()),
+            }
+        };
+        assert!(same_layout(
+            &make_board_layout_from("super", &read_file).unwrap(),
+            &make_super_board_layout()
+        ));
+        assert_eq!(
+            make_board_layout_from("tiny.txt", &read_file)
+                .unwrap()
+                .dim()
+                .cols,
+            2
+        );
+        assert!(make_board_layout_from("round", &read_file).is_err());
     }
 }
