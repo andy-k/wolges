@@ -2414,7 +2414,7 @@ impl Clone for ValuedMove {
 impl PartialEq for ValuedMove {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self.equity == other.equity
+        self.equity == other.equity && self.play == other.play
     }
 }
 
@@ -2427,10 +2427,45 @@ impl PartialOrd for ValuedMove {
     }
 }
 
+#[inline(always)]
+fn cmp_play(a: &Play, b: &Play) -> std::cmp::Ordering {
+    match (a, b) {
+        (
+            Play::Place {
+                down: a_down,
+                lane: a_lane,
+                idx: a_idx,
+                word: a_word,
+                score: a_score,
+            },
+            Play::Place {
+                down: b_down,
+                lane: b_lane,
+                idx: b_idx,
+                word: b_word,
+                score: b_score,
+            },
+        ) => a_down
+            .cmp(b_down)
+            .then_with(|| a_lane.cmp(b_lane))
+            .then_with(|| a_idx.cmp(b_idx))
+            .then_with(|| a_word.cmp(b_word))
+            .then_with(|| a_score.cmp(b_score)),
+        (Play::Exchange { tiles: a_tiles }, Play::Exchange { tiles: b_tiles }) => {
+            a_tiles.cmp(b_tiles)
+        }
+        (Play::Place { .. }, Play::Exchange { .. }) => std::cmp::Ordering::Less,
+        (Play::Exchange { .. }, Play::Place { .. }) => std::cmp::Ordering::Greater,
+    }
+}
+
 impl Ord for ValuedMove {
     #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.equity.cmp(&self.equity)
+        other
+            .equity
+            .cmp(&self.equity)
+            .then_with(|| cmp_play(&self.play, &other.play))
     }
 }
 
@@ -2685,13 +2720,18 @@ impl KurniaMoveGenerator {
             equity: equity::Equity,
             mut construct_play: F,
         ) {
-            if found_moves.len() >= max_gen && threshold.get() >= equity {
+            if found_moves.len() >= max_gen && threshold.get() > equity {
                 return;
             }
             let play = construct_play();
             if equity_pred(equity, &play) {
                 if found_moves.len() >= max_gen {
-                    *found_moves.peek_mut().unwrap() = ValuedMove { equity, play };
+                    let candidate = ValuedMove { equity, play };
+                    let mut worst = found_moves.peek_mut().unwrap();
+                    if candidate >= *worst {
+                        return;
+                    }
+                    *worst = candidate;
                 } else {
                     found_moves.push(ValuedMove { equity, play });
                 }
@@ -2752,7 +2792,9 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: i32| threshold.get() < equity::Equity::new(best_possible_equity),
+            |best_possible_equity: i32| {
+                threshold.get() <= equity::Equity::new(best_possible_equity)
+            },
         ) {
             breathe().await;
         }
@@ -2835,13 +2877,18 @@ impl KurniaMoveGenerator {
             equity: equity::Equity,
             mut construct_play: F,
         ) {
-            if found_moves.len() >= max_gen && threshold.get() >= equity {
+            if found_moves.len() >= max_gen && threshold.get() > equity {
                 return;
             }
             let play = construct_play();
             if equity_pred(equity, &play) {
                 if found_moves.len() >= max_gen {
-                    *found_moves.peek_mut().unwrap() = ValuedMove { equity, play };
+                    let candidate = ValuedMove { equity, play };
+                    let mut worst = found_moves.peek_mut().unwrap();
+                    if candidate >= *worst {
+                        return;
+                    }
+                    *worst = candidate;
                 } else {
                     found_moves.push(ValuedMove { equity, play });
                 }
@@ -2902,7 +2949,9 @@ impl KurniaMoveGenerator {
                     );
                 }
             },
-            |best_possible_equity: i32| threshold.get() < equity::Equity::new(best_possible_equity),
+            |best_possible_equity: i32| {
+                threshold.get() <= equity::Equity::new(best_possible_equity)
+            },
         ) {}
         kurnia_gen_exchange_moves(
             params.board_snapshot,
@@ -3599,7 +3648,125 @@ fn gen_remaining_words<'a, FoundWord: 'a + FnMut(&[u8]), N: kwg::Node, L: kwg::N
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{alphabet, bites, build, game_config, klv, kwg};
+    use crate::{alphabet, bites, build, display, game_config, klv, kwg};
+
+    static TEST_WORDS: &[&str] = &[
+        "AS", "AT", "EAST", "EAT", "EATS", "ETA", "ETAS", "SAT", "SEA", "SEAT", "SEATS", "SET",
+        "TA", "TAE", "TAS", "TEA", "TEAS",
+    ];
+
+    #[inline]
+    fn test_kwg(gc: &game_config::GameConfig) -> kwg::Kwg<kwg::Node22> {
+        let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
+        let mut word_buf = Vec::new();
+        let mut words = Vec::<bites::Bites>::with_capacity(TEST_WORDS.len());
+        for w in TEST_WORDS {
+            reader.set_word(w, &mut word_buf).unwrap();
+            words.push(word_buf[..].into());
+        }
+        words.sort_unstable();
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(
+            &build::build(
+                build::BuildContent::Gaddawg,
+                build::BuildLayout::Wolges,
+                &words,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[inline]
+    fn parse_test_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> Vec<u8> {
+        let reader = alphabet::AlphabetReader::new_for_racks(alphabet);
+        let sb = rack_str.as_bytes();
+        let mut rack = Vec::new();
+        let mut ix = 0;
+        while ix < sb.len() {
+            let (tile, next_ix) = reader.next_tile(sb, ix).unwrap();
+            rack.push(tile);
+            ix = next_ix;
+        }
+        rack
+    }
+
+    #[inline]
+    fn placements(fen: &str, rack: &str) -> Vec<String> {
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack: &parse_test_rack(gc.alphabet(), rack),
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        let mut out = move_generator
+            .plays
+            .iter()
+            .filter(|p| matches!(p.play, Play::Place { .. }))
+            .map(|p| format!("{}", p.play.fmt(&board_snapshot)))
+            .collect::<Vec<_>>();
+        out.sort_unstable();
+        out
+    }
+
+    #[inline]
+    fn valued_plays(fen: &str, rack: &str, max_gen: usize) -> Vec<String> {
+        let gc = game_config::make_english_game_config();
+        let kwg = test_kwg(&gc);
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+        let board_snapshot = BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &gc,
+            kwg: &kwg,
+            klv: &klv,
+        };
+        let mut move_generator = KurniaMoveGenerator::new(&gc);
+        move_generator.gen_moves_unfiltered(&GenMovesParams {
+            board_snapshot: &board_snapshot,
+            rack: &parse_test_rack(gc.alphabet(), rack),
+            max_gen,
+            num_exchanges_by_this_player: 0,
+            pass_policy: PassPolicy::OnlyWhenForced,
+            dynamic_leaves: None,
+        });
+        move_generator
+            .plays
+            .iter()
+            .map(|p| format!("{} {}", p.equity.raw(), p.play.fmt(&board_snapshot)))
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    #[inline]
+    fn a_capped_generation_keeps_the_best_of_a_tie() {
+        let empty = "15/15/15/15/15/15/15/15/15/15/15/15/15/15/15";
+        let all = valued_plays(empty, "AEST", usize::MAX);
+        assert!(all.len() > 6);
+        let top_equity = all[0].split(' ').next().unwrap();
+        assert_eq!(
+            all[3].split(' ').next().unwrap(),
+            top_equity,
+            "no tie to cut"
+        );
+        assert_ne!(all[4].split(' ').next().unwrap(), top_equity);
+        for k in 1..=6 {
+            assert_eq!(valued_plays(empty, "AEST", k), all[..k], "cap of {k}");
+        }
+    }
 
     #[test]
     fn cross_set_score_cache_distinguishes_blank_from_natural_tile() {
@@ -3677,5 +3844,177 @@ mod tests {
         );
         assert_eq!(cross_sets[1].score, 0);
         assert_eq!(cross_sets[3].score, 0);
+    }
+    #[inline]
+    fn word_of(formatted: &str) -> String {
+        formatted
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .replace(['(', ')'], "")
+            .to_uppercase()
+    }
+
+    #[test]
+    #[inline]
+    fn movegen_opens_through_the_star_with_dictionary_words_only() {
+        let plays = placements("15/15/15/15/15/15/15/15/15/15/15/15/15/15/15", "AEST");
+        for p in &plays {
+            let w = word_of(p);
+            assert!(TEST_WORDS.contains(&&w[..]), "{p} spells {w}, not a word");
+            let coord = p.split_whitespace().next().unwrap();
+            assert!(coord.starts_with('8'), "{p} is not on the star row");
+            let col = coord.as_bytes()[1];
+            assert!(col <= b'H', "{p} starts past the star");
+            assert!(
+                col as usize + w.len() > b'H' as usize,
+                "{p} stops before the star"
+            );
+        }
+        assert!(plays.contains(&"8E SEAT 8".to_string()));
+        assert_eq!(plays.len(), 50);
+    }
+
+    #[test]
+    #[inline]
+    fn movegen_hooks_onto_a_word_on_the_board() {
+        assert_eq!(
+            placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "S"),
+            ["8G (SEAT)S 5", "I8 (A)S 3"]
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn movegen_scores_a_blank_as_zero() {
+        let plays = placements("15/15/15/15/15/15/15/6SEAT5/15/15/15/15/15/15/15", "?");
+        assert_eq!(
+            plays,
+            [
+                "8G (SEAT)s 4",
+                "G7 a(S) 1",
+                "I7 t(A) 1",
+                "I8 (A)s 1",
+                "I8 (A)t 1",
+                "J7 a(T) 1",
+                "J8 (T)a 1",
+            ]
+        );
+    }
+
+    #[inline]
+    fn sample_plays() -> Vec<Play> {
+        let word: bites::Bites = [1u8, 2, 3][..].into();
+        let other_word: bites::Bites = [1u8, 2, 4][..].into();
+        let place = |down, lane, idx, w: &bites::Bites, score| Play::Place {
+            down,
+            lane,
+            idx,
+            word: w.clone(),
+            score,
+        };
+        vec![
+            place(false, 7, 7, &word, 24),
+            place(false, 7, 7, &word, 26),
+            place(false, 7, 7, &other_word, 24),
+            place(false, 7, 8, &word, 24),
+            place(false, 8, 7, &word, 24),
+            place(true, 7, 7, &word, 24),
+            Play::Exchange {
+                tiles: [][..].into(),
+            },
+            Play::Exchange {
+                tiles: [1u8, 1][..].into(),
+            },
+            Play::Exchange {
+                tiles: [1u8, 2][..].into(),
+            },
+        ]
+    }
+
+    #[test]
+    #[inline]
+    fn valued_move_order_is_total() {
+        let plays = sample_plays();
+        let moves: Vec<ValuedMove> = plays
+            .iter()
+            .flat_map(|p| {
+                [10, 20].into_iter().map(move |e| ValuedMove {
+                    equity: equity::Equity::new(e),
+                    play: p.clone(),
+                })
+            })
+            .collect();
+
+        for a in moves.iter() {
+            assert_eq!(a.cmp(a), std::cmp::Ordering::Equal, "not reflexive");
+            for b in moves.iter() {
+                assert_eq!(
+                    a.cmp(b),
+                    b.cmp(a).reverse(),
+                    "not antisymmetric: {:?} {:?}",
+                    a.equity.raw(),
+                    b.equity.raw()
+                );
+                assert_eq!(
+                    a.cmp(b) == std::cmp::Ordering::Equal,
+                    a.equity == b.equity && a.play == b.play,
+                    "Equal disagrees with equality"
+                );
+                assert_eq!(a == b, a.cmp(b) == std::cmp::Ordering::Equal);
+                for c in moves.iter() {
+                    if a.cmp(b) != std::cmp::Ordering::Greater
+                        && b.cmp(c) != std::cmp::Ordering::Greater
+                    {
+                        assert_ne!(a.cmp(c), std::cmp::Ordering::Greater, "not transitive");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn heap_drains_ties_the_same_whatever_order_they_arrive() {
+        let plays = sample_plays();
+        let build = |order: &[usize]| -> Vec<Play> {
+            let mut heap = std::collections::BinaryHeap::new();
+            for &i in order {
+                heap.push(ValuedMove {
+                    equity: equity::Equity::new(1234),
+                    play: plays[i].clone(),
+                });
+            }
+            heap.into_sorted_vec().into_iter().map(|m| m.play).collect()
+        };
+
+        let forward: Vec<usize> = (0..plays.len()).collect();
+        let backward: Vec<usize> = (0..plays.len()).rev().collect();
+        let mut shuffled = forward.clone();
+        shuffled.swap(0, 4);
+        shuffled.swap(1, 7);
+        shuffled.swap(2, 5);
+
+        let a = build(&forward);
+        let b = build(&backward);
+        let c = build(&shuffled);
+        assert_eq!(a.len(), plays.len());
+        assert!(a == b && b == c, "arrival order changed the drained order");
+
+        let expect = [
+            plays[0].clone(),
+            plays[1].clone(),
+            plays[2].clone(),
+            plays[3].clone(),
+            plays[4].clone(),
+            plays[5].clone(),
+            plays[6].clone(),
+            plays[7].clone(),
+            plays[8].clone(),
+        ];
+        assert!(
+            a == expect,
+            "the tie-break did not order the plays as documented"
+        );
     }
 }
