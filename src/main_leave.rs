@@ -520,6 +520,8 @@ struct Playability {
     games: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Subcommand)]
@@ -1036,7 +1038,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::Playability(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.leave)?;
-            discover_playability(game_config, kwg, klv, a.games, a.seed, threads)
+            discover_playability(game_config, kwg, klv, a.games, a.seed, threads, a.lean)
         }
     }
 }
@@ -3663,6 +3665,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     num_games: u64,
     seed: Option<u64>,
     threads: usize,
+    lean: bool,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -3695,6 +3698,10 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         game_config::GameRules::Classic => 100,
         game_config::GameRules::Jumbled => 1,
     };
+
+    let arm_tables = ArmTables::build(&kwg, &game_config, lean);
+    let anagrams = arm_tables.anagrams();
+    let rack_lengths = arm_tables.rack_lengths();
 
     std::thread::scope(|s| {
         let mut threads = vec![];
@@ -3771,8 +3778,8 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
                             kwg: &kwg,
-                            anagrams: None,
-                            rack_lengths: None,
+                            anagrams,
+                            rack_lengths,
                             klv: &klv,
                         };
 
