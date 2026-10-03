@@ -247,10 +247,10 @@ fn do_it<N: kwg::Node + Sync>(
         });
         let plays3 = move_generator.plays.clone();
         if plays1 != plays3 {
-            panic!("movegen was confused");
+            return Err("movegen was confused".into());
         }
         if plays1 != plays2 {
-            panic!("movegen cannot work with smaller kwg");
+            return Err("movegen cannot work with smaller kwg".into());
         }
         let plays = plays2;
         println!("{} moves found...", plays.len());
@@ -380,10 +380,10 @@ fn do_it<N: kwg::Node + Sync>(
                         dynamic_leaves: None,
                     });
                     if plays1 != move_generator.plays {
-                        panic!("movegen was confused");
+                        return Err("movegen was confused".into());
                     }
                     if plays1 != plays2 {
-                        panic!("movegen cannot work with smaller kwg");
+                        return Err("movegen cannot work with smaller kwg".into());
                     }
                     &plays2
                 } else {
