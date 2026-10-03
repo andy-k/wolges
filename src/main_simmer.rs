@@ -5,6 +5,8 @@ use wolges::{
     movegen,
 };
 
+mod game_args;
+
 // most of this is copied from main_endgame.
 // parsing board into Vec<Vec<i8>> then back into Vec<u8> does not make sense,
 // but here we are.
@@ -12,10 +14,8 @@ use wolges::{
 // tile numbering follows alphabet order (not necessarily unicode order).
 // rack: array of numbers. 0 for blank, 1 for A.
 // board: 2D array of numbers. 0 for empty, 1 for A, -1 for blank-as-A.
-// lexicon: this implies board size and other rules too.
 #[derive(serde::Deserialize)]
 struct Question {
-    lexicon: String,
     rack: Vec<u8>,
     #[serde(rename = "board")]
     board_tiles: Vec<Vec<i8>>,
@@ -28,7 +28,6 @@ impl Question {
     #[inline(always)]
     fn from_fen(
         game_config: &game_config::GameConfig,
-        lexicon: &str,
         fen_str: &str,
         rack: &str,
     ) -> Result<Question, error::MyError> {
@@ -59,44 +58,79 @@ impl Question {
             .collect::<Vec<_>>();
         parse_rack(&mut v, rack).map_err(|e| error::new(format!("invalid rack {rack:?}: {e}")))?;
         Ok(Question {
-            lexicon: lexicon.to_string(),
             rack: v,
             board_tiles,
         })
     }
 }
 
+#[derive(clap::Parser)]
+#[command(about = "simulate the built-in position, printing the leaderboard every 50 iterations")]
+struct Cli {
+    #[arg(long, help = "the word graph is a kbwg")]
+    kbwg: bool,
+    // actually "NWL20"
+    #[arg(default_value = "lexbin/NWL23.kwg", help = "the word graph")]
+    kwg: String,
+    #[arg(default_value = "lexbin/NWL23.klv2", help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(help = "the simulation's seed")]
+    seed: Option<u64>,
+    #[command(flatten)]
+    game: game_args::GameArgs,
+}
+
 fn main() -> error::Returns<()> {
+    let cli: Cli = clap::Parser::parse();
+    let game_config = cli.game.make_game_config()?;
+    // of course this should be cached
+    let klv = if cli.klv == "-" {
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+    } else {
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)
+    };
+    game_config.check_leaves(klv.leave_range())?;
+    let kwg_bytes = std::fs::read(&cli.kwg)?;
+    if cli.kbwg {
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+        simulate(&kwg, &klv, &game_config, cli.seed)
+    } else {
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+        simulate(&kwg, &klv, &game_config, cli.seed)
+    }
+}
+
+#[inline]
+fn refuse_a_wider_graph<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    game_config: &game_config::GameConfig,
+    kwg_path: &str,
+) -> error::Returns<()> {
+    let alphabet_len = game_config.alphabet().len();
+    if kwg.fits_alphabet(alphabet_len) {
+        return Ok(());
+    }
+    wolges::return_error!(format!(
+        "{kwg_path} has tiles past this game's {alphabet_len}",
+    ));
+}
+
+#[inline(always)]
+fn simulate<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    klv: &klv::Klv<kwg::Node22>,
+    game_config: &game_config::GameConfig,
+    seed: Option<u64>,
+) -> error::Returns<()> {
     // https://github.com/domino14/macondo/issues/43
     let scores = [336000, 298000];
     let question = Question::from_fen(
-        &game_config::make_english_game_config(),
-        "NWL23", // actually "NWL20",
+        game_config,
         "C14/O2TOY9/mIRADOR8/F4DAB2PUGH1/I5GOOEY3V/T4XI2MALTHA/14N/6GUM3OWN/7PEW2DOE/9EF1DOR/2KUNA1J1BEVELS/3TURRETs2S2/7A4T2/7N7/7S7",
         "EEEIILZ",
     )?;
-
-    // of course this should be cached
-    let (kwg, klv, game_config) = match question.lexicon.as_str() {
-        "CSW24" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
-            game_config::make_english_game_config(),
-        ),
-        "NWL23" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?),
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.klv2")?),
-            game_config::make_english_game_config(),
-        ),
-        "ECWL" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?),
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.klv2")?),
-            game_config::make_english_game_config(),
-        ),
-        _ => {
-            wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
-        }
-    };
 
     let alphabet = game_config.alphabet();
     let alphabet_len_without_blank = alphabet.len() - 1;
@@ -181,7 +215,7 @@ fn main() -> error::Returns<()> {
     }
 
     // rebuild game state
-    let mut game_state = game_state::GameState::new(&game_config);
+    let mut game_state = game_state::GameState::new(game_config);
     for (i, &score) in scores.iter().enumerate() {
         game_state.players[i].score = score;
     }
@@ -197,21 +231,21 @@ fn main() -> error::Returns<()> {
             .bag
             .replenish(&mut player.rack, game_config.rack_size() as usize, i);
     }
-    display::print_game_state(&game_config, &game_state, None);
+    display::print_game_state(game_config, &game_state, None);
 
     // perform word prune.
 
-    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
     // these always allocate for now.
     let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
     move_generator.gen_remaining_words(
         &movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
-            game_config: &game_config,
-            kwg: &kwg,
+            game_config,
+            kwg,
             anagrams: None,
             rack_lengths: None,
-            klv: &klv,
+            klv,
         },
         |word: &[u8]| {
             set_of_words.insert(word.into());
@@ -234,11 +268,11 @@ fn main() -> error::Returns<()> {
 
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &game_state.board_tiles,
-        game_config: &game_config,
+        game_config,
         kwg: &smaller_kwg,
         anagrams: None,
         rack_lengths: None,
-        klv: &klv,
+        klv,
     };
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot,
@@ -251,16 +285,16 @@ fn main() -> error::Returns<()> {
 
     let sim_iters = 10000u64;
     let mut driver = move_picker::Simmer::<_, _, true>::new(
-        &game_config,
+        game_config,
         &smaller_kwg,
-        &klv,
+        klv,
         move_picker::SimmerParams {
             num_sim_iters: sim_iters,
             sim_threads: 1,
             win_pct_table: None,
         },
     );
-    if let Some(seed) = std::env::args().nth(1).and_then(|s| s.parse::<u64>().ok()) {
+    if let Some(seed) = seed {
         driver.reseed(seed);
     }
 
