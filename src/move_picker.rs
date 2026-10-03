@@ -1,7 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{
-    anagrams, game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats, win_pct,
+    anagrams, error, game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats,
+    win_pct,
 };
 use rand::SeedableRng;
 
@@ -223,15 +224,15 @@ impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSER
         arm_tables: &'a anagrams::ArmTables,
         klv: &'a klv::Klv<L>,
         params: SimmerParams<'a>,
-    ) -> Self {
-        Self::with_rng(
+    ) -> error::Returns<Self> {
+        Ok(Self::with_rng(
             game_config,
             kwg,
             arm_tables,
             klv,
             params,
-            simmer::DefaultRng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
-        )
+            simmer::DefaultRng::try_from_rng(&mut rand::rngs::SysRng)?,
+        ))
     }
 }
 
@@ -249,8 +250,9 @@ impl<
         arm_tables: &'a anagrams::ArmTables,
         klv: &'a klv::Klv<L>,
         params: SimmerParams<'a>,
-        rng: R,
+        mut rng: R,
     ) -> Self {
+        let decision_seed = rng.next_u64();
         Self {
             game_config,
             kwg,
@@ -265,7 +267,7 @@ impl<
             win_pct_table: params.win_pct_table,
             #[cfg(not(target_family = "wasm"))]
             sim_threads: params.sim_threads,
-            decision_seed: rand::random(),
+            decision_seed,
             candidate_scratch: Vec::new(),
             prepared_pristine: game_state::GameState::new(game_config),
         }

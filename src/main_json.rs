@@ -249,7 +249,7 @@ fn answer<N: kwg::Node + Sync>(
             sim_threads: 1,
             win_pct_table: None,
         },
-    )));
+    )?));
     game_state
         .board_tiles
         .copy_from_slice(&kibitzer.board_tiles);

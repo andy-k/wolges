@@ -61,6 +61,15 @@ fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error
     })
 }
 
+// the given seed, else one drawn from the system
+#[inline]
+fn seed_or_random(seed: Option<u64>) -> error::Returns<u64> {
+    Ok(match seed {
+        Some(seed) => seed,
+        None => GameRng::try_from_rng(&mut rand::rngs::SysRng)?.next_u64(),
+    })
+}
+
 #[inline]
 fn run_stamp() -> String {
     let d = std::time::SystemTime::now()
@@ -766,7 +775,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     sim_threads: 1,
                     win_pct_table: None,
                 },
-            );
+            )?;
             driver.reseed(seed);
             driver.begin_decision(&move_generator, &game_state, iters);
             let one_shot = driver.leader_summary();
@@ -874,7 +883,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     sim_threads: 1,
                     win_pct_table: None,
                 },
-            );
+            )?;
             driver.reseed(seed);
             let opening = (iters / 4).max(1);
             driver.begin_decision(&move_generator, &game_state, opening);
@@ -1080,7 +1089,7 @@ fn generate_autoplay_logs<
             .map(|x| format!("p{x}"))
             .collect::<Box<[String]>>(),
     );
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = threads;
 
@@ -1878,7 +1887,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = threads;
 
@@ -2808,7 +2817,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
 
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
 
     let mut leave_cur = vec![0i32; lat.len()];
     let mut tally_buf = vec![0u8; num_letters];
@@ -3642,7 +3651,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let klv = std::sync::Arc::new(klv);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = threads;
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -4284,7 +4293,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     let num_threads = threads.max(1).min(num_games.max(1) as usize);
     writeln!(
         boxed_stdout_or_stderr(),
@@ -4373,7 +4382,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
     let table = std::sync::Arc::new(table);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     let num_threads = threads.max(1).min(num_games.max(1) as usize);
     writeln!(
         boxed_stdout_or_stderr(),
@@ -4703,7 +4712,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             sim_threads: 1,
             win_pct_table: None,
         },
-    );
+    )?;
     driver.reseed(seed);
     driver.begin_decision(&move_generator, &game_state, iters);
     let whole = driver.leaderboard(usize::MAX);
@@ -5710,13 +5719,18 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
     match picker {
         SeatPicker::Hasty => move_picker::MovePicker::Hasty,
         SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dynamic_leaves.unwrap()),
-        SeatPicker::Simmer => move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
-            game_config,
-            kwg,
-            arm_tables,
-            klv,
-            simmer_params,
-        ))),
+        // reseeded before each of its turns, so its first generator is fixed
+        // rather than drawn from the system
+        SeatPicker::Simmer => {
+            move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::with_rng(
+                game_config,
+                kwg,
+                arm_tables,
+                klv,
+                simmer_params,
+                wolges::simmer::DefaultRng::seed_from_u64(0),
+            )))
+        }
     }
 }
 
@@ -5745,7 +5759,7 @@ fn compare_seats<
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = threads;
     let claimed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));

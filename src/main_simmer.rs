@@ -298,7 +298,7 @@ fn simulate<N: kwg::Node>(
             sim_threads: 1,
             win_pct_table: None,
         },
-    );
+    )?;
     if let Some(seed) = seed {
         driver.reseed(seed);
     }

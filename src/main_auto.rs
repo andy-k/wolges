@@ -140,7 +140,7 @@ fn do_it<N: kwg::Node + Sync>(
             sim_threads: 1,
             win_pct_table: None,
         },
-    )));
+    )?));
     if true {
         move_picker_1 = move_picker::MovePicker::Hasty;
     }

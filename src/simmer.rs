@@ -93,11 +93,11 @@ pub struct Simmer<R = DefaultRng> {
 
 impl Simmer {
     // The other methods must be called with the same game_config.
-    pub fn new(game_config: &game_config::GameConfig) -> Self {
-        Self::with_rng(
+    pub fn new(game_config: &game_config::GameConfig) -> error::Returns<Self> {
+        Ok(Self::with_rng(
             game_config,
-            DefaultRng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
-        )
+            DefaultRng::try_from_rng(&mut rand::rngs::SysRng)?,
+        ))
     }
 }
 
@@ -128,12 +128,10 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         self.rng = R::seed_from_u64(seed);
     }
 
+    // the clone's generator starts fixed: reseed it before it draws.
     #[inline(always)]
     pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
-        let mut clone = Self::with_rng(
-            game_config,
-            R::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
-        );
+        let mut clone = Self::with_rng(game_config, R::seed_from_u64(0));
         clone.prepare(
             game_config,
             &self.initial_game_state,
@@ -382,7 +380,7 @@ mod tests {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00");
         let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false);
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
-        let mut simmer = Simmer::new(&game_config);
+        let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(99);
         simmer.prepare(&game_config, &game_state, 0, false);
         simmer.prepare_iteration();
@@ -448,7 +446,7 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
         let opponent_draw = |seed: u64| -> Vec<u8> {
-            let mut simmer = Simmer::new(&game_config);
+            let mut simmer = Simmer::new(&game_config).unwrap();
             simmer.prepare(&game_config, &game_state, 2, false);
             simmer.reseed(seed);
             simmer.prepare_iteration();
@@ -467,7 +465,7 @@ mod tests {
         let mut game_state = game_state::GameState::new(&game_config);
         let mut deal_rng = DefaultRng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
-        let mut simmer = Simmer::new(&game_config);
+        let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.prepare(&game_config, &game_state, 2, false);
         let bag = simmer.game_state.bag.len();
         let turn = simmer.initial_game_state.turn as usize;
