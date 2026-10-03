@@ -1192,8 +1192,10 @@ fn generate_autoplay_logs<
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
+    // a thread that fails sets this, so the others stop rather than wait on it
+    let failed = std::sync::atomic::AtomicBool::new(false);
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
         let mut threads = vec![];
 
         for _ in 0..num_threads {
@@ -1216,7 +1218,12 @@ fn generate_autoplay_logs<
             let undersampling_remediation_generation_id =
                 std::sync::Arc::clone(&undersampling_remediation_generation_id);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
-            threads.push(s.spawn(move || {
+            let failed = &failed;
+            threads.push(s.spawn(move || -> error::Returns<()> {
+                let fail = |e: error::BoxAnyError| {
+                    failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    e
+                };
                 let mut game_id = String::with_capacity(8);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
@@ -1269,6 +1276,9 @@ fn generate_autoplay_logs<
                 let mut undersampling_remediation_thread_generation_id = 0;
                 let mut undersampling_remediation_thread_begun = false;
                 loop {
+                    if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Ok(());
+                    }
                     let mut num_prior_games =
                         num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let mut rng = GameRng::from_stream(seed, num_prior_games);
@@ -1288,7 +1298,11 @@ fn generate_autoplay_logs<
                             while undersampling_remediation_submission
                                 .load(std::sync::atomic::Ordering::Relaxed)
                                 != num_threads as u64
+                                && !failed.load(std::sync::atomic::Ordering::Relaxed)
                             {}
+                            if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                                return Ok(());
+                            }
                             match undersampling_remediation_state.compare_exchange(
                                 0,
                                 1,
@@ -1349,7 +1363,11 @@ fn generate_autoplay_logs<
                                     while undersampling_remediation_state
                                         .load(std::sync::atomic::Ordering::Relaxed)
                                         <= 1
+                                        && !failed.load(std::sync::atomic::Ordering::Relaxed)
                                     {}
+                                    if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                                        return Ok(());
+                                    }
                                 }
                             }
                             undersampling_remediation_thread_begun = true;
@@ -1624,7 +1642,9 @@ fn generate_autoplay_logs<
                             }
                         };
 
-                        game_state.play(&game_config, &mut rng, &play.play).unwrap();
+                        game_state
+                            .play(&game_config, &mut rng, &play.play)
+                            .map_err(fail)?;
 
                         let old_turn = game_state.turn;
                         num_turns[old_turn as usize] += 1;
@@ -1645,8 +1665,9 @@ fn generate_autoplay_logs<
                         }
 
                         let res = {
-                            let game_ended =
-                                game_state.check_game_ended(&game_config, &mut final_scores).unwrap();
+                            let game_ended = game_state
+                                .check_game_ended(&game_config, &mut final_scores)
+                                .map_err(fail)?;
 
                             match game_ended {
                                 game_state::CheckGameEnded::NotEnded
@@ -1720,12 +1741,13 @@ fn generate_autoplay_logs<
                                         if WRITE_LOGS
                                             && let Some(c) = &mut mutex_guard.csv_log_writer
                                         {
-                                            c.write_all(&batched_csv_log_buf).unwrap()
+                                            c.write_all(&batched_csv_log_buf)
+                                                .map_err(|e| fail(e.into()))?;
                                         }
                                         mutex_guard
                                             .csv_game_writer
                                             .write_all(&batched_csv_game_buf)
-                                            .unwrap();
+                                            .map_err(|e| fail(e.into()))?;
                                         if mutex_guard.tick_periods.update(elapsed_time_secs) {
                                             write!(boxed_stdout_or_stderr(),
                                                 "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves)").ok();
@@ -1782,25 +1804,31 @@ fn generate_autoplay_logs<
                 let batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
                 let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                 if WRITE_LOGS && let Some(c) = &mut mutex_guard.csv_log_writer {
-                    c.write_all(&batched_csv_log_buf).unwrap();
+                    c.write_all(&batched_csv_log_buf)
+                        .map_err(|e| fail(e.into()))?;
                 }
                 mutex_guard
                     .csv_game_writer
                     .write_all(&batched_csv_game_buf)
-                    .unwrap();
+                    .map_err(|e| fail(e.into()))?;
 
                 if SUMMARIZE {
                     merge_rack_map(&mut mutex_guard.full_rack_map, &mut thread_full_rack_map);
                 }
+                Ok(())
             }));
         }
 
         for thread in threads {
-            if let Err(e) = thread.join() {
-                writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+            match thread.join() {
+                Ok(done) => done?,
+                Err(e) => {
+                    writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+                }
             }
         }
-    });
+        Ok(())
+    })?;
 
     if SUMMARIZE {
         let mutex_guard = mutexed_stuffs.lock().unwrap();
@@ -1924,7 +1952,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
         let mut threads = vec![];
         for _ in 0..num_threads {
             let game_config = std::sync::Arc::clone(&game_config);
@@ -1937,7 +1965,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             let mutexed = std::sync::Arc::clone(&mutexed);
             let mutexed_tick = std::sync::Arc::clone(&mutexed_tick);
             let run_identifier = run_identifier.clone();
-            threads.push(s.spawn(move || {
+            threads.push(s.spawn(move || -> error::Returns<()> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let alphabet = game_config.alphabet();
@@ -2090,10 +2118,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                         });
 
                         let play = &move_generator.plays[0];
-                        game_state.play(&game_config, &mut rng, &play.play).unwrap();
-                        let game_ended = game_state
-                            .check_game_ended(&game_config, &mut final_scores)
-                            .unwrap();
+                        game_state.play(&game_config, &mut rng, &play.play)?;
+                        let game_ended =
+                            game_state.check_game_ended(&game_config, &mut final_scores)?;
                         game_state.next_turn();
                         turn_idx += 1;
                         if !matches!(game_ended, game_state::CheckGameEnded::NotEnded) {
@@ -2117,14 +2144,19 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
                 let mut g = mutexed.lock().unwrap();
                 merge_rack_map(&mut g.full_rack_map, &mut thread_map);
+                Ok(())
             }));
         }
         for thread in threads {
-            if let Err(e) = thread.join() {
-                writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+            match thread.join() {
+                Ok(done) => done?,
+                Err(e) => {
+                    writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+                }
             }
         }
-    });
+        Ok(())
+    })?;
 
     let g = mutexed.lock().unwrap();
     let map = &g.full_rack_map;
@@ -2896,6 +2928,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     ));
 
     let barrier = std::sync::Barrier::new(num_threads);
+    // a thread that fails sets this; every thread then stops at the next
+    // barrier instead of leaving the others waiting there
+    let failed = std::sync::atomic::AtomicBool::new(false);
 
     let sheet_cache: Vec<SheetCacheSlot> = (0..sheet_cache_len)
         .map(|_| std::sync::Mutex::new(None))
@@ -2905,9 +2940,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         "census: {num_threads} threads over {board_counts:?} boards/gen"
     )?;
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
+        let mut handles = Vec::with_capacity(num_threads);
         for _ in 0..num_threads {
-            s.spawn(|| {
+            handles.push(s.spawn(|| -> error::Returns<()> {
+                let mut error = None;
 
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -3063,7 +3100,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         let leave = leave_lock.read().unwrap();
 
                         let null_leave = leave.iter().all(|&x| x == 0);
-                        loop {
+                        'boards: loop {
+                            if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
                             let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if b >= num_boards {
                                 break;
@@ -3119,11 +3159,18 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
                             });
-                            game_state
+                            let ended = match game_state
                                 .play(&game_config, &mut rng, &move_generator.plays[0].play)
-                                .unwrap();
-                            let ended =
-                                game_state.check_game_ended(&game_config, &mut final_scores).unwrap();
+                                .and_then(|()| {
+                                    game_state.check_game_ended(&game_config, &mut final_scores)
+                                }) {
+                                Ok(ended) => ended,
+                                Err(e) => {
+                                    error = Some(e);
+                                    failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    break 'boards;
+                                }
+                            };
                             game_state.next_turn();
                             if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
                                 break; // game ended before the window; try a fresh game.
@@ -3164,7 +3211,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
 
                     if multigen {
-                        if barrier.wait().is_leader() {
+                        if barrier.wait().is_leader()
+                            && !failed.load(std::sync::atomic::Ordering::Relaxed)
+                        {
 
                             {
                                 let mut g = shared.lock().unwrap();
@@ -3230,7 +3279,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                         }
                         barrier.wait();
-                        if gen_idx + 1 < gens {
+                        if gen_idx + 1 < gens && !failed.load(std::sync::atomic::Ordering::Relaxed) {
 
                             prior_max_boards = prior_max_boards.max(num_boards as usize);
                             gen_idx += 1;
@@ -3240,9 +3289,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
                     break;
                 }
-            });
+                match error {
+                    Some(e) => Err(e),
+                    None => Ok(()),
+                }
+            }));
         }
-    });
+        for handle in handles {
+            handle.join().unwrap()?;
+        }
+        Ok(())
+    })?;
 
     let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
     let leave_final = leave_lock.into_inner().unwrap();
@@ -3684,7 +3741,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
         let mut threads = vec![];
 
         for _thread_id in 0..num_threads {
@@ -3697,7 +3754,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let logged_games = std::sync::Arc::clone(&logged_games);
             let completed_moves = std::sync::Arc::clone(&completed_moves);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
-            threads.push(s.spawn(move || {
+            threads.push(s.spawn(move || -> error::Returns<()> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0; game_config.num_players() as usize];
@@ -3876,9 +3933,9 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             let plays = &move_generator.plays;
                             let play = &plays[0];
 
-                            game_state.play(&game_config, &mut rng, &play.play).unwrap();
+                            game_state.play(&game_config, &mut rng, &play.play)?;
 
-                            match game_state.check_game_ended(&game_config, &mut final_scores).unwrap() {
+                            match game_state.check_game_ended(&game_config, &mut final_scores)? {
                                 game_state::CheckGameEnded::PlayedOut
                                 | game_state::CheckGameEnded::ZeroScores => 1,
                                 game_state::CheckGameEnded::NotEnded => !0,
@@ -3934,15 +3991,20 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             .or_insert(thread_v);
                     }
                 }
+                Ok(())
             }));
         }
 
         for thread in threads {
-            if let Err(e) = thread.join() {
-                writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+            match thread.join() {
+                Ok(done) => done?,
+                Err(e) => {
+                    writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+                }
             }
         }
-    });
+        Ok(())
+    })?;
 
     {
         let mutex_guard = mutexed_stuffs.lock().unwrap();
@@ -4228,7 +4290,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
     rng: &mut GameRng,
     snapshots: &mut Vec<(usize, usize, usize, usize, i32)>,
     final_scores: &mut [i32],
-) {
+) -> error::Returns<()> {
     let WinpctTables {
         game_config,
         kwg,
@@ -4266,16 +4328,14 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             dynamic_leaves: None,
         });
         let play = &move_generator.plays[0].play;
-        game_state.play(game_config, rng, play).unwrap();
-        match game_state
-            .check_game_ended(game_config, final_scores)
-            .unwrap()
-        {
+        game_state.play(game_config, rng, play)?;
+        match game_state.check_game_ended(game_config, final_scores)? {
             game_state::CheckGameEnded::NotEnded => {}
             _ => break,
         }
         game_state.next_turn();
     }
+    Ok(())
 }
 
 #[inline]
@@ -4308,9 +4368,10 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
+        let mut handles = Vec::with_capacity(num_threads);
         for _ in 0..num_threads {
-            s.spawn(|| {
+            handles.push(s.spawn(|| -> error::Returns<()> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -4337,7 +4398,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                         &mut rng,
                         &mut snapshots,
                         &mut final_scores,
-                    );
+                    )?;
 
                     for &(bag, my, opp, mover, lead) in &snapshots {
                         let mover_final = equity::descale_score(final_scores[mover])
@@ -4349,9 +4410,14 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                     }
                 }
                 shared.lock().unwrap().merge(&acc);
-            });
+                Ok(())
+            }));
         }
-    });
+        for handle in handles {
+            handle.join().unwrap()?;
+        }
+        Ok(())
+    })?;
 
     let acc = shared.into_inner().unwrap();
 
@@ -4399,9 +4465,10 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
+        let mut handles = Vec::with_capacity(num_threads);
         for _ in 0..num_threads {
-            s.spawn(|| {
+            handles.push(s.spawn(|| -> error::Returns<()> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -4427,7 +4494,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         &mut rng,
                         &mut snapshots,
                         &mut final_scores,
-                    );
+                    )?;
                     for &(bag, my, opp, mover, lead) in &snapshots {
                         let mover_final = equity::descale_score(final_scores[mover])
                             - equity::descale_score(final_scores[1 - mover]);
@@ -4449,9 +4516,14 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 acc.0 += bt;
                 acc.1 += bs;
                 acc.2 += n;
-            });
+                Ok(())
+            }));
         }
-    });
+        for handle in handles {
+            handle.join().unwrap()?;
+        }
+        Ok(())
+    })?;
 
     let (bt, bs, n) = shared.into_inner().unwrap();
     let d = n.max(1) as f64;
@@ -5957,11 +6029,10 @@ fn compare_seats<
                             } else {
                                 first_game_moves.push(play.clone());
                             }
-                            game_state.play(&game_config, &mut rng, play).unwrap();
+                            game_state.play(&game_config, &mut rng, play)?;
                             num_turns += 1;
-                            let end = game_state
-                                .check_game_ended(&game_config, &mut final_scores)
-                                .unwrap();
+                            let end =
+                                game_state.check_game_ended(&game_config, &mut final_scores)?;
                             match end {
                                 game_state::CheckGameEnded::PlayedOut
                                 | game_state::CheckGameEnded::ZeroScores => break end,
