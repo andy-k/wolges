@@ -1,7 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use wolges::kwg::Node;
-use wolges::{alphabet, bites, build, error, fash, klv, kwg, lexport, prob};
+use wolges::{alphabet, bites, build, equity, error, fash, klv, kwg, lexport, prob};
 
 #[inline]
 fn parse_machine_words(
@@ -129,6 +129,18 @@ fn read_machine_words_sorted_by_length(
 use std::io::Write;
 use std::str::FromStr;
 
+// a load keeps round(v * SCALE) in an i32
+#[inline(always)]
+fn leave_value(leave: &str, value: &str) -> error::Returns<f32> {
+    let v = f32::from_str(value)?;
+    let milli = (v * equity::SCALE as f32).round() as f64;
+    if (i32::MIN as f64..=i32::MAX as f64).contains(&milli) {
+        Ok(v)
+    } else {
+        Err(format!("{leave:?} has the value {value:?}, which a leave table cannot hold").into())
+    }
+}
+
 #[inline]
 fn build_leaves_scaled_i16<Readable: std::io::Read>(
     f: Readable,
@@ -150,7 +162,7 @@ fn build_leaves_scaled_i16<Readable: std::io::Read>(
         }
         alphabet_reader.set_word(&record[0], &mut v)?;
         v.sort_unstable();
-        let rounded_leave = (f32::from_str(&record[1])? * scale).round();
+        let rounded_leave = (leave_value(&record[0], &record[1])? * scale).round();
         let int_leave = rounded_leave as i16;
         if (int_leave as f32 - rounded_leave).abs() != 0.0 {
             wolges::return_error!(format!(
@@ -255,7 +267,7 @@ fn read_leaves_f32<Readable: std::io::Read>(
         }
         alphabet_reader.set_word(&record[0], &mut v)?;
         v.sort_unstable();
-        let float_leave = f32::from_str(&record[1])?;
+        let float_leave = leave_value(&record[0], &record[1])?;
         if leaves_map.insert(v[..].into(), float_leave).is_some() {
             wolges::return_error!(format!("duplicate record {}", &record[0]));
         }
@@ -1360,5 +1372,35 @@ mod tests {
         // without the header kept, it is judged as tiles: WORD has four
         assert_eq!(trim(ranked, 1, 0, 4, 4).unwrap(), "rank,word\n");
         assert!(trim("QI\n", 1, 0, 0, 9).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_leave_value_is_a_number_a_leave_table_holds() {
+        assert_eq!(leave_value("QU", "-3.5").unwrap(), -3.5);
+        let held = |v: f32| {
+            let milli = (v * equity::SCALE as f32).round();
+            milli as i32 as i64 == milli as i64
+        };
+        for (value, ok) in [
+            ("-2147483.648", true),
+            ("2147483.5", true),
+            ("2147483.648", false),
+            ("-2147484", false),
+            ("1e37", false),
+        ] {
+            assert_eq!(leave_value("QU", value).is_ok(), ok, "{value:?}");
+            assert_eq!(held(f32::from_str(value).unwrap()), ok, "{value:?}");
+        }
+        let edge = 2147483648.0 / equity::SCALE as f32;
+        for edge in [edge, -edge] {
+            for step in -64..=64 {
+                let v = f32::from_bits(edge.to_bits().wrapping_add_signed(step));
+                assert_eq!(leave_value("QU", &v.to_string()).is_ok(), held(v), "{v}");
+            }
+        }
+        for value in ["nan", "NaN", "inf", "-inf", "infinity", "", "x"] {
+            assert!(leave_value("QU", value).is_err(), "{value:?}");
+        }
     }
 }
