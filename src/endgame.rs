@@ -890,43 +890,40 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let board = self.board_tiles.clone();
         let racks = [self.racks[0].clone(), self.racks[1].clone()];
 
+        let mut search = OneInBag {
+            gc,
+            kwg,
+            klv: &klv,
+            sub: &mut sub,
+            mg: &mut mg,
+            memo: fash::MyHashMap::default(),
+        };
         if one_in_bag_exchange_solvable(gc) {
-            let mut memo = fash::MyHashMap::<BagExchangeKey, f32>::default();
-            Self::one_in_bag_minimax_ex(
-                gc, kwg, &klv, &mut sub, &mut mg, &board, &racks, player_idx, bag_tile, 0, 0,
-                &mut memo,
-            )
+            Self::one_in_bag_minimax_ex(&mut search, &board, &racks, player_idx, bag_tile, 0, 0)
         } else {
-            Self::one_in_bag_minimax(
-                gc, kwg, &klv, &mut sub, &mut mg, &board, &racks, player_idx, bag_tile, false,
-            )
+            Self::one_in_bag_minimax(&mut search, &board, &racks, player_idx, bag_tile, false)
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn one_in_bag_minimax(
-        gc: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
-        klv: &klv::Klv<L>,
-        sub: &mut EndgameSolver<'a, N, L>,
-        mg: &mut movegen::KurniaMoveGenerator,
+        search: &mut OneInBag<'_, 'a, N, L>,
         board: &[u8],
         racks: &[Vec<u8>; 2],
         mover: u8,
         bag_tile: u8,
         just_passed: bool,
     ) -> f32 {
-        let alphabet = gc.alphabet();
+        let alphabet = search.gc.alphabet();
         let opp = mover ^ 1;
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
-            game_config: gc,
-            kwg,
+            game_config: search.gc,
+            kwg: search.kwg,
             anagrams: None,
             rack_lengths: None,
-            klv,
+            klv: search.klv,
         };
-        mg.gen_moves_raw_all_unsorted(
+        search.mg.gen_moves_raw_all_unsorted(
             &snapshot,
             &racks[mover as usize],
             0,
@@ -936,7 +933,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let drawn = bag_tile & !((bag_tile as i8) >> 7) as u8;
 
         let mut best = f32::NEG_INFINITY;
-        for vm in &mg.plays {
+        for vm in &search.mg.plays {
             if let movegen::Play::Place {
                 down,
                 lane,
@@ -949,7 +946,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 let mut nr = racks.clone();
                 {
                     let rack = &mut nr[mover as usize];
-                    let strider = gc.board_layout().dim().lane(*down, *lane);
+                    let strider = search.gc.board_layout().dim().lane(*down, *lane);
                     for (i, &tile) in (*idx..).zip(word.iter()) {
                         if tile != 0 {
                             nb[strider.at(i)] = tile;
@@ -962,8 +959,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     rack.push(drawn);
                 }
 
-                sub.init(&nb, [&nr[0], &nr[1]]);
-                let v = sub.solve(opp);
+                search.sub.init(&nb, [&nr[0], &nr[1]]);
+                let v = search.sub.solve(opp);
 
                 let val = *score as f32 - v;
                 if val > best {
@@ -976,7 +973,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             (alphabet.scaled_rack_score(&racks[opp as usize])
                 - alphabet.scaled_rack_score(&racks[mover as usize])) as f32
         } else {
-            -Self::one_in_bag_minimax(gc, kwg, klv, sub, mg, board, racks, opp, bag_tile, true)
+            -Self::one_in_bag_minimax(search, board, racks, opp, bag_tile, true)
         };
         if pass_val > best {
             best = pass_val;
@@ -984,20 +981,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         best
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn one_in_bag_minimax_ex(
-        gc: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
-        klv: &klv::Klv<L>,
-        sub: &mut EndgameSolver<'a, N, L>,
-        mg: &mut movegen::KurniaMoveGenerator,
+        search: &mut OneInBag<'_, 'a, N, L>,
         board: &[u8],
         racks: &[Vec<u8>; 2],
         mover: u8,
         bag_tile: u8,
         passes: u8,
         zeros: u8,
-        memo: &mut fash::MyHashMap<BagExchangeKey, f32>,
     ) -> f32 {
         let mut rack0 = racks[0].clone();
         let mut rack1 = racks[1].clone();
@@ -1011,21 +1002,21 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             rack0,
             rack1,
         };
-        if let Some(&v) = memo.get(&key) {
+        if let Some(&v) = search.memo.get(&key) {
             return v;
         }
 
-        let alphabet = gc.alphabet();
+        let alphabet = search.gc.alphabet();
         let opp = mover ^ 1;
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
-            game_config: gc,
-            kwg,
+            game_config: search.gc,
+            kwg: search.kwg,
             anagrams: None,
             rack_lengths: None,
-            klv,
+            klv: search.klv,
         };
-        mg.gen_moves_raw_all_unsorted(
+        search.mg.gen_moves_raw_all_unsorted(
             &snapshot,
             &racks[mover as usize],
             0,
@@ -1033,7 +1024,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         );
 
         let mut places: Vec<movegen::Play> = Vec::new();
-        for vm in &mg.plays {
+        for vm in &search.mg.plays {
             if let movegen::Play::Place { .. } = &vm.play {
                 places.push(vm.play.clone());
             }
@@ -1056,7 +1047,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 let mut nr = racks.clone();
                 {
                     let rack = &mut nr[mover as usize];
-                    let strider = gc.board_layout().dim().lane(*down, *lane);
+                    let strider = search.gc.board_layout().dim().lane(*down, *lane);
                     for (i, &tile) in (*idx..).zip(word.iter()) {
                         if tile != 0 {
                             nb[strider.at(i)] = tile;
@@ -1068,8 +1059,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     rack.retain(|&t| t != 0x80);
                     rack.push(drawn);
                 }
-                sub.init(&nb, [&nr[0], &nr[1]]);
-                let v = sub.solve(opp);
+                search.sub.init(&nb, [&nr[0], &nr[1]]);
+                let v = search.sub.solve(opp);
                 let val = *score as f32 - v;
                 if val > best {
                     best = val;
@@ -1079,23 +1070,18 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
         let pass_passes = passes + 1;
         let pass_zeros = zeros + 1;
-        let pass_val = if scoreless_turns_end(gc, pass_passes, pass_zeros) {
+        let pass_val = if scoreless_turns_end(search.gc, pass_passes, pass_zeros) {
             (alphabet.scaled_rack_score(&racks[opp as usize])
                 - alphabet.scaled_rack_score(&racks[mover as usize])) as f32
         } else {
             -Self::one_in_bag_minimax_ex(
-                gc,
-                kwg,
-                klv,
-                sub,
-                mg,
+                search,
                 board,
                 racks,
                 opp,
                 bag_tile,
                 pass_passes,
                 pass_zeros,
-                memo,
             )
         };
         if pass_val > best {
@@ -1121,20 +1107,18 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 let p = rack.iter().position(|&t| t == r).unwrap();
                 rack[p] = drawn;
             }
-            let exch_val = if scoreless_turns_end(gc, 0, exch_zeros) {
+            let exch_val = if scoreless_turns_end(search.gc, 0, exch_zeros) {
                 (alphabet.scaled_rack_score(&nr[opp as usize])
                     - alphabet.scaled_rack_score(&nr[mover as usize])) as f32
             } else {
-                -Self::one_in_bag_minimax_ex(
-                    gc, kwg, klv, sub, mg, board, &nr, opp, r, 0, exch_zeros, memo,
-                )
+                -Self::one_in_bag_minimax_ex(search, board, &nr, opp, r, 0, exch_zeros)
             };
             if exch_val > best {
                 best = exch_val;
             }
         }
 
-        memo.insert(key, best);
+        search.memo.insert(key, best);
         best
     }
 
@@ -1300,7 +1284,19 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         r2[mover as usize] = mover_rack.to_vec();
                         r2[opp as usize] = opp_rack;
                         -Self::one_in_bag_minimax(
-                            gc, kwg, &klv, &mut sub, &mut mg, board, &r2, opp, t, true,
+                            &mut OneInBag {
+                                gc,
+                                kwg,
+                                klv: &klv,
+                                sub: &mut sub,
+                                mg: &mut mg,
+                                memo: fash::MyHashMap::default(),
+                            },
+                            board,
+                            &r2,
+                            opp,
+                            t,
+                            true,
                         )
                     }
                     PegMove::Place(_) => {
@@ -1369,6 +1365,16 @@ impl std::fmt::Display for PegUnsupported {
             ),
         }
     }
+}
+
+// the one-in-bag search's fixed parts, carried down its recursion
+struct OneInBag<'s, 'a, N: kwg::Node, L: kwg::Node> {
+    gc: &'s game_config::GameConfig,
+    kwg: &'s kwg::Kwg<N>,
+    klv: &'s klv::Klv<L>,
+    sub: &'s mut EndgameSolver<'a, N, L>,
+    mg: &'s mut movegen::KurniaMoveGenerator,
+    memo: fash::MyHashMap<BagExchangeKey, f32>,
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -1481,27 +1487,31 @@ mod tests {
         rack.retain(|&t| t != 0x80);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    // a reference solve's fixed parts, carried down its recursion
+    struct Reference<'s, N: kwg::Node, L: kwg::Node> {
+        gc: &'s game_config::GameConfig,
+        kwg: &'s kwg::Kwg<N>,
+        klv: &'s klv::Klv<L>,
+        mg: &'s mut movegen::KurniaMoveGenerator,
+    }
+
     fn reference<N: kwg::Node, L: kwg::Node>(
-        gc: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
-        klv: &klv::Klv<L>,
-        mg: &mut movegen::KurniaMoveGenerator,
+        fixed: &mut Reference<'_, N, L>,
         board: &[u8],
         racks: &[Vec<u8>; 2],
         mover: usize,
         just_passed: bool,
     ) -> f32 {
-        let alphabet = gc.alphabet();
+        let alphabet = fixed.gc.alphabet();
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
-            game_config: gc,
-            kwg,
+            game_config: fixed.gc,
+            kwg: fixed.kwg,
             anagrams: None,
             rack_lengths: None,
-            klv,
+            klv: fixed.klv,
         };
-        mg.gen_moves_raw_all_unsorted(
+        fixed.mg.gen_moves_raw_all_unsorted(
             &snapshot,
             &racks[mover],
             0,
@@ -1509,7 +1519,7 @@ mod tests {
         );
 
         let mut places: Vec<movegen::Play> = Vec::new();
-        for vm in &mg.plays {
+        for vm in &fixed.mg.plays {
             if let movegen::Play::Place { .. } = &vm.play {
                 places.push(vm.play.clone());
             }
@@ -1532,8 +1542,8 @@ mod tests {
                 } else {
                     let mut nb = board.to_vec();
                     let mut nr = racks.clone();
-                    apply_place(gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
-                    *score as f32 - reference(gc, kwg, klv, mg, &nb, &nr, opp, false)
+                    apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
+                    *score as f32 - reference(fixed, &nb, &nr, opp, false)
                 };
                 if val > best {
                     best = val;
@@ -1545,7 +1555,7 @@ mod tests {
             (alphabet.scaled_rack_score(&racks[opp]) - alphabet.scaled_rack_score(&racks[mover]))
                 as f32
         } else {
-            -reference(gc, kwg, klv, mg, board, racks, opp, true)
+            -reference(fixed, board, racks, opp, true)
         };
         if pass_val > best {
             best = pass_val;
@@ -1553,28 +1563,24 @@ mod tests {
         best
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn reference_one_in_bag<N: kwg::Node, L: kwg::Node>(
-        gc: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
-        klv: &klv::Klv<L>,
-        mg: &mut movegen::KurniaMoveGenerator,
+        fixed: &mut Reference<'_, N, L>,
         board: &[u8],
         racks: &[Vec<u8>; 2],
         mover: usize,
         bag_tile: u8,
         just_passed: bool,
     ) -> f32 {
-        let alphabet = gc.alphabet();
+        let alphabet = fixed.gc.alphabet();
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
-            game_config: gc,
-            kwg,
+            game_config: fixed.gc,
+            kwg: fixed.kwg,
             anagrams: None,
             rack_lengths: None,
-            klv,
+            klv: fixed.klv,
         };
-        mg.gen_moves_raw_all_unsorted(
+        fixed.mg.gen_moves_raw_all_unsorted(
             &snapshot,
             &racks[mover],
             0,
@@ -1582,7 +1588,7 @@ mod tests {
         );
 
         let mut places: Vec<movegen::Play> = Vec::new();
-        for vm in &mg.plays {
+        for vm in &fixed.mg.plays {
             if let movegen::Play::Place { .. } = &vm.play {
                 places.push(vm.play.clone());
             }
@@ -1603,10 +1609,10 @@ mod tests {
             {
                 let mut nb = board.to_vec();
                 let mut nr = racks.clone();
-                apply_place(gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
+                apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                 nr[mover].push(drawn);
 
-                let val = *score as f32 - reference(gc, kwg, klv, mg, &nb, &nr, opp, false);
+                let val = *score as f32 - reference(fixed, &nb, &nr, opp, false);
                 if val > best {
                     best = val;
                 }
@@ -1617,7 +1623,7 @@ mod tests {
             (alphabet.scaled_rack_score(&racks[opp]) - alphabet.scaled_rack_score(&racks[mover]))
                 as f32
         } else {
-            -reference_one_in_bag(gc, kwg, klv, mg, board, racks, opp, bag_tile, true)
+            -reference_one_in_bag(fixed, board, racks, opp, bag_tile, true)
         };
         if pass_val > best {
             best = pass_val;
@@ -1625,12 +1631,8 @@ mod tests {
         best
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn reference_one_in_bag_ex<N: kwg::Node, L: kwg::Node>(
-        gc: &game_config::GameConfig,
-        kwg: &kwg::Kwg<N>,
-        klv: &klv::Klv<L>,
-        mg: &mut movegen::KurniaMoveGenerator,
+        fixed: &mut Reference<'_, N, L>,
         board: &[u8],
         racks: &[Vec<u8>; 2],
         mover: usize,
@@ -1638,23 +1640,23 @@ mod tests {
         passes: u8,
         zeros: u8,
     ) -> f32 {
-        let alphabet = gc.alphabet();
+        let alphabet = fixed.gc.alphabet();
         let snapshot = movegen::BoardSnapshot {
             board_tiles: board,
-            game_config: gc,
-            kwg,
+            game_config: fixed.gc,
+            kwg: fixed.kwg,
             anagrams: None,
             rack_lengths: None,
-            klv,
+            klv: fixed.klv,
         };
-        mg.gen_moves_raw_all_unsorted(
+        fixed.mg.gen_moves_raw_all_unsorted(
             &snapshot,
             &racks[mover],
             0,
             movegen::PassPolicy::AsACandidate,
         );
         let mut places: Vec<movegen::Play> = Vec::new();
-        for vm in &mg.plays {
+        for vm in &fixed.mg.plays {
             if let movegen::Play::Place { .. } = &vm.play {
                 places.push(vm.play.clone());
             }
@@ -1674,9 +1676,9 @@ mod tests {
             {
                 let mut nb = board.to_vec();
                 let mut nr = racks.clone();
-                apply_place(gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
+                apply_place(fixed.gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                 nr[mover].push(drawn);
-                let val = *score as f32 - reference(gc, kwg, klv, mg, &nb, &nr, opp, false);
+                let val = *score as f32 - reference(fixed, &nb, &nr, opp, false);
                 if val > best {
                     best = val;
                 }
@@ -1685,22 +1687,11 @@ mod tests {
 
         let pass_passes = passes + 1;
         let pass_zeros = zeros + 1;
-        let pass_val = if super::scoreless_turns_end(gc, pass_passes, pass_zeros) {
+        let pass_val = if super::scoreless_turns_end(fixed.gc, pass_passes, pass_zeros) {
             (alphabet.scaled_rack_score(&racks[opp]) - alphabet.scaled_rack_score(&racks[mover]))
                 as f32
         } else {
-            -reference_one_in_bag_ex(
-                gc,
-                kwg,
-                klv,
-                mg,
-                board,
-                racks,
-                opp,
-                bag_tile,
-                pass_passes,
-                pass_zeros,
-            )
+            -reference_one_in_bag_ex(fixed, board, racks, opp, bag_tile, pass_passes, pass_zeros)
         };
         if pass_val > best {
             best = pass_val;
@@ -1724,11 +1715,11 @@ mod tests {
                 let p = rack.iter().position(|&t| t == r).unwrap();
                 rack[p] = drawn;
             }
-            let exch_val = if super::scoreless_turns_end(gc, 0, exch_zeros) {
+            let exch_val = if super::scoreless_turns_end(fixed.gc, 0, exch_zeros) {
                 (alphabet.scaled_rack_score(&nr[opp]) - alphabet.scaled_rack_score(&nr[mover]))
                     as f32
             } else {
-                -reference_one_in_bag_ex(gc, kwg, klv, mg, board, &nr, opp, r, 0, exch_zeros)
+                -reference_one_in_bag_ex(fixed, board, &nr, opp, r, 0, exch_zeros)
             };
             if exch_val > best {
                 best = exch_val;
@@ -1958,7 +1949,18 @@ mod tests {
         let mut total = 0usize;
         for (name, pos) in all_positions() {
             total += 1;
-            let refv = reference(&gc, &kwg, &klv, &mut mg, &pos.board, &pos.racks, 0, false);
+            let refv = reference(
+                &mut Reference {
+                    gc: &gc,
+                    kwg: &kwg,
+                    klv: &klv,
+                    mg: &mut mg,
+                },
+                &pos.board,
+                &pos.racks,
+                0,
+                false,
+            );
             let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
             let solvev = egs.solve(0);
@@ -2225,10 +2227,12 @@ mod tests {
                 for mover in 0u8..2 {
                     total += 1;
                     let refv = reference_one_in_bag(
-                        &gc,
-                        &kwg,
-                        &klv,
-                        &mut mg,
+                        &mut Reference {
+                            gc: &gc,
+                            kwg: &kwg,
+                            klv: &klv,
+                            mg: &mut mg,
+                        },
                         &pos.board,
                         &pos.racks,
                         mover as usize,
@@ -2290,7 +2294,19 @@ mod tests {
         let racks = [vec![1u8, 2], vec![8u8, 20]]; // p0=[A,B] p1=[H,T]
         let bag = 1u8; // one A in the bag
 
-        let refv = reference_one_in_bag(&gc, &kwg, &klv, &mut mg, &board, &racks, 0, bag, false);
+        let refv = reference_one_in_bag(
+            &mut Reference {
+                gc: &gc,
+                kwg: &kwg,
+                klv: &klv,
+                mg: &mut mg,
+            },
+            &board,
+            &racks,
+            0,
+            bag,
+            false,
+        );
         let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
         let solvev = egs.solve_one_in_bag(0, bag);
@@ -2327,10 +2343,12 @@ mod tests {
                 for mover in 0u8..2 {
                     total += 1;
                     let refv = reference_one_in_bag_ex(
-                        &gc,
-                        &kwg,
-                        &klv,
-                        &mut mg,
+                        &mut Reference {
+                            gc: &gc,
+                            kwg: &kwg,
+                            klv: &klv,
+                            mg: &mut mg,
+                        },
                         &pos.board,
                         &pos.racks,
                         mover as usize,
@@ -2478,11 +2496,35 @@ mod tests {
                             apply_place(&gc, &mut nb, &mut nr[mover], *down, *lane, *idx, word);
                             nr[mover].push(drawn);
                             nr[opp] = opp_rack;
-                            *score as f32 - reference(&gc, &kwg, &klv, mg, &nb, &nr, opp, false)
+                            *score as f32
+                                - reference(
+                                    &mut Reference {
+                                        gc: &gc,
+                                        kwg: &kwg,
+                                        klv: &klv,
+                                        mg,
+                                    },
+                                    &nb,
+                                    &nr,
+                                    opp,
+                                    false,
+                                )
                         }
                         _ => {
                             let nr = [mover_rack.to_vec(), opp_rack];
-                            -reference_one_in_bag(&gc, &kwg, &klv, mg, board, &nr, opp, t, true)
+                            -reference_one_in_bag(
+                                &mut Reference {
+                                    gc: &gc,
+                                    kwg: &kwg,
+                                    klv: &klv,
+                                    mg,
+                                },
+                                board,
+                                &nr,
+                                opp,
+                                t,
+                                true,
+                            )
                         }
                     };
                     marg += (w as f32) * v;
