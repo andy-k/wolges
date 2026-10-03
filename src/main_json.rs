@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use rand::prelude::*;
+use std::io::Write;
 use wolges::{
     display, equity, error, game_config, game_state, kibitzer, klv, kwg, move_filter, move_picker,
     movegen, play_scorer,
@@ -238,7 +239,7 @@ fn answer<N: kwg::Node + Sync>(
         game_config.alphabet(),
         game_config.board_layout(),
         &kibitzer.board_tiles,
-    );
+    )?;
 
     let arm_tables = wolges::anagrams::ArmTables::build(kwg, game_config, lean)?;
     let mut move_filter = move_filter::GenMoves::Unfiltered;
@@ -287,9 +288,14 @@ fn answer<N: kwg::Node + Sync>(
             &game_state.current_player().rack,
         )?;
         let plays = &move_generator.plays;
-        println!("found {} moves", plays.len());
+        writeln!(std::io::stdout(), "found {} moves", plays.len())?;
         for play in plays.iter() {
-            println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+            writeln!(
+                std::io::stdout(),
+                "{} {}",
+                play.equity,
+                play.play.fmt(board_snapshot)
+            )?;
         }
     }
 
@@ -303,10 +309,15 @@ fn answer<N: kwg::Node + Sync>(
     });
     let plays = &move_generator.plays;
 
-    println!("found {} moves", plays.len());
+    writeln!(std::io::stdout(), "found {} moves", plays.len())?;
     let mut ps = play_scorer::PlayScorer::new();
     for play in plays.iter() {
-        println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+        writeln!(
+            std::io::stdout(),
+            "{} {}",
+            play.equity,
+            play.play.fmt(board_snapshot)
+        )?;
 
         let movegen_score = match &play.play {
             movegen::Play::Exchange { .. } => 0,
@@ -314,12 +325,13 @@ fn answer<N: kwg::Node + Sync>(
         };
         let recounted_score = ps.compute_score(board_snapshot, &play.play);
         if movegen_score != recounted_score {
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "{} should score {} instead of {}!",
                 play.play.fmt(board_snapshot),
                 recounted_score,
                 movegen_score
-            );
+            )?;
         }
     }
 
@@ -328,8 +340,8 @@ fn answer<N: kwg::Node + Sync>(
         .map(|x| x.into())
         .collect::<Vec<kibitzer::JsonPlayWithEquity>>();
     let ret = serde_json::to_value(result)?;
-    println!("{ret}");
-    println!("{}", serde_json::to_string_pretty(&ret)?);
+    writeln!(std::io::stdout(), "{ret}")?;
+    writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&ret)?)?;
 
     Ok(())
 }

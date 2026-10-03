@@ -38,7 +38,7 @@ fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
     if false {
         let mut rng = rand::rngs::ChaCha20Rng::from_seed(*b"the seed is an array of 32 bytes");
-        println!("{:?}", rng.get_seed());
+        writeln!(std::io::stdout(), "{:?}", rng.get_seed())?;
         let alphabet = alphabet::make_english_alphabet();
         let mut bag;
         let mut v = Vec::new();
@@ -46,13 +46,18 @@ fn main() -> error::Returns<()> {
             v.push((rng.get_seed(), rng.get_stream(), rng.get_word_pos()));
             bag = bag::Bag::new(&alphabet);
             bag.shuffle(&mut rng);
-            println!("Pool {}: {}", bag.len(), alphabet.fmt_rack(bag.as_slice()));
+            writeln!(
+                std::io::stdout(),
+                "Pool {}: {}",
+                bag.len(),
+                alphabet.fmt_rack(bag.as_slice())
+            )?;
         }
-        println!("{v:?}");
+        writeln!(std::io::stdout(), "{v:?}")?;
         for _ in 0..40 {
-            print!(" {}", rng.random_range(0..10));
+            write!(std::io::stdout(), " {}", rng.random_range(0..10))?;
         }
-        println!();
+        writeln!(std::io::stdout())?;
         for _ in 0..5 {
             let (seed, stream, word_pos) = v.pop().unwrap();
             bag = bag::Bag::new(&alphabet);
@@ -60,7 +65,12 @@ fn main() -> error::Returns<()> {
             rng.set_stream(stream);
             rng.set_word_pos(word_pos);
             bag.shuffle(&mut rng);
-            println!("Pool {}: {}", bag.len(), alphabet.fmt_rack(bag.as_slice()));
+            writeln!(
+                std::io::stdout(),
+                "Pool {}: {}",
+                bag.len(),
+                alphabet.fmt_rack(bag.as_slice())
+            )?;
         }
         return Ok(());
     }
@@ -182,7 +192,7 @@ fn do_it<N: kwg::Node + Sync>(
                 .flat_map(|(tile, &count)| std::iter::repeat_n(tile, count as usize)),
         );
         //game_state.bag.shuffle(&mut rng);
-        display::print_game_state(game_config, &game_state, Some(&timers));
+        display::print_game_state(game_config, &game_state, Some(&timers))?;
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config,
@@ -197,7 +207,11 @@ fn do_it<N: kwg::Node + Sync>(
             //println!("{:?}", word);
             //println!("{}", alphabet.fmt_rack(&word))
         });
-        println!("word_prune: {} words", set_of_words.len());
+        writeln!(
+            std::io::stdout(),
+            "word_prune: {} words",
+            set_of_words.len()
+        )?;
         let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
         vec_of_words.sort_unstable();
         //println!("{:?}", vec_of_words);
@@ -207,7 +221,11 @@ fn do_it<N: kwg::Node + Sync>(
             build::BuildOrder::Sorted,
             &vec_of_words.into_boxed_slice(),
         )?;
-        println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
+        writeln!(
+            std::io::stdout(),
+            "word_prune: {} bytes kwg",
+            smaller_kwg_bytes.len()
+        )?;
         //std::fs::write("_word_62702.kwg", smaller_kwg_bytes)?;
         let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes)?;
         let smaller_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
@@ -253,9 +271,14 @@ fn do_it<N: kwg::Node + Sync>(
             return Err("movegen cannot work with smaller kwg".into());
         }
         let plays = plays2;
-        println!("{} moves found...", plays.len());
+        writeln!(std::io::stdout(), "{} moves found...", plays.len())?;
         for play in plays.iter() {
-            println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+            writeln!(
+                std::io::stdout(),
+                "{} {}",
+                play.equity,
+                play.play.fmt(board_snapshot)
+            )?;
         }
         return Ok(());
     }
@@ -269,7 +292,7 @@ fn do_it<N: kwg::Node + Sync>(
 
         loop {
             timers.set_turn(game_state.turn as i8);
-            display::print_game_state(game_config, &game_state, Some(&timers));
+            display::print_game_state(game_config, &game_state, Some(&timers))?;
 
             if false {
                 let fen_str = format!(
@@ -280,13 +303,16 @@ fn do_it<N: kwg::Node + Sync>(
                         &game_state.board_tiles,
                     )
                 );
-                println!("{fen_str}");
+                writeln!(std::io::stdout(), "{fen_str}")?;
                 let parsed_fen = fen_parser.parse(&fen_str)?;
                 if parsed_fen != &game_state.board_tiles[..] {
-                    println!(
+                    writeln!(
+                        std::io::stdout(),
                         "{} parses into {:?} (expecting {:?})",
-                        fen_str, parsed_fen, game_state.board_tiles
-                    );
+                        fen_str,
+                        parsed_fen,
+                        game_state.board_tiles
+                    )?;
                 }
             }
 
@@ -297,13 +323,14 @@ fn do_it<N: kwg::Node + Sync>(
             };
             if let move_filter::GenMoves::Tilt { tilt, bot_level } = filtered_movegen {
                 tilt.tilt_by_rng(&mut rng, *bot_level);
-                println!(
+                writeln!(
+                    std::io::stdout(),
                     "Effective tilt: tilt factor = {}/{}, leave scale = {}/{}",
                     tilt.tilt_factor,
                     move_filter::TILT_DENOM,
                     tilt.leave_scale,
                     move_filter::LEAVE_SCALE_DENOM
-                );
+                )?;
             }
 
             let move_picker = if game_state.turn == 0 {
@@ -342,7 +369,11 @@ fn do_it<N: kwg::Node + Sync>(
                     move_generator.gen_remaining_words(board_snapshot, |word: &[u8]| {
                         set_of_words.insert(word.into());
                     });
-                    println!("word_prune: {} words", set_of_words.len());
+                    writeln!(
+                        std::io::stdout(),
+                        "word_prune: {} words",
+                        set_of_words.len()
+                    )?;
                     let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
                     vec_of_words.sort_unstable();
                     let smaller_kwg_bytes = build::build(
@@ -351,7 +382,11 @@ fn do_it<N: kwg::Node + Sync>(
                         build::BuildOrder::Sorted,
                         &vec_of_words.into_boxed_slice(),
                     )?;
-                    println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
+                    writeln!(
+                        std::io::stdout(),
+                        "word_prune: {} bytes kwg",
+                        smaller_kwg_bytes.len()
+                    )?;
                     let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes)?;
                     let smaller_tables =
                         anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
@@ -389,9 +424,14 @@ fn do_it<N: kwg::Node + Sync>(
                 } else {
                     &move_generator.plays
                 };
-                println!("{} moves found...", plays.len());
+                writeln!(std::io::stdout(), "{} moves found...", plays.len())?;
                 for play in plays.iter() {
-                    println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+                    writeln!(
+                        std::io::stdout(),
+                        "{} {}",
+                        play.equity,
+                        play.play.fmt(board_snapshot)
+                    )?;
                 }
             }
 
@@ -422,23 +462,29 @@ fn do_it<N: kwg::Node + Sync>(
                     movegen::EquityPredicate::AcceptAll,
                 );
                 let plays = &mut move_generator.plays;
-                println!("{} moves found...", plays.len());
+                writeln!(std::io::stdout(), "{} moves found...", plays.len())?;
                 let mut issues = 0;
                 let mut ps = play_scorer::PlayScorer::new();
                 for play in plays.iter() {
                     match ps.validate_play(board_snapshot, &game_state, &play.play) {
                         Err(err) => {
                             issues += 1;
-                            println!("{} is not valid, {}!", play.play.fmt(board_snapshot), err);
+                            writeln!(
+                                std::io::stdout(),
+                                "{} is not valid, {}!",
+                                play.play.fmt(board_snapshot),
+                                err
+                            )?;
                         }
                         Ok(adjusted_play) => {
                             if let Some(canonical_play) = adjusted_play {
                                 issues += 1;
-                                println!(
+                                writeln!(
+                                    std::io::stdout(),
                                     "{} is valid, but reformats into {}!",
                                     play.play.fmt(board_snapshot),
                                     canonical_play.fmt(board_snapshot)
-                                );
+                                )?;
                             }
                             let movegen_score = match &play.play {
                                 movegen::Play::Exchange { .. } => 0,
@@ -447,12 +493,13 @@ fn do_it<N: kwg::Node + Sync>(
                             let recounted_score = ps.compute_score(board_snapshot, &play.play);
                             if movegen_score != recounted_score {
                                 issues += 1;
-                                println!(
+                                writeln!(
+                                    std::io::stdout(),
                                     "{} should score {} instead of {}!",
                                     play.play.fmt(board_snapshot),
                                     recounted_score,
                                     movegen_score
-                                );
+                                )?;
                             } else {
                                 let recounted_equity = ps.compute_equity(
                                     board_snapshot,
@@ -463,17 +510,22 @@ fn do_it<N: kwg::Node + Sync>(
                                 );
                                 if play.equity.raw() != recounted_equity {
                                     issues += 1;
-                                    println!(
+                                    writeln!(
+                                        std::io::stdout(),
                                         "{} should have equity {} instead of {}!",
                                         play.play.fmt(board_snapshot),
                                         equity::Equity::new(recounted_equity),
                                         play.equity
-                                    );
+                                    )?;
                                 }
                             }
                             if !ps.words_are_valid(board_snapshot, &play.play) {
                                 issues += 1;
-                                println!("{} forms invalid words!", play.play.fmt(board_snapshot));
+                                writeln!(
+                                    std::io::stdout(),
+                                    "{} forms invalid words!",
+                                    play.play.fmt(board_snapshot)
+                                )?;
                             }
                         }
                     }
@@ -493,20 +545,21 @@ fn do_it<N: kwg::Node + Sync>(
             )?;
             let plays = &mut move_generator.plays;
             let play = &plays[0].play; // assume at least there's always Pass
-            println!("Playing: {}", play.fmt(board_snapshot));
+            writeln!(std::io::stdout(), "Playing: {}", play.fmt(board_snapshot))?;
 
             game_state.play(game_config, &mut rng, play)?;
 
             match game_state.check_game_ended(game_config, &mut final_scores)? {
                 game_state::CheckGameEnded::PlayedOut => {
-                    println!("Player {} went out", game_state.turn + 1);
+                    writeln!(std::io::stdout(), "Player {} went out", game_state.turn + 1)?;
                     break;
                 }
                 game_state::CheckGameEnded::ZeroScores => {
-                    println!(
+                    writeln!(
+                        std::io::stdout(),
                         "Player {} ended game by making yet another zero score",
                         game_state.turn + 1
-                    );
+                    )?;
                     break;
                 }
                 game_state::CheckGameEnded::NotEnded => {}
@@ -534,16 +587,21 @@ fn do_it<N: kwg::Node + Sync>(
         }
         timers.set_turn(-1);
 
-        display::print_game_state(game_config, &game_state, Some(&timers));
+        display::print_game_state(game_config, &game_state, Some(&timers))?;
         for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
             *d = equity::descale_score(f);
         }
-        println!("Final scores: {display_scores:?}");
+        writeln!(std::io::stdout(), "Final scores: {display_scores:?}")?;
         let mut has_time_adjustment = false;
         for (i, &clock_ms) in timers.clocks_ms.iter().enumerate() {
             let adjustment = game_config.time_adjustment(clock_ms);
             if adjustment != 0 {
-                println!("Player {} adjustment {}", i + 1, adjustment);
+                writeln!(
+                    std::io::stdout(),
+                    "Player {} adjustment {}",
+                    i + 1,
+                    adjustment
+                )?;
                 final_scores[i] = i32::try_from(adjustment * i64::from(equity::SCALE))
                     .ok()
                     .and_then(|scaled| final_scores[i].checked_add(scaled))
@@ -555,7 +613,7 @@ fn do_it<N: kwg::Node + Sync>(
             for (d, &f) in display_scores.iter_mut().zip(final_scores.iter()) {
                 *d = equity::descale_score(f);
             }
-            println!("Really final scores: {display_scores:?}");
+            writeln!(std::io::stdout(), "Really final scores: {display_scores:?}")?;
         }
 
         let spr = display_scores[0] - display_scores[1];
@@ -566,7 +624,8 @@ fn do_it<N: kwg::Node + Sync>(
         win_stats_0.update(p0dw as f64 * 50.0);
         loss_draw_win[p0dw as usize] += 1;
 
-        println!(
+        writeln!(
+            std::io::stdout(),
             "Stats: {display_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3})",
             loss_draw_win[0] + loss_draw_win[1] + loss_draw_win[2],
             loss_draw_win[2],
@@ -580,7 +639,7 @@ fn do_it<N: kwg::Node + Sync>(
             spread_stats_0.standard_deviation(),
             win_stats_0.mean(),
             win_stats_0.standard_deviation(),
-        );
+        )?;
     } // loop
 
     //Ok(())

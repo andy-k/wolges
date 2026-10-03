@@ -1,5 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
+use std::io::Write;
 use wolges::{
     alphabet, anagrams, bites, build, display, error, fash, game_config, game_state, klv, kwg,
     move_picker, movegen,
@@ -237,7 +238,7 @@ fn simulate<N: kwg::Node>(
             .bag
             .replenish(&mut player.rack, game_config.rack_size() as usize, i);
     }
-    display::print_game_state(game_config, &game_state, None);
+    display::print_game_state(game_config, &game_state, None)?;
 
     // perform word prune.
 
@@ -257,7 +258,11 @@ fn simulate<N: kwg::Node>(
             set_of_words.insert(word.into());
         },
     );
-    println!("word_prune: {} words", set_of_words.len());
+    writeln!(
+        std::io::stdout(),
+        "word_prune: {} words",
+        set_of_words.len()
+    )?;
     let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
     vec_of_words.sort_unstable();
     let smaller_kwg_bytes = build::build(
@@ -266,7 +271,11 @@ fn simulate<N: kwg::Node>(
         build::BuildOrder::Sorted,
         &vec_of_words.into_boxed_slice(),
     )?;
-    println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
+    writeln!(
+        std::io::stdout(),
+        "word_prune: {} bytes kwg",
+        smaller_kwg_bytes.len()
+    )?;
     let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
     let arm_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
     move_generator.reset_for_another_kwg();
@@ -311,15 +320,16 @@ fn simulate<N: kwg::Node>(
     driver.begin_decision(&move_generator, &game_state, chunk)?;
     done += chunk;
     loop {
-        println!("\niter {done}");
+        writeln!(std::io::stdout(), "\niter {done}")?;
         for (i, (play_index, _obj, equity_mean, win_rate)) in (1..).zip(driver.leaderboard(10)) {
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "{:3} {:6.2} {:6.2} {}",
                 i,
                 equity_mean,
                 100.0 * win_rate,
                 move_generator.plays[play_index].play.fmt(board_snapshot)
-            );
+            )?;
         }
         if done >= sim_iters {
             break;

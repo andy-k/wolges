@@ -2,6 +2,7 @@
 
 use super::{game_config, klv, kwg, movegen, prob};
 use rand::prelude::*;
+use std::io::Write;
 
 #[derive(Clone)]
 pub struct LimitedVocabChecker {
@@ -164,9 +165,17 @@ impl<'a> Tilt<'a> {
                 true
             } else {
                 if false {
-                    println!(
+                    // a trace line; a predicate has no error to return, so a
+                    // failed write is let go rather than a panic
+                    let _ = writeln!(
+                        std::io::stdout(),
                         "Rejecting word {:?}, lhs={} rhs={} (this={} over max={}), tilt={}",
-                        word, lhs, rhs, this_wp, max_wp, self.tilt_factor
+                        word,
+                        lhs,
+                        rhs,
+                        this_wp,
+                        max_wp,
+                        self.tilt_factor
                     );
                 }
                 false

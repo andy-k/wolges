@@ -108,6 +108,7 @@ fn is_cum_token(coord: &str) -> bool {
     l1 == b.len()
 }
 
+use std::io::Write;
 use std::str::FromStr;
 
 impl Question {
@@ -515,7 +516,7 @@ fn run_batch<N: kwg::Node>(
         )?;
         egs.init(&board_tiles, [&rack0, &rack1]);
         let v = egs.solve(player)?;
-        println!("{line_index}\t{v}");
+        writeln!(std::io::stdout(), "{line_index}\t{v}")?;
     }
     Ok(())
 }
@@ -1530,11 +1531,19 @@ fn solve_position<N: kwg::Node>(
             set_of_words.insert(word.into());
         },
     );
-    println!("word_prune: {} words", set_of_words.len());
+    writeln!(
+        std::io::stdout(),
+        "word_prune: {} words",
+        set_of_words.len()
+    )?;
     let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
     vec_of_words.sort_unstable();
     let smaller_kwg_bytes = build_pruned_kwg(game_config, &vec_of_words)?;
-    println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
+    writeln!(
+        std::io::stdout(),
+        "word_prune: {} bytes kwg",
+        smaller_kwg_bytes.len()
+    )?;
     let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
     let arm_tables = solver_tables(&smaller_kwg, game_config, lean)?;
     move_generator.reset_for_another_kwg();
@@ -1557,7 +1566,7 @@ fn solve_position<N: kwg::Node>(
         let result = match result {
             Ok(result) => result,
             Err(unsupported) => {
-                println!("peg: {unsupported}");
+                writeln!(std::io::stdout(), "peg: {unsupported}")?;
                 return Ok(());
             }
         };
@@ -1565,7 +1574,10 @@ fn solve_position<N: kwg::Node>(
 
         match &result.best_move {
             Some(endgame::PegMove::Pass) => {
-                println!("peg: model = committed; best move = pass");
+                writeln!(
+                    std::io::stdout(),
+                    "peg: model = committed; best move = pass"
+                )?;
             }
             Some(endgame::PegMove::Place(movegen::Play::Place {
                 down,
@@ -1587,21 +1599,26 @@ fn solve_position<N: kwg::Node>(
                         word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
                     }
                 }
-                println!("peg: model = committed; best move = {coord} {word_str} (scores {score})");
+                writeln!(
+                    std::io::stdout(),
+                    "peg: model = committed; best move = {coord} {word_str} (scores {score})"
+                )?;
             }
             Some(endgame::PegMove::Place(_)) => unreachable!("Place holds a Play::Place"),
             None => {
-                println!(
+                writeln!(
+                    std::io::stdout(),
                     "peg: model = clairvoyant bound (exchange-legal config; not the in-game value)"
-                );
+                )?;
             }
         }
-        println!(
+        writeln!(
+            std::io::stdout(),
             "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles \
              (current score {score_diff:+})",
             result.hypotheses.len(),
             total_unseen,
-        );
+        )?;
         for &(bag_tile, weight, value) in &result.hypotheses {
             let mut opp = Vec::new();
             for (u, &c) in available_tally.iter().enumerate() {
@@ -1616,29 +1633,32 @@ fn solve_position<N: kwg::Node>(
             } else {
                 "loss"
             };
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "  bag={} (x{}): opp rack [{}] -> game margin {} ({})",
                 alphabet.of_rack(bag_tile).unwrap_or("?"),
                 weight,
                 alphabet.fmt_rack(&opp),
                 value / equity::SCALE as f32,
                 outcome,
-            );
+            )?;
         }
-        println!(
+        writeln!(
+            std::io::stdout(),
             "peg: win% {:.4}, expected game margin {}",
             result.win_pct * 100.0,
             result.expected_margin / equity::SCALE as f32,
-        );
+        )?;
     } else {
         egs.init(&board_tiles, [&question.rack, &oppo_rack]);
         let future_margin = egs.evaluate(0)?;
         let total_margin = equity::scale_score(score_diff) as f32 + future_margin;
-        println!(
+        writeln!(
+            std::io::stdout(),
             "total game margin (current score {score_diff:+} + future {}) = {}",
             future_margin / equity::SCALE as f32,
             total_margin / equity::SCALE as f32,
-        );
+        )?;
     }
 
     Ok(())

@@ -126,6 +126,7 @@ fn read_machine_words_sorted_by_length(
     Ok(machine_words.into_boxed_slice())
 }
 
+use std::io::Write;
 use std::str::FromStr;
 
 #[inline]
@@ -899,7 +900,11 @@ fn old_main() -> error::Returns<()> {
                 )?,
             )?,
         )?;
-        println!("{:?} for reading+building+writing CSW24 kwg", t0.elapsed());
+        writeln!(
+            std::io::stdout(),
+            "{:?} for reading+building+writing CSW24 kwg",
+            t0.elapsed()
+        )?;
     }
     {
         let t0 = std::time::Instant::now();
@@ -915,10 +920,11 @@ fn old_main() -> error::Returns<()> {
                 )?),
             )?,
         )?;
-        println!(
+        writeln!(
+            std::io::stdout(),
             "{:?} for reading+building+writing CSW24 alpha dawg",
             t0.elapsed()
-        );
+        )?;
     }
     std::fs::write(
         "lexbin/NWL23.kwg",
@@ -958,10 +964,11 @@ fn old_main() -> error::Returns<()> {
                 )?,
             )?,
         )?;
-        println!(
+        writeln!(
+            std::io::stdout(),
             "{:?} for reading+building+writing polish gaddawg",
             t0.elapsed()
-        );
+        )?;
     }
 
     if true {
@@ -972,7 +979,11 @@ fn old_main() -> error::Returns<()> {
             let t0 = std::time::Instant::now();
             let kwg =
                 kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?)?;
-            println!("{:?} for rereading CSW24.kwg", t0.elapsed());
+            writeln!(
+                std::io::stdout(),
+                "{:?} for rereading CSW24.kwg",
+                t0.elapsed()
+            )?;
             let t0 = std::time::Instant::now();
             std::fs::write(
                 "lexbin/CSW24.dawg",
@@ -983,7 +994,11 @@ fn old_main() -> error::Returns<()> {
                     lexport::MacondoFormat::Dawg,
                 )?,
             )?;
-            println!("{:?} for exporting CSW24 dawg", t0.elapsed());
+            writeln!(
+                std::io::stdout(),
+                "{:?} for exporting CSW24 dawg",
+                t0.elapsed()
+            )?;
             let t0 = std::time::Instant::now();
             std::fs::write(
                 "lexbin/CSW24.gaddag",
@@ -994,7 +1009,11 @@ fn old_main() -> error::Returns<()> {
                     lexport::MacondoFormat::Gaddag,
                 )?,
             )?;
-            println!("{:?} for exporting CSW24 gaddag", t0.elapsed());
+            writeln!(
+                std::io::stdout(),
+                "{:?} for exporting CSW24 gaddag",
+                t0.elapsed()
+            )?;
         }
         {
             let kwg =
@@ -1040,12 +1059,20 @@ fn old_main() -> error::Returns<()> {
                 )?,
             )?;
         }
-        println!("{:?} for exporting many files", t0.elapsed());
+        writeln!(
+            std::io::stdout(),
+            "{:?} for exporting many files",
+            t0.elapsed()
+        )?;
         if true {
             let t0 = std::time::Instant::now();
             let kwg =
                 kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/OSPS49.kwg")?)?;
-            println!("{:?} for rereading OSPS49.kwg", t0.elapsed());
+            writeln!(
+                std::io::stdout(),
+                "{:?} for rereading OSPS49.kwg",
+                t0.elapsed()
+            )?;
             let t0 = std::time::Instant::now();
             std::fs::write(
                 "lexbin/OSPS49.dawg",
@@ -1056,7 +1083,11 @@ fn old_main() -> error::Returns<()> {
                     lexport::MacondoFormat::Dawg,
                 )?,
             )?;
-            println!("{:?} for exporting OSPS49 dawg", t0.elapsed());
+            writeln!(
+                std::io::stdout(),
+                "{:?} for exporting OSPS49 dawg",
+                t0.elapsed()
+            )?;
             let t0 = std::time::Instant::now();
             std::fs::write(
                 "lexbin/OSPS49.gaddag",
@@ -1067,7 +1098,11 @@ fn old_main() -> error::Returns<()> {
                     lexport::MacondoFormat::Gaddag,
                 )?,
             )?;
-            println!("{:?} for exporting OSPS49 gaddag", t0.elapsed());
+            writeln!(
+                std::io::stdout(),
+                "{:?} for exporting OSPS49 gaddag",
+                t0.elapsed()
+            )?;
         }
     }
 
@@ -1187,7 +1222,11 @@ fn old_main() -> error::Returns<()> {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/allgdw.kwg")?)?;
         let word_counts = kwg.count_dawg_words_alloc()?;
         // because dawg do not need gaddag nodes
-        println!("only counting {} nodes", word_counts.len());
+        writeln!(
+            std::io::stdout(),
+            "only counting {} nodes",
+            word_counts.len()
+        )?;
         let v_csw24_bits = std::fs::read("lexbin/all-CSW24.kwi")?;
         let v_nwl23_bits = std::fs::read("lexbin/all-NWL23.kwi")?;
         let v_ecwl_bits = std::fs::read("lexbin/all-ECWL.kwi")?;
@@ -1202,28 +1241,33 @@ fn old_main() -> error::Returns<()> {
                 out_vec.push(v);
             })?;
             let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
-            print!("{i} {j} {out_vec:?}");
+            write!(std::io::stdout(), "{i} {j} {out_vec:?}")?;
             let byte_index = j as usize / 8;
             let bit = 1 << (j as usize % 8);
             if v_csw24_bits[byte_index] & bit != 0 {
-                print!(" CSW24");
+                write!(std::io::stdout(), " CSW24")?;
             }
             if v_nwl23_bits[byte_index] & bit != 0 {
-                print!(" NWL23");
+                write!(std::io::stdout(), " NWL23")?;
             }
             if v_ecwl_bits[byte_index] & bit != 0 {
-                print!(" ECWL");
+                write!(std::io::stdout(), " ECWL")?;
             }
-            print!(" wp={}", word_prob.word_draw_ways(&out_vec));
-            print!(
+            write!(
+                std::io::stdout(),
+                " wp={}",
+                word_prob.word_draw_ways(&out_vec)
+            )?;
+            write!(
+                std::io::stdout(),
                 " pi={}",
                 u32::from_le_bytes(
                     v_probability_indexes[i as usize * 4..i as usize * 4 + 4]
                         .try_into()
                         .unwrap()
                 )
-            );
-            println!();
+            )?;
+            writeln!(std::io::stdout())?;
             assert_eq!(i, j);
         }
     }

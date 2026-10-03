@@ -4,6 +4,7 @@ use wolges::{alphabet, alphagram, bites, error, fash, klv, kwg, prob, stats};
 
 use kwg::{read_le_u16, read_le_u32};
 use std::fmt::Write;
+use std::io::Write as _;
 use std::str::FromStr;
 
 trait WgReader {
@@ -618,14 +619,15 @@ fn do_wg_check<R: CheckedWg>(
             not_found = true;
         }
     }
-    println!(
+    writeln!(
+        std::io::stdout(),
         "{}",
         if not_found {
             "Play is NOT acceptable"
         } else {
             "Play is Acceptable"
         }
-    );
+    )?;
     Ok(())
 }
 
@@ -1149,7 +1151,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                             return Err("invalid tile".into());
                         }
                     }
-                    println!("{}", word_prob.word_draw_ways(&v));
+                    writeln!(std::io::stdout(), "{}", word_prob.word_draw_ways(&v))?;
                 }
                 Ok(true)
             }
@@ -3341,7 +3343,7 @@ fn main() -> error::Returns<()> {
             let v = y as f32 * 0.1;
             writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
         }
-        print!("{ret}");
+        write!(std::io::stdout(), "{ret}")?;
     } else {
         return Err("invalid argument".into());
     }

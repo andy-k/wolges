@@ -784,16 +784,22 @@ fn run<N: kwg::Node + Sync + Send>(
             driver.begin_decision(&move_generator, &game_state, half)?;
             driver.resume(&move_generator, iters - half)?;
             let split = driver.leader_summary();
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "one_shot leader play_index={} mean={} count={}",
-                one_shot.0, one_shot.1, one_shot.2,
-            );
-            println!(
+                one_shot.0,
+                one_shot.1,
+                one_shot.2,
+            )?;
+            writeln!(
+                std::io::stdout(),
                 "split    leader play_index={} mean={} count={}",
-                split.0, split.1, split.2,
-            );
+                split.0,
+                split.1,
+                split.2,
+            )?;
             if one_shot == split {
-                println!("SIM_RESUME_OK");
+                writeln!(std::io::stdout(), "SIM_RESUME_OK")?;
                 Ok(())
             } else {
                 wolges::return_error!(
@@ -897,9 +903,10 @@ fn run<N: kwg::Node + Sync + Send>(
                 let now_retired = driver.retired_stream_ids().any(|id| id == by_hand);
                 let still_active = driver.active_stream_ids().any(|id| id == by_hand);
                 let kept = driver.stream_count(by_hand).unwrap();
-                println!(
+                writeln!(
+                    std::io::stdout(),
                     "retire stream {by_hand}: count {at_retire} -> {kept}, retired={now_retired} active={still_active}",
-                );
+                )?;
                 if !retired_by_hand || !now_retired || still_active || kept != at_retire {
                     wolges::return_error!(
                         "hand retire did not move the candidate intact".to_string()
@@ -924,9 +931,12 @@ fn run<N: kwg::Node + Sync + Send>(
                     let readmitted = driver.readmit_with_history(id);
                     driver.resume(&move_generator, iters)?;
                     let after = driver.stream_count(id).unwrap();
-                    println!("readmit stream {id}: count before={before} after={after}");
+                    writeln!(
+                        std::io::stdout(),
+                        "readmit stream {id}: count before={before} after={after}"
+                    )?;
                     if readmitted && after >= before {
-                        println!("SIM_MUTATE_OK");
+                        writeln!(std::io::stdout(), "SIM_MUTATE_OK")?;
                         Ok(())
                     } else {
                         wolges::return_error!("readmit dropped history: count reset".to_string())
@@ -4139,34 +4149,38 @@ impl GameStats {
     }
 
     #[inline]
-    fn print(&self, label: &str) {
+    fn print(&self, label: &str) -> std::io::Result<()> {
         let total = self.total_games();
         if total == 0 {
-            return;
+            return Ok(());
         }
         let p0_total = self.p0_wins as f64 + self.p0_draws as f64 / 2.0;
         let p1_total = total as f64 - p0_total;
-        println!("{label}");
-        println!(
+        writeln!(std::io::stdout(), "{label}")?;
+        writeln!(
+            std::io::stdout(),
             "  turns per game: {:.2} (sd={:.2})",
             self.turns.mean(),
             self.turns.standard_deviation(),
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "  played out: {} ({:.2}%)  zero scores: {} ({:.2}%)",
             self.played_out,
             self.played_out as f64 / total as f64 * 100.0,
             self.zero_scores,
             self.zero_scores as f64 / total as f64 * 100.0,
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "  p0 (klv0): {:.1} ({:.2}%)  p1 (klv1): {:.1} ({:.2}%)",
             p0_total,
             p0_total / total as f64 * 100.0,
             p1_total,
             p1_total / total as f64 * 100.0,
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "  wins: {} ({:.2}%)  losses: {} ({:.2}%)  draws: {} ({:.2}%)",
             self.p0_wins,
             self.p0_wins as f64 / total as f64 * 100.0,
@@ -4174,14 +4188,15 @@ impl GameStats {
             self.p0_losses as f64 / total as f64 * 100.0,
             self.p0_draws,
             self.p0_draws as f64 / total as f64 * 100.0,
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "  score: p0={:.2} (sd={:.2})  p1={:.2} (sd={:.2})",
             self.p0_score.mean(),
             self.p0_score.standard_deviation(),
             self.p1_score.mean(),
             self.p1_score.standard_deviation(),
-        );
+        )?;
         let corrected_pct = (p0_total.max(p1_total) - 0.5) / total as f64;
         if corrected_pct > 0.5 {
             let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
@@ -4191,17 +4206,21 @@ impl GameStats {
             } else {
                 "p1 (klv1)"
             };
-            println!("  {leading} leads, confidence: {confidence:.2}%");
+            writeln!(
+                std::io::stdout(),
+                "  {leading} leads, confidence: {confidence:.2}%"
+            )?;
         } else {
-            println!("  no significant difference");
+            writeln!(std::io::stdout(), "  no significant difference")?;
         }
+        Ok(())
     }
 
     #[inline]
-    fn print_porcelain(&self) {
+    fn print_porcelain(&self) -> std::io::Result<()> {
         let total = self.total_games();
         if total == 0 {
-            return;
+            return Ok(());
         }
         let p0_total = self.p0_wins as f64 + self.p0_draws as f64 / 2.0;
         let p1_total = total as f64 - p0_total;
@@ -4212,20 +4231,35 @@ impl GameStats {
         } else {
             0.0
         };
-        println!("WCMP_P0_PCT {:.4}", p0_total / total as f64 * 100.0);
-        println!("WCMP_P1_PCT {:.4}", p1_total / total as f64 * 100.0);
-        println!(
+        writeln!(
+            std::io::stdout(),
+            "WCMP_P0_PCT {:.4}",
+            p0_total / total as f64 * 100.0
+        )?;
+        writeln!(
+            std::io::stdout(),
+            "WCMP_P1_PCT {:.4}",
+            p1_total / total as f64 * 100.0
+        )?;
+        writeln!(
+            std::io::stdout(),
             "WCMP_P0_WINS_PCT {:.4}",
             self.p0_wins as f64 / total as f64 * 100.0
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "WCMP_DRAWS_PCT {:.4}",
             self.p0_draws as f64 / total as f64 * 100.0
-        );
-        println!("WCMP_CONF_PCT {confidence:.4}");
-        println!("WCMP_LEADER {}", if p0_total >= p1_total { 0 } else { 1 });
-        println!("WCMP_GAMES {total}");
-        println!("WCMP_PAIRS {}", total / 2);
+        )?;
+        writeln!(std::io::stdout(), "WCMP_CONF_PCT {confidence:.4}")?;
+        writeln!(
+            std::io::stdout(),
+            "WCMP_LEADER {}",
+            if p0_total >= p1_total { 0 } else { 1 }
+        )?;
+        writeln!(std::io::stdout(), "WCMP_GAMES {total}")?;
+        writeln!(std::io::stdout(), "WCMP_PAIRS {}", total / 2)?;
+        Ok(())
     }
 }
 
@@ -4262,14 +4296,14 @@ impl GamePairStats {
         self.divergent.merge(&other.divergent);
     }
 
-    fn print(&self) {
+    fn print(&self) -> std::io::Result<()> {
         let all_total = self.all.total_games();
         let all_pairs = all_total / 2;
         self.all.print(&format!(
             "{all_total} {} ({all_pairs} {}):",
             plural(all_total, "game", "games"),
             plural(all_pairs, "pair", "pairs"),
-        ));
+        ))?;
         let div_total = self.divergent.total_games();
         if div_total > 0 && div_total < all_total {
             let div_pairs = div_total / 2;
@@ -4278,10 +4312,10 @@ impl GamePairStats {
                 plural(div_total, "game", "games"),
                 plural(div_pairs, "pair", "pairs"),
                 div_pairs as f64 / all_pairs as f64 * 100.0,
-            ));
+            ))?;
         }
 
-        self.all.print_porcelain();
+        self.all.print_porcelain()
     }
 }
 
@@ -4629,7 +4663,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                      move_generator: &mut movegen::KurniaMoveGenerator,
                      scratch: &mut Vec<movegen::ValuedMove>,
                      label: &str|
-     -> usize {
+     -> std::io::Result<usize> {
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
@@ -4676,7 +4710,8 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             scratch,
         );
         let with = count_nonplacing_plays(&move_generator.plays);
-        println!(
+        writeln!(
+            std::io::stdout(),
             "{label}: {}; field of {} holds {without} without the quota, {with} with it",
             match rank {
                 Some(rank) => format!(
@@ -4686,8 +4721,8 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                 None => "only tile plays are generated".to_string(),
             },
             move_picker::SIMMER_FIELD.max_gen,
-        );
-        with
+        )?;
+        Ok(with)
     };
 
     for rack_str in SIM_FIELD_PROBE_RACKS {
@@ -4699,7 +4734,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             &mut move_generator,
             &mut scratch,
             &format!("rack {rack_str}"),
-        );
+        )?;
         if with == 0 {
             writeln!(
                 boxed_stdout_or_stderr(),
@@ -4717,17 +4752,18 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
         }
         extra_turns += 1;
     }
-    println!(
+    writeln!(
+        std::io::stdout(),
         "after {} more turns the bag holds {}, under the {exchange_tile_limit} an exchange needs",
         extra_turns,
         move_generator.num_tiles_in_bag(),
-    );
+    )?;
     let with = probe(
         &game_state,
         &mut move_generator,
         &mut scratch,
         "bag too short to exchange",
-    );
+    )?;
     if with == 0 {
         writeln!(
             boxed_stdout_or_stderr(),
@@ -4737,7 +4773,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
     }
 
     if failures == 0 {
-        println!("SIM_FIELD_OK");
+        writeln!(std::io::stdout(), "SIM_FIELD_OK")?;
         Ok(())
     } else {
         wolges::return_error!(format!("{failures} field checks failed"))
@@ -4799,7 +4835,11 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     driver.reseed(seed);
     driver.begin_decision(&move_generator, &game_state, iters)?;
     let whole = driver.leaderboard(usize::MAX);
-    println!("one call of {iters}: {} candidates", whole.len());
+    writeln!(
+        std::io::stdout(),
+        "one call of {iters}: {} candidates",
+        whole.len()
+    )?;
 
     let mut mismatches = 0u32;
     for trial in 0..trials {
@@ -4817,7 +4857,11 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
         }
         let split = driver.leaderboard(usize::MAX);
         if split == whole {
-            println!("trial {trial}: {} chunks {chunks:?} match", chunks.len());
+            writeln!(
+                std::io::stdout(),
+                "trial {trial}: {} chunks {chunks:?} match",
+                chunks.len()
+            )?;
         } else {
             mismatches += 1;
             writeln!(
@@ -4836,7 +4880,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
         }
     }
     if mismatches == 0 {
-        println!("SIM_CHUNK_OK");
+        writeln!(std::io::stdout(), "SIM_CHUNK_OK")?;
         Ok(())
     } else {
         wolges::return_error!(format!("{mismatches} of {trials} chunkings disagreed"))
@@ -4918,11 +4962,13 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             });
         }
     }
-    println!(
+    writeln!(
+        std::io::stdout(),
         "{tiles_on_board} tiles on the board, {unseen} unseen, {num_candidates} candidate plays \
          in {sheet_elapsed:?}",
-    );
-    println!(
+    )?;
+    writeln!(
+        std::io::stdout(),
         "  valued as {} ({})",
         phase.name(),
         match phase {
@@ -4932,7 +4978,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             BoardPhase::Endgame =>
                 "no leave table: going out is worth twice what the opponent holds",
         },
-    );
+    )?;
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
     let mut rack = Vec::new();
     let mut tally = vec![0u8; num_letters];
@@ -5026,7 +5072,8 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             .iter()
             .all(|&t| tally[t as usize] <= unseen_tally[t as usize]);
         let sheet_best = equity::Equity::new(best).as_f64();
-        println!(
+        writeln!(
+            std::io::stdout(),
             "  {rack_str:<10} best equity {sheet_best:>8.3}  (the move generator says \
              {movegen_best:>8.3} for {movegen_play}{}){}",
             if (sheet_best - movegen_best).abs() < 0.0005 {
@@ -5039,7 +5086,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             } else {
                 "   (not drawable from this board's unseen pool)"
             },
-        );
+        )?;
     }
     Ok(())
 }
@@ -5111,8 +5158,11 @@ fn inspect_dynamic_leaves<L: kwg::Node>(
     game_config.take_rack(&mut pool, &rack)?;
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     let (lat, add, full_v) = lattice_leaves(&klv, num_letters, rack_size, threads)?;
-    println!("rack {rack_str}, {pool_size} tiles unseen");
-    print_rack_keeps(alphabet, &klv, &lat, &add, &full_v, &pool, &rack);
+    writeln!(
+        std::io::stdout(),
+        "rack {rack_str}, {pool_size} tiles unseen"
+    )?;
+    print_rack_keeps(alphabet, &klv, &lat, &add, &full_v, &pool, &rack)?;
     Ok(())
 }
 
@@ -5142,11 +5192,14 @@ fn print_rack_keeps<L: kwg::Node>(
     full_v: &[i32],
     pool: &[u8],
     rack: &[u8],
-) {
+) -> std::io::Result<()> {
     let num_letters = alphabet.len() as usize;
     let rack_size = lat.rack_size();
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
-    println!("  keep                 static    dynamic     delta");
+    writeln!(
+        std::io::stdout(),
+        "  keep                 static    dynamic     delta"
+    )?;
     let mut distinct: Vec<(u8, u8)> = Vec::new();
     for &tile in rack {
         match distinct.last_mut() {
@@ -5193,19 +5246,22 @@ fn print_rack_keeps<L: kwg::Node>(
     for (_, kept, static_value, dynamic) in rows {
         let scale = equity::SCALE as f64;
         if dynamic == census::UNPLAYABLE {
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "  {kept:<16} {:>10.3}  undrawable",
                 static_value as f64 / scale,
-            );
+            )?;
         } else {
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "  {kept:<16} {:>10.3} {:>10.3} {:>9.3}",
                 static_value as f64 / scale,
                 dynamic as f64 / scale,
                 (dynamic - static_value) as f64 / scale,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 // each multiset's value once the tiles still to draw come from the pool less
@@ -5269,7 +5325,7 @@ fn print_moves<N: kwg::Node, L: kwg::Node>(
     rack: &[u8],
     num_moves: usize,
     dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
-) {
+) -> std::io::Result<()> {
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot,
         rack,
@@ -5279,12 +5335,14 @@ fn print_moves<N: kwg::Node, L: kwg::Node>(
         dynamic_leaves,
     });
     for play in &move_generator.plays {
-        println!(
+        writeln!(
+            std::io::stdout(),
             "  {:>9.3}  {}",
             play.equity.raw() as f64 / equity::SCALE as f64,
             play.play.fmt(board_snapshot),
-        );
+        )?;
     }
+    Ok(())
 }
 
 struct PositionParams<'a> {
@@ -5320,7 +5378,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     let rack_size = game_config.rack_size() as usize;
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
     let board_tiles = fen_parser.parse(fen)?.to_vec();
-    display::print_board(alphabet, board_layout, &board_tiles);
+    display::print_board(alphabet, board_layout, &board_tiles)?;
 
     let off_board = game_config.tiles_off_board(&board_tiles)?;
     let mut unseen = off_board.clone();
@@ -5332,9 +5390,15 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     }
     let unseen_size: usize = unseen.iter().map(|&c| c as usize).sum();
     if rack.is_some() {
-        println!("unseen: {unseen_size} tiles, the bag and the other racks");
+        writeln!(
+            std::io::stdout(),
+            "unseen: {unseen_size} tiles, the bag and the other racks"
+        )?;
     } else {
-        println!("not on the board: {unseen_size} tiles, the bag and every rack");
+        writeln!(
+            std::io::stdout(),
+            "not on the board: {unseen_size} tiles, the bag and every rack"
+        )?;
     }
     let (mut vowels, mut consonants) = (0usize, 0usize);
     let mut cells = Vec::with_capacity(num_letters);
@@ -5354,27 +5418,29 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         ));
     }
     for line in cells.chunks(8) {
-        println!("  {}", line.join("  ").trim_end());
+        writeln!(std::io::stdout(), "  {}", line.join("  ").trim_end())?;
     }
-    println!(
+    writeln!(
+        std::io::stdout(),
         "  vowels {vowels}, consonants {consonants}, blanks {}",
         unseen[0]
-    );
+    )?;
     if rack.is_some() {
         let others = (game_config.num_players() as usize).saturating_sub(1) * rack_size;
         if unseen_size > others {
-            println!("  in the bag: {}", unseen_size - others);
+            writeln!(std::io::stdout(), "  in the bag: {}", unseen_size - others)?;
         } else if game_config.num_players() == 2 {
             let mut other = Vec::new();
             for (tile, &count) in (0u8..).zip(unseen.iter()) {
                 other.extend(std::iter::repeat_n(tile, count as usize));
             }
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "  the bag is empty: the other rack is {}",
                 alphabet.fmt_rack(&other)
-            );
+            )?;
         } else {
-            println!("  the bag is empty");
+            writeln!(std::io::stdout(), "  the bag is empty")?;
         }
     }
 
@@ -5408,16 +5474,21 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         }
     }
     if not_words.is_empty() {
-        println!("words: {num_words}, every one in the lexicon");
+        writeln!(
+            std::io::stdout(),
+            "words: {num_words}, every one in the lexicon"
+        )?;
     } else {
-        println!(
+        writeln!(
+            std::io::stdout(),
             "words: {num_words}, {} not in the lexicon: {}",
             not_words.len(),
             not_words.join(" ")
-        );
+        )?;
     }
     let shape = board_shape(board_layout, &board_tiles);
-    println!(
+    writeln!(
+        std::io::stdout(),
         "shape: {} tiles, mean word length {:.3}, perimeter per tile {:.3}, radius of gyration {:.3}, {} holes",
         shape.area,
         if shape.num_words > 0 {
@@ -5432,13 +5503,13 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         },
         shape.radius_of_gyration,
         shape.holes,
-    );
+    )?;
 
     let lattice = if rack.is_some() || dynamic_out.is_some() {
         match lattice_leaves(&klv, num_letters, rack_size, threads) {
             Ok(lattice) => Some(lattice),
             Err(e) if dynamic_out.is_none() => {
-                println!("no dynamic leaves: {e}");
+                writeln!(std::io::stdout(), "no dynamic leaves: {e}")?;
                 None
             }
             Err(e) => return Err(e),
@@ -5456,16 +5527,22 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
             klv: &klv,
         };
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-        println!("rack {rack}: the best {num_moves} moves by the leaves");
+        writeln!(
+            std::io::stdout(),
+            "rack {rack}: the best {num_moves} moves by the leaves"
+        )?;
         print_moves(
             &mut move_generator,
             &board_snapshot,
             &rack_tiles,
             num_moves,
             None,
-        );
+        )?;
         if let Some((lat, add, full_v)) = &lattice {
-            println!("rack {rack}: the best {num_moves} moves by dynamic leaves");
+            writeln!(
+                std::io::stdout(),
+                "rack {rack}: the best {num_moves} moves by dynamic leaves"
+            )?;
             print_moves(
                 &mut move_generator,
                 &board_snapshot,
@@ -5477,9 +5554,12 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
                     full_v,
                     min_keep: 0,
                 }),
-            );
-            println!("rack {rack}: every subrack kept, {unseen_size} tiles unseen");
-            print_rack_keeps(alphabet, &klv, lat, add, full_v, &unseen, &rack_tiles);
+            )?;
+            writeln!(
+                std::io::stdout(),
+                "rack {rack}: every subrack kept, {unseen_size} tiles unseen"
+            )?;
+            print_rack_keeps(alphabet, &klv, lat, add, full_v, &unseen, &rack_tiles)?;
         }
     }
     if let (Some(path), Some((lat, add, full_v))) = (dynamic_out, &lattice) {
@@ -5496,10 +5576,11 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
             false,
             path,
         )?;
-        println!(
+        writeln!(
+            std::io::stdout(),
             "dynamic leaves: wrote {written} to {path}, keeping nothing worth {:.3}",
             baseline / equity::SCALE as f64
-        );
+        )?;
     }
     Ok(())
 }
@@ -5706,7 +5787,7 @@ fn board_stats(
     if boards == 0 {
         return Err("no boards to measure".into());
     }
-    println!("boards: {boards}");
+    writeln!(std::io::stdout(), "boards: {boards}")?;
     for (label, stat) in [
         ("tiles on board", &area),
         ("words", &words),
@@ -5715,11 +5796,12 @@ fn board_stats(
         ("radius of gyration", &radius),
         ("holes", &holes),
     ] {
-        println!(
+        writeln!(
+            std::io::stdout(),
             "  {label}: {:.3} (sd={:.3})",
             stat.mean(),
             stat.standard_deviation(),
-        );
+        )?;
     }
     Ok(())
 }
@@ -6036,8 +6118,8 @@ fn compare_seats<
             combined.merge(&handle.join().unwrap()?);
         }
 
-        println!();
-        combined.print();
+        writeln!(std::io::stdout())?;
+        combined.print()?;
 
         Ok(())
     })

@@ -4,6 +4,7 @@
 // and it still has many bugs
 
 use super::{anagrams, display, error, fash, game_config, klv, kwg, move_picker, movegen};
+use std::io::Write;
 
 // move one tile at a time from rack
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -356,12 +357,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             };
             last_valuation = valuation;
             if verbose {
-                println!(
+                writeln!(
+                    std::io::stdout(),
                     "valuation for depth {max_depth} is {}",
                     valuation / super::equity::SCALE as f32
-                );
-                self.print_progress();
-                self.print_best_line(player_idx);
+                )?;
+                self.print_progress()?;
+                self.print_best_line(player_idx)?;
             }
             // check for time limit here
 
@@ -492,10 +494,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             ];
 
             /*
-            println!(
+            writeln!(std::io::stdout(),
                 "position {} has racks {:?} and board",
                 state_idx, current_ply_buffer.racks
-            );
+            )?;
             super::display::print_board(
                 self.game_config.alphabet(),
                 self.game_config.board_layout(),
@@ -732,7 +734,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             .tick_periods
             .update(self.work_buffer.t0.elapsed().as_millis() as u64 / 10000)
         {
-            self.print_progress();
+            self.print_progress()?;
         }
 
         Ok(best_valuation)
@@ -789,7 +791,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     #[inline]
-    pub fn print_best_line(&mut self, player_idx: u8) {
+    pub fn print_best_line(&mut self, player_idx: u8) -> std::io::Result<()> {
         let mut current_ply_buffer = std::mem::take(&mut self.work_buffer.current_ply_buffer);
         let board_tiles = &mut current_ply_buffer.board_tiles;
         board_tiles.clone_from(&self.board_tiles);
@@ -797,6 +799,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         racks.clone_from(&self.racks);
         let mut leftovers = [f32::NAN, f32::NAN];
         let mut i = 0usize;
+        let mut written = Ok(());
         self.append_solution(0, player_idx, |ply| {
             let player_turn_idx = (player_idx as usize + i) & 1;
             let rack = &mut racks[player_turn_idx];
@@ -806,23 +809,26 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     movegen::Play::Exchange { .. } => 0.0,
                     movegen::Play::Place { score, .. } => *score as f32,
                 };
-            println!(
-                "{}: p{}: {}{:width$} {} {}",
-                i,
-                player_turn_idx,
-                self.game_config.alphabet().fmt_rack(rack),
-                "",
-                ply.equity / super::equity::SCALE as f32,
-                ply.play.fmt(&movegen::BoardSnapshot {
-                    board_tiles,
-                    game_config: self.game_config,
-                    kwg: self.kwg,
-                    anagrams: self.arm_tables.anagrams(),
-                    rack_lengths: self.arm_tables.rack_lengths(),
-                    klv: &self.klv,
-                }),
-                width = self.game_config.rack_size() as usize - rack.len(),
-            );
+            if written.is_ok() {
+                written = writeln!(
+                    std::io::stdout(),
+                    "{}: p{}: {}{:width$} {} {}",
+                    i,
+                    player_turn_idx,
+                    self.game_config.alphabet().fmt_rack(rack),
+                    "",
+                    ply.equity / super::equity::SCALE as f32,
+                    ply.play.fmt(&movegen::BoardSnapshot {
+                        board_tiles,
+                        game_config: self.game_config,
+                        kwg: self.kwg,
+                        anagrams: self.arm_tables.anagrams(),
+                        rack_lengths: self.arm_tables.rack_lengths(),
+                        klv: &self.klv,
+                    }),
+                    width = self.game_config.rack_size() as usize - rack.len(),
+                );
+            }
             match &ply.play {
                 movegen::Play::Exchange { .. } => {}
                 movegen::Play::Place {
@@ -849,39 +855,44 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
             i += 1;
         });
+        written?;
         for _ in 0..2 {
             let player_turn_idx = (player_idx as usize + i) & 1;
             let rack = &racks[player_turn_idx];
             let leftover = leftovers[player_turn_idx];
-            print!(
+            write!(
+                std::io::stdout(),
                 "e: p{}: {}",
                 player_turn_idx,
                 self.game_config.alphabet().fmt_rack(rack)
-            );
+            )?;
             if !leftover.is_nan() {
-                print!(
+                write!(
+                    std::io::stdout(),
                     "{:width$} {}",
                     "",
                     leftover / super::equity::SCALE as f32,
                     width = self.game_config.rack_size() as usize - rack.len(),
-                );
+                )?;
             }
-            println!();
+            writeln!(std::io::stdout())?;
             i += 1;
         }
         display::print_board(
             self.game_config.alphabet(),
             self.game_config.board_layout(),
             board_tiles,
-        );
+        )?;
         self.work_buffer.current_ply_buffer = current_ply_buffer;
+        Ok(())
     }
 
     #[inline]
-    fn print_progress(&self) {
+    fn print_progress(&self) -> std::io::Result<()> {
         let dur0 = self.work_buffer.t0.elapsed();
         let dur1 = self.work_buffer.dur_movegen;
-        println!(
+        writeln!(
+            std::io::stdout(),
             "after {:?} ({:?} on movegen), there are {} states, {} evaluated, {} child_plays, {} plays",
             dur0,
             dur1,
@@ -889,7 +900,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.work_buffer.state_eval.len(),
             self.work_buffer.child_plays.len(),
             self.work_buffer.plays.len(),
-        );
+        )
     }
 
     #[inline]
