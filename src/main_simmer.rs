@@ -305,7 +305,7 @@ fn simulate<N: kwg::Node>(
 
     let chunk = 50u64;
     let mut done = 0u64;
-    driver.begin_decision(&move_generator, &game_state, chunk);
+    driver.begin_decision(&move_generator, &game_state, chunk)?;
     done += chunk;
     loop {
         println!("\niter {done}");
@@ -321,7 +321,7 @@ fn simulate<N: kwg::Node>(
         if done >= sim_iters {
             break;
         }
-        driver.resume(&move_generator, chunk);
+        driver.resume(&move_generator, chunk)?;
         done += chunk;
     }
 

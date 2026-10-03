@@ -131,9 +131,9 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node, R: rand::Rng + SeedableRng + si
     klv: &klv::Klv<L>,
     play: &movegen::Play,
     table: Option<&win_pct::WinPctTable>,
-) -> (f64, i32, f64) {
-    let game_ended = simmer.simulate(game_config, kwg, arm_tables, klv, play);
-    let final_spread = simmer.final_equity_spread().unwrap();
+) -> error::Returns<(f64, i32, f64)> {
+    let game_ended = simmer.simulate(game_config, kwg, arm_tables, klv, play)?;
+    let final_spread = simmer.final_equity_spread()?;
     let win_prob = if simmer.wants_win_prob() {
         simmer.compute_win_prob(game_ended, final_spread, table)
     } else {
@@ -141,10 +141,10 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node, R: rand::Rng + SeedableRng + si
     };
     let sim_spread = final_spread
         .checked_sub(simmer.initial_score_spread)
-        .expect("score overflow");
+        .ok_or("score overflow")?;
     let objective = simmer::sim_objective(sim_spread, win_prob, simmer.win_prob_weightage());
 
-    (objective, sim_spread, win_prob)
+    Ok((objective, sim_spread, win_prob))
 }
 
 #[inline(always)]
@@ -446,15 +446,14 @@ impl<
         move_generator: &movegen::KurniaMoveGenerator,
         budget: u64,
         count: u64,
-    ) {
+    ) -> error::Returns<()> {
         if self.candidates.len() < 2 {
-            return;
+            return Ok(());
         }
 
         #[cfg(not(target_family = "wasm"))]
         if self.sim_threads > 1 {
-            self.run_iterations_parallel(move_generator, budget, count);
-            return;
+            return self.run_iterations_parallel(move_generator, budget, count);
         }
         let mut candidates = std::mem::take(&mut self.candidates);
         let mut retired = std::mem::take(&mut self.retired);
@@ -474,7 +473,7 @@ impl<
                     self.klv,
                     &move_generator.plays[candidate.play_index].play,
                     self.win_pct_table,
-                );
+                )?;
                 candidate.stats.update(value);
                 if OBSERVE {
                     candidate
@@ -506,6 +505,7 @@ impl<
         self.simmer.restore_prepared(&self.prepared_pristine);
         self.candidates = candidates;
         self.retired = retired;
+        Ok(())
     }
 
     // reduce every iteration in the same order whatever the thread count: the variance
@@ -517,7 +517,7 @@ impl<
         move_generator: &movegen::KurniaMoveGenerator,
         budget: u64,
         count: u64,
-    ) {
+    ) -> error::Returns<()> {
         let mut candidates = std::mem::take(&mut self.candidates);
         let mut retired = std::mem::take(&mut self.retired);
         const Z: f64 = 1.96; // 95% confidence interval
@@ -545,7 +545,7 @@ impl<
 
             let mut thread_rows: Vec<(Vec<f64>, Vec<f64>, Vec<f64>)> =
                 Vec::with_capacity(num_threads);
-            std::thread::scope(|scope| {
+            std::thread::scope(|scope| -> error::Returns<()> {
                 let mut handles = Vec::with_capacity(num_threads);
                 for thread_index in 0..num_threads {
                     let play_indices = &play_indices;
@@ -554,7 +554,7 @@ impl<
                     let extra = block_len % num_threads;
                     let lo = thread_index * base + thread_index.min(extra);
                     let hi = lo + base + if thread_index < extra { 1 } else { 0 };
-                    handles.push(scope.spawn(move || {
+                    handles.push(scope.spawn(move || -> error::Returns<_> {
                         let mut simmer = base_simmer.prepared_clone(game_config);
 
                         let pristine = simmer.prepared_state().clone();
@@ -580,7 +580,7 @@ impl<
                                     klv,
                                     &move_generator.plays[play_index].play,
                                     win_pct_table,
-                                );
+                                )?;
                                 objective.push(value);
                                 if OBSERVE {
                                     equity.push(simmer::spread_points(sim_spread));
@@ -588,13 +588,14 @@ impl<
                                 }
                             }
                         }
-                        (objective, equity, win_rate)
+                        Ok((objective, equity, win_rate))
                     }));
                 }
                 for handle in handles {
-                    thread_rows.push(handle.join().unwrap());
+                    thread_rows.push(handle.join().unwrap()?);
                 }
-            });
+                Ok(())
+            })?;
 
             let mut block_objective: Vec<f64> = Vec::with_capacity(block_len * num_candidates);
             let mut block_equity: Vec<f64> = Vec::new();
@@ -642,6 +643,7 @@ impl<
         }
         self.candidates = candidates;
         self.retired = retired;
+        Ok(())
     }
 
     #[inline]
@@ -650,7 +652,7 @@ impl<
         move_generator: &movegen::KurniaMoveGenerator,
         game_state: &game_state::GameState,
         iters: u64,
-    ) {
+    ) -> error::Returns<()> {
         self.simmer
             .prepare(self.game_config, game_state, 2, OBSERVE);
         self.prepared_pristine
@@ -660,13 +662,17 @@ impl<
         self.retired.clear();
         self.iters_done = 0;
         let budget = self.num_sim_iters;
-        self.run_iterations(move_generator, budget, iters);
+        self.run_iterations(move_generator, budget, iters)
     }
 
     #[inline]
-    pub fn resume(&mut self, move_generator: &movegen::KurniaMoveGenerator, extra_iters: u64) {
+    pub fn resume(
+        &mut self,
+        move_generator: &movegen::KurniaMoveGenerator,
+        extra_iters: u64,
+    ) -> error::Returns<()> {
         let budget = self.num_sim_iters;
-        self.run_iterations(move_generator, budget, extra_iters);
+        self.run_iterations(move_generator, budget, extra_iters)
     }
 }
 
@@ -679,7 +685,8 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
         board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
         game_state: &game_state::GameState,
         rack: &[u8],
-    ) where
+    ) -> error::Returns<()>
+    where
         N: Sync,
         L: Sync,
     {
@@ -717,12 +724,13 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 );
                 simmer.candidate_scratch = scratch;
                 let budget = simmer.num_sim_iters;
-                simmer.begin_decision(move_generator, game_state, budget);
+                simmer.begin_decision(move_generator, game_state, budget)?;
                 let winner_play_index = top_candidate_play_index_by_mean(&simmer.candidates);
                 move_generator.plays.swap(0, winner_play_index);
                 move_generator.plays.truncate(1);
             }
         }
+        Ok(())
     }
 }
 

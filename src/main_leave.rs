@@ -777,12 +777,12 @@ fn run<N: kwg::Node + Sync + Send>(
                 },
             )?;
             driver.reseed(seed);
-            driver.begin_decision(&move_generator, &game_state, iters);
+            driver.begin_decision(&move_generator, &game_state, iters)?;
             let one_shot = driver.leader_summary();
             driver.reseed(seed);
             let half = iters / 2;
-            driver.begin_decision(&move_generator, &game_state, half);
-            driver.resume(&move_generator, iters - half);
+            driver.begin_decision(&move_generator, &game_state, half)?;
+            driver.resume(&move_generator, iters - half)?;
             let split = driver.leader_summary();
             println!(
                 "one_shot leader play_index={} mean={} count={}",
@@ -886,7 +886,7 @@ fn run<N: kwg::Node + Sync + Send>(
             )?;
             driver.reseed(seed);
             let opening = (iters / 4).max(1);
-            driver.begin_decision(&move_generator, &game_state, opening);
+            driver.begin_decision(&move_generator, &game_state, opening)?;
             {
                 let by_hand = driver
                     .active_stream_ids()
@@ -913,7 +913,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     );
                 }
             }
-            driver.resume(&move_generator, iters.saturating_sub(opening));
+            driver.resume(&move_generator, iters.saturating_sub(opening))?;
             let pruned_id = driver.retired_stream_ids().next();
             match pruned_id {
                 None => wolges::return_error!(
@@ -922,7 +922,7 @@ fn run<N: kwg::Node + Sync + Send>(
                 Some(id) => {
                     let before = driver.stream_count(id).unwrap();
                     let readmitted = driver.readmit_with_history(id);
-                    driver.resume(&move_generator, iters);
+                    driver.resume(&move_generator, iters)?;
                     let after = driver.stream_count(id).unwrap();
                     println!("readmit stream {id}: count before={before} after={after}");
                     if readmitted && after >= before {
@@ -4714,7 +4714,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
         },
     )?;
     driver.reseed(seed);
-    driver.begin_decision(&move_generator, &game_state, iters);
+    driver.begin_decision(&move_generator, &game_state, iters)?;
     let whole = driver.leaderboard(usize::MAX);
     println!("one call of {iters}: {} candidates", whole.len());
 
@@ -4728,9 +4728,9 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             left -= take;
         }
         driver.reseed(seed);
-        driver.begin_decision(&move_generator, &game_state, chunks[0]);
+        driver.begin_decision(&move_generator, &game_state, chunks[0])?;
         for &chunk in &chunks[1..] {
-            driver.resume(&move_generator, chunk);
+            driver.resume(&move_generator, chunk)?;
         }
         let split = driver.leaderboard(usize::MAX);
         if split == whole {
@@ -5832,7 +5832,7 @@ fn compare_seats<
             let claimed_pairs = std::sync::Arc::clone(&claimed_pairs);
             let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
-            thread_handles.push(s.spawn(move || {
+            thread_handles.push(s.spawn(move || -> error::Returns<GamePairStats> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
                 let mut driver_p0 = seat_picker(
@@ -5944,7 +5944,7 @@ fn compare_seats<
                                     &board_snapshot,
                                     &game_state,
                                     &game_state.current_player().rack,
-                                );
+                                )?;
                             }
                             let play = &move_generator.plays[0].play;
                             if seat_swapped {
@@ -5998,13 +5998,13 @@ fn compare_seats<
                     }
                 }
 
-                stats
+                Ok(stats)
             }));
         }
 
         let mut combined = GamePairStats::new();
         for handle in thread_handles {
-            combined.merge(&handle.join().unwrap());
+            combined.merge(&handle.join().unwrap()?);
         }
 
         println!();

@@ -490,7 +490,7 @@ fn do_it<N: kwg::Node + Sync>(
                 board_snapshot,
                 &game_state,
                 &game_state.current_player().rack,
-            );
+            )?;
             let plays = &mut move_generator.plays;
             let play = &plays[0].play; // assume at least there's always Pass
             println!("Playing: {}", play.fmt(board_snapshot));

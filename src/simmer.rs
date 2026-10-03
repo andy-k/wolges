@@ -227,7 +227,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
-    ) -> bool {
+    ) -> error::Returns<bool> {
         self.game_state.clone_from(&self.initial_game_state);
         // reset leave values from previous iteration
         self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
@@ -270,11 +270,10 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             self.last_seen_leave_values[self.game_state.turn as usize] =
                 klv.leave_value_from_tally(&self.rack_tally);
             let rng = rollout_rng.get_or_insert_with(|| self.rng.copy_state());
-            self.game_state.play(game_config, rng, &next_play).unwrap();
+            self.game_state.play(game_config, rng, &next_play)?;
             match self
                 .game_state
-                .check_game_ended(game_config, &mut self.final_scores)
-                .unwrap()
+                .check_game_ended(game_config, &mut self.final_scores)?
             {
                 game_state::CheckGameEnded::NotEnded => {}
                 _ => {
@@ -283,12 +282,12 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                         player.score = self.final_scores[i];
                     }
                     self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
-                    return true;
+                    return Ok(true);
                 }
             }
             self.game_state.next_turn();
         }
-        false
+        Ok(false)
     }
 
     #[inline(always)]
@@ -393,14 +392,18 @@ mod tests {
 
         let shared_state = simmer.rng.clone();
 
-        simmer.simulate(&game_config, &kwg, &arm_tables, &klv, &candidate);
+        simmer
+            .simulate(&game_config, &kwg, &arm_tables, &klv, &candidate)
+            .unwrap();
         let rack_after_first = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();
 
         assert_eq!(simmer.rng, shared_state);
 
-        simmer.simulate(&game_config, &kwg, &arm_tables, &klv, &candidate);
+        simmer
+            .simulate(&game_config, &kwg, &arm_tables, &klv, &candidate)
+            .unwrap();
         let rack_after_second = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();

@@ -282,7 +282,7 @@ fn answer<N: kwg::Node + Sync>(
             board_snapshot,
             &game_state,
             &game_state.current_player().rack,
-        );
+        )?;
         let plays = &move_generator.plays;
         println!("found {} moves", plays.len());
         for play in plays.iter() {
