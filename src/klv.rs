@@ -92,6 +92,23 @@ fn split_klv(buf: &[u8]) -> error::Returns<KlvParts<'_>> {
     })
 }
 
+// the leaves' graph and its word counts, which also refuse a graph that loops;
+// it must hold one leave for each value.
+#[inline(always)]
+fn load_leaves_graph<L: kwg::Node>(
+    kwg_bytes: &[u8],
+    lv_len: usize,
+) -> error::Returns<(kwg::Kwg<L>, Box<[u32]>)> {
+    let kwg = kwg::Kwg::<L>::from_bytes_alloc(kwg_bytes)?;
+    let counts = kwg.count_words_alloc()?;
+    let root = kwg[0].arc_index();
+    let num_leaves = if root != 0 { counts[root as usize] } else { 0 };
+    if num_leaves as usize != lv_len {
+        return Err(format!("klv has {lv_len} leave values for {num_leaves} leaves").into());
+    }
+    Ok((kwg, counts))
+}
+
 impl<L: kwg::Node> Klv<L> {
     pub fn from_bytes_alloc(buf: &[u8]) -> error::Returns<Self> {
         let KlvParts {
@@ -100,7 +117,7 @@ impl<L: kwg::Node> Klv<L> {
             values,
             is_klv2,
         } = split_klv(buf)?;
-        let kwg = kwg::Kwg::<L>::from_bytes_alloc(kwg_bytes)?;
+        let (kwg, counts) = load_leaves_graph::<L>(kwg_bytes, lv_len)?;
         let mut r = 0;
         let mut elts = Vec::with_capacity(lv_len);
         if !is_klv2 {
@@ -115,13 +132,6 @@ impl<L: kwg::Node> Klv<L> {
                 elts.push((raw * equity::SCALE as f32).round() as i32);
                 r += 4;
             }
-        }
-        let counts = kwg.count_words_alloc();
-        // each leave the graph holds has its value
-        let root = kwg[0].arc_index();
-        let num_leaves = if root != 0 { counts[root as usize] } else { 0 };
-        if num_leaves as usize != lv_len {
-            return Err(format!("klv has {lv_len} leave values for {num_leaves} leaves").into());
         }
         Ok(Klv {
             kwg,
@@ -177,7 +187,7 @@ pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites:
         values: value_bytes,
         is_klv2,
     } = split_klv(buf)?;
-    let kwg = kwg::Kwg::<L>::from_bytes_alloc(kwg_bytes)?;
+    let (kwg, _) = load_leaves_graph::<L>(kwg_bytes, lv_len)?;
     let mut values = Vec::with_capacity(lv_len);
     if is_klv2 {
         for i in 0..lv_len {
@@ -195,19 +205,17 @@ pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites:
         word: Vec<u8>,
         leaves: Vec<(bites::Bites, f32)>,
     }
-    fn iter<L: kwg::Node>(env: &mut Env<'_, L>, mut p: i32) -> error::Returns<()> {
+    // the graph was counted: it does not loop, and holds one leave a value.
+    fn iter<L: kwg::Node>(env: &mut Env<'_, L>, mut p: i32) {
         loop {
             let node = env.kwg[p];
             env.word.push(node.tile());
             if node.accepts() {
-                let value = *env
-                    .values
-                    .get(env.leaves.len())
-                    .ok_or("klv has fewer leave values than leaves")?;
+                let value = env.values[env.leaves.len()];
                 env.leaves.push((env.word[..].into(), value));
             }
             if node.arc_index() != 0 {
-                iter(env, node.arc_index())?;
+                iter(env, node.arc_index());
             }
             env.word.pop();
             if node.is_end() {
@@ -215,7 +223,6 @@ pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites:
             }
             p += 1;
         }
-        Ok(())
     }
     let mut env = Env {
         kwg: &kwg,
@@ -225,10 +232,7 @@ pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites:
     };
     let root = kwg[0].arc_index();
     if root != 0 {
-        iter(&mut env, root)?;
-    }
-    if env.leaves.len() != lv_len {
-        return Err("klv has more leave values than leaves".into());
+        iter(&mut env, root);
     }
     Ok(env.leaves)
 }
@@ -805,6 +809,20 @@ mod tests {
         let mut cut = bin.clone();
         cut[..4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(Klv::<kwg::Node22>::from_bytes_alloc(&cut).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_klv_whose_leaves_loop_is_an_error() {
+        let bin = make_klv2(&[(&[1], 1.0), (&[1, 2], 2.0), (&[2], 3.0)]);
+        // the first tile of the leaves leads back to the run it starts
+        let root = kwg::read_le_u32(&bin, 4) & 0x3fffff;
+        let at = 4 + root as usize * 4;
+        let mut looping = bin.clone();
+        looping[at..at + 4]
+            .copy_from_slice(&((kwg::read_le_u32(&bin, at) & !0x3fffff) | root).to_le_bytes());
+        assert!(Klv::<kwg::Node22>::from_bytes_alloc(&looping).is_err());
+        assert!(read_leaves_alloc::<kwg::Node22>(&looping).is_err());
     }
 
     #[inline]

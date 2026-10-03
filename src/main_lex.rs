@@ -442,7 +442,7 @@ TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
 
     print_dawg(alphabet, &kwg);
     let t0 = std::time::Instant::now();
-    let word_counts = kwg.count_words_alloc();
+    let word_counts = kwg.count_words_alloc()?;
     println!("took {} ms", t0.elapsed().as_millis());
     println!("{:?}", &word_counts[0..100]);
     let mut out_vec = Vec::new();
@@ -451,7 +451,7 @@ TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
         out_vec.clear();
         kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
             out_vec.push(v);
-        });
+        })?;
         let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
         println!("{i} {j} {out_vec:?}");
         assert_eq!(i, j);

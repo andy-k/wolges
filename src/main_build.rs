@@ -1172,7 +1172,7 @@ fn old_main() -> error::Returns<()> {
     if true {
         // proof-of-concept
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/allgdw.kwg")?)?;
-        let word_counts = kwg.count_dawg_words_alloc();
+        let word_counts = kwg.count_dawg_words_alloc()?;
         // because dawg do not need gaddag nodes
         println!("only counting {} nodes", word_counts.len());
         let v_csw24_bits = std::fs::read("lexbin/all-CSW24.kwi")?;
@@ -1187,7 +1187,7 @@ fn old_main() -> error::Returns<()> {
             out_vec.clear();
             kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
                 out_vec.push(v);
-            });
+            })?;
             let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
             print!("{i} {j} {out_vec:?}");
             let byte_index = j as usize / 8;

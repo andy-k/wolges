@@ -1680,7 +1680,7 @@ mod tests {
         let words = [word.clone()];
 
         let present = |kwg: &kwg::Kwg<kwg::Node22>, w: &[u8]| {
-            let counts = kwg.count_dawg_words_alloc();
+            let counts = kwg.count_dawg_words_alloc().unwrap();
             kwg.get_word_index(&counts, kwg[0].arc_index(), w) != !0
         };
 

@@ -181,38 +181,42 @@ impl<N: Node> Kwg<N> {
         }
     }
 
-    fn count_words_at(&self, word_counts: &mut [u32], p: i32) -> u32 {
+    fn count_words_at(&self, word_counts: &mut [u32], p: i32) -> error::Returns<u32> {
         if p as usize >= word_counts.len() {
-            return 0;
+            return Ok(0);
         }
         if word_counts[p as usize] == !0 {
-            panic!()
+            return Err(format!("the word graph loops back to node {p}").into());
         };
         if word_counts[p as usize] == 0 {
             word_counts[p as usize] = !0; // marker
             let node = self[p];
-            word_counts[p as usize] = node.accepts() as u32
+            let count = node.accepts() as u64
                 + if node.arc_index() != 0 {
-                    self.count_words_at(word_counts, node.arc_index())
+                    self.count_words_at(word_counts, node.arc_index())? as u64
                 } else {
                     0
                 }
                 + if node.is_end() {
                     0
                 } else {
-                    self.count_words_at(word_counts, p + 1)
+                    self.count_words_at(word_counts, p + 1)? as u64
                 };
+            if count >= !0u32 as u64 {
+                return Err("the word graph holds too many words to count".into());
+            }
+            word_counts[p as usize] = count as u32;
         }
-        word_counts[p as usize]
+        Ok(word_counts[p as usize])
     }
 
     #[inline(always)]
-    pub fn count_words_alloc(&self) -> Box<[u32]> {
+    pub fn count_words_alloc(&self) -> error::Returns<Box<[u32]>> {
         let mut word_counts = vec![0u32; self.0.len()];
         for p in (0..word_counts.len()).rev() {
-            self.count_words_at(&mut word_counts, p as i32);
+            self.count_words_at(&mut word_counts, p as i32)?;
         }
-        word_counts.into_boxed_slice()
+        Ok(word_counts.into_boxed_slice())
     }
 
     #[inline(always)]
@@ -247,7 +251,7 @@ impl<N: Node> Kwg<N> {
     }
 
     #[inline(always)]
-    pub fn count_dawg_words_alloc(&self) -> Box<[u32]> {
+    pub fn count_dawg_words_alloc(&self) -> error::Returns<Box<[u32]>> {
         fn max_from<N: Node>(nodes: &Kwg<N>, vis: &mut [u8], mut p: i32) -> i32 {
             let mut ret = 0;
             loop {
@@ -271,9 +275,9 @@ impl<N: Node> Kwg<N> {
             max_from(self, &mut vec![0u8; self.0.len().div_ceil(8)], 0) as usize + 1;
         let mut word_counts = vec![0u32; required_size];
         for p in (0..word_counts.len()).rev() {
-            self.count_words_at(&mut word_counts, p as i32);
+            self.count_words_at(&mut word_counts, p as i32)?;
         }
-        word_counts.into_boxed_slice()
+        Ok(word_counts.into_boxed_slice())
     }
 
     #[inline(always)]
@@ -283,7 +287,7 @@ impl<N: Node> Kwg<N> {
         mut p: i32,
         mut idx: u32,
         mut out: F,
-    ) {
+    ) -> error::Returns<()> {
         let mut node = self[p];
         while !(idx == 0 && node.accepts()) {
             let words_here = if node.is_end() {
@@ -298,13 +302,14 @@ impl<N: Node> Kwg<N> {
             } else {
                 idx -= words_here;
                 if node.is_end() {
-                    panic!();
+                    return Err("the word graph has fewer words than the index".into());
                 }
                 p += 1;
             }
             node = self[p];
         }
         out(node.tile());
+        Ok(())
     }
 
     #[inline(always)]
@@ -493,6 +498,33 @@ mod tests {
         let last = bytes.len() - 4;
         open[last..].copy_from_slice(&(read_le_u32(&bytes, last) & !0x400000).to_le_bytes());
         assert!(Kwg::<Node22>::from_bytes_alloc(&open).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_walk_off_the_words_or_round_a_loop_is_an_error() {
+        let bytes = bytes_of(&game_config::make_english_game_config(), &["SEAT", "TEA"]);
+        let kwg = Kwg::<Node22>::from_bytes_alloc(&bytes).unwrap();
+        let counts = kwg.count_words_alloc().unwrap();
+        let dawg_root = kwg[0].arc_index();
+        let mut word = Vec::new();
+        kwg.get_word_by_index(&counts, dawg_root, 1, |t| word.push(t))
+            .unwrap();
+        assert_eq!(word, [20, 5, 1]); // TEA
+        assert!(
+            kwg.get_word_by_index(&counts, dawg_root, 2, |_| {})
+                .is_err()
+        );
+
+        // the S that starts the dawg's first run now leads back to that run
+        let mut looping = bytes.clone();
+        let at = dawg_root as usize * 4;
+        looping[at..at + 4].copy_from_slice(
+            &((read_le_u32(&bytes, at) & !0x3fffff) | dawg_root as u32).to_le_bytes(),
+        );
+        let kwg = Kwg::<Node22>::from_bytes_alloc(&looping).unwrap();
+        assert!(kwg.count_words_alloc().is_err());
+        assert!(kwg.count_dawg_words_alloc().is_err());
     }
 
     #[test]
