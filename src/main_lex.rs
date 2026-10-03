@@ -350,13 +350,13 @@ fn find_words<N: kwg::Node>(
     kwg2_path: &str,
 ) -> error::Returns<()> {
     if false {
-        let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?);
+        let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?)?;
         print_dawg(alphabet, &kwg);
         return Ok(());
     }
-    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?);
+    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?)?;
     if true {
-        let nwl23_kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg2_path)?);
+        let nwl23_kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg2_path)?)?;
         let known_boards = [
             &[
                 1, 1, 1, 1, //

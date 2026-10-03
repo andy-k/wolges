@@ -87,18 +87,18 @@ fn main() -> error::Returns<()> {
     let game_config = cli.game.make_game_config()?;
     // of course this should be cached
     let klv = if cli.klv == "-" {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?
     } else {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)?
     };
     game_config.check_leaves(klv.leave_range())?;
     let kwg_bytes = std::fs::read(&cli.kwg)?;
     if cli.kbwg {
-        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
         simulate(&kwg, &klv, &game_config, cli.seed, cli.lean)
     } else {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
         simulate(&kwg, &klv, &game_config, cli.seed, cli.lean)
     }
@@ -264,7 +264,7 @@ fn simulate<N: kwg::Node>(
         &vec_of_words.into_boxed_slice(),
     )?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
-    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
+    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
     let arm_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean);
     move_generator.reset_for_another_kwg();
 

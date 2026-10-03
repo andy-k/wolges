@@ -50,18 +50,18 @@ fn main() -> error::Returns<()> {
     let game_config = cli.game.make_game_config()?;
     // of course this should be cached
     let klv = if cli.klv == "-" {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?
     } else {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)?
     };
     game_config.check_leaves(klv.leave_range())?;
     let kwg_bytes = std::fs::read(&cli.kwg)?;
     if cli.kbwg {
-        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
         answer(&kwg, &klv, &game_config, cli.lean)
     } else {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
         answer(&kwg, &klv, &game_config, cli.lean)
     }

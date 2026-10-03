@@ -1,5 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
+use super::error;
+
 pub trait Node: Copy {
     fn new(v: u32) -> Self;
     fn tile(&self) -> u8;
@@ -104,16 +106,36 @@ impl<N: Node> std::ops::Index<i32> for Kwg<N> {
 }
 
 impl<N: Node> Kwg<N> {
+    // every arc must land inside the graph and the last node must end its run,
+    // so no walk leaves it. an empty lexicon's dawg is one node; its copy
+    // stands in for the empty gaddag a classic game enters at node 1.
     #[inline(always)]
-    pub fn from_bytes_alloc(buf: &[u8]) -> Self {
+    pub fn from_bytes_alloc(buf: &[u8]) -> error::Returns<Self> {
         let kwg_len = buf.len() / 4;
-        let mut elts = Vec::with_capacity(kwg_len);
-        let mut r = 0;
-        for _ in 0..kwg_len {
-            elts.push(N::new(read_le_u32(buf, r)));
-            r += 4;
+        if kwg_len == 0 || !buf.len().is_multiple_of(4) {
+            return Err(format!("a word graph of {} bytes is not whole nodes", buf.len()).into());
         }
-        Kwg(elts.into_boxed_slice())
+        let mut elts = buf
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&b| N::new(u32::from_le_bytes(b)))
+            .collect::<Vec<_>>();
+        // the largest arc, found in one pass with no early exit
+        let max_arc_index = elts.iter().fold(0, |m, node| m.max(node.arc_index()));
+        if max_arc_index as usize >= kwg_len {
+            return Err(format!(
+                "the word graph points to node {max_arc_index}, past its {kwg_len} nodes"
+            )
+            .into());
+        }
+        if !elts[kwg_len - 1].is_end() {
+            return Err("the word graph's last node does not end its run".into());
+        }
+        if kwg_len == 1 {
+            elts.push(elts[0]);
+        }
+        Ok(Kwg(elts.into_boxed_slice()))
     }
 
     #[inline(always)]
@@ -424,7 +446,7 @@ mod tests {
     use crate::{alphabet, bites, build, game_config};
 
     #[inline]
-    fn graph_of(gc: &game_config::GameConfig, words: &[&str]) -> Kwg<Node22> {
+    fn bytes_of(gc: &game_config::GameConfig, words: &[&str]) -> Vec<u8> {
         let reader = alphabet::AlphabetReader::new_for_words(gc.alphabet());
         let mut buf = Vec::new();
         let mut out = Vec::<bites::Bites>::with_capacity(words.len());
@@ -433,15 +455,53 @@ mod tests {
             out.push(buf[..].into());
         }
         out.sort_unstable();
-        Kwg::<Node22>::from_bytes_alloc(
-            &build::build(
-                build::BuildContent::Gaddawg,
-                build::BuildLayout::Wolges,
-                build::BuildOrder::Sorted,
-                &out,
-            )
-            .unwrap(),
+        build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &out,
         )
+        .unwrap()
+        .to_vec()
+    }
+
+    #[inline]
+    fn graph_of(gc: &game_config::GameConfig, words: &[&str]) -> Kwg<Node22> {
+        Kwg::<Node22>::from_bytes_alloc(&bytes_of(gc, words)).unwrap()
+    }
+
+    #[test]
+    #[inline]
+    fn a_graph_loads_only_whole_nodes_that_stay_inside_it() {
+        let bytes = bytes_of(&game_config::make_english_game_config(), &["SEAT", "TEA"]);
+        assert!(Kwg::<Node22>::from_bytes_alloc(&bytes).is_ok());
+        assert!(Kwg::<Node22>::from_bytes_alloc(&[]).is_err());
+        assert!(Kwg::<Node22>::from_bytes_alloc(&bytes[..3]).is_err());
+        assert!(Kwg::<Node22>::from_bytes_alloc(&bytes[..bytes.len() - 1]).is_err());
+
+        let num_nodes = (bytes.len() / 4) as u32;
+        let with_root_arc = |arc: u32| {
+            let mut v = bytes.clone();
+            v[..4].copy_from_slice(&((read_le_u32(&bytes, 0) & !0x3fffff) | arc).to_le_bytes());
+            v
+        };
+        assert!(Kwg::<Node22>::from_bytes_alloc(&with_root_arc(num_nodes - 1)).is_ok());
+        assert!(Kwg::<Node22>::from_bytes_alloc(&with_root_arc(num_nodes)).is_err());
+        assert!(Kwg::<Node22>::from_bytes_alloc(&with_root_arc(0x3fffff)).is_err());
+
+        let mut open = bytes.clone();
+        let last = bytes.len() - 4;
+        open[last..].copy_from_slice(&(read_le_u32(&bytes, last) & !0x400000).to_le_bytes());
+        assert!(Kwg::<Node22>::from_bytes_alloc(&open).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_one_node_graph_is_an_empty_dawg_and_an_empty_gaddag() {
+        let kwg = Kwg::<Node22>::from_bytes_alloc(b"\x00\x00\x40\x00").unwrap();
+        assert_eq!(kwg.0.len(), 2);
+        assert_eq!(kwg.seek(0, 1), -1);
+        assert_eq!(kwg.seek(1, 1), -1);
     }
 
     #[test]

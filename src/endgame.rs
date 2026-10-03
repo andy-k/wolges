@@ -175,7 +175,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             game_config,
             kwg,
             arm_tables,
-            klv: Box::new(klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)),
+            klv: Box::new(klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?),
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
             rack_scores: [0, 0],
@@ -902,7 +902,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
 
-        let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?;
 
         let board = self.board_tiles.clone();
         let racks = [self.racks[0].clone(), self.racks[1].clone()];
@@ -1228,7 +1228,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let gc = self.game_config;
         let kwg = self.kwg;
         let arm_tables = self.arm_tables;
-        let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?;
         let opp = mover ^ 1;
         let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
 
@@ -1979,8 +1979,8 @@ mod tests {
     fn differential_reference_vs_solve() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let arms = both_arms(&kwg, &gc);
 
@@ -2052,7 +2052,7 @@ mod tests {
         .make_game_config(&|_| Err("no files here".into()))
         .unwrap();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
         assert!(EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).is_err());
     }
@@ -2062,7 +2062,7 @@ mod tests {
     fn peg_one_in_bag_hand_checkable() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
 
         let board = empty_board();
         let mover_rack = [2u8]; // B
@@ -2088,7 +2088,7 @@ mod tests {
     fn peg_one_in_bag_score_diff_shifts_the_outcome() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
 
         let board = empty_board();
         let mover_rack = [2u8]; // B
@@ -2114,7 +2114,7 @@ mod tests {
     fn a_principal_variation_plays_out_to_the_value_it_claims() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
 
         let mut ok = 0usize;
         let mut bad = 0usize;
@@ -2199,8 +2199,8 @@ mod tests {
     fn every_principal_variation_is_legal_and_its_value_bounded() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
 
         let mut illegal = 0usize;
@@ -2309,8 +2309,8 @@ mod tests {
     fn differential_one_in_bag() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
 
         let bag_tiles: [u8; 4] = [1, 8, 20, 0];
@@ -2367,7 +2367,7 @@ mod tests {
     fn one_in_bag_forced_double_pass() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
 
         let board = empty_board();
         let racks = [vec![2u8, 2], vec![8u8, 20]];
@@ -2392,8 +2392,8 @@ mod tests {
     fn a_one_in_bag_solve_agrees_with_the_reference_and_beats_passing() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
 
         let board = empty_board();
@@ -2433,8 +2433,8 @@ mod tests {
     fn differential_one_in_bag_exchange() {
         let gc = game_config::make_exchange_test_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
 
         let bag_tiles: [u8; 2] = [1, 0]; // A, blank
@@ -2496,7 +2496,7 @@ mod tests {
     fn one_in_bag_exchange_beats_passing() {
         let gc = game_config::make_exchange_test_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
 
         let board = empty_board();
         let racks = [vec![17u8], vec![1u8]]; // p0 = [Q], p1 = [A]
@@ -2521,7 +2521,7 @@ mod tests {
     #[inline]
     fn peg_one_in_bag_exchange_solved_or_declined() {
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
 
         let gc = game_config::make_exchange_test_game_config();
         let board = empty_board();
@@ -2566,8 +2566,8 @@ mod tests {
     fn differential_peg_committed() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let a = gc.alphabet();
         let alen = a.len() as usize;

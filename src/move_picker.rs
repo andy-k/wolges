@@ -779,8 +779,8 @@ mod tests {
         rack: &[u8],
         field: FieldShape,
     ) -> Vec<movegen::ValuedMove> {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg_bytes);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg_bytes).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv_bytes).unwrap();
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles,
             game_config,

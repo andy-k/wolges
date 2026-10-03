@@ -48,35 +48,86 @@ pub struct Klv<L: kwg::Node> {
 // kwg::Node22
 pub static EMPTY_KLV_BYTES: &[u8] = b"\x01\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00";
 
+// a klv is the leaves' word graph (its node count, then its nodes), then the
+// leaves' values (their count, then the values: each an f32 in a klv2, or an
+// i16 counting 1/256 of a point in a klv), and nothing after them.
+struct KlvParts<'a> {
+    kwg_bytes: &'a [u8],
+    lv_len: usize,
+    values: &'a [u8],
+    is_klv2: bool,
+}
+
+#[inline(always)]
+fn split_klv(buf: &[u8]) -> error::Returns<KlvParts<'_>> {
+    if buf.len() < 4 {
+        return Err("klv is too short for its header".into());
+    }
+    let kwg_bytes = (kwg::read_le_u32(buf, 0) as usize)
+        .checked_mul(4)
+        .and_then(|kwg_bytes_len| buf[4..].get(..kwg_bytes_len))
+        .ok_or("klv is too short for the kwg it declares")?;
+    let rest = &buf[4 + kwg_bytes.len()..];
+    if rest.len() < 4 {
+        return Err("klv is too short for the kwg it declares".into());
+    }
+    let lv_len = kwg::read_le_u32(rest, 0) as usize;
+    let values = &rest[4..];
+    let is_klv2 = if lv_len.checked_mul(4) == Some(values.len()) {
+        true
+    } else if lv_len.checked_mul(2) == Some(values.len()) {
+        false
+    } else {
+        return Err(format!(
+            "klv has {} bytes for its {lv_len} leave values",
+            values.len()
+        )
+        .into());
+    };
+    Ok(KlvParts {
+        kwg_bytes,
+        lv_len,
+        values,
+        is_klv2,
+    })
+}
+
 impl<L: kwg::Node> Klv<L> {
-    pub fn from_bytes_alloc(buf: &[u8]) -> Self {
+    pub fn from_bytes_alloc(buf: &[u8]) -> error::Returns<Self> {
+        let KlvParts {
+            kwg_bytes,
+            lv_len,
+            values,
+            is_klv2,
+        } = split_klv(buf)?;
+        let kwg = kwg::Kwg::<L>::from_bytes_alloc(kwg_bytes)?;
         let mut r = 0;
-        let kwg_bytes_len = (kwg::read_le_u32(buf, r) as usize) * 4;
-        r += 4;
-        let kwg = kwg::Kwg::from_bytes_alloc(&buf[r..r + kwg_bytes_len]);
-        r += kwg_bytes_len;
-        let lv_len = kwg::read_le_u32(buf, r);
-        r += 4;
-        let mut elts = Vec::with_capacity(lv_len as usize);
-        if buf.len() < r + 4 * lv_len as usize {
+        let mut elts = Vec::with_capacity(lv_len);
+        if !is_klv2 {
             for _ in 0..lv_len {
-                elts.push((kwg::read_le_u16(buf, r) as i16 as i32 * equity::SCALE + 128) / 256);
+                elts.push((kwg::read_le_u16(values, r) as i16 as i32 * equity::SCALE + 128) / 256);
                 r += 2;
             }
         } else {
             // klv2 uses f32
             for _ in 0..lv_len {
-                let raw = f32::from_bits(kwg::read_le_u32(buf, r));
+                let raw = f32::from_bits(kwg::read_le_u32(values, r));
                 elts.push((raw * equity::SCALE as f32).round() as i32);
                 r += 4;
             }
         }
         let counts = kwg.count_words_alloc();
-        Klv {
+        // each leave the graph holds has its value
+        let root = kwg[0].arc_index();
+        let num_leaves = if root != 0 { counts[root as usize] } else { 0 };
+        if num_leaves as usize != lv_len {
+            return Err(format!("klv has {lv_len} leave values for {num_leaves} leaves").into());
+        }
+        Ok(Klv {
             kwg,
             counts,
             leaves: elts.into_boxed_slice(),
-        }
+        })
     }
 
     #[inline(always)]
@@ -120,32 +171,22 @@ impl<L: kwg::Node> Klv<L> {
 
 #[inline(always)]
 pub fn read_leaves_alloc<L: kwg::Node>(buf: &[u8]) -> error::Returns<Vec<(bites::Bites, f32)>> {
-    if buf.len() < 4 {
-        return Err("klv is too short for its header".into());
-    }
-    let mut r = 0;
-    let kwg_bytes_len = (kwg::read_le_u32(buf, r) as usize) * 4;
-    r += 4;
-    if buf.len() < r + kwg_bytes_len + 4 {
-        return Err("klv is too short for the kwg it declares".into());
-    }
-    let kwg = kwg::Kwg::<L>::from_bytes_alloc(&buf[r..r + kwg_bytes_len]);
-    r += kwg_bytes_len;
-    let lv_len = kwg::read_le_u32(buf, r) as usize;
-    r += 4;
-    let is_klv2 = buf.len() >= r + 4 * lv_len;
-    if buf.len() != r + lv_len * if is_klv2 { 4 } else { 2 } {
-        return Err("klv has trailing bytes after its leave values".into());
-    }
+    let KlvParts {
+        kwg_bytes,
+        lv_len,
+        values: value_bytes,
+        is_klv2,
+    } = split_klv(buf)?;
+    let kwg = kwg::Kwg::<L>::from_bytes_alloc(kwg_bytes)?;
     let mut values = Vec::with_capacity(lv_len);
     if is_klv2 {
         for i in 0..lv_len {
-            values.push(f32::from_bits(kwg::read_le_u32(buf, r + i * 4)));
+            values.push(f32::from_bits(kwg::read_le_u32(value_bytes, i * 4)));
         }
     } else {
         // klv holds each value as an i16 counting 1/256 of a point.
         for i in 0..lv_len {
-            values.push(kwg::read_le_u16(buf, r + i * 2) as i16 as f32 * (1.0 / 256.0));
+            values.push(kwg::read_le_u16(value_bytes, i * 2) as i16 as f32 * (1.0 / 256.0));
         }
     }
     struct Env<'a, L: kwg::Node> {
@@ -741,6 +782,31 @@ mod tests {
         assert!(read_leaves_alloc::<kwg::Node22>(&bin).is_err());
     }
 
+    #[test]
+    #[inline]
+    fn a_klv_loads_only_with_one_value_for_each_leave() {
+        let bin = make_klv2(&[(&[1], 1.0), (&[1, 2], 2.0), (&[2], 3.0)]);
+        let klv = Klv::<kwg::Node22>::from_bytes_alloc(&bin).unwrap();
+        assert_eq!(klv.leave_value_from_tally(&[0, 1, 1]), 2 * equity::SCALE);
+
+        assert!(Klv::<kwg::Node22>::from_bytes_alloc(&[]).is_err());
+        assert!(Klv::<kwg::Node22>::from_bytes_alloc(&bin[..4]).is_err());
+        assert!(Klv::<kwg::Node22>::from_bytes_alloc(&bin[..8]).is_err());
+        let mut long = bin.clone();
+        long.push(0);
+        assert!(Klv::<kwg::Node22>::from_bytes_alloc(&long).is_err());
+
+        // two values for three leaves
+        let lv_len_at = 4 + kwg::read_le_u32(&bin, 0) as usize * 4;
+        let mut short = bin[..bin.len() - 4].to_vec();
+        short[lv_len_at..lv_len_at + 4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(Klv::<kwg::Node22>::from_bytes_alloc(&short).is_err());
+        // a graph too long for the file
+        let mut cut = bin.clone();
+        cut[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(Klv::<kwg::Node22>::from_bytes_alloc(&cut).is_err());
+    }
+
     #[inline]
     fn binom(n: u64, k: u64) -> u64 {
         if k > n {
@@ -877,7 +943,7 @@ mod tests {
     #[test]
     #[inline]
     fn a_klv_knows_its_lowest_and_highest_leave() {
-        let empty = Klv::<kwg::Node22>::from_bytes_alloc(EMPTY_KLV_BYTES);
+        let empty = Klv::<kwg::Node22>::from_bytes_alloc(EMPTY_KLV_BYTES).unwrap();
         assert_eq!(empty.leave_range(), (0, 0));
         let klv = Klv::<kwg::Node22> {
             kwg: empty.kwg,

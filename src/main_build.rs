@@ -730,7 +730,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         }
         Task::Macondo(args) => {
             let alphabet = make_alphabet()?;
-            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args.kwg)?);
+            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args.kwg)?)?;
             refuse_a_wider_graph(&kwg, &alphabet, &args.kwg)?;
             make_writer(&args.dawg)?.write_all(&lexport::to_macondo(
                 &kwg,
@@ -748,7 +748,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
         }
         Task::Lxd(args) => {
             let alphabet = make_alphabet()?;
-            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args.kwg)?);
+            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args.kwg)?)?;
             refuse_a_wider_graph(&kwg, &alphabet, &args.kwg)?;
             make_writer(&args.out)?.write_all(&lexport::to_lxd(
                 &kwg,
@@ -958,7 +958,7 @@ fn old_main() -> error::Returns<()> {
         {
             let t0 = std::time::Instant::now();
             let kwg =
-                kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+                kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?)?;
             println!("{:?} for rereading CSW24.kwg", t0.elapsed());
             let t0 = std::time::Instant::now();
             std::fs::write(
@@ -985,7 +985,7 @@ fn old_main() -> error::Returns<()> {
         }
         {
             let kwg =
-                kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
+                kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?)?;
             std::fs::write(
                 "lexbin/NWL23.dawg",
                 lexport::to_macondo(
@@ -1006,7 +1006,8 @@ fn old_main() -> error::Returns<()> {
             )?;
         }
         {
-            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?);
+            let kwg =
+                kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?)?;
             std::fs::write(
                 "lexbin/ECWL.dawg",
                 lexport::to_macondo(
@@ -1030,7 +1031,7 @@ fn old_main() -> error::Returns<()> {
         if true {
             let t0 = std::time::Instant::now();
             let kwg =
-                kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/OSPS49.kwg")?);
+                kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/OSPS49.kwg")?)?;
             println!("{:?} for rereading OSPS49.kwg", t0.elapsed());
             let t0 = std::time::Instant::now();
             std::fs::write(
@@ -1170,7 +1171,7 @@ fn old_main() -> error::Returns<()> {
 
     if true {
         // proof-of-concept
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/allgdw.kwg")?);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/allgdw.kwg")?)?;
         let word_counts = kwg.count_dawg_words_alloc();
         // because dawg do not need gaddag nodes
         println!("only counting {} nodes", word_counts.len());

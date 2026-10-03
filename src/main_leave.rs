@@ -164,7 +164,7 @@ fn read_kwg<N: kwg::Node>(
     game_config: &game_config::GameConfig,
     path: &str,
 ) -> error::Returns<kwg::Kwg<N>> {
-    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(path)?)?);
+    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(path)?)?)?;
     refuse_a_wider_graph(&kwg, game_config, path)?;
     Ok(kwg)
 }
@@ -175,9 +175,9 @@ fn read_klv(
     path: &str,
 ) -> error::Returns<klv::Klv<kwg::Node22>> {
     let klv = if path == "-" {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?
     } else {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(path)?)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(path)?)?
     };
     game_config.check_leaves(klv.leave_range())?;
     Ok(klv)
@@ -2875,7 +2875,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             ))
         };
         let bytes = std::fs::read(&path)?;
-        let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes);
+        let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes)?;
         for (idx, slot) in leave_cur.iter_mut().enumerate() {
             lat.unrank_into(idx, &mut tally_buf);
             *slot = resume_klv.leave_value_from_tally(&tally_buf);
