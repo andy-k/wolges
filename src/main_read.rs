@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::{alphabet, alphagram, bites, error, fash, kwg, prob, stats};
+use wolges::{alphabet, alphagram, bites, error, fash, klv, kwg, prob, stats};
 
 use kwg::{read_le_u16, read_le_u32};
 use std::fmt::Write;
@@ -42,6 +42,28 @@ impl WgReader for KwgReader {
     #[inline(always)]
     fn len(&self, bytes: &[u8]) -> usize {
         bytes.len() / 4
+    }
+}
+
+// a word graph read here node by node is first loaded and counted by the
+// library, which refuses one that is cut short, points outside itself or loops
+trait CheckedWg: WgReader {
+    fn check(&self, bytes: &[u8]) -> error::Returns<()>;
+}
+
+impl CheckedWg for KwgReader {
+    #[inline]
+    fn check(&self, bytes: &[u8]) -> error::Returns<()> {
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(bytes)?.count_words_alloc()?;
+        Ok(())
+    }
+}
+
+impl CheckedWg for KbwgReader {
+    #[inline]
+    fn check(&self, bytes: &[u8]) -> error::Returns<()> {
+        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(bytes)?.count_words_alloc()?;
+        Ok(())
     }
 }
 
@@ -527,6 +549,15 @@ fn parse_klv(klv_bytes: &[u8]) -> error::Returns<KlvParts<'_>> {
     })
 }
 
+// a leave table read here raw is first loaded by the library, which refuses one
+// that is cut short, sized wrong or loops, or that has a value too few or too
+// many for its leaves
+#[inline(always)]
+fn check_klv(klv_bytes: &[u8]) -> error::Returns<()> {
+    klv::Klv::<kwg::Node22>::from_bytes_alloc(klv_bytes)?;
+    Ok(())
+}
+
 #[inline(always)]
 fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Returns<f32> {
     if is_klv2 && klv_bytes.len() >= *r + 4 {
@@ -543,7 +574,7 @@ fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Re
 }
 
 #[inline]
-fn do_wg_check<R: WgReader>(
+fn do_wg_check<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
@@ -553,9 +584,7 @@ fn do_wg_check<R: WgReader>(
     }
     let alphabet_reader = &alphabet::AlphabetReader::new_for_words(alphabet);
     let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-    if 0 == reader.len(kwg_bytes) {
-        return Err("out of bounds".into());
-    }
+    reader.check(kwg_bytes)?;
     let mut not_found = false;
     for word in &args[3..] {
         let sb = &word.as_bytes();
@@ -608,7 +637,7 @@ enum AnagramMode {
 }
 
 #[inline]
-fn do_wg_anagram<R: WgReader>(
+fn do_wg_anagram<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
@@ -616,9 +645,7 @@ fn do_wg_anagram<R: WgReader>(
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
     let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-    if 0 == reader.len(kwg_bytes) {
-        return Err("out of bounds".into());
-    }
+    reader.check(kwg_bytes)?;
     let mut rack = vec![0; alphabet.len().into()];
     let mut given_num_tiles = 0usize;
     let sb = &args[4].as_bytes();
@@ -739,13 +766,11 @@ fn do_klv_anagram<R: WgReader>(
     mode: AnagramMode,
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
+    check_klv(klv_bytes)?;
     let parts = parse_klv(klv_bytes)?;
     let kwg_bytes = parts.kwg_bytes;
     let mut r = parts.r;
     let is_klv2 = parts.is_klv2;
-    if 0 == reader.len(kwg_bytes) {
-        return Err("out of bounds".into());
-    }
     let mut rack = vec![0; alphabet.len().into()];
     let mut given_num_tiles = 0usize;
     let sb = &args[4].as_bytes();
@@ -823,7 +848,7 @@ fn do_klv_anagram<R: WgReader>(
 }
 
 #[inline]
-fn do_wg_dawg<R: WgReader>(
+fn do_wg_dawg<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
@@ -831,6 +856,7 @@ fn do_wg_dawg<R: WgReader>(
     blank_str: Option<&str>,
 ) -> error::Returns<()> {
     let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    reader.check(bytes)?;
     if initial_node_idx >= reader.len(bytes) {
         return Err("out of bounds".into());
     }
@@ -845,13 +871,14 @@ fn do_wg_dawg<R: WgReader>(
 }
 
 #[inline]
-fn do_wg_nodes<R: WgReader>(
+fn do_wg_nodes<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
 ) -> error::Returns<()> {
     let alphabet_label = &WolgesAlphabetLabel { alphabet };
     let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    reader.check(kwg_bytes)?;
     let kwg_len = reader.len(kwg_bytes);
     let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
     let mut kwg_pointed_to = vec![false; kwg_len];
@@ -889,7 +916,7 @@ fn do_wg_nodes<R: WgReader>(
 }
 
 #[inline]
-fn do_wg_prob<R: WgReader>(
+fn do_wg_prob<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
@@ -897,9 +924,7 @@ fn do_wg_prob<R: WgReader>(
     let mut word_prob = prob::WordProbability::new(alphabet);
     let word_cell = std::cell::RefCell::new(Vec::new());
     let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-    if 0 == reader.len(kwg_bytes) {
-        return Err("out of bounds".into());
-    }
+    reader.check(kwg_bytes)?;
     let vec_out_cell = std::cell::RefCell::new(Vec::new());
     iter_dawg(
         DawgSource {
@@ -1016,11 +1041,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 let alphabet = make_alphabet()?;
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                check_klv(klv_bytes)?;
                 let parts = parse_klv(klv_bytes)?;
                 let kwg_bytes = parts.kwg_bytes;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
                 let mut r = parts.r;
                 let is_klv2 = !is_klv16 && parts.is_klv2;
                 if r + parts.lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
@@ -2554,7 +2577,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
 // note: kwg in legacy layout is reported to be slower than the newer layouts.
 // this cache simulation contradicts that observation. can someone explain?
 #[inline]
-fn kwg_hitcheck<R: WgReader>(
+fn kwg_hitcheck<R: CheckedWg>(
     ret: &mut String,
     r: &R,
     b: &[u8],
@@ -2563,6 +2586,10 @@ fn kwg_hitcheck<R: WgReader>(
     cache_set_associativity: u32,
     num_cache_sets: u32,
 ) -> error::Returns<()> {
+    r.check(b)?;
+    if cache_line_size == 0 || cache_set_associativity == 0 || num_cache_sets == 0 {
+        return Err("a cache has lines, ways and sets of 1 or more".into());
+    }
     struct Cache {
         cache_line_size: u32,
         cache_set_associativity: u32,
@@ -3136,6 +3163,7 @@ fn main() -> error::Returns<()> {
     if done {
     } else if args[1] == "klv-kwg-extract" {
         let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        check_klv(klv_bytes)?;
         let parts = parse_klv(klv_bytes)?;
         // binary output
         make_writer(&args[3])?.write_all(parts.kwg_bytes)?;
@@ -3172,13 +3200,11 @@ fn main() -> error::Returns<()> {
     } else if args[1] == "quackle-make-superleaves" {
         let reader = &KwgReader {};
         let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        check_klv(klv_bytes)?;
         let parts = parse_klv(klv_bytes)?;
         let kwg_bytes = parts.kwg_bytes;
         let mut r = parts.r;
         let is_klv2 = parts.is_klv2;
-        if 0 == reader.len(kwg_bytes) {
-            return Err("out of bounds".into());
-        }
         let mut ret = Vec::new();
         iter_dawg(
             DawgSource {
