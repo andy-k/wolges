@@ -6,16 +6,16 @@ use wolges::{
     movegen, play_scorer,
 };
 
+mod game_args;
+
 // tile numbering follows alphabet order (not necessarily unicode order).
 // rack: array of numbers. 0 for blank, 1 for A.
 // board: 2D array of numbers. 0 for empty, 1 for A, -1 for blank-as-A.
-// lexicon: this implies board size and other rules too.
 // count: maximum number of moves returned.
 // (note: equal moves are not stably sorted;
 //  different counts may tie-break the last move differently.)
 #[derive(serde::Deserialize)]
 struct Question {
-    lexicon: String,
     rack: Vec<u8>,
     #[serde(rename = "board")]
     board_tiles: Vec<Vec<i8>>,
@@ -23,7 +23,69 @@ struct Question {
     max_gen: usize,
 }
 
+// the built-in question is on a super board.
+#[derive(clap::Parser)]
+#[command(
+    about = "generate the built-in question's moves and print them, then as json",
+    mut_arg("preset", |preset| preset.default_value("super-english"))
+)]
+struct Cli {
+    #[arg(long, help = "the word graph is a kbwg")]
+    kbwg: bool,
+    #[arg(default_value = "lexbin/CSW24.kwg", help = "the word graph")]
+    kwg: String,
+    #[arg(
+        default_value = "lexbin/super-CSW24.klv2",
+        help = "the leaves (- for none)"
+    )]
+    klv: String,
+    #[command(flatten)]
+    game: game_args::GameArgs,
+}
+
 fn main() -> error::Returns<()> {
+    let cli: Cli = clap::Parser::parse();
+    let game_config = cli.game.make_game_config()?;
+    // of course this should be cached
+    let klv = if cli.klv == "-" {
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+    } else {
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)
+    };
+    game_config.check_leaves(klv.leave_range())?;
+    let kwg_bytes = std::fs::read(&cli.kwg)?;
+    if cli.kbwg {
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+        answer(&kwg, &klv, &game_config)
+    } else {
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
+        answer(&kwg, &klv, &game_config)
+    }
+}
+
+#[inline]
+fn refuse_a_wider_graph<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    game_config: &game_config::GameConfig,
+    kwg_path: &str,
+) -> error::Returns<()> {
+    let alphabet_len = game_config.alphabet().len();
+    if kwg.fits_alphabet(alphabet_len) {
+        return Ok(());
+    }
+    wolges::return_error!(format!(
+        "{kwg_path} has tiles past this game's {alphabet_len}",
+    ));
+}
+
+#[inline(always)]
+fn answer<N: kwg::Node + Sync>(
+    kwg: &kwg::Kwg<N>,
+    klv: &klv::Klv<kwg::Node22>,
+    game_config: &game_config::GameConfig,
+) -> error::Returns<()> {
     let data = r#"
       {
         "actual_lexicon": "CSW19",
@@ -157,51 +219,14 @@ fn main() -> error::Returns<()> {
     */
     let question = serde_json::from_str::<Question>(data)?;
 
-    // of course this should be cached
-    let (kwg, klv, game_config) = match question.lexicon.as_str() {
-        "CSW24" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.klv2")?),
-            game_config::make_english_game_config(),
-        ),
-        "super-CSW24" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/super-CSW24.klv2")?),
-            game_config::make_super_english_game_config(),
-        ),
-        "NWL23" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?),
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.klv2")?),
-            game_config::make_english_game_config(),
-        ),
-        "super-NWL23" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?),
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/super-NWL23.klv2")?),
-            game_config::make_english_game_config(),
-        ),
-        "ECWL" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?),
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.klv2")?),
-            game_config::make_english_game_config(),
-        ),
-        "super-ECWL" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/ECWL.kwg")?),
-            klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/super-ECWL.klv2")?),
-            game_config::make_english_game_config(),
-        ),
-        _ => {
-            wolges::return_error!(format!("invalid lexicon {:?}", question.lexicon));
-        }
-    };
-
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::try_from_rng(&mut rand::rngs::SysRng)?;
-    let mut game_state = game_state::GameState::new(&game_config);
+    let mut game_state = game_state::GameState::new(game_config);
     // temp hardcode
     game_state.players[0].score = equity::scale_score(16);
     game_state.players[1].score = equity::scale_score(44);
 
     let mut kibitzer = kibitzer::Kibitzer::new();
-    kibitzer.prepare(&game_config, &question.rack, &question.board_tiles)?;
+    kibitzer.prepare(game_config, &question.rack, &question.board_tiles)?;
 
     display::print_board(
         game_config.alphabet(),
@@ -211,9 +236,9 @@ fn main() -> error::Returns<()> {
 
     let mut move_filter = move_filter::GenMoves::Unfiltered;
     let mut move_picker = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
-        &game_config,
-        &kwg,
-        &klv,
+        game_config,
+        kwg,
+        klv,
         move_picker::SimmerParams {
             num_sim_iters: move_picker::DEFAULT_NUM_SIM_ITERS,
             sim_threads: 1,
@@ -232,14 +257,14 @@ fn main() -> error::Returns<()> {
     );
     game_state.bag.shuffle(&mut rng);
 
-    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &kibitzer.board_tiles,
-        game_config: &game_config,
-        kwg: &kwg,
+        game_config,
+        kwg,
         anagrams: None,
         rack_lengths: None,
-        klv: &klv,
+        klv,
     };
 
     if false {
