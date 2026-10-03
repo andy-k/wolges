@@ -2594,9 +2594,8 @@ mod tests {
                             if gap > worst_gap {
                                 worst_gap = gap;
                             }
-                            if matches!(got.best_move, Some(PegMove::Place(_))) {
-                                n_gap_place += 1;
-                            }
+                            n_gap_place +=
+                                matches!(got.best_move, Some(PegMove::Place(_))) as usize;
                             if report.lines().count() < 25 {
                                 report.push_str(&format!(
                                     "gap win%={gap:.3} [{bname}] mover=[{}] unseen={unseen:?}: clairvoyant {:.3} vs committed {:.3}\n",

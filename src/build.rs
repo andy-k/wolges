@@ -1469,9 +1469,8 @@ mod tests {
 
         let mut num_moved_turnarounds = 0;
         for i in 2..reordered.0.len() {
-            if reordered[i as i32].tile() == 0 && !reordered[i as i32 - 1].is_end() {
-                num_moved_turnarounds += 1;
-            }
+            num_moved_turnarounds +=
+                (reordered[i as i32].tile() == 0 && !reordered[i as i32 - 1].is_end()) as usize;
         }
         assert!(
             num_moved_turnarounds > 0,
