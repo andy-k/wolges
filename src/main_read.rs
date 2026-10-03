@@ -249,7 +249,16 @@ impl AlphabetLabel for QuackleLeavesAlphabetLabel {
     }
 }
 
-#[expect(clippy::too_many_arguments)]
+// the graph iter_dawg walks: its bytes through a reader, from one arc index,
+// each tile labeled by a, and a blank as blank_str
+struct DawgSource<'a, A: AlphabetLabel, R: WgReader> {
+    a: &'a A,
+    r: &'a R,
+    b: &'a [u8],
+    initial_idx: usize,
+    blank_str: Option<&'a str>,
+}
+
 #[inline]
 fn iter_dawg<
     F: FnMut(&str) -> error::Returns<()>,
@@ -258,11 +267,13 @@ fn iter_dawg<
     A: AlphabetLabel,
     R: WgReader,
 >(
-    a: &A,
-    r: &R,
-    b: &[u8],
-    initial_idx: usize,
-    blank_str: Option<&str>,
+    DawgSource {
+        a,
+        r,
+        b,
+        initial_idx,
+        blank_str,
+    }: DawgSource<'_, A, R>,
     accepts: &mut F,
     on_in: &mut In,
     on_out: &mut Out,
@@ -625,11 +636,13 @@ fn do_wg_anagram<R: WgReader>(
     let num_tiles = std::sync::atomic::AtomicUsize::new(0);
     let mut ret = String::new();
     iter_dawg(
-        &WolgesAlphabetLabel { alphabet },
-        reader,
-        kwg_bytes,
-        reader.arc_index(kwg_bytes, 0),
-        None,
+        DawgSource {
+            a: &WolgesAlphabetLabel { alphabet },
+            r: reader,
+            b: kwg_bytes,
+            initial_idx: reader.arc_index(kwg_bytes, 0),
+            blank_str: None,
+        },
         &mut |s: &str| {
             let dominated = match mode {
                 AnagramMode::Sub => false,
@@ -698,11 +711,13 @@ fn dump_dawg<R: WgReader, A: AlphabetLabel>(
 ) -> error::Returns<()> {
     let mut ret = String::new();
     iter_dawg(
-        label,
-        reader,
-        bytes,
-        initial_arc_index,
-        blank_str,
+        DawgSource {
+            a: label,
+            r: reader,
+            b: bytes,
+            initial_idx: initial_arc_index,
+            blank_str,
+        },
         &mut |s: &str| {
             ret.push_str(s);
             ret.push('\n');
@@ -749,11 +764,13 @@ fn do_klv_anagram<R: WgReader>(
     let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
     let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
     iter_dawg(
-        &WolgesAlphabetLabel { alphabet },
-        reader,
-        kwg_bytes,
-        reader.arc_index(kwg_bytes, 0),
-        alphabet.of_rack(0),
+        DawgSource {
+            a: &WolgesAlphabetLabel { alphabet },
+            r: reader,
+            b: kwg_bytes,
+            initial_idx: reader.arc_index(kwg_bytes, 0),
+            blank_str: alphabet.of_rack(0),
+        },
         &mut |s: &str| {
             let leave_value = read_leave_value(klv_bytes, &mut r, is_klv2)?;
             let dominated = match mode {
@@ -885,11 +902,13 @@ fn do_wg_prob<R: WgReader>(
     }
     let vec_out_cell = std::cell::RefCell::new(Vec::new());
     iter_dawg(
-        &WolgesAlphabetLabel { alphabet },
-        reader,
-        kwg_bytes,
-        reader.arc_index(kwg_bytes, 0),
-        None,
+        DawgSource {
+            a: &WolgesAlphabetLabel { alphabet },
+            r: reader,
+            b: kwg_bytes,
+            initial_idx: reader.arc_index(kwg_bytes, 0),
+            blank_str: None,
+        },
         &mut |s: &str| {
             let word = word_cell.borrow();
             let this_wp = word_prob.word_draw_ways(&word);
@@ -1010,13 +1029,15 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 let scale = if is_klv16 { 1.0 / 8.0 } else { 1.0 / 256.0 };
                 let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
                 iter_dawg(
-                    &WolgesAlphabetLabel {
-                        alphabet: &alphabet,
+                    DawgSource {
+                        a: &WolgesAlphabetLabel {
+                            alphabet: &alphabet,
+                        },
+                        r: reader,
+                        b: kwg_bytes,
+                        initial_idx: reader.arc_index(kwg_bytes, 0),
+                        blank_str: alphabet.of_rack(0),
                     },
-                    reader,
-                    kwg_bytes,
-                    reader.arc_index(kwg_bytes, 0),
-                    alphabet.of_rack(0),
                     &mut |s: &str| {
                         let v = if is_klv2 && klv_bytes.len() >= r + 4 {
                             let v = f32::from_bits(read_le_u32(klv_bytes, r));
@@ -3157,11 +3178,13 @@ fn main() -> error::Returns<()> {
         }
         let mut ret = Vec::new();
         iter_dawg(
-            &QuackleLeavesAlphabetLabel {},
-            reader,
-            kwg_bytes,
-            reader.arc_index(kwg_bytes, 0),
-            Some("\x01"),
+            DawgSource {
+                a: &QuackleLeavesAlphabetLabel {},
+                r: reader,
+                b: kwg_bytes,
+                initial_idx: reader.arc_index(kwg_bytes, 0),
+                blank_str: Some("\x01"),
+            },
             &mut |s: &str| {
                 let float_leave = read_leave_value(klv_bytes, &mut r, is_klv2)?;
                 let rounded_leave = (float_leave * 256.0).round();
