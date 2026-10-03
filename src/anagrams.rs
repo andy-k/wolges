@@ -12,6 +12,13 @@ fn filter_hash(key: u128, len: u8) -> u64 {
     alphagram::mixed(key).rotate_left(len as u32)
 }
 
+// about the bytes a hash table of this capacity holds: std's keeps an eighth of
+// its slots free, and a control byte beside each
+#[inline(always)]
+fn hashed_bytes<T>(capacity: usize) -> usize {
+    capacity.div_ceil(7) * 8 * (std::mem::size_of::<T>() + 1)
+}
+
 #[inline(always)]
 fn layout_for_config(game_config: &game_config::GameConfig) -> Option<alphagram::KeyLayout> {
     let dim = game_config.board_layout().dim();
@@ -227,6 +234,24 @@ impl Anagrams {
             len,
         }
     }
+
+    // about the bytes it holds
+    #[inline(always)]
+    fn bytes(&self) -> usize {
+        let tables = |tables: &[Table]| {
+            std::mem::size_of_val(tables)
+                + tables
+                    .iter()
+                    .map(|table| hashed_bytes::<(u128, Span)>(table.capacity()))
+                    .sum::<usize>()
+        };
+        self.arena.len()
+            + tables(&self.groups)
+            + tables(&self.blanked)
+            + std::mem::size_of_val(&*self.answers)
+            + std::mem::size_of_val(&*self.filter)
+            + std::mem::size_of_val(&*self.blank_filter)
+    }
 }
 
 impl Anagrams {
@@ -343,6 +368,12 @@ impl RackLengths {
     pub fn contains(&self, key: u128) -> bool {
         self.present.contains(&key)
     }
+
+    // about the bytes it holds
+    #[inline(always)]
+    fn bytes(&self) -> usize {
+        hashed_bytes::<u128>(self.present.capacity())
+    }
 }
 
 // what the generator reads beside the word graph: the anagrams, or on the lean
@@ -380,6 +411,16 @@ impl ArmTables {
         match self {
             Self::RackLengths(rack_lengths) => Some(rack_lengths),
             Self::Anagrams(_) | Self::None => None,
+        }
+    }
+
+    // about the bytes the tables hold
+    #[inline(always)]
+    pub fn bytes(&self) -> usize {
+        match self {
+            Self::Anagrams(anagrams) => anagrams.bytes(),
+            Self::RackLengths(rack_lengths) => rack_lengths.bytes(),
+            Self::None => 0,
         }
     }
 }
@@ -585,5 +626,31 @@ mod tests {
         for lean in [false, true] {
             assert!(ArmTables::build(&kwg, &gc, lean).is_err());
         }
+    }
+
+    #[test]
+    #[inline]
+    fn the_tables_count_the_bytes_they_hold() {
+        let gc = crate::game_config::make_english_game_config();
+        let words = three_letter_words()
+            .iter()
+            .map(|w| w[..].into())
+            .collect::<Vec<crate::bites::Bites>>();
+        let bytes = crate::build::build(
+            crate::build::BuildContent::Gaddawg,
+            crate::build::BuildLayout::Wolges,
+            crate::build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
+        let anagrams = ArmTables::build(&kwg, &gc, false).unwrap().bytes();
+        let lean = ArmTables::build(&kwg, &gc, true).unwrap().bytes();
+        // the anagrams hold every word's letters beside its keys, the lean arm
+        // the keys alone
+        assert!(anagrams > words.len() * 3, "{anagrams}");
+        assert!(0 < lean && lean < anagrams, "{lean} {anagrams}");
+        let none = ArmTables::None;
+        assert_eq!(none.bytes(), 0);
     }
 }
