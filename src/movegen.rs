@@ -4017,10 +4017,15 @@ impl<N: kwg::Node, L: kwg::Node> std::fmt::Display for WriteablePlay<'_, N, L> {
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
-            // allocates, but no choice.
-            #[expect(clippy::recursive_format_impl)]
-            return f.pad(&format!("{self}"));
+            return display::pad_with(f, |s| self.write_unpadded(s));
         }
+        self.write_unpadded(f)
+    }
+}
+
+impl<N: kwg::Node, L: kwg::Node> WriteablePlay<'_, N, L> {
+    #[inline]
+    fn write_unpadded(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         match &self.play {
             Play::Exchange { tiles } => {
                 if tiles.is_empty() {

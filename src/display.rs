@@ -41,19 +41,42 @@ pub fn board_label<'a>(
         .unwrap_or_else(|| empty_label(board_layout, row, col))
 }
 
+thread_local! {
+    static PAD_BUF: std::cell::Cell<String> = const { std::cell::Cell::new(String::new()) };
+}
+
+// a padded display is written into one buffer per thread, reused; a padded
+// display nested inside finds the buffer taken and grows its own.
+#[inline]
+pub(crate) fn pad_with(
+    f: &mut std::fmt::Formatter<'_>,
+    write: impl FnOnce(&mut String) -> std::fmt::Result,
+) -> std::fmt::Result {
+    let mut s = PAD_BUF.take();
+    s.clear();
+    let r = write(&mut s).and_then(|()| f.pad(&s));
+    PAD_BUF.set(s);
+    r
+}
+
 pub struct ColumnStr(usize);
 
 impl std::fmt::Display for ColumnStr {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
-            // allocates, but no choice.
-            #[expect(clippy::recursive_format_impl)]
-            return f.pad(&format!("{self}"));
+            return pad_with(f, |s| self.write_unpadded(s));
         }
+        self.write_unpadded(f)
+    }
+}
+
+impl ColumnStr {
+    #[inline(always)]
+    fn write_unpadded(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         if self.0 >= 26 {
             // usize::MAX is about 26**14 so recursion may be ok.
-            write!(f, "{}", Self(self.0 / 26 - 1))?;
+            Self(self.0 / 26 - 1).write_unpadded(f)?;
         }
         write!(f, "{}", ((self.0 % 26) as u8 + 0x41) as char)?;
         Ok(())
@@ -121,10 +144,15 @@ impl std::fmt::Display for BoardPrinter<'_> {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
-            // allocates, but no choice.
-            #[expect(clippy::recursive_format_impl)]
-            return f.pad(&format!("{self}"));
+            return pad_with(f, |s| self.write_unpadded(s));
         }
+        self.write_unpadded(f)
+    }
+}
+
+impl BoardPrinter<'_> {
+    #[inline(always)]
+    fn write_unpadded(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         let ncols: i8 = self.board_layout.dim().cols;
         let max_col_label_width = 1 + ((ncols > 26) as usize);
         let nrows: i8 = self.board_layout.dim().rows;
@@ -201,10 +229,15 @@ impl std::fmt::Display for BoardFenner<'_> {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
-            // allocates, but no choice.
-            #[expect(clippy::recursive_format_impl)]
-            return f.pad(&format!("{self}"));
+            return pad_with(f, |s| self.write_unpadded(s));
         }
+        self.write_unpadded(f)
+    }
+}
+
+impl BoardFenner<'_> {
+    #[inline(always)]
+    fn write_unpadded(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         let mut p = 0usize;
         for r in 0..self.board_layout.dim().rows {
             if r > 0 {
@@ -339,10 +372,15 @@ impl std::fmt::Display for MsPrinter {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
-            // allocates, but no choice.
-            #[expect(clippy::recursive_format_impl)]
-            return f.pad(&format!("{self}"));
+            return pad_with(f, |s| self.write_unpadded(s));
         }
+        self.write_unpadded(f)
+    }
+}
+
+impl MsPrinter {
+    #[inline(always)]
+    fn write_unpadded(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         let mut ms = self.ms;
         if ms < 0 {
             write!(f, "-")?;
@@ -367,10 +405,15 @@ impl std::fmt::Display for GameStatePrinter<'_> {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
-            // allocates, but no choice.
-            #[expect(clippy::recursive_format_impl)]
-            return f.pad(&format!("{self}"));
+            return pad_with(f, |s| self.write_unpadded(s));
         }
+        self.write_unpadded(f)
+    }
+}
+
+impl GameStatePrinter<'_> {
+    #[inline(always)]
+    fn write_unpadded(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         writeln!(
             f,
             "{}{}\nPool {}: {}",
@@ -490,5 +533,28 @@ mod tests {
         assert_eq!(fen, "A25E100/99s27/126T");
         let mut fen_parser = BoardFenParser::new(&alphabet, &board_layout);
         assert_eq!(fen_parser.parse(&fen).unwrap(), &board_tiles[..]);
+    }
+
+    #[test]
+    #[inline]
+    fn a_padded_display_pads_the_text_it_writes() {
+        assert_eq!(format!("[{:^6}]", column(27)), "[  AB  ]");
+        assert_eq!(format!("[{:>4.1}]", column(27)), "[   A]");
+        assert_eq!(
+            format!("[{:*<12}]", MsPrinter { ms: -61_001 }),
+            "[-01:01.001**]"
+        );
+        let game_config = game_config::make_english_game_config();
+        let board_printer = BoardPrinter {
+            alphabet: game_config.alphabet(),
+            board_layout: game_config.board_layout(),
+            board_tiles: &[0u8; 15 * 15],
+        };
+        let text = board_printer.to_string();
+        assert!(text.contains(" A B C "));
+        assert_eq!(
+            format!("{:>width$}", board_printer, width = text.len() + 3),
+            format!("   {text}"),
+        );
     }
 }
