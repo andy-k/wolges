@@ -481,6 +481,12 @@ fn run_batch<N: kwg::Node>(
                 "line {line_index}: bad player {player_str:?}: the player to move is 0 or 1"
             ));
         }
+        let mut off_board = game_config.tiles_off_board(&board_tiles)?;
+        for rack in [&rack0, &rack1] {
+            game_config
+                .take_rack(&mut off_board, rack)
+                .map_err(|e| error::new(format!("line {line_index}: {e}")))?;
+        }
 
         let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
         move_generator.gen_remaining_words(
@@ -1411,6 +1417,13 @@ fn solve_position<N: kwg::Node>(
         .map(|tile| alphabet.freq(tile))
         .collect::<Box<_>>();
 
+    if question.rack.len() > game_config.rack_size() as usize {
+        wolges::return_error!(format!(
+            "rack has {} tiles, a rack holds {}",
+            question.rack.len(),
+            game_config.rack_size(),
+        ));
+    }
     for &tile in &question.rack {
         if tile > alphabet_len_without_blank {
             wolges::return_error!(format!(

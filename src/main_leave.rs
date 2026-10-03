@@ -4864,15 +4864,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     let board_tiles = fen_parser.parse(board_fen)?.to_vec();
     let tiles_on_board = board_tiles.iter().filter(|&&t| t != 0).count();
     let phase = BoardPhase::of_board(&board_tiles, &game_config);
-    let mut unseen_tally = (0..alphabet.len())
-        .map(|t| alphabet.freq(t))
-        .collect::<Vec<u8>>();
-    for &t in &board_tiles {
-        if t != 0 {
-            let base = t & !((t as i8) >> 7) as u8;
-            unseen_tally[base as usize] = unseen_tally[base as usize].saturating_sub(1);
-        }
-    }
+    let unseen_tally = game_config.tiles_off_board(&board_tiles)?;
     let unseen: usize = unseen_tally.iter().map(|&c| c as usize).sum();
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let can_exchange =
@@ -4944,13 +4936,9 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     let mut tally = vec![0u8; num_letters];
     for rack_str in rack_strs {
         rack_reader.set_word(rack_str, &mut rack)?;
-        if rack.len() > rack_size {
-            return Err(format!(
-                "{rack_str} has {} tiles; a rack holds {rack_size}",
-                rack.len(),
-            )
-            .into());
-        }
+        game_config
+            .take_rack(&mut unseen_tally.clone(), &rack)
+            .map_err(|e| format!("{rack_str}: {e}"))?;
         tally.iter_mut().for_each(|c| *c = 0);
         for &t in &rack {
             tally[t as usize] += 1;
@@ -5116,30 +5104,9 @@ fn inspect_dynamic_leaves<L: kwg::Node>(
     let mut rack = Vec::new();
     alphabet::AlphabetReader::new_for_racks(alphabet).set_word(rack_str, &mut rack)?;
     rack.sort_unstable();
-    if rack.len() > rack_size {
-        return Err("that is more tiles than a rack holds".into());
-    }
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
-    let board_tiles = fen_parser.parse(board_fen)?;
-    let mut pool = vec![0u8; num_letters];
-    for (tile, slot) in (0u8..).zip(pool.iter_mut()) {
-        *slot = alphabet.freq(tile);
-    }
-    for &tile in board_tiles {
-        if tile != 0 {
-            let tile = if tile & 0x80 != 0 { 0 } else { tile } as usize;
-            if pool[tile] == 0 {
-                return Err("the board holds more of a tile than the bag has".into());
-            }
-            pool[tile] -= 1;
-        }
-    }
-    for &tile in &rack {
-        if pool[tile as usize] == 0 {
-            return Err("the rack holds a tile the board has already used up".into());
-        }
-        pool[tile as usize] -= 1;
-    }
+    let mut pool = game_config.tiles_off_board(fen_parser.parse(board_fen)?)?;
+    game_config.take_rack(&mut pool, &rack)?;
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     let (lat, add, full_v) = lattice_leaves(&klv, num_letters, rack_size, threads)?;
     println!("rack {rack_str}, {pool_size} tiles unseen");
@@ -5353,33 +5320,13 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     let board_tiles = fen_parser.parse(fen)?.to_vec();
     display::print_board(alphabet, board_layout, &board_tiles);
 
-    let mut off_board = vec![0u8; num_letters];
-    for (tile, slot) in (0u8..).zip(off_board.iter_mut()) {
-        *slot = alphabet.freq(tile);
-    }
-    for &tile in &board_tiles {
-        if tile != 0 {
-            let tile = if tile & 0x80 != 0 { 0 } else { tile } as usize;
-            if off_board[tile] == 0 {
-                return Err("the board holds more of a tile than the bag has".into());
-            }
-            off_board[tile] -= 1;
-        }
-    }
+    let off_board = game_config.tiles_off_board(&board_tiles)?;
     let mut unseen = off_board.clone();
     let mut rack_tiles = Vec::new();
     if let Some(rack) = rack {
         alphabet::AlphabetReader::new_for_racks(alphabet).set_word(rack, &mut rack_tiles)?;
         rack_tiles.sort_unstable();
-        if rack_tiles.len() > rack_size {
-            return Err("that is more tiles than a rack holds".into());
-        }
-        for &tile in &rack_tiles {
-            if unseen[tile as usize] == 0 {
-                return Err("the rack holds a tile the board has already used up".into());
-            }
-            unseen[tile as usize] -= 1;
-        }
+        game_config.take_rack(&mut unseen, &rack_tiles)?;
     }
     let unseen_size: usize = unseen.iter().map(|&c| c as usize).sum();
     if rack.is_some() {
