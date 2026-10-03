@@ -531,6 +531,38 @@ fn wmp_read_bit_rack(
     }
 }
 
+// inlining it slows the dump
+#[inline(never)]
+fn check_wmp_buckets(
+    bytes: &[u8],
+    ofs: usize,
+    num_buckets: u32,
+    num_entries: u32,
+) -> error::Returns<()> {
+    let mut prev = 0;
+    for i in 0..=num_buckets as usize {
+        let idx = read_le_u32(bytes, ofs + i * 4);
+        if idx < prev || (i == 0 && idx != 0) || (i == num_buckets as usize && idx != num_entries) {
+            return Err("invalid buckets".into());
+        }
+        prev = idx;
+    }
+    Ok(())
+}
+
+#[inline(always)]
+fn check_wmp_run(
+    initial_ofs: u32,
+    num_elts: u32,
+    width: usize,
+    section_len: usize,
+) -> error::Returns<()> {
+    if initial_ofs as u64 + num_elts as u64 * width as u64 > section_len as u64 {
+        return Err("an entry's words run past their section".into());
+    }
+    Ok(())
+}
+
 struct KlvParts<'a> {
     kwg_bytes: &'a [u8],
     r: usize,
@@ -1451,7 +1483,8 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     let wmp_bylen_num_words = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_words_ofs = r;
-                    r += (len as u32 * wmp_bylen_num_words) as usize;
+                    let wmp_bylen_words_len = len as usize * wmp_bylen_num_words as usize;
+                    r += wmp_bylen_words_len;
 
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
@@ -1489,6 +1522,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     let wmp_bylen_double_blank_entries_ofs = r;
                     r += wmp_entry_size * wmp_bylen_num_double_blank_entries as usize;
                     let wmp_bylen_blank_pairs_ofs;
+                    let wmp_bylen_blank_pairs_len;
                     if wmp_ver < 2 {
                         if wmp_bytes.len() < r + 4 {
                             return Err("out of bounds".into());
@@ -1496,14 +1530,34 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                         let wmp_bylen_num_blank_pairs = read_le_u32(wmp_bytes, r);
                         r += 4;
                         wmp_bylen_blank_pairs_ofs = r;
-                        r += 2 * wmp_bylen_num_blank_pairs as usize;
+                        wmp_bylen_blank_pairs_len = 2 * wmp_bylen_num_blank_pairs as usize;
+                        r += wmp_bylen_blank_pairs_len;
                     } else {
                         wmp_bylen_blank_pairs_ofs = 0;
+                        wmp_bylen_blank_pairs_len = 0;
                     }
 
                     if wmp_bytes.len() < r {
                         return Err("out of bounds".into());
                     }
+                    check_wmp_buckets(
+                        wmp_bytes,
+                        wmp_bylen_word_buckets_ofs,
+                        wmp_bylen_num_word_buckets,
+                        wmp_bylen_num_word_entries,
+                    )?;
+                    check_wmp_buckets(
+                        wmp_bytes,
+                        wmp_bylen_blank_buckets_ofs,
+                        wmp_bylen_num_blank_buckets,
+                        wmp_bylen_num_blank_entries,
+                    )?;
+                    check_wmp_buckets(
+                        wmp_bytes,
+                        wmp_bylen_double_blank_buckets_ofs,
+                        wmp_bylen_num_double_blank_buckets,
+                        wmp_bylen_num_double_blank_entries,
+                    )?;
                     if words_only {
                         // inlined words
                         for bucket_idx in 0..wmp_bylen_num_word_buckets {
@@ -1522,6 +1576,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     let initial_ofs = read_le_u32(wmp_bytes, p);
                                     p += 4;
                                     num_elts = read_le_u32(wmp_bytes, p);
+                                    check_wmp_run(
+                                        initial_ofs,
+                                        num_elts,
+                                        len as usize,
+                                        wmp_bylen_words_len,
+                                    )?;
                                     p = wmp_bylen_words_ofs + initial_ofs as usize;
                                 } else {
                                     // inlined words
@@ -1587,6 +1647,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                         let initial_ofs = read_le_u32(wmp_bytes, p);
                                         p += 4;
                                         num_elts = read_le_u32(wmp_bytes, p);
+                                        check_wmp_run(
+                                            initial_ofs,
+                                            num_elts,
+                                            len as usize,
+                                            wmp_bylen_words_len,
+                                        )?;
                                         p = wmp_bylen_words_ofs + initial_ofs as usize;
                                     } else {
                                         // inlined words
@@ -1660,6 +1726,13 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                             ret,
                             "\ndouble blank buckets: {wmp_bylen_num_double_blank_buckets}"
                         )?;
+                        // else the lookups below divide by 0
+                        if wmp_bylen_num_double_blank_entries != 0
+                            && (wmp_bylen_num_word_buckets == 0
+                                || (wmp_ver >= 2 && wmp_bylen_num_blank_buckets == 0))
+                        {
+                            return Err("invalid double blank entry".into());
+                        }
                         if wmp_ver < 2 {
                             for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
                                 let mut p =
@@ -1695,6 +1768,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                             let initial_ofs = read_le_u32(wmp_bytes, p);
                                             p += 4;
                                             num_elts = read_le_u32(wmp_bytes, p);
+                                            check_wmp_run(
+                                                initial_ofs,
+                                                num_elts,
+                                                2,
+                                                wmp_bylen_blank_pairs_len,
+                                            )?;
                                             p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
                                         } else {
                                             num_elts = (wmp_bytes[p..p + 16]
@@ -1709,7 +1788,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                             let mut unblanked_bit_rack = bit_rack & !0xf;
                                             for _ in 0..2 {
                                                 let tile = wmp_bytes[p];
-                                                unblanked_bit_rack += 1 << (4 * tile);
+                                                // 32 tiles, four bits each
+                                                if tile >= 32 {
+                                                    return Err("invalid tile".into());
+                                                }
+                                                unblanked_bit_rack = unblanked_bit_rack
+                                                    .wrapping_add(1 << (4 * tile));
                                                 alphabet_label.label(&mut ret, tile)?;
                                                 p += 1;
                                             }
@@ -1753,7 +1837,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                                                 / len as usize)
                                                                 as u32
                                                         };
-                                                        this_word_lookup_results += num_elts;
+                                                        this_word_lookup_results =
+                                                            this_word_lookup_results
+                                                                .saturating_add(num_elts);
                                                         found = true;
                                                         break;
                                                     }
@@ -1764,10 +1850,13 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                             }
                                         }
                                         expected_max_word_lookup_results =
-                                            expected_max_word_lookup_results
-                                                .max(len as u32 * this_word_lookup_results);
+                                            expected_max_word_lookup_results.max(
+                                                (len as u32)
+                                                    .saturating_mul(this_word_lookup_results),
+                                            );
                                         expected_max_blank_pair_results =
-                                            expected_max_blank_pair_results.max(2 * num_elts);
+                                            expected_max_blank_pair_results
+                                                .max(num_elts.saturating_mul(2));
                                         ret.push('\n');
                                     }
                                 }
@@ -1814,8 +1903,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                         let mut this_word_lookup_results = 0u32;
                                         for first_i in 0..32 {
                                             if bits & (1 << first_i) != 0 {
-                                                let b1_bit_rack =
-                                                    (bit_rack - 1) + (1 << (4 * first_i));
+                                                // a corrupt bit rack wraps
+                                                let b1_bit_rack = bit_rack
+                                                    .wrapping_sub(1)
+                                                    .wrapping_add(1 << (4 * first_i));
                                                 {
                                                     // shadow all the variables inside here.
                                                     let mut sought_quotient = 0;
@@ -1875,7 +1966,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
 
                                                                         let unblanked_bit_rack =
                                                                             (b1_bit_rack & !0xf)
-                                                                                + (1 << (4 * i));
+                                                                                .wrapping_add(
+                                                                                    1 << (4 * i),
+                                                                                );
                                                                         {
                                                                             // shadow all the variables inside here.
                                                                             let mut sought_quotient =
@@ -1959,8 +2052,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                                                                 / len as usize)
                                                                                 as u32
                                                                                         };
-                                                                                    this_word_lookup_results +=
-                                                                            num_elts;
+                                                                                    this_word_lookup_results =
+                                                                                        this_word_lookup_results
+                                                                                            .saturating_add(num_elts);
                                                                                     found = true;
                                                                                     break;
                                                                                 }
@@ -1985,8 +2079,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                             }
                                         }
                                         expected_max_word_lookup_results =
-                                            expected_max_word_lookup_results
-                                                .max(len as u32 * this_word_lookup_results);
+                                            expected_max_word_lookup_results.max(
+                                                (len as u32)
+                                                    .saturating_mul(this_word_lookup_results),
+                                            );
                                         ret.push('\n');
                                     }
                                 }
