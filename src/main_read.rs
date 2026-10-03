@@ -317,6 +317,7 @@ fn iter_dawg<
         accepts: &'a mut F,
         on_in: &'a mut In,
         on_out: &'a mut Out,
+        runs_on_path: Vec<bool>,
     }
     fn iter<
         F: FnMut(&str) -> error::Returns<()>,
@@ -328,6 +329,14 @@ fn iter_dawg<
         env: &mut Env<'_, F, In, Out, A, R>,
         first_p: usize,
     ) -> error::Returns<()> {
+        // a run entered again before the walk leaves it is a loop
+        match env.runs_on_path.get_mut(first_p) {
+            None => return Err("out of bounds".into()),
+            Some(true) => {
+                return Err(format!("the word graph loops back to node {first_p}").into());
+            }
+            Some(on_path) => *on_path = true,
+        }
         let l = env.s.len();
         let mut prev_tile = 0u8;
         let mut took_any = false;
@@ -374,6 +383,7 @@ fn iter_dawg<
             }
             env.s.truncate(l);
         }
+        env.runs_on_path[first_p] = false;
         Ok(())
     }
     if initial_idx >= r.len(b) {
@@ -389,6 +399,7 @@ fn iter_dawg<
             accepts,
             on_in,
             on_out,
+            runs_on_path: vec![false; r.len(b)],
         },
         initial_idx,
     )
