@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{equity, error, game_config, game_state, klv, kwg, movegen, win_pct};
+use super::{anagrams, equity, error, game_config, game_state, klv, kwg, movegen, win_pct};
 use rand::SeedableRng;
 
 // scores and leave values are millipoints; the sigmoid and its weightage are in
@@ -226,6 +226,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         &mut self,
         game_config: &game_config::GameConfig,
         kwg: &kwg::Kwg<N>,
+        arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
     ) -> bool {
@@ -248,8 +249,8 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                             board_tiles: &self.game_state.board_tiles,
                             game_config,
                             kwg,
-                            anagrams: None,
-                            rack_lengths: None,
+                            anagrams: arm_tables.anagrams(),
+                            rack_lengths: arm_tables.rack_lengths(),
                             klv,
                         },
                         rack: &self.game_state.current_player().rack,
@@ -379,6 +380,7 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00");
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false);
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut simmer = Simmer::new(&game_config);
         simmer.reseed(99);
@@ -393,14 +395,14 @@ mod tests {
 
         let shared_state = simmer.rng.clone();
 
-        simmer.simulate(&game_config, &kwg, &klv, &candidate);
+        simmer.simulate(&game_config, &kwg, &arm_tables, &klv, &candidate);
         let rack_after_first = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();
 
         assert_eq!(simmer.rng, shared_state);
 
-        simmer.simulate(&game_config, &kwg, &klv, &candidate);
+        simmer.simulate(&game_config, &kwg, &arm_tables, &klv, &candidate);
         let rack_after_second = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();

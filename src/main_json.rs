@@ -237,10 +237,12 @@ fn answer<N: kwg::Node + Sync>(
         &kibitzer.board_tiles,
     );
 
+    let arm_tables = wolges::anagrams::ArmTables::build(kwg, game_config, lean);
     let mut move_filter = move_filter::GenMoves::Unfiltered;
     let mut move_picker = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
         game_config,
         kwg,
+        &arm_tables,
         klv,
         move_picker::SimmerParams {
             num_sim_iters: move_picker::DEFAULT_NUM_SIM_ITERS,
@@ -261,7 +263,6 @@ fn answer<N: kwg::Node + Sync>(
     game_state.bag.shuffle(&mut rng);
 
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
-    let arm_tables = wolges::anagrams::ArmTables::build(kwg, game_config, lean);
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &kibitzer.board_tiles,
         game_config,

@@ -759,6 +759,7 @@ fn run<N: kwg::Node + Sync + Send>(
             let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
+                &arm_tables,
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
@@ -866,6 +867,7 @@ fn run<N: kwg::Node + Sync + Send>(
             let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
+                &arm_tables,
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
@@ -4694,6 +4696,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     let mut driver = move_picker::Simmer::<_, _, true>::new(
         &game_config,
         &kwg,
+        &arm_tables,
         &klv,
         move_picker::SimmerParams {
             num_sim_iters: iters,
@@ -5699,6 +5702,7 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
     picker: SeatPicker,
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
+    arm_tables: &'a anagrams::ArmTables,
     klv: &'a klv::Klv<L>,
     dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
     simmer_params: move_picker::SimmerParams<'a>,
@@ -5709,6 +5713,7 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
         SeatPicker::Simmer => move_picker::MovePicker::Simmer(move_picker::Simmer::new(
             game_config,
             kwg,
+            arm_tables,
             klv,
             simmer_params,
         )),
@@ -5820,6 +5825,7 @@ fn compare_seats<
                     p0_picker,
                     &game_config,
                     &kwg,
+                    arm_tables,
                     &arc_klv0,
                     dyn_refs.map(|refs| refs[0]),
                     move_picker::SimmerParams {
@@ -5832,6 +5838,7 @@ fn compare_seats<
                     p1_picker,
                     &game_config,
                     &kwg,
+                    arm_tables,
                     &arc_klv1,
                     dyn_refs.map(|refs| refs[1]),
                     move_picker::SimmerParams {

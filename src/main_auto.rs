@@ -133,6 +133,7 @@ fn do_it<N: kwg::Node + Sync>(
     let mut move_picker_1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
         game_config,
         kwg,
+        &arm_tables,
         klv,
         move_picker::SimmerParams {
             num_sim_iters: move_picker::DEFAULT_NUM_SIM_ITERS,

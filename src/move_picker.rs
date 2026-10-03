@@ -1,6 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats, win_pct};
+use super::{
+    anagrams, game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats, win_pct,
+};
 use rand::SeedableRng;
 
 struct Candidate {
@@ -124,11 +126,12 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node, R: rand::Rng + SeedableRng + si
     simmer: &mut simmer::Simmer<R>,
     game_config: &game_config::GameConfig,
     kwg: &kwg::Kwg<N>,
+    arm_tables: &anagrams::ArmTables,
     klv: &klv::Klv<L>,
     play: &movegen::Play,
     table: Option<&win_pct::WinPctTable>,
 ) -> (f64, i32, f64) {
-    let game_ended = simmer.simulate(game_config, kwg, klv, play);
+    let game_ended = simmer.simulate(game_config, kwg, arm_tables, klv, play);
     let final_spread = simmer.final_equity_spread().unwrap();
     let win_prob = if simmer.wants_win_prob() {
         simmer.compute_win_prob(game_ended, final_spread, table)
@@ -191,6 +194,7 @@ pub struct Simmer<
 > {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
+    arm_tables: &'a anagrams::ArmTables,
     klv: &'a klv::Klv<L>,
     candidates: Vec<Candidate>,
     simmer: simmer::Simmer<R>,
@@ -216,12 +220,14 @@ impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSER
     pub fn new(
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
+        arm_tables: &'a anagrams::ArmTables,
         klv: &'a klv::Klv<L>,
         params: SimmerParams<'a>,
     ) -> Self {
         Self::with_rng(
             game_config,
             kwg,
+            arm_tables,
             klv,
             params,
             simmer::DefaultRng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
@@ -240,6 +246,7 @@ impl<
     pub fn with_rng(
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
+        arm_tables: &'a anagrams::ArmTables,
         klv: &'a klv::Klv<L>,
         params: SimmerParams<'a>,
         rng: R,
@@ -247,6 +254,7 @@ impl<
         Self {
             game_config,
             kwg,
+            arm_tables,
             klv,
             candidates: Vec::new(),
             simmer: simmer::Simmer::with_rng(game_config, rng),
@@ -461,6 +469,7 @@ impl<
                     &mut self.simmer,
                     self.game_config,
                     self.kwg,
+                    self.arm_tables,
                     self.klv,
                     &move_generator.plays[candidate.play_index].play,
                     self.win_pct_table,
@@ -515,6 +524,7 @@ impl<
         let decision_seed = self.decision_seed;
         let game_config = self.game_config;
         let kwg = self.kwg;
+        let arm_tables = self.arm_tables;
         let klv = self.klv;
         let win_pct_table = self.win_pct_table;
         let base_simmer = &self.simmer;
@@ -565,6 +575,7 @@ impl<
                                     &mut simmer,
                                     game_config,
                                     kwg,
+                                    arm_tables,
                                     klv,
                                     &move_generator.plays[play_index].play,
                                     win_pct_table,

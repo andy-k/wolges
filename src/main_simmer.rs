@@ -291,6 +291,7 @@ fn simulate<N: kwg::Node>(
     let mut driver = move_picker::Simmer::<_, _, true>::new(
         game_config,
         &smaller_kwg,
+        &arm_tables,
         klv,
         move_picker::SimmerParams {
             num_sim_iters: sim_iters,
