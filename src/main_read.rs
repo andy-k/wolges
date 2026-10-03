@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::{alphabet, bites, error, fash, kwg, prob, stats};
+use wolges::{alphabet, alphagram, bites, error, fash, kwg, prob, stats};
 
 use kwg::{read_le_u16, read_le_u32};
 use std::fmt::Write;
@@ -940,15 +940,7 @@ fn do_wg_prob<R: WgReader>(
 // https://github.com/aappleby/smhasher/blob/0ff96f7835817a27d0487325b6c16033e2992eb5/src/MurmurHash3.cpp#L83-L87
 #[inline(always)]
 fn wmp3_hash(bit_rack: u128) -> u32 {
-    let mut k = (bit_rack >> 64) as u64;
-    k ^= k.rotate_left(17);
-    k ^= bit_rack as u64;
-    k ^= k >> 33;
-    k *= 0xff51afd7ed558ccd;
-    k ^= k >> 33;
-    k *= 0xc4ceb9fe1a85ec53;
-    k ^= k >> 33;
-    k as u32
+    alphagram::mixed(bit_rack) as u32
 }
 
 #[inline]
