@@ -5710,13 +5710,13 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
     match picker {
         SeatPicker::Hasty => move_picker::MovePicker::Hasty,
         SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dynamic_leaves.unwrap()),
-        SeatPicker::Simmer => move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+        SeatPicker::Simmer => move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
             game_config,
             kwg,
             arm_tables,
             klv,
             simmer_params,
-        )),
+        ))),
     }
 }
 
