@@ -3536,6 +3536,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         .collect::<Box<_>>();
     let mut neighbor_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let mut num_smoothed = 0u64;
+    let mut written = Ok(());
     generate_exchanges(&mut ExchangeEnv {
         found_exchange_move: |rack_bytes: &[u8]| {
             let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
@@ -3576,15 +3577,14 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
             }
             ev_map.insert(rack_bytes.into(), new_v);
             let elapsed_time_secs = t0.elapsed().as_secs();
-            if tick_periods.update(elapsed_time_secs) {
-                writeln!(
+            if tick_periods.update(elapsed_time_secs) && written.is_ok() {
+                written = writeln!(
                     stdout_or_stderr,
                     "After {} seconds, have processed {} subracks and smoothed {}",
                     elapsed_time_secs,
                     ev_map.len(),
                     num_smoothed,
-                )
-                .unwrap();
+                );
             }
         },
         rack_tally: &mut alphabet_freqs,
@@ -3592,6 +3592,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         max_len: leave_size,
         exchange_buffer: &mut exchange_buffer,
     });
+    written?;
     drop(neighbor_buffer);
     writeln!(
         stdout_or_stderr,
@@ -3620,6 +3621,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
 
     let mut subrack_bytes = Vec::with_capacity(leave_size as usize);
     for len_to_complete in 2..=leave_size {
+        let mut written = Ok(());
         let len_minus_one = len_to_complete as usize - 1;
         // ensure every subrack of each length has samples.
         // if not, fill it in based on subracks one tile fewer.
@@ -3658,12 +3660,11 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
                         // just use straight average.
                         ev_map.insert(rack_bytes.into(), vn / vd as f64);
                         num_filled_in += 1;
-                    } else {
-                        writeln!(
+                    } else if written.is_ok() {
+                        written = writeln!(
                             stdout_or_stderr,
                             "not enough samples to derive {rack_bytes:?}"
-                        )
-                        .unwrap();
+                        );
                     }
                 }
             },
@@ -3672,6 +3673,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
             max_len: len_to_complete,
             exchange_buffer: &mut exchange_buffer,
         });
+        written?;
     }
     writeln!(
         stdout_or_stderr,

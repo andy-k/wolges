@@ -2225,6 +2225,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
 
                     // 0-blank section
                     {
+                        let mut written = Ok(());
                         let mut linearized_buckets = b0_bits
                             .keys()
                             .map(|bits| {
@@ -2237,16 +2238,18 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                 if quotient >> 96 != 0 {
                                     quotient &= (1u128 << 96) - 1;
                                     // hopefully this does not crash
-                                    writeln!(
-                                        boxed_stdout_or_stderr(),
-                                        "OVERFLOW: 0x{bits_u128:032x}.divmod({num_word_buckets})=[0x{quotient:024x},{remainder}]"
-                                    )
-                                    .unwrap();
+                                    if written.is_ok() {
+                                        written = writeln!(
+                                            boxed_stdout_or_stderr(),
+                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_word_buckets})=[0x{quotient:024x},{remainder}]"
+                                        );
+                                    }
                                 }
                                 (remainder, quotient, bits)
                                 }
                             })
                             .collect::<Box<_>>();
+                        written?;
                         linearized_buckets.sort_unstable();
                         write_u32(&mut ret, num_word_buckets);
                         write_u32(&mut ret, 0);
@@ -2303,6 +2306,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
 
                     // 1-blank section
                     {
+                        let mut written = Ok(());
                         let mut linearized_buckets = b1_bits
                             .keys()
                             .map(|bits| {
@@ -2319,16 +2323,18 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     if quotient >> 96 != 0 {
                                         quotient &= (1u128 << 96) - 1;
                                         // hopefully this does not crash
-                                        writeln!(
-                                            boxed_stdout_or_stderr(),
-                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_blank_buckets})=[0x{quotient:024x},{remainder}]"
-                                        )
-                                        .unwrap();
+                                        if written.is_ok() {
+                                            written = writeln!(
+                                                boxed_stdout_or_stderr(),
+                                                "OVERFLOW: 0x{bits_u128:032x}.divmod({num_blank_buckets})=[0x{quotient:024x},{remainder}]"
+                                            );
+                                        }
                                     }
                                     (remainder, quotient, bits)
                                 }
                             })
                             .collect::<Box<_>>();
+                        written?;
                         linearized_buckets.sort_unstable();
                         write_u32(&mut ret, num_blank_buckets);
                         write_u32(&mut ret, 0);
@@ -2365,6 +2371,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                         let mut max_word_lookup_results_before_multiplying_len = 0u32;
                         if is_v1 {
                             let mut b2_chars = Vec::<u8>::new(); // even number of elements to be interpreted in pairs.
+                            let mut written = Ok(());
                             let mut linearized_buckets = b2_bits
                                 .iter()
                                 .map(|(bits_from_b2, b1)| {
@@ -2377,11 +2384,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     if quotient >> 96 != 0 {
                                         quotient &= (1u128 << 96) - 1;
                                         // hopefully this does not crash
-                                        writeln!(
-                                            boxed_stdout_or_stderr(),
-                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
-                                        )
-                                        .unwrap();
+                                        if written.is_ok() {
+                                            written = writeln!(
+                                                boxed_stdout_or_stderr(),
+                                                "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
+                                            );
+                                        }
                                     }
                                     let start_idx = b2_chars.len() as u32;
                                     let mut num_words_here = 0u32;
@@ -2416,6 +2424,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     (remainder, quotient, start_idx, end_idx)
                                 })
                                 .collect::<Box<_>>();
+                            written?;
                             linearized_buckets.sort_unstable();
                             write_u32(&mut ret, num_double_blank_buckets);
                             write_u32(&mut ret, 0);
@@ -2466,6 +2475,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                 }
                             }
                         } else {
+                            let mut written = Ok(());
                             let mut linearized_buckets = b2_bits
                                 .iter()
                                 .map(|(key_bits, val_bits)| {
@@ -2514,16 +2524,18 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                         if quotient >> 96 != 0 {
                                             quotient &= (1u128 << 96) - 1;
                                             // hopefully this does not crash
-                                            writeln!(
-                                                boxed_stdout_or_stderr(),
-                                                "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
-                                            )
-                                            .unwrap();
+                                            if written.is_ok() {
+                                                written = writeln!(
+                                                    boxed_stdout_or_stderr(),
+                                                    "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
+                                                );
+                                            }
                                         }
                                         (remainder, quotient, key_bits)
                                     }
                                 })
                                 .collect::<Box<_>>();
+                            written?;
                             linearized_buckets.sort_unstable();
                             write_u32(&mut ret, num_double_blank_buckets);
                             write_u32(&mut ret, 0);
