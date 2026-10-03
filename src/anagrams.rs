@@ -336,6 +336,45 @@ impl RackLengths {
     }
 }
 
+// what the generator reads beside the word graph: the anagrams, or on the lean
+// arm the rack lengths alone
+pub enum ArmTables {
+    Anagrams(Anagrams),
+    RackLengths(RackLengths),
+    None,
+}
+
+impl ArmTables {
+    #[inline]
+    pub fn build<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+        lean: bool,
+    ) -> Self {
+        if lean {
+            RackLengths::build_for_config(kwg, game_config).map_or(Self::None, Self::RackLengths)
+        } else {
+            Anagrams::build_for_config(kwg, game_config).map_or(Self::None, Self::Anagrams)
+        }
+    }
+
+    #[inline(always)]
+    pub fn anagrams(&self) -> Option<&Anagrams> {
+        match self {
+            Self::Anagrams(anagrams) => Some(anagrams),
+            Self::RackLengths(_) | Self::None => None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn rack_lengths(&self) -> Option<&RackLengths> {
+        match self {
+            Self::RackLengths(rack_lengths) => Some(rack_lengths),
+            Self::Anagrams(_) | Self::None => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

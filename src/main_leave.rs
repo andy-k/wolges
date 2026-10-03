@@ -6,8 +6,9 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::simmer::CopyState;
 use wolges::{
-    alphabet, bites, board_layout, build, census, display, equity, error, fash, game_config,
-    game_state, klv, kwg, move_filter, move_picker, movegen, play_scorer, prob, stats, win_pct,
+    alphabet, anagrams, bites, board_layout, build, census, display, equity, error, fash,
+    game_config, game_state, klv, kwg, move_filter, move_picker, movegen, play_scorer, prob, stats,
+    win_pct,
 };
 
 mod game_args;
@@ -191,47 +192,6 @@ fn read_klv_pair(
         std::sync::Arc::new(read_klv(game_config, path1)?)
     };
     Ok((klv0, klv1))
-}
-
-// what the generator reads beside the word graph: the anagrams, or with --lean
-// the rack lengths alone
-enum ArmTables {
-    Anagrams(wolges::anagrams::Anagrams),
-    RackLengths(wolges::anagrams::RackLengths),
-    None,
-}
-
-impl ArmTables {
-    #[inline]
-    fn build<N: kwg::Node>(
-        kwg: &kwg::Kwg<N>,
-        game_config: &game_config::GameConfig,
-        lean: bool,
-    ) -> Self {
-        if lean {
-            wolges::anagrams::RackLengths::build_for_config(kwg, game_config)
-                .map_or(Self::None, Self::RackLengths)
-        } else {
-            wolges::anagrams::Anagrams::build_for_config(kwg, game_config)
-                .map_or(Self::None, Self::Anagrams)
-        }
-    }
-
-    #[inline(always)]
-    fn anagrams(&self) -> Option<&wolges::anagrams::Anagrams> {
-        match self {
-            Self::Anagrams(anagrams) => Some(anagrams),
-            Self::RackLengths(_) | Self::None => None,
-        }
-    }
-
-    #[inline(always)]
-    fn rack_lengths(&self) -> Option<&wolges::anagrams::RackLengths> {
-        match self {
-            Self::RackLengths(rack_lengths) => Some(rack_lengths),
-            Self::Anagrams(_) | Self::None => None,
-        }
-    }
 }
 
 #[derive(clap::Args)]
@@ -1208,7 +1168,7 @@ fn generate_autoplay_logs<
     }));
     let batch_size = 100;
 
-    let arm_tables = ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -1939,7 +1899,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let mutexed_tick = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
     let t0 = std::time::Instant::now();
 
-    let arm_tables = ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -3699,7 +3659,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         game_config::GameRules::Jumbled => 1,
     };
 
-    let arm_tables = ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -4323,7 +4283,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let report_every = 10_000u64;
     let shared = std::sync::Mutex::new(win_pct::WinPctAccumulator::new());
 
-    let arm_tables = ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -4414,7 +4374,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
     let shared = std::sync::Mutex::new((0.0f64, 0.0f64, 0u64));
 
-    let arm_tables = ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -5274,7 +5234,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         lean,
     }: PositionParams<'_>,
 ) -> error::Returns<()> {
-    let arm_tables = ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
@@ -5508,7 +5468,7 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
         lean,
     }: HarvestParams,
 ) -> error::Returns<()> {
-    let arm_tables = ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
@@ -5774,7 +5734,7 @@ fn compare_seats<
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let arm_tables = ArmTables::build(&kwg, &game_config, LEAN);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, LEAN);
 
     let winpct_p0 = match &p0_win_pct {
         Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
