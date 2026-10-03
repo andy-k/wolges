@@ -48,6 +48,9 @@ usage 3: (spell out the self-play generations: games[:min_samples_per_rack])
   ../genblend.sh english english 100000000:500 100000000:1000
 usage 4: (a small run of every stage)
   ../genblend.sh --recipe 64,256 english english 200000:100 200000:200
+usage 5: (jumbled rules, whose word graph is a .kad)
+  cp -ip ../.../CSW24.kad .
+  ../genblend.sh jumbled-english english
 options:
   --recipe LIST     board counts for the census, comma separated, each N or KxN
                     (K generations of N boards). Default 3x256,2048.
@@ -79,18 +82,22 @@ if [ "$#" -eq 0 ]; then
 fi
 
 kwg=""
-for x in *.kwg *.kbwg; do
+for x in *.kwg *.kbwg *.kad; do
   if [ ! -f "$x" ]; then
     :
   elif [ ! "$kwg" ]; then
     kwg="$x"
   else
-    echo "there must be exactly 1 kwg here (found multiple)" >&2
+    echo "there must be exactly 1 kwg, kbwg or kad here (found multiple)" >&2
     exit 1
   fi
 done
 if [ ! "$kwg" ]; then
-  echo "there must be exactly 1 kwg here (found none)" >&2
+  echo "there must be exactly 1 kwg, kbwg or kad here (found none)" >&2
+  exit 1
+fi
+if [ "$kwg" != "${kwg%.kad}" ] && [ "${leave_param#jumbled-}" = "$leave_param" ]; then
+  echo "$kwg is for jumbled rules: use jumbled-$leave_param" >&2
   exit 1
 fi
 
