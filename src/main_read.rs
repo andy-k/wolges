@@ -1006,7 +1006,7 @@ fn do_quackle<R: WgReader>(
     make_reader_fn: impl FnOnce(usize) -> R,
 ) -> error::Returns<()> {
     let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-    if 20 > quackle_bytes.len() {
+    if 20 >= quackle_bytes.len() {
         return Err("out of bounds".into());
     }
     let alpha_size = quackle_bytes[20] as usize;
@@ -1015,7 +1015,7 @@ fn do_quackle<R: WgReader>(
     for _ in 0..alpha_size {
         let p0 = p;
         loop {
-            if p > quackle_bytes.len() {
+            if p >= quackle_bytes.len() {
                 return Err("out of bounds".into());
             }
             if quackle_bytes[p] == b' ' {
