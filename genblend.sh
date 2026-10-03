@@ -2,55 +2,23 @@
 
 set -euo pipefail
 
-recipe="3x256,2048"
-weight="0.5"
-census_seed=""
-threads=""
-while :; do
-  if [ "${1:-}" = "--" ]; then
-    shift
-    break
-  fi
-  if [ "${1:-}" = "--recipe" ]; then
-    recipe="${2:?--recipe needs a board count list}"
-    shift 2
-    continue
-  fi
-  if [ "${1:-}" = "--weight" ]; then
-    weight="${2:?--weight needs a number}"
-    shift 2
-    continue
-  fi
-  if [ "${1:-}" = "--census-seed" ]; then
-    census_seed="${2:?--census-seed needs a number}"
-    shift 2
-    continue
-  fi
-  if [ "${1:-}" = "--threads" ]; then
-    threads="${2:?--threads needs a number}"
-    shift 2
-    continue
-  fi
-  break
-done
-
-if [ "$#" -lt 2 ]; then
+usage() {
   cat <<"EOF"
 usage:
   mkdir t
   cd t
   cp -ip ../.../CSW24.kwg .
-  ../genblend.sh english english
-usage 2: (a language whose word graph is a .kbwg)
+  ../genblend.sh --preset english
+usage 2: (a game whose word graph is a .kbwg)
   cp -ip ../.../DSW25.kbwg .
-  ../genblend.sh dutch dutch
+  ../genblend.sh --preset dutch
 usage 3: (spell out the self-play generations: games[:min_samples_per_rack])
-  ../genblend.sh english english 100000000:500 100000000:1000
+  ../genblend.sh --preset english 100000000:500 100000000:1000
 usage 4: (a small run of every stage)
-  ../genblend.sh --recipe 64,256 english english 200000:100 200000:200
+  ../genblend.sh --recipe 64,256 --preset english 200000:100 200000:200
 usage 5: (jumbled rules, whose word graph is a .kad)
   cp -ip ../.../CSW24.kad .
-  ../genblend.sh jumbled-english english
+  ../genblend.sh --preset english --jumbled
 options:
   --recipe LIST     board counts for the census, comma separated, each N or KxN
                     (K generations of N boards). Default 3x256,2048.
@@ -59,22 +27,101 @@ options:
   --census-seed S   fix the census's seed. Omitted means the census picks one
                     and prints it.
   --threads N       worker threads for every leave run. Default every core.
+  the game, as leave takes it (see leave --help): --preset NAME|FILE (default
+  english), --tiles NAME|FILE, --board NAME|FILE, --rack-size N, --jumbled,
+  --players N, --bingo-bonus TILES:POINTS,..., --zeros-to-end N,
+  --passes-to-end N, --exchange-limit N, --exchanges N|unlimited. buildlex
+  reads the leaves with --tiles, else the preset's tiles.
 defaults, spelled out: the census recipe above, then two self-play generations
 of 100 million games each, the first asking for 500 samples of every rack and
 the second 1000, then a half-and-half blend.
 EOF
+}
+
+if [ "$#" -eq 0 ]; then
+  usage
   exit 2
 fi
 
-leave_param="$1"
-buildlex_param="$2"
-shift 2
+recipe="3x256,2048"
+weight="0.5"
+census_seed=""
+threads=""
+preset="english"
+tiles=""
+jumbled=""
+game_options=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --)
+      shift
+      break
+      ;;
+    --recipe)
+      recipe="${2:?--recipe needs a board count list}"
+      shift 2
+      ;;
+    --weight)
+      weight="${2:?--weight needs a number}"
+      shift 2
+      ;;
+    --census-seed)
+      census_seed="${2:?--census-seed needs a number}"
+      shift 2
+      ;;
+    --threads)
+      threads="${2:?--threads needs a number}"
+      shift 2
+      ;;
+    --preset)
+      preset="${2:?--preset needs a name or a file}"
+      shift 2
+      ;;
+    --tiles)
+      tiles="${2:?--tiles needs a name or a file}"
+      game_options+=(--tiles "$tiles")
+      shift 2
+      ;;
+    --jumbled)
+      jumbled=1
+      game_options+=(--jumbled)
+      shift
+      ;;
+    --board | --rack-size | --players | --bingo-bonus | --zeros-to-end | --passes-to-end | --exchange-limit | --exchanges)
+      game_options+=("$1" "${2:?$1 needs a value}")
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "unknown option $1" >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+leave_options=(--preset "$preset" "${game_options[@]}")
 
-# a config word as leave's options: the word is a preset, and a jumbled-
-# prefix adds --jumbled
-leave_options=(--preset "${leave_param#jumbled-}")
-if [ "${leave_param#jumbled-}" != "$leave_param" ]; then
-  leave_options+=(--jumbled)
+# buildlex reads the leaves with the game's tiles: --tiles, else the preset's
+# (a bundled preset's tiles have its name; a preset file names its own)
+buildlex_tiles="$tiles"
+if [ ! "$buildlex_tiles" ]; then
+  if [ -f "$preset" ]; then
+    buildlex_tiles="$(sed -n 's/^tiles //p' "$preset" | head -1)"
+    if [ ! "$buildlex_tiles" ]; then
+      echo "$preset names no tiles: give --tiles" >&2
+      exit 1
+    fi
+    if [ -f "$(dirname "$preset")/$buildlex_tiles" ]; then
+      buildlex_tiles="$(dirname "$preset")/$buildlex_tiles"
+    fi
+  else
+    buildlex_tiles="$preset"
+  fi
 fi
 
 if [ "$#" -eq 0 ]; then
@@ -96,8 +143,8 @@ if [ ! "$kwg" ]; then
   echo "there must be exactly 1 kwg, kbwg or kad here (found none)" >&2
   exit 1
 fi
-if [ "$kwg" != "${kwg%.kad}" ] && [ "${leave_param#jumbled-}" = "$leave_param" ]; then
-  echo "$kwg is for jumbled rules: use jumbled-$leave_param" >&2
+if [ "$kwg" != "${kwg%.kad}" ] && [ ! "$jumbled" ]; then
+  echo "$kwg is for jumbled rules: add --jumbled" >&2
   exit 1
 fi
 
@@ -171,13 +218,13 @@ for full_arg in "$@"; do
   fi
   time cargo run --release --bin leave -- "${leave_options[@]}" ${threads:+--threads "$threads"} \
     "$generate_subcommand" "summary${num_processed}.csv" "leaves${num_processed}.csv"
-  time cargo run --release --bin buildlex -- --tiles "$buildlex_param" "$buildlex_subcommand" \
+  time cargo run --release --bin buildlex -- --tiles "$buildlex_tiles" "$buildlex_subcommand" \
     "leaves${num_processed}".{csv,klv2}
   last_leave="leaves${num_processed}.klv2"
 done
 
 # the blend
-time cargo run --release --bin buildlex -- --tiles "$buildlex_param" "$blend_subcommand" \
+time cargo run --release --bin buildlex -- --tiles "$buildlex_tiles" "$blend_subcommand" \
   census.klv2 "$last_leave" "$weight" blend.klv2
 echo "blend.klv2 takes ${weight} of ${last_leave} and the rest of census.klv2"
 ls -l census.klv2 "$last_leave" blend.klv2
