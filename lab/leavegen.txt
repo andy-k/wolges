@@ -124,7 +124,7 @@ thinly sampled to trust borrow their value from their neighbors on the way out
 
 The fourth step compiles the csv into the binary klv2 the move generator reads:
 
-  cargo run --release --bin buildlex -- klv2 leaves.csv leaves.klv2
+  cargo run --release --bin buildlex -- klv leaves.csv leaves.klv2
 
 Feeding a finished table back in as the players' table and repeating from the
 first step lets each generation improve on the last:

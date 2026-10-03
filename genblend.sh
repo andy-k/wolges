@@ -126,7 +126,7 @@ done
 census_subcommand="census"
 autoplay_subcommand="autoplay-summarize-only"
 generate_subcommand="generate"
-buildlex_subcommand="klv2"
+buildlex_subcommand="klv"
 blend_subcommand="blend"
 
 # the census stamps its output with the run; copy it to a fixed name

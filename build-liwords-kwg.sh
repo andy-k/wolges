@@ -15,4 +15,4 @@ kadpath="${liwordsdir}/liwords-ui/public/wasm/${lexname}.kad"
 
 cargo run --release --bin buildlex -- --tiles "$lexlang" kwg "$infile" "$kwgpath"
 cargo run --release --bin buildlex -- --tiles "$lexlang" macondo "$kwgpath" "$lexname" "$dawgpath" "$gaddagpath"
-cargo run --release --bin buildlex -- --tiles "$lexlang" kwg-alpha "$infile" "$kadpath"
+cargo run --release --bin buildlex -- --tiles "$lexlang" kwg --words alphagrams "$infile" "$kadpath"
