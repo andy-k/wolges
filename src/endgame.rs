@@ -3,7 +3,7 @@
 // note: this module is very slow and may need a lot of space
 // and it still has many bugs
 
-use super::{anagrams, display, fash, game_config, klv, kwg, move_picker, movegen};
+use super::{anagrams, display, error, fash, game_config, klv, kwg, move_picker, movegen};
 
 // move one tile at a time from rack
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -167,11 +167,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         game_config: &'a game_config::GameConfig,
         kwg: &'a kwg::Kwg<N>,
         arm_tables: &'a anagrams::ArmTables,
-    ) -> Self {
+    ) -> error::Returns<Self> {
         if game_config.num_players() != 2 {
-            panic!("cannot solve non-2-player endgames");
+            return Err("cannot solve non-2-player endgames".into());
         }
-        Self {
+        Ok(Self {
             game_config,
             kwg,
             arm_tables,
@@ -180,7 +180,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             racks: [Vec::new(), Vec::new()],
             rack_scores: [0, 0],
             work_buffer: WorkBuffer::new(game_config),
-        }
+        })
     }
 
     pub fn init(&mut self, board_tiles: &[u8], racks: [&[u8]; 2]) {
@@ -196,9 +196,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     #[inline(always)]
-    fn get_new_state_idx(&mut self, state_idx: u32, which_player: u8, play_idx: u32) -> u32 {
+    fn get_new_state_idx(
+        &mut self,
+        state_idx: u32,
+        which_player: u8,
+        play_idx: u32,
+    ) -> error::Returns<u32> {
         match &self.work_buffer.plays[play_idx as usize] {
-            movegen::Play::Exchange { .. } => state_idx,
+            movegen::Play::Exchange { .. } => Ok(state_idx),
             movegen::Play::Place {
                 down,
                 lane,
@@ -297,12 +302,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         self.work_buffer.states.push(new_state);
                         if new_new_state_idx == !0 {
                             // this might happen, but only after a very long time
-                            panic!("too many states");
+                            return Err("too many states".into());
                         }
                     }
                 }
 
-                new_state_idx
+                Ok(new_state_idx)
             }
         }
     }
@@ -322,7 +327,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     #[inline]
-    fn run_id_loop(&mut self, player_idx: u8, verbose: bool) -> f32 {
+    fn run_id_loop(&mut self, player_idx: u8, verbose: bool) -> error::Returns<f32> {
         let mut last_valuation = f32::NAN;
         // a move that does not end the line places tiles and leaves the mover some, or passes;
         // a pass answering a pass repeats the position two plies back and ends it, and so does
@@ -345,9 +350,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     f32::NEG_INFINITY,
                     f32::INFINITY,
                     false,
-                )
+                )?
             } else {
-                self.aspiration_search(player_idx, max_depth, last_valuation)
+                self.aspiration_search(player_idx, max_depth, last_valuation)?
             };
             last_valuation = valuation;
             if verbose {
@@ -366,17 +371,22 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 break;
             }
         }
-        last_valuation
+        Ok(last_valuation)
     }
 
     #[inline]
-    fn aspiration_search(&mut self, player_idx: u8, max_depth: i8, last_valuation: f32) -> f32 {
+    fn aspiration_search(
+        &mut self,
+        player_idx: u8,
+        max_depth: i8,
+        last_valuation: f32,
+    ) -> error::Returns<f32> {
         const ASPIRATION_WINDOW: f32 = (3 * super::equity::SCALE) as f32;
         let lo = last_valuation - ASPIRATION_WINDOW;
         let hi = last_valuation + ASPIRATION_WINDOW;
-        let v = self.negamax_eval(0, player_idx, max_depth, lo, hi, false);
+        let v = self.negamax_eval(0, player_idx, max_depth, lo, hi, false)?;
         if v > lo && v < hi {
-            v
+            Ok(v)
         } else {
             self.negamax_eval(
                 0,
@@ -390,12 +400,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     #[inline(always)]
-    pub fn evaluate(&mut self, player_idx: u8) -> f32 {
+    pub fn evaluate(&mut self, player_idx: u8) -> error::Returns<f32> {
         self.run_id_loop(player_idx, true)
     }
 
     #[inline(always)]
-    pub fn solve(&mut self, player_idx: u8) -> f32 {
+    pub fn solve(&mut self, player_idx: u8) -> error::Returns<f32> {
         self.run_id_loop(player_idx, false)
     }
 
@@ -408,12 +418,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         mut alpha: f32,
         mut beta: f32,
         just_passed: bool,
-    ) -> f32 {
+    ) -> error::Returns<f32> {
         // movegen not done for depth == 0, so no state_eval.
         if depth == 0 {
             self.work_buffer.depth_limited = true;
 
-            return self.both_pass_value(state_idx, player_idx);
+            return Ok(self.both_pass_value(state_idx, player_idx));
         }
 
         // return and/or trim range
@@ -429,7 +439,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 );
                 match state_side_eval.equity_type {
                     StateSideEvalEquityType::Exact => {
-                        return state_side_eval.equity;
+                        return Ok(state_side_eval.equity);
                     }
                     StateSideEvalEquityType::LowerBound => {
                         if state_side_eval.equity > alpha {
@@ -443,7 +453,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     }
                 }
                 if alpha >= beta {
-                    return state_side_eval.equity;
+                    return Ok(state_side_eval.equity);
                 }
             }
             state_eval
@@ -547,7 +557,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                                 self.work_buffer.plays.push(candidate.play.clone());
                                 if new_new_play_idx == !0 {
                                     // this should not happen
-                                    panic!("too many plays");
+                                    return Err("too many plays".into());
                                 }
                             }
                             self.work_buffer.child_plays.push(
@@ -627,10 +637,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                                 // construct the new state
                                 self.work_buffer.child_plays[child_play_idx].new_state_idx = self
                                     .get_new_state_idx(
-                                        state_idx,
-                                        player_idx,
-                                        self.work_buffer.child_plays[child_play_idx].play_idx,
-                                    );
+                                    state_idx,
+                                    player_idx,
+                                    self.work_buffer.child_plays[child_play_idx].play_idx,
+                                )?;
                             }
                             // the math goes like this:
                             // child negamax returns v.
@@ -648,7 +658,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                                     score - beta,
                                     score - alpha,
                                     false,
-                                )
+                                )?
                         };
                     self.work_buffer.child_plays[child_play_idx].valuation = child_valuation;
                     // only place moves affect alpha/beta
@@ -670,7 +680,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let pass_valuation = if just_passed {
             self.both_pass_value(state_idx, player_idx)
         } else {
-            -self.negamax_eval(state_idx, player_idx ^ 1, depth - 1, -beta, -alpha, true)
+            -self.negamax_eval(state_idx, player_idx ^ 1, depth - 1, -beta, -alpha, true)?
         };
 
         // fill in best_place_move
@@ -725,7 +735,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.print_progress();
         }
 
-        best_valuation
+        Ok(best_valuation)
     }
 
     // must have been precomputed
@@ -883,12 +893,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     #[inline]
-    pub fn solve_one_in_bag(&mut self, player_idx: u8, bag_tile: u8) -> f32 {
+    pub fn solve_one_in_bag(&mut self, player_idx: u8, bag_tile: u8) -> error::Returns<f32> {
         let gc = self.game_config;
         let kwg = self.kwg;
         let arm_tables = self.arm_tables;
 
-        let mut sub = EndgameSolver::<N, L>::new(gc, kwg, arm_tables);
+        let mut sub = EndgameSolver::<N, L>::new(gc, kwg, arm_tables)?;
 
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
 
@@ -920,7 +930,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         mover: u8,
         bag_tile: u8,
         just_passed: bool,
-    ) -> f32 {
+    ) -> error::Returns<f32> {
         let alphabet = search.gc.alphabet();
         let opp = mover ^ 1;
         let snapshot = movegen::BoardSnapshot {
@@ -968,7 +978,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 }
 
                 search.sub.init(&nb, [&nr[0], &nr[1]]);
-                let v = search.sub.solve(opp);
+                let v = search.sub.solve(opp)?;
 
                 let val = *score as f32 - v;
                 if val > best {
@@ -981,12 +991,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             (alphabet.scaled_rack_score(&racks[opp as usize])
                 - alphabet.scaled_rack_score(&racks[mover as usize])) as f32
         } else {
-            -Self::one_in_bag_minimax(search, board, racks, opp, bag_tile, true)
+            -Self::one_in_bag_minimax(search, board, racks, opp, bag_tile, true)?
         };
         if pass_val > best {
             best = pass_val;
         }
-        best
+        Ok(best)
     }
 
     fn one_in_bag_minimax_ex(
@@ -997,7 +1007,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         bag_tile: u8,
         passes: u8,
         zeros: u8,
-    ) -> f32 {
+    ) -> error::Returns<f32> {
         let mut rack0 = racks[0].clone();
         let mut rack1 = racks[1].clone();
         rack0.sort_unstable();
@@ -1011,7 +1021,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             rack1,
         };
         if let Some(&v) = search.memo.get(&key) {
-            return v;
+            return Ok(v);
         }
 
         let alphabet = search.gc.alphabet();
@@ -1068,7 +1078,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     rack.push(drawn);
                 }
                 search.sub.init(&nb, [&nr[0], &nr[1]]);
-                let v = search.sub.solve(opp);
+                let v = search.sub.solve(opp)?;
                 let val = *score as f32 - v;
                 if val > best {
                     best = val;
@@ -1090,7 +1100,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 bag_tile,
                 pass_passes,
                 pass_zeros,
-            )
+            )?
         };
         if pass_val > best {
             best = pass_val;
@@ -1119,7 +1129,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 (alphabet.scaled_rack_score(&nr[opp as usize])
                     - alphabet.scaled_rack_score(&nr[mover as usize])) as f32
             } else {
-                -Self::one_in_bag_minimax_ex(search, board, &nr, opp, r, 0, exch_zeros)
+                -Self::one_in_bag_minimax_ex(search, board, &nr, opp, r, 0, exch_zeros)?
             };
             if exch_val > best {
                 best = exch_val;
@@ -1127,7 +1137,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
 
         search.memo.insert(key, best);
-        best
+        Ok(best)
     }
 
     #[inline]
@@ -1138,14 +1148,20 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         mover_rack: &[u8],
         unseen_tally: &[u8],
         score_diff: f32,
-    ) -> Result<PegResult, PegUnsupported> {
+    ) -> error::Returns<Result<PegResult, PegUnsupported>> {
         let gc = self.game_config;
         if one_in_bag_exchange_legal(gc) && !one_in_bag_exchange_solvable(gc) {
-            return Err(PegUnsupported::ExchangeWithoutForcedEnd);
+            return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
         }
 
         if one_in_bag_exchange_legal(gc) {
-            Ok(self.peg_clairvoyant_aggregate(mover, board, mover_rack, unseen_tally, score_diff))
+            Ok(Ok(self.peg_clairvoyant_aggregate(
+                mover,
+                board,
+                mover_rack,
+                unseen_tally,
+                score_diff,
+            )?))
         } else {
             let unseen: Vec<(u8, u32)> = unseen_tally
                 .iter()
@@ -1153,7 +1169,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 .filter(|&(_, &c)| c != 0)
                 .map(|(t, &c)| (t as u8, c as u32))
                 .collect();
-            Ok(self.peg_committed_no_exchange(mover, board, mover_rack, &unseen, score_diff))
+            Ok(Ok(self.peg_committed_no_exchange(
+                mover, board, mover_rack, &unseen, score_diff,
+            )?))
         }
     }
 
@@ -1165,7 +1183,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         mover_rack: &[u8],
         unseen_tally: &[u8],
         score_diff: f32,
-    ) -> PegResult {
+    ) -> error::Returns<PegResult> {
         let mut hypotheses: Vec<(u8, u32, f32)> = Vec::new();
 
         let mut opp_rack: Vec<u8> = Vec::new();
@@ -1184,18 +1202,18 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             racks[mover as usize] = mover_rack;
             racks[(mover ^ 1) as usize] = &opp_rack;
             self.init(board, racks);
-            let v = self.solve_one_in_bag(mover, bag_tile) + score_diff;
+            let v = self.solve_one_in_bag(mover, bag_tile)? + score_diff;
             hypotheses.push((bag_tile, count as u32, v));
         }
         let weighted: Vec<(u32, f32)> = hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
         let (win_pct, expected_margin) = peg_aggregate(&weighted);
-        PegResult {
+        Ok(PegResult {
             win_pct,
             expected_margin,
             hypotheses,
             best_move: None,
             committed: false,
-        }
+        })
     }
 
     #[inline]
@@ -1206,7 +1224,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         mover_rack: &[u8],
         unseen: &[(u8, u32)],
         score_diff: f32,
-    ) -> PegResult {
+    ) -> error::Returns<PegResult> {
         let gc = self.game_config;
         let kwg = self.kwg;
         let arm_tables = self.arm_tables;
@@ -1236,7 +1254,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
 
-        let mut sub = EndgameSolver::<N, L>::new(gc, kwg, arm_tables);
+        let mut sub = EndgameSolver::<N, L>::new(gc, kwg, arm_tables)?;
 
         let mut best_win = f32::NEG_INFINITY;
         let mut best_marg = f32::NEG_INFINITY;
@@ -1282,7 +1300,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         r2[mover as usize] = mr;
                         r2[opp as usize] = opp_rack;
                         sub.init(&nb, [&r2[0], &r2[1]]);
-                        *score as f32 - sub.solve(opp)
+                        *score as f32 - sub.solve(opp)?
                     }
                     PegMove::Pass => {
                         // PEG2-7: with two or more in the bag, draw every tile from the SAME end -- pop,
@@ -1307,7 +1325,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                             opp,
                             t,
                             true,
-                        )
+                        )?
                     }
                     PegMove::Place(_) => {
                         unreachable!("Place candidate always holds a Play::Place")
@@ -1336,13 +1354,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
 
-        PegResult {
+        Ok(PegResult {
             win_pct: best_win,
             expected_margin: best_marg,
             hypotheses: best_hyps,
             best_move: Some(best_move),
             committed: true,
-        }
+        })
     }
 }
 
@@ -1983,9 +2001,10 @@ mod tests {
             );
             for (lean, arm_tables) in &arms {
                 total += 1;
-                let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                let mut egs =
+                    EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables).unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                let solvev = egs.solve(0);
+                let solvev = egs.solve(0).unwrap();
                 if refv.to_bits() != solvev.to_bits() {
                     disagreements += 1;
                     let ratio = if refv != 0.0 { solvev / refv } else { f32::NAN };
@@ -2016,6 +2035,30 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_solver_for_three_players_is_an_error() {
+        let gc = game_config::Options {
+            preset: "english",
+            tiles: None,
+            board: None,
+            rack_size: None,
+            jumbled: false,
+            players: Some(3),
+            bingo_bonus: None,
+            zeros_to_end: None,
+            passes_to_end: None,
+            exchange_limit: None,
+            exchanges: None,
+        }
+        .make_game_config(&|_| Err("no files here".into()))
+        .unwrap();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        assert!(EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).is_err());
+    }
+
+    #[test]
+    #[inline]
     fn peg_one_in_bag_hand_checkable() {
         let gc = game_config::make_english_game_config();
         let kwg_bytes = tiny_kwg_bytes();
@@ -2028,9 +2071,11 @@ mod tests {
         unseen_tally[20] = 1; // T
 
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
             .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+            .unwrap()
             .expect("english one-in-bag is always solvable");
 
         assert_eq!(result.hypotheses, vec![(8, 1, -2000.0), (20, 1, 1000.0)]);
@@ -2052,9 +2097,11 @@ mod tests {
         unseen_tally[20] = 1; // T
 
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
             .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 3000.0)
+            .unwrap()
             .expect("english one-in-bag is always solvable");
 
         assert_eq!(result.hypotheses, vec![(8, 1, 1000.0), (20, 1, 4000.0)]);
@@ -2075,9 +2122,10 @@ mod tests {
         let positions = all_positions();
         for (lean, arm_tables) in &both_arms(&kwg, &gc) {
             for (name, pos) in &positions {
-                let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                let mut egs =
+                    EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables).unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                let v = egs.solve(0);
+                let v = egs.solve(0).unwrap();
                 egs.collect_pv(0, &mut pv);
 
                 let a = gc.alphabet();
@@ -2161,9 +2209,10 @@ mod tests {
         let positions = all_positions();
         for (lean, arm_tables) in &both_arms(&kwg, &gc) {
             for (name, pos) in &positions {
-                let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                let mut egs =
+                    EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables).unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                let v = egs.solve(0);
+                let v = egs.solve(0).unwrap();
                 egs.collect_pv(0, &mut pv);
 
                 let a = gc.alphabet();
@@ -2291,9 +2340,10 @@ mod tests {
                     for (lean, arm_tables) in &arms {
                         total += 1;
                         let mut egs =
-                            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables)
+                                .unwrap();
                         egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                        let solvev = egs.solve_one_in_bag(mover, t);
+                        let solvev = egs.solve_one_in_bag(mover, t).unwrap();
                         if refv.to_bits() != solvev.to_bits() {
                             disagreements += 1;
                             println!(
@@ -2323,15 +2373,17 @@ mod tests {
         let racks = [vec![2u8, 2], vec![8u8, 20]];
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
 
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
 
-        let v0 = egs.solve_one_in_bag(0, 2);
+        let v0 = egs.solve_one_in_bag(0, 2).unwrap();
         assert_eq!(v0, -1000.0, "p0 forced-pass leftover should be -1000");
 
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
-        let v1 = egs.solve_one_in_bag(1, 2);
+        let v1 = egs.solve_one_in_bag(1, 2).unwrap();
         assert_eq!(v1, 1000.0, "p1 forced-pass leftover should be +1000");
     }
 
@@ -2362,9 +2414,10 @@ mod tests {
             false,
         );
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
-        let solvev = egs.solve_one_in_bag(0, bag);
+        let solvev = egs.solve_one_in_bag(0, bag).unwrap();
         assert_eq!(solvev.to_bits(), refv.to_bits(), "bag layer vs reference");
 
         let a = gc.alphabet();
@@ -2414,9 +2467,10 @@ mod tests {
                     for (lean, arm_tables) in &arms {
                         total += 1;
                         let mut egs =
-                            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables)
+                                .unwrap();
                         egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                        let solvev = egs.solve_one_in_bag(mover, t);
+                        let solvev = egs.solve_one_in_bag(mover, t).unwrap();
                         if refv.to_bits() != solvev.to_bits() {
                             disagreements += 1;
                             println!(
@@ -2449,9 +2503,10 @@ mod tests {
         let bag = 1u8; // one A in the bag
 
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
-        let solvev = egs.solve_one_in_bag(0, bag);
+        let solvev = egs.solve_one_in_bag(0, bag).unwrap();
 
         let a = gc.alphabet();
         let pass_only = (a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0])) as f32; // -9000
@@ -2475,28 +2530,33 @@ mod tests {
         unseen_tally[8] = 1; // H
         unseen_tally[20] = 1; // T
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
             .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+            .unwrap()
             .expect("the exchange test config forces an end and is solvable");
         assert_eq!(result.hypotheses.len(), 2);
 
         let gc_en = game_config::make_english_game_config();
         let arm_tables_en = anagrams::ArmTables::build(&kwg, &gc_en, false);
         let mut egs_en =
-            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_en, &kwg, &arm_tables_en);
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_en, &kwg, &arm_tables_en).unwrap();
         assert!(
             egs_en
                 .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+                .unwrap()
                 .is_ok()
         );
 
         let gc_bad = game_config::make_exchange_unsolvable_test_game_config();
         let arm_tables_bad = anagrams::ArmTables::build(&kwg, &gc_bad, false);
         let mut egs_bad =
-            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_bad, &kwg, &arm_tables_bad);
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_bad, &kwg, &arm_tables_bad).unwrap();
         assert!(matches!(
-            egs_bad.solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0),
+            egs_bad
+                .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+                .unwrap(),
             Err(super::PegUnsupported::ExchangeWithoutForcedEnd)
         ));
     }
@@ -2667,16 +2727,20 @@ mod tests {
                         for (lean, arm_tables) in &arms {
                             let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(
                                 &gc, &kwg, arm_tables,
-                            );
+                            )
+                            .unwrap();
                             let got = egs
                                 .solve_peg_one_in_bag(0, board, mrack, &unseen_tally, 0.0)
+                                .unwrap()
                                 .expect("english one-in-bag is always solvable");
 
                             let mut egs2 = EndgameSolver::<kwg::Node22, kwg::Node22>::new(
                                 &gc, &kwg, arm_tables,
-                            );
-                            let clair =
-                                egs2.peg_clairvoyant_aggregate(0, board, mrack, &unseen_tally, 0.0);
+                            )
+                            .unwrap();
+                            let clair = egs2
+                                .peg_clairvoyant_aggregate(0, board, mrack, &unseen_tally, 0.0)
+                                .unwrap();
 
                             assert!(got.committed, "english path must be committed");
                             assert!(got.best_move.is_some(), "committed result must name a move");

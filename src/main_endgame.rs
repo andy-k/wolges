@@ -504,9 +504,9 @@ fn run_batch<N: kwg::Node>(
             &game_config,
             &smaller_kwg,
             &arm_tables,
-        );
+        )?;
         egs.init(&board_tiles, [&rack0, &rack1]);
-        let v = egs.solve(player);
+        let v = egs.solve(player)?;
         println!("{line_index}\t{v}");
     }
     Ok(())
@@ -1528,7 +1528,7 @@ fn solve_position<N: kwg::Node>(
         game_config,
         &smaller_kwg,
         &arm_tables,
-    );
+    )?;
     if oppo_rack.len() == rack_size + 1 {
         let scaled_score_diff = equity::scale_score(score_diff) as f32;
         let result = egs.solve_peg_one_in_bag(
@@ -1537,7 +1537,7 @@ fn solve_position<N: kwg::Node>(
             &question.rack,
             &available_tally,
             scaled_score_diff,
-        );
+        )?;
 
         let result = match result {
             Ok(result) => result,
@@ -1617,7 +1617,7 @@ fn solve_position<N: kwg::Node>(
         );
     } else {
         egs.init(&board_tiles, [&question.rack, &oppo_rack]);
-        let future_margin = egs.evaluate(0);
+        let future_margin = egs.evaluate(0)?;
         let total_margin = equity::scale_score(score_diff) as f32 + future_margin;
         println!(
             "total game margin (current score {score_diff:+} + future {}) = {}",
