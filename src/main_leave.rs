@@ -315,6 +315,8 @@ struct SimStudyCheck {
     iters: u64,
     #[arg(default_value_t = 1)]
     seed: u64,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -400,6 +402,8 @@ struct SimChunkCheck {
     seed: u64,
     #[arg(default_value_t = 8)]
     trials: u32,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -412,6 +416,8 @@ struct SimMutateCheck {
     iters: u64,
     #[arg(default_value_t = 1)]
     seed: u64,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -424,6 +430,8 @@ struct SimFieldCheck {
     seed: u64,
     #[arg(default_value_t = 12)]
     turns: u32,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -727,6 +735,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean);
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -737,8 +746,8 @@ fn run<N: kwg::Node + Sync + Send>(
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
-                    anagrams: None,
-                    rack_lengths: None,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
                     klv: &klv,
                 },
                 rack: &game_state.current_player().rack,
@@ -828,11 +837,12 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimChunkCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            sim_chunk_check(game_config, kwg, klv, a.iters, a.seed, a.trials)
+            sim_chunk_check(game_config, kwg, klv, a.iters, a.seed, a.trials, a.lean)
         }
         Task::SimMutateCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean);
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -843,8 +853,8 @@ fn run<N: kwg::Node + Sync + Send>(
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
-                    anagrams: None,
-                    rack_lengths: None,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
                     klv: &klv,
                 },
                 rack: &game_state.current_player().rack,
@@ -916,7 +926,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimFieldCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            sim_field_check(game_config, kwg, klv, a.seed, a.turns)
+            sim_field_check(game_config, kwg, klv, a.seed, a.turns, a.lean)
         }
         Task::Winpct(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -4473,9 +4483,11 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
     klv: klv::Klv<L>,
     seed: u64,
     turns: u32,
+    lean: bool,
 ) -> error::Returns<()> {
     let alphabet = game_config.alphabet();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -4491,8 +4503,8 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                 board_tiles: &game_state.board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
-                anagrams: None,
-                rack_lengths: None,
+                anagrams: arm_tables.anagrams(),
+                rack_lengths: arm_tables.rack_lengths(),
                 klv: &klv,
             },
             rack: &game_state.current_player().rack,
@@ -4528,8 +4540,8 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
-            anagrams: None,
-            rack_lengths: None,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
             klv: &klv,
         };
         let rack = &game_state.current_player().rack;
@@ -4654,10 +4666,12 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     iters: u64,
     seed: u64,
     trials: u32,
+    lean: bool,
 ) -> error::Returns<()> {
     if iters < 2 {
         return Err("sim-chunk-check needs at least two iterations".into());
     }
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -4667,8 +4681,8 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
-            anagrams: None,
-            rack_lengths: None,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
             klv: &klv,
         },
         rack: &game_state.current_player().rack,
