@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{equity, game_config, game_state, klv, kwg, movegen, win_pct};
+use super::{equity, error, game_config, game_state, klv, kwg, movegen, win_pct};
 use rand::SeedableRng;
 
 // scores and leave values are millipoints; the sigmoid and its weightage are in
@@ -293,22 +293,29 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
     }
 
     #[inline(always)]
-    pub fn final_equity_spread(&self) -> i32 {
+    pub fn final_equity_spread(&self) -> error::Returns<i32> {
         let mut best_opponent_equity = i32::MIN;
         for (i, player) in (0..).zip(self.game_state.players.iter()) {
             if i != self.initial_game_state.turn {
-                let opponent_equity = player.score + self.last_seen_leave_values[i as usize];
+                let opponent_equity = player
+                    .score
+                    .checked_add(self.last_seen_leave_values[i as usize])
+                    .ok_or("score overflow")?;
                 if opponent_equity > best_opponent_equity {
                     best_opponent_equity = opponent_equity;
                 }
             }
         }
-        let mut this_equity = self.game_state.players[self.initial_game_state.turn as usize].score
-            + self.last_seen_leave_values[self.initial_game_state.turn as usize];
+        let mut this_equity = self.game_state.players[self.initial_game_state.turn as usize]
+            .score
+            .checked_add(self.last_seen_leave_values[self.initial_game_state.turn as usize])
+            .ok_or("score overflow")?;
         if best_opponent_equity != i32::MIN {
-            this_equity -= best_opponent_equity;
+            this_equity = this_equity
+                .checked_sub(best_opponent_equity)
+                .ok_or("score overflow")?;
         }
-        this_equity
+        Ok(this_equity)
     }
 
     #[inline(always)]
@@ -499,5 +506,27 @@ mod tests {
             fell_back, sigmoid,
             "absent key should fall back to the sigmoid"
         );
+    }
+
+    #[test]
+    #[inline]
+    fn final_equity_spread_takes_the_best_opponent_from_the_mover() {
+        let (mut simmer, _, _, _) = prepared_simmer();
+        let turn = simmer.initial_game_state.turn as usize;
+        simmer.game_state.players[turn].score = 300 * equity::SCALE;
+        simmer.game_state.players[1 - turn].score = 250 * equity::SCALE;
+        simmer.last_seen_leave_values[turn] = 5 * equity::SCALE;
+        simmer.last_seen_leave_values[1 - turn] = 0;
+        assert_eq!(simmer.final_equity_spread().unwrap(), 55 * equity::SCALE);
+    }
+
+    #[test]
+    #[inline]
+    fn final_equity_spread_errs_when_a_sum_would_overflow() {
+        let (mut simmer, _, _, _) = prepared_simmer();
+        let turn = simmer.initial_game_state.turn as usize;
+        simmer.game_state.players[turn].score = i32::MAX - 5;
+        simmer.last_seen_leave_values[turn] = 10;
+        assert!(simmer.final_equity_spread().is_err());
     }
 }
