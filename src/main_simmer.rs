@@ -1,8 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use wolges::{
-    alphabet, bites, build, display, error, fash, game_config, game_state, klv, kwg, move_picker,
-    movegen,
+    alphabet, anagrams, bites, build, display, error, fash, game_config, game_state, klv, kwg,
+    move_picker, movegen,
 };
 
 mod game_args;
@@ -69,6 +69,8 @@ impl Question {
 struct Cli {
     #[arg(long, help = "the word graph is a kbwg")]
     kbwg: bool,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
     // actually "NWL20"
     #[arg(default_value = "lexbin/NWL23.kwg", help = "the word graph")]
     kwg: String,
@@ -94,11 +96,11 @@ fn main() -> error::Returns<()> {
     if cli.kbwg {
         let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-        simulate(&kwg, &klv, &game_config, cli.seed)
+        simulate(&kwg, &klv, &game_config, cli.seed, cli.lean)
     } else {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-        simulate(&kwg, &klv, &game_config, cli.seed)
+        simulate(&kwg, &klv, &game_config, cli.seed, cli.lean)
     }
 }
 
@@ -123,6 +125,7 @@ fn simulate<N: kwg::Node>(
     klv: &klv::Klv<kwg::Node22>,
     game_config: &game_config::GameConfig,
     seed: Option<u64>,
+    lean: bool,
 ) -> error::Returns<()> {
     // https://github.com/domino14/macondo/issues/43
     let scores = [336000, 298000];
@@ -262,6 +265,7 @@ fn simulate<N: kwg::Node>(
     )?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
     let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
+    let arm_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean);
     move_generator.reset_for_another_kwg();
 
     // ok, let's sim...
@@ -270,8 +274,8 @@ fn simulate<N: kwg::Node>(
         board_tiles: &game_state.board_tiles,
         game_config,
         kwg: &smaller_kwg,
-        anagrams: None,
-        rack_lengths: None,
+        anagrams: arm_tables.anagrams(),
+        rack_lengths: arm_tables.rack_lengths(),
         klv,
     };
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
