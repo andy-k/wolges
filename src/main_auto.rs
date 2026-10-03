@@ -490,7 +490,7 @@ fn do_it<N: kwg::Node + Sync>(
 
             game_state.play(game_config, &mut rng, play)?;
 
-            match game_state.check_game_ended(game_config, &mut final_scores) {
+            match game_state.check_game_ended(game_config, &mut final_scores)? {
                 game_state::CheckGameEnded::PlayedOut => {
                     println!("Player {} went out", game_state.turn + 1);
                     break;

@@ -1549,7 +1549,7 @@ fn generate_autoplay_logs<
 
                         let res = {
                             let game_ended =
-                                game_state.check_game_ended(&game_config, &mut final_scores);
+                                game_state.check_game_ended(&game_config, &mut final_scores).unwrap();
 
                             match game_ended {
                                 game_state::CheckGameEnded::NotEnded
@@ -1987,8 +1987,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
                         let play = &move_generator.plays[0];
                         game_state.play(&game_config, &mut rng, &play.play).unwrap();
-                        let game_ended =
-                            game_state.check_game_ended(&game_config, &mut final_scores);
+                        let game_ended = game_state
+                            .check_game_ended(&game_config, &mut final_scores)
+                            .unwrap();
                         game_state.next_turn();
                         turn_idx += 1;
                         if !matches!(game_ended, game_state::CheckGameEnded::NotEnded) {
@@ -3018,7 +3019,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 .play(&game_config, &mut rng, &move_generator.plays[0].play)
                                 .unwrap();
                             let ended =
-                                game_state.check_game_ended(&game_config, &mut final_scores);
+                                game_state.check_game_ended(&game_config, &mut final_scores).unwrap();
                             game_state.next_turn();
                             if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
                                 break; // game ended before the window; try a fresh game.
@@ -3768,7 +3769,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
                             game_state.play(&game_config, &mut rng, &play.play).unwrap();
 
-                            match game_state.check_game_ended(&game_config, &mut final_scores) {
+                            match game_state.check_game_ended(&game_config, &mut final_scores).unwrap() {
                                 game_state::CheckGameEnded::PlayedOut
                                 | game_state::CheckGameEnded::ZeroScores => 1,
                                 game_state::CheckGameEnded::NotEnded => !0,
@@ -4153,7 +4154,10 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
         });
         let play = &move_generator.plays[0].play;
         game_state.play(game_config, rng, play).unwrap();
-        match game_state.check_game_ended(game_config, final_scores) {
+        match game_state
+            .check_game_ended(game_config, final_scores)
+            .unwrap()
+        {
             game_state::CheckGameEnded::NotEnded => {}
             _ => break,
         }
@@ -4390,7 +4394,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
         let play = move_generator.plays[0].play.clone();
         game_state.play(&game_config, rng, &play)?;
         let mut final_scores = vec![0i32; game_config.num_players() as usize];
-        match game_state.check_game_ended(&game_config, &mut final_scores) {
+        match game_state.check_game_ended(&game_config, &mut final_scores)? {
             game_state::CheckGameEnded::NotEnded => {
                 game_state.next_turn();
                 Ok(true)
@@ -5374,7 +5378,7 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
                     display::BoardFenner::new(alphabet, board_layout, &game_state.board_tiles),
                 )?;
             }
-            match game_state.check_game_ended(&game_config, &mut final_scores) {
+            match game_state.check_game_ended(&game_config, &mut final_scores)? {
                 game_state::CheckGameEnded::NotEnded => game_state.next_turn(),
                 _ => break,
             }
@@ -5810,7 +5814,9 @@ fn compare_seats<
                             }
                             game_state.play(&game_config, &mut rng, play).unwrap();
                             num_turns += 1;
-                            let end = game_state.check_game_ended(&game_config, &mut final_scores);
+                            let end = game_state
+                                .check_game_ended(&game_config, &mut final_scores)
+                                .unwrap();
                             match end {
                                 game_state::CheckGameEnded::PlayedOut
                                 | game_state::CheckGameEnded::ZeroScores => break end,

@@ -275,6 +275,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             match self
                 .game_state
                 .check_game_ended(game_config, &mut self.final_scores)
+                .unwrap()
             {
                 game_state::CheckGameEnded::NotEnded => {}
                 _ => {

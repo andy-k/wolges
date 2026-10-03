@@ -219,7 +219,10 @@ impl GameState {
                     }
                 }
 
-                current_player.score += score;
+                current_player.score = current_player
+                    .score
+                    .checked_add(*score)
+                    .ok_or("score overflow")?;
                 use_tiles(
                     &mut current_player.rack,
                     word.iter().filter_map(|&tile| {
@@ -254,27 +257,34 @@ impl GameState {
         &self,
         game_config: &game_config::GameConfig,
         final_scores: &mut [i32],
-    ) -> CheckGameEnded {
+    ) -> error::Returns<CheckGameEnded> {
         if self.current_player().rack.is_empty() {
             for (i, player) in self.players.iter().enumerate() {
                 final_scores[i] = player.score;
             }
             if self.players.len() == 2 {
-                final_scores[self.turn as usize] += 2
-                    * equity::SCALE
-                    * game_config
-                        .alphabet()
-                        .rack_score(&self.players[(1 - self.turn) as usize].rack);
+                final_scores[self.turn as usize] = (2 * equity::SCALE)
+                    .checked_mul(
+                        game_config
+                            .alphabet()
+                            .rack_score(&self.players[(1 - self.turn) as usize].rack),
+                    )
+                    .and_then(|bonus| final_scores[self.turn as usize].checked_add(bonus))
+                    .ok_or("score overflow")?;
             } else {
-                let mut earned = 0;
+                let mut earned = 0i32;
                 for (i, player) in self.players.iter().enumerate() {
                     let this_rack = game_config.alphabet().scaled_rack_score(&player.rack);
-                    final_scores[i] -= this_rack;
-                    earned += this_rack;
+                    final_scores[i] = final_scores[i]
+                        .checked_sub(this_rack)
+                        .ok_or("score overflow")?;
+                    earned = earned.checked_add(this_rack).ok_or("score overflow")?;
                 }
-                final_scores[self.turn as usize] += earned;
+                final_scores[self.turn as usize] = final_scores[self.turn as usize]
+                    .checked_add(earned)
+                    .ok_or("score overflow")?;
             }
-            CheckGameEnded::PlayedOut
+            Ok(CheckGameEnded::PlayedOut)
         } else if (self.pass_turns > 0
             && game_config.num_passes_to_end() != 0
             && self.pass_turns >= game_config.num_passes_to_end() as u16)
@@ -285,12 +295,14 @@ impl GameState {
                     || self.board_tiles.iter().any(|&tile| tile != 0)))
         {
             for (i, player) in self.players.iter().enumerate() {
-                final_scores[i] =
-                    player.score - game_config.alphabet().scaled_rack_score(&player.rack);
+                final_scores[i] = player
+                    .score
+                    .checked_sub(game_config.alphabet().scaled_rack_score(&player.rack))
+                    .ok_or("score overflow")?;
             }
-            CheckGameEnded::ZeroScores
+            Ok(CheckGameEnded::ZeroScores)
         } else {
-            CheckGameEnded::NotEnded
+            Ok(CheckGameEnded::NotEnded)
         }
     }
 }
