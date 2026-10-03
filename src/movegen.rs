@@ -5933,10 +5933,8 @@ mod tests {
     #[inline]
     fn both_arms_agree(gc: &game_config::GameConfig, boards: &[&str], racks: &[&str]) {
         let kwg = sweep_kwg_covering(gc);
-        let dim = gc.board_layout().dim();
-        let layout = alphagram::KeyLayout::of(gc.alphabet(), dim.rows.max(dim.cols) as u8).unwrap();
-        let held = anagrams::Anagrams::build(&kwg, layout.clone()).unwrap();
-        let rack_lengths = anagrams::RackLengths::build(&kwg, layout, gc.rack_size() as usize + 1);
+        let held = anagrams::Anagrams::build_for_config(&kwg, gc).unwrap();
+        let rack_lengths = anagrams::RackLengths::build_for_config(&kwg, gc).unwrap();
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         for max_gen in [1usize, 5, 100_000] {

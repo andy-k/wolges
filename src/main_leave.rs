@@ -5633,11 +5633,7 @@ fn compare_seats<
     };
 
     let arc_rack_lengths = if LEAN {
-        let dim = game_config.board_layout().dim();
-        let max_tiles = game_config.rack_size() as usize + 1;
-        wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
-            .map(|layout| wolges::anagrams::RackLengths::build(&kwg, layout, max_tiles))
-            .map(std::sync::Arc::new)
+        wolges::anagrams::RackLengths::build_for_config(&kwg, &game_config).map(std::sync::Arc::new)
     } else {
         None
     };
