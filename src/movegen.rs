@@ -436,7 +436,7 @@ struct WorkingBuffer {
     used_tile_scores_shadowr: ShadowScores,     // for shadow_play_right, premultiplied by SCALE
     rack_tally_shadowl: [u8; MAX_ALPHABET_LEN], // for shadow_play_left
     rack_tally_shadowr: [u8; MAX_ALPHABET_LEN], // for shadow_play_right
-    word_source_fits_config: bool,
+    anagrams_fit_config: bool,
     is_census: bool,
 }
 
@@ -509,7 +509,7 @@ impl Clone for WorkingBuffer {
             rack_tally_shadowl: self.rack_tally_shadowl,
             rack_tally_shadowr: self.rack_tally_shadowr,
             is_census: self.is_census,
-            word_source_fits_config: self.word_source_fits_config,
+            anagrams_fit_config: self.anagrams_fit_config,
         }
     }
 
@@ -593,7 +593,7 @@ impl Clone for WorkingBuffer {
         self.rack_tally_shadowr
             .clone_from(&source.rack_tally_shadowr);
         self.is_census = source.is_census;
-        self.word_source_fits_config = source.word_source_fits_config;
+        self.anagrams_fit_config = source.anagrams_fit_config;
     }
 }
 
@@ -696,7 +696,7 @@ impl WorkingBuffer {
             rack_tally_shadowl: [0u8; MAX_ALPHABET_LEN],
             rack_tally_shadowr: [0u8; MAX_ALPHABET_LEN],
             is_census: false,
-            word_source_fits_config: false,
+            anagrams_fit_config: false,
         }
     }
 
@@ -717,7 +717,7 @@ impl WorkingBuffer {
         let layout = board_snapshot.anagrams.map(anagrams::Anagrams::layout);
         !want_raw
             && !self.is_census
-            && self.word_source_fits_config
+            && self.anagrams_fit_config
             && self.rack_tally[0] <= 2
             && !self.subracks.is_empty()
             && layout
@@ -732,8 +732,7 @@ impl WorkingBuffer {
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
-        self.word_source_fits_config = match board_snapshot.anagrams.map(anagrams::Anagrams::layout)
-        {
+        self.anagrams_fit_config = match board_snapshot.anagrams.map(anagrams::Anagrams::layout) {
             Some(layout) => {
                 let dim = board_snapshot.game_config.board_layout().dim();
                 layout.matches(alphabet, dim.rows.max(dim.cols) as u8)
@@ -4506,7 +4505,7 @@ impl KurniaMoveGenerator {
     #[inline(always)]
     // The census sheet wants each WORD once, not each PLAY, so its descent
     // takes a real tile before a blank. That is a different generator, not a
-    // setting: the placement path that reads a word source does not run it.
+    // setting: the placement path that reads the anagrams does not run it.
     pub fn gen_census_sheet<'a, N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &'a GenMovesParams<'a, N, L>,
