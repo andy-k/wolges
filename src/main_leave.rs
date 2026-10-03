@@ -1096,6 +1096,9 @@ fn generate_autoplay_logs<
     }));
     let batch_size = 100;
 
+    let anagram_table = wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config);
+    let anagrams = anagram_table.as_ref();
+
     std::thread::scope(|s| {
         let mut threads = vec![];
 
@@ -1362,7 +1365,7 @@ fn generate_autoplay_logs<
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
                             kwg: &kwg,
-                            anagrams: None,
+                            anagrams,
                             rack_lengths: None,
                             klv: if game_state.turn == 0 {
                                 &arc_klv0
@@ -1820,6 +1823,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let mutexed_tick = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
     let t0 = std::time::Instant::now();
 
+    let anagram_table = wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config);
+    let anagrams = anagram_table.as_ref();
+
     std::thread::scope(|s| {
         let mut threads = vec![];
         for _ in 0..num_threads {
@@ -1927,7 +1933,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     board_tiles: &game_state.board_tiles,
                                     game_config: &game_config,
                                     kwg: &kwg,
-                                    anagrams: None,
+                                    anagrams,
                                     rack_lengths: None,
                                     klv: if game_state.turn == 0 {
                                         &arc_klv0
@@ -1968,7 +1974,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
                             kwg: &kwg,
-                            anagrams: None,
+                            anagrams,
                             rack_lengths: None,
                             klv: if game_state.turn == 0 {
                                 &arc_klv0
@@ -4106,6 +4112,7 @@ impl GamePairStats {
 struct WinpctTables<'a, N: kwg::Node, L: kwg::Node> {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
+    anagrams: Option<&'a wolges::anagrams::Anagrams>,
     arc_klv: &'a klv::Klv<L>,
 }
 
@@ -4121,6 +4128,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
     let WinpctTables {
         game_config,
         kwg,
+        anagrams,
         arc_klv,
     } = tables;
     snapshots.clear();
@@ -4140,7 +4148,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             board_tiles: &game_state.board_tiles,
             game_config,
             kwg,
-            anagrams: None,
+            anagrams,
             rack_lengths: None,
             klv: arc_klv,
         };
@@ -4188,6 +4196,9 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let report_every = 10_000u64;
     let shared = std::sync::Mutex::new(win_pct::WinPctAccumulator::new());
 
+    let anagram_table = wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config);
+    let anagrams = anagram_table.as_ref();
+
     std::thread::scope(|s| {
         for _ in 0..num_threads {
             s.spawn(|| {
@@ -4208,6 +4219,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                         WinpctTables {
                             game_config: &game_config,
                             kwg: &kwg,
+                            anagrams,
                             arc_klv: &arc_klv,
                         },
                         &mut move_generator,
@@ -4270,6 +4282,9 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
     let shared = std::sync::Mutex::new((0.0f64, 0.0f64, 0u64));
 
+    let anagram_table = wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config);
+    let anagrams = anagram_table.as_ref();
+
     std::thread::scope(|s| {
         for _ in 0..num_threads {
             s.spawn(|| {
@@ -4289,6 +4304,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         WinpctTables {
                             game_config: &game_config,
                             kwg: &kwg,
+                            anagrams,
                             arc_klv: &arc_klv,
                         },
                         &mut move_generator,
@@ -5122,6 +5138,8 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         threads,
     }: PositionParams<'_>,
 ) -> error::Returns<()> {
+    let anagram_table = wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config);
+    let anagrams = anagram_table.as_ref();
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
@@ -5280,7 +5298,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
-            anagrams: None,
+            anagrams,
             rack_lengths: None,
             klv: &klv,
         };
@@ -5343,6 +5361,8 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
     seed: u64,
     stride: u32,
 ) -> error::Returns<()> {
+    let anagram_table = wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config);
+    let anagrams = anagram_table.as_ref();
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -5359,7 +5379,7 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
-                    anagrams: None,
+                    anagrams,
                     rack_lengths: None,
                     klv: &klv,
                 },
@@ -5609,10 +5629,7 @@ fn compare_seats<
     let arc_anagrams = if LEAN {
         None
     } else {
-        let dim = game_config.board_layout().dim();
-        wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
-            .and_then(|layout| wolges::anagrams::Anagrams::build(&kwg, layout))
-            .map(std::sync::Arc::new)
+        wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config).map(std::sync::Arc::new)
     };
 
     let arc_rack_lengths = if LEAN {

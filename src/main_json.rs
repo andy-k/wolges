@@ -258,11 +258,12 @@ fn answer<N: kwg::Node + Sync>(
     game_state.bag.shuffle(&mut rng);
 
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+    let anagram_table = wolges::anagrams::Anagrams::build_for_config(kwg, game_config);
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &kibitzer.board_tiles,
         game_config,
         kwg,
-        anagrams: None,
+        anagrams: anagram_table.as_ref(),
         rack_lengths: None,
         klv,
     };
