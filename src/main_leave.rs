@@ -2377,6 +2377,8 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     Ok(())
 }
 
+// https://doi.org/10.1145/2714064.2660195
+// https://prng.di.unimi.it/splitmix64.c
 #[inline]
 const fn census_mix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
@@ -5761,6 +5763,8 @@ fn compare_seats<
                             };
 
                             if let move_picker::MovePicker::Simmer(simmer_driver) = &mut *driver {
+                                // https://doi.org/10.1145/2714064.2660195
+                                // https://prng.di.unimi.it/splitmix64.c
                                 simmer_driver.reseed(census_mix64(
                                     seed.wrapping_add(census_mix64(
                                         pair_idx
