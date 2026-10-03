@@ -1219,7 +1219,11 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 r += 4;
                 let ort_num_values = read_le_u32(ort_bytes, r);
                 r += 4;
-                if ort_bytes.len() < r + ((ort_num_buckets + 1 + ort_num_values) * 4) as usize {
+                // both counts come from the file: in 64 bits, no pair of them
+                // can wrap the size
+                if (ort_bytes.len() as u64)
+                    < r as u64 + (ort_num_buckets as u64 + 1 + ort_num_values as u64) * 4
+                {
                     return Err("out of bounds".into());
                 }
                 let mut ort_buckets = Vec::with_capacity(ort_num_buckets as usize + 1);
