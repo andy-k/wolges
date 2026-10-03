@@ -13,8 +13,12 @@ pub struct MultisetLattice {
 
 impl MultisetLattice {
     #[inline(always)]
-    pub fn new(num_letters: usize, rack_size: usize) -> Self {
-        assert!((1..=MAX_LETTERS).contains(&num_letters));
+    pub fn new(num_letters: usize, rack_size: usize) -> crate::error::Returns<Self> {
+        if !(1..=MAX_LETTERS).contains(&num_letters) {
+            return Err(
+                format!("a census counts 1 to {MAX_LETTERS} letters, not {num_letters}").into(),
+            );
+        }
         let n_max = rack_size + num_letters;
 
         let pascal = crate::prob::Pascal::with_rows(n_max + 1);
@@ -23,12 +27,12 @@ impl MultisetLattice {
         for (s, slot) in size_offset.iter_mut().enumerate() {
             *slot = pascal.binom(s + num_letters - 1, num_letters);
         }
-        Self {
+        Ok(Self {
             num_letters,
             rack_size,
             pascal,
             size_offset,
-        }
+        })
     }
 
     #[inline(always)]
@@ -1076,7 +1080,7 @@ mod tests {
     #[test]
     #[inline]
     fn a_lattice_ranks_every_multiset_back_to_itself() {
-        let lat = MultisetLattice::new(3, 2);
+        let lat = MultisetLattice::new(3, 2).unwrap();
 
         assert_eq!(lat.len(), 10);
         for idx in 0..lat.len() {
@@ -1088,8 +1092,17 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_lattice_counts_one_to_sixty_four_letters() {
+        assert!(MultisetLattice::new(0, 7).is_err());
+        assert!(MultisetLattice::new(1, 7).is_ok());
+        assert!(MultisetLattice::new(64, 1).is_ok());
+        assert!(MultisetLattice::new(65, 1).is_err());
+    }
+
+    #[test]
+    #[inline]
     fn an_english_sized_lattice_ranks_back_at_every_sample() {
-        let lat = MultisetLattice::new(27, 7);
+        let lat = MultisetLattice::new(27, 7).unwrap();
         assert_eq!(lat.len(), 5_379_616);
         let mut buf = vec![0u8; 27];
         for idx in (0..lat.len()).step_by(997) {
@@ -1101,7 +1114,7 @@ mod tests {
     #[test]
     #[inline]
     fn rank_sparse_matches_rank() {
-        let lat = MultisetLattice::new(27, 7);
+        let lat = MultisetLattice::new(27, 7).unwrap();
         let mut buf = vec![0u8; 27];
         for idx in (0..lat.len()).step_by(733) {
             lat.unrank_into(idx, &mut buf);
@@ -1122,7 +1135,7 @@ mod tests {
     #[test]
     #[inline]
     fn naive_best_equity_matches_hand_calc() {
-        let lat = MultisetLattice::new(2, 2);
+        let lat = MultisetLattice::new(2, 2).unwrap();
 
         let mut sheet = vec![0i32; lat.len()];
         sheet[lat.rank(&[1, 0]) as usize] = 5_000;
@@ -1139,7 +1152,7 @@ mod tests {
     #[test]
     #[inline]
     fn best_equity_table_matches_naive() {
-        let lat = MultisetLattice::new(4, 4);
+        let lat = MultisetLattice::new(4, 4).unwrap();
 
         let mut sheet = vec![0i32; lat.len()];
         let mut leave = vec![0i32; lat.len()];
@@ -1164,7 +1177,7 @@ mod tests {
     #[test]
     #[inline]
     fn a_leave_is_worth_the_average_of_the_racks_it_draws_into() {
-        let lat = MultisetLattice::new(2, 2);
+        let lat = MultisetLattice::new(2, 2).unwrap();
         let unseen = [1u8, 1u8];
         let mut best = vec![0i32; lat.len()];
         best[lat.rank(&[2, 0]) as usize] = 10_000;
@@ -1183,7 +1196,7 @@ mod tests {
     #[test]
     #[inline]
     fn dynamic_leave_matches_draw_with_s_added() {
-        let lat = MultisetLattice::new(3, 3);
+        let lat = MultisetLattice::new(3, 3).unwrap();
         let add = AddTable::new(&lat);
         let pool = [3u8, 2u8, 2u8];
         let mut full_v = vec![UNPLAYABLE; lat.len()];
@@ -1208,7 +1221,7 @@ mod tests {
     #[test]
     #[inline]
     fn apportion_table_matches_naive() {
-        let lat = MultisetLattice::new(3, 3);
+        let lat = MultisetLattice::new(3, 3).unwrap();
         let unseen = [4u8, 3u8, 2u8];
         let mut best = vec![UNPLAYABLE; lat.len()];
         for (idx, slot) in best.iter_mut().enumerate().skip(lat.full_rack_start()) {
@@ -1266,7 +1279,7 @@ mod tests {
     #[test]
     #[inline]
     fn apportion_fused_matches_split() {
-        let lat = MultisetLattice::new(4, 4);
+        let lat = MultisetLattice::new(4, 4).unwrap();
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
         let mut leave = vec![0i32; lat.len()];
@@ -1325,7 +1338,7 @@ mod tests {
     #[test]
     #[inline]
     fn apportion_fused_null_leave_matches() {
-        let lat = MultisetLattice::new(4, 4);
+        let lat = MultisetLattice::new(4, 4).unwrap();
         let unseen = [3u8, 2u8, 4u8, 1u8];
         let mut sheet = vec![0i32; lat.len()]; // >= 0, like a built sheet
         let leave = vec![0i32; lat.len()]; // null klv -> all zero
@@ -1383,7 +1396,7 @@ mod tests {
     #[test]
     #[inline]
     fn record_blank_variants_enumerates_designations() {
-        let lat = MultisetLattice::new(4, 4);
+        let lat = MultisetLattice::new(4, 4).unwrap();
         let key = |tally: &[u8]| lat.rank(tally) as usize;
         let run = |placed: &mut [(u8, i32)], unseen: &[u8], blanks: usize, real_score: i32| {
             let mut sheet = vec![0i32; lat.len()];

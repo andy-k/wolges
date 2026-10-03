@@ -845,7 +845,7 @@ mod tests {
     fn apply_dynamic_leaves_matches_brute() {
         let num_letters = 3usize;
         let rack_size = 3usize;
-        let lat = census::MultisetLattice::new(num_letters, rack_size);
+        let lat = census::MultisetLattice::new(num_letters, rack_size).unwrap();
         let add = census::AddTable::new(&lat);
 
         let mut full_v = vec![0i32; lat.len()];

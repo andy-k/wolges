@@ -737,13 +737,13 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 &alphabet,
                 &args.name,
                 lexport::MacondoFormat::Dawg,
-            ))?;
+            )?)?;
             make_writer(&args.gaddag)?.write_all(&lexport::to_macondo(
                 &kwg,
                 &alphabet,
                 &args.name,
                 lexport::MacondoFormat::Gaddag,
-            ))?;
+            )?)?;
             Ok(())
         }
         Task::Lxd(args) => {
@@ -968,7 +968,7 @@ fn old_main() -> error::Returns<()> {
                     &english_alphabet,
                     "CSW24",
                     lexport::MacondoFormat::Dawg,
-                ),
+                )?,
             )?;
             println!("{:?} for exporting CSW24 dawg", t0.elapsed());
             let t0 = std::time::Instant::now();
@@ -979,7 +979,7 @@ fn old_main() -> error::Returns<()> {
                     &english_alphabet,
                     "CSW24",
                     lexport::MacondoFormat::Gaddag,
-                ),
+                )?,
             )?;
             println!("{:?} for exporting CSW24 gaddag", t0.elapsed());
         }
@@ -993,7 +993,7 @@ fn old_main() -> error::Returns<()> {
                     &english_alphabet,
                     "NWL23",
                     lexport::MacondoFormat::Dawg,
-                ),
+                )?,
             )?;
             std::fs::write(
                 "lexbin/NWL23.gaddag",
@@ -1002,7 +1002,7 @@ fn old_main() -> error::Returns<()> {
                     &english_alphabet,
                     "NWL23",
                     lexport::MacondoFormat::Gaddag,
-                ),
+                )?,
             )?;
         }
         {
@@ -1015,7 +1015,7 @@ fn old_main() -> error::Returns<()> {
                     &english_alphabet,
                     "ECWL",
                     lexport::MacondoFormat::Dawg,
-                ),
+                )?,
             )?;
             std::fs::write(
                 "lexbin/ECWL.gaddag",
@@ -1024,7 +1024,7 @@ fn old_main() -> error::Returns<()> {
                     &english_alphabet,
                     "ECWL",
                     lexport::MacondoFormat::Gaddag,
-                ),
+                )?,
             )?;
         }
         println!("{:?} for exporting many files", t0.elapsed());
@@ -1041,7 +1041,7 @@ fn old_main() -> error::Returns<()> {
                     &polish_alphabet,
                     "OSPS49",
                     lexport::MacondoFormat::Dawg,
-                ),
+                )?,
             )?;
             println!("{:?} for exporting OSPS49 dawg", t0.elapsed());
             let t0 = std::time::Instant::now();
@@ -1052,7 +1052,7 @@ fn old_main() -> error::Returns<()> {
                     &polish_alphabet,
                     "OSPS49",
                     lexport::MacondoFormat::Gaddag,
-                ),
+                )?,
             )?;
             println!("{:?} for exporting OSPS49 gaddag", t0.elapsed());
         }

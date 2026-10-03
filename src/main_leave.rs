@@ -2822,7 +2822,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let sheet_cache_len = if sheet_reuse { sheet_cache_len } else { 0 };
 
-    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
     writeln!(
         boxed_stdout_or_stderr(),
@@ -4865,7 +4865,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
         }
     }
     let unseen: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let can_exchange =
         bag_size(&board_tiles, &game_config) >= game_config.exchange_tile_limit() as i64;
     let sheet_floor = if can_exchange { 0 } else { i32::MIN / 4 };
@@ -5147,7 +5147,7 @@ fn lattice_leaves<L: kwg::Node>(
     rack_size: usize,
     threads: usize,
 ) -> error::Returns<(census::MultisetLattice, census::AddTable, Vec<i32>)> {
-    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let full_v = full_rack_values(&lat, klv);
     let add = census::AddTable::new_with_threads(&lat, threads);
     Ok((lat, add, full_v))
@@ -5855,7 +5855,7 @@ fn compare_seats<
         if matches!(p0_picker, SeatPicker::Dynamic) || matches!(p1_picker, SeatPicker::Dynamic) {
             let num_letters = game_config.alphabet().len() as usize;
             let rack_size = game_config.rack_size() as usize;
-            let lat = census::MultisetLattice::new(num_letters, rack_size);
+            let lat = census::MultisetLattice::new(num_letters, rack_size)?;
             let full_v_of = |picker: SeatPicker, klv: &klv::Klv<L>| match picker {
                 SeatPicker::Dynamic => full_rack_values(&lat, klv),
                 SeatPicker::Hasty | SeatPicker::Simmer => Vec::new(),
@@ -6218,7 +6218,7 @@ mod tests {
     #[test]
     #[inline]
     fn dynamic_leaves_of_a_pool_match_each_leave_drawn_alone() {
-        let lat = census::MultisetLattice::new(4, 3);
+        let lat = census::MultisetLattice::new(4, 3).unwrap();
         let add = census::AddTable::new_with_threads(&lat, 1);
         let full_v = (0..lat.len() as i32)
             .map(|i| i * 7919 % 1000 - 500)
