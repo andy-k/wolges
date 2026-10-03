@@ -224,6 +224,9 @@ fn answer<N: kwg::Node + Sync>(
 
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::try_from_rng(&mut rand::rngs::SysRng)?;
     let mut game_state = game_state::GameState::new(game_config);
+    if game_state.players.len() < 2 {
+        wolges::return_error!("the question scores two players".to_string());
+    }
     // temp hardcode
     game_state.players[0].score = equity::scale_score(16);
     game_state.players[1].score = equity::scale_score(44);

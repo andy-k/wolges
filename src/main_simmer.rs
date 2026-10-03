@@ -219,6 +219,9 @@ fn simulate<N: kwg::Node>(
 
     // rebuild game state
     let mut game_state = game_state::GameState::new(game_config);
+    if game_state.players.len() < scores.len() {
+        wolges::return_error!(format!("the question scores {} players", scores.len()));
+    }
     for (i, &score) in scores.iter().enumerate() {
         game_state.players[i].score = score;
     }
