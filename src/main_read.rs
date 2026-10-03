@@ -2686,93 +2686,406 @@ fn next_prime(mut x: u32) -> u32 {
     }
 }
 
+#[derive(Clone, clap::ValueEnum)]
+enum Graph {
+    Dawg,
+    Gaddag,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum WmpVersion {
+    #[value(name = "1")]
+    One,
+    #[value(name = "2")]
+    Two,
+    #[value(name = "3")]
+    Three,
+}
+
+#[derive(clap::Args)]
+struct WordGraph {
+    #[arg(long, help = "the word graph is a kbwg")]
+    kbwg: bool,
+    #[arg(help = "the word graph")]
+    kwg: String,
+}
+
+#[derive(clap::Subcommand)]
+enum Task {
+    #[command(about = "read klv/klv2 file")]
+    Klv {
+        #[arg(
+            long,
+            value_parser = ["16"],
+            help = "16 for a klv16 (magpie-retro); a klv and a klv2 are told apart by their content"
+        )]
+        klv: Option<String>,
+        #[arg(help = "the leave table")]
+        leaves: String,
+        #[arg(help = "the csv to write")]
+        out: String,
+    },
+    #[command(about = "read kwg/kad file (dawg, or gaddag)")]
+    Kwg {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(help = "the words to write")]
+        out: String,
+        #[arg(long, value_enum, default_value = "dawg", help = "the half to read")]
+        graph: Graph,
+        #[arg(
+            long,
+            help = "allow ? (tile 0), such as for klv-kwg-extract's output (dawg only)"
+        )]
+        blanks: bool,
+    },
+    #[command(about = "read kwg file for human inspection")]
+    KwgNodes {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(help = "the nodes to write")]
+        out: String,
+    },
+    #[command(about = "read kwg file (dawg) by probability (output format subject to changes)")]
+    KwgProb {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(help = "the words to write")]
+        out: String,
+    },
+    #[command(about = "show raw probability")]
+    Prob {
+        #[arg(required = true, help = "the words")]
+        words: Vec<String>,
+    },
+    #[command(name = "klv-anagram-", about = "list all leaves with subanagram")]
+    KlvAnagramSub {
+        #[arg(help = "the leave table")]
+        leaves: String,
+        #[arg(help = "the leaves to write")]
+        out: String,
+        #[arg(help = "the rack, such as A?AC")]
+        rack: String,
+    },
+    #[command(name = "klv-anagram", about = "list all leaves with anagram")]
+    KlvAnagram {
+        #[arg(help = "the leave table")]
+        leaves: String,
+        #[arg(help = "the leaves to write")]
+        out: String,
+        #[arg(help = "the rack, such as A?AC")]
+        rack: String,
+    },
+    #[command(name = "klv-anagram+", about = "list all leaves with superanagram")]
+    KlvAnagramSuper {
+        #[arg(help = "the leave table")]
+        leaves: String,
+        #[arg(help = "the leaves to write")]
+        out: String,
+        #[arg(help = "the rack, such as A?AC")]
+        rack: String,
+    },
+    #[command(
+        name = "kwg-anagram-",
+        about = "list all words with subanagram (using dawg)"
+    )]
+    KwgAnagramSub {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(help = "the words to write")]
+        out: String,
+        #[arg(help = "the rack, such as A?AC")]
+        rack: String,
+    },
+    #[command(
+        name = "kwg-anagram",
+        about = "list all words with anagram (using dawg)"
+    )]
+    KwgAnagram {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(help = "the words to write")]
+        out: String,
+        #[arg(help = "the rack, such as A?AC")]
+        rack: String,
+    },
+    #[command(
+        name = "kwg-anagram+",
+        about = "list all words with superanagram (using dawg)"
+    )]
+    KwgAnagramSuper {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(help = "the words to write")]
+        out: String,
+        #[arg(help = "the rack, such as A?AC")]
+        rack: String,
+    },
+    #[command(about = "checks if all words are valid (using dawg)")]
+    KwgCheck {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(required = true, help = "the words")]
+        words: Vec<String>,
+    },
+    #[command(name = "q2-ort", about = "read .ort (format subject to change)")]
+    Q2Ort {
+        #[arg(help = "the ort")]
+        ort: String,
+        #[arg(help = "the csv to write")]
+        out: String,
+    },
+    #[command(
+        name = "make-q2-ort",
+        about = "generate .ort with the given num_buckets (ideally prime eg 5297687)"
+    )]
+    MakeQ2Ort {
+        #[arg(help = "the csv")]
+        csv: String,
+        #[arg(help = "the ort to write")]
+        out: String,
+        #[arg(help = "the number of buckets")]
+        num_buckets: u32,
+    },
+    #[command(about = "read .wmp (format subject to change)")]
+    Wmp {
+        #[arg(help = "the wmp")]
+        wmp: String,
+        #[arg(help = "the text to write")]
+        out: String,
+    },
+    #[command(about = "read .wmp words (format subject to change)")]
+    WmpWords {
+        #[arg(help = "the wmp")]
+        wmp: String,
+        #[arg(help = "the words to write")]
+        out: String,
+    },
+    #[command(about = "generate .wmp")]
+    MakeWmp {
+        #[arg(help = "the words, one a line")]
+        word_list: String,
+        #[arg(help = "the wmp to write")]
+        out: String,
+        #[arg(long, value_enum, default_value = "3", help = "the wmp version")]
+        wmp: WmpVersion,
+        #[arg(
+            long,
+            help = "allow overflows (for 1, also disable 2-blank inlining; not for 3)"
+        )]
+        overflow: bool,
+    },
+    #[command(about = "just copy out the kwg for further analysis")]
+    KlvKwgExtract {
+        #[arg(help = "the leave table")]
+        leaves: String,
+        #[arg(help = "the kwg to write")]
+        out: String,
+    },
+    #[command(
+        about = "check dawg cache hit rate",
+        after_help = "cls = cache line size, 64 is typical.
+csa = cache set associativity, e.g. 8 for 8-way set associativity.
+ncs = number of cache sets = L1D cache size / cores / csa / cls.
+example for i7-8700B (192 kB, 6 cores, 8-way set assoc): 64 8 64."
+    )]
+    KwgHitcheck {
+        #[command(flatten)]
+        graph_file: WordGraph,
+        #[arg(help = "cache line size")]
+        cls: u32,
+        #[arg(help = "cache set associativity")]
+        csa: u32,
+        #[arg(help = "number of cache sets")]
+        ncs: u32,
+        #[arg(help = "the report to write")]
+        out: String,
+        #[arg(long, value_enum, default_value = "dawg", help = "the half to check")]
+        graph: Graph,
+    },
+    #[command(about = "read klv/klv2 file, save quackle superleaves (english/french)")]
+    QuackleMakeSuperleaves {
+        #[arg(help = "the leave table")]
+        leaves: String,
+        #[arg(help = "the superleaves to write")]
+        out: String,
+    },
+    #[command(about = "read quackle superleaves (english/french)")]
+    QuackleSuperleaves {
+        #[arg(help = "the superleaves")]
+        superleaves: String,
+        #[arg(help = "the csv to write")]
+        out: String,
+    },
+    #[command(about = "read quackle dawg")]
+    Quackle {
+        #[arg(help = "the dawg")]
+        dawg: String,
+        #[arg(help = "the words to write")]
+        out: String,
+        #[arg(
+            long,
+            help = "a quackle small dawg (for example, TWL-only words in older CSW files)"
+        )]
+        small: bool,
+    },
+    #[command(about = "read zyzzyva dawg")]
+    Zyzzyva {
+        #[arg(help = "the dwg")]
+        dwg: String,
+        #[arg(help = "the words to write")]
+        out: String,
+    },
+    #[command(about = "read lexpert dawg")]
+    Lexpert {
+        #[arg(help = "the lxd")]
+        lxd: String,
+        #[arg(help = "the words to write")]
+        out: String,
+    },
+    #[command(about = "experimental statistics exploration showing the Z table")]
+    StatsZt,
+}
+
+impl Task {
+    // the task word and the files and values after it, as the tasks read them.
+    #[inline]
+    fn into_args(self) -> error::Returns<Vec<String>> {
+        // the word graph tasks' word: kwg- or kbwg- before the job.
+        #[inline(always)]
+        fn wg(graph_file: &WordGraph, job: &str) -> String {
+            format!("{}{job}", if graph_file.kbwg { "kbwg" } else { "kwg" })
+        }
+        Ok(match self {
+            Task::Klv { klv, leaves, out } => {
+                let task = if klv.is_some() { "klv16" } else { "klv" };
+                vec![task.into(), leaves, out]
+            }
+            Task::Kwg {
+                graph_file,
+                out,
+                graph,
+                blanks,
+            } => {
+                let job = match (graph, blanks) {
+                    (Graph::Dawg, false) => "",
+                    (Graph::Dawg, true) => "0",
+                    (Graph::Gaddag, false) => "-gaddag",
+                    (Graph::Gaddag, true) => {
+                        return Err(
+                            "--blanks reads a dawg: tile 0 is the gaddag's separator".into()
+                        );
+                    }
+                };
+                vec![wg(&graph_file, job), graph_file.kwg, out]
+            }
+            Task::KwgNodes { graph_file, out } => {
+                vec![wg(&graph_file, "-nodes"), graph_file.kwg, out]
+            }
+            Task::KwgProb { graph_file, out } => {
+                vec![wg(&graph_file, "-prob"), graph_file.kwg, out]
+            }
+            Task::Prob { words } => std::iter::once("prob".into()).chain(words).collect(),
+            Task::KlvAnagramSub { leaves, out, rack } => {
+                vec!["klv-anagram-".into(), leaves, out, rack]
+            }
+            Task::KlvAnagram { leaves, out, rack } => {
+                vec!["klv-anagram".into(), leaves, out, rack]
+            }
+            Task::KlvAnagramSuper { leaves, out, rack } => {
+                vec!["klv-anagram+".into(), leaves, out, rack]
+            }
+            Task::KwgAnagramSub {
+                graph_file,
+                out,
+                rack,
+            } => vec![wg(&graph_file, "-anagram-"), graph_file.kwg, out, rack],
+            Task::KwgAnagram {
+                graph_file,
+                out,
+                rack,
+            } => vec![wg(&graph_file, "-anagram"), graph_file.kwg, out, rack],
+            Task::KwgAnagramSuper {
+                graph_file,
+                out,
+                rack,
+            } => vec![wg(&graph_file, "-anagram+"), graph_file.kwg, out, rack],
+            Task::KwgCheck { graph_file, words } => [wg(&graph_file, "-check"), graph_file.kwg]
+                .into_iter()
+                .chain(words)
+                .collect(),
+            Task::Q2Ort { ort, out } => vec!["q2-ort".into(), ort, out],
+            Task::MakeQ2Ort {
+                csv,
+                out,
+                num_buckets,
+            } => vec!["make-q2-ort".into(), csv, out, num_buckets.to_string()],
+            Task::Wmp { wmp, out } => vec!["wmp".into(), wmp, out],
+            Task::WmpWords { wmp, out } => vec!["wmp-words".into(), wmp, out],
+            Task::MakeWmp {
+                word_list,
+                out,
+                wmp,
+                overflow,
+            } => {
+                let task = match (wmp, overflow) {
+                    (WmpVersion::One, false) => "make-wmp1",
+                    (WmpVersion::One, true) => "make-wmp1-overflow",
+                    (WmpVersion::Two, false) => "make-wmp2",
+                    (WmpVersion::Two, true) => "make-wmp2-overflow",
+                    (WmpVersion::Three, false) => "make-wmp",
+                    (WmpVersion::Three, true) => {
+                        return Err("--overflow is for --wmp 1 and 2".into());
+                    }
+                };
+                vec![task.into(), word_list, out]
+            }
+            Task::KlvKwgExtract { leaves, out } => vec!["klv-kwg-extract".into(), leaves, out],
+            Task::KwgHitcheck {
+                graph_file,
+                cls,
+                csa,
+                ncs,
+                out,
+                graph,
+            } => {
+                let job = match graph {
+                    Graph::Dawg => "-hitcheck",
+                    Graph::Gaddag => "-hitcheck-gaddag",
+                };
+                vec![
+                    wg(&graph_file, job),
+                    graph_file.kwg,
+                    cls.to_string(),
+                    csa.to_string(),
+                    ncs.to_string(),
+                    out,
+                ]
+            }
+            Task::QuackleMakeSuperleaves { leaves, out } => {
+                vec!["quackle-make-superleaves".into(), leaves, out]
+            }
+            Task::QuackleSuperleaves { superleaves, out } => {
+                vec!["quackle-superleaves".into(), superleaves, out]
+            }
+            Task::Quackle { dawg, out, small } => {
+                let task = if small { "quackle-small" } else { "quackle" };
+                vec![task.into(), dawg, out]
+            }
+            Task::Zyzzyva { dwg, out } => vec!["zyzzyva".into(), dwg, out],
+            Task::Lexpert { lxd, out } => vec!["lexpert".into(), lxd, out],
+            Task::StatsZt => vec!["stats-zt".into()],
+        })
+    }
+}
+
 #[derive(clap::Parser)]
 #[command(
     about = "read word graphs, leave tables and other lexicon files",
     arg_required_else_help = true,
-    after_help = "tasks:
-  klv CSW24.klv CSW24.csv
-  klv CSW24.klv2 CSW24.csv
-    read klv/klv2 file
-  klv16 CSW24.klv16 CSW24.csv
-    read klv16 file
-  kwg CSW24.kwg CSW24.txt
-  kwg CSW24.kad CSW24.txt
-    read kwg/kad file (dawg) (use kwg0 to allow 0, such as for klv-kwg-extract)
-  kbwg CSW24.kbwg CSW24.txt
-    read kbwg file (dawg) (use kbwg0 to allow 0)
-  kwg-gaddag CSW24.kwg CSW24.txt
-    read gaddawg kwg file (gaddag)
-  kbwg-gaddag CSW24.kbwg CSW24.txt
-    read gaddawg kbwg file (gaddag)
-  kwg-nodes CSW24.kwg CSW24.kwg.raw
-    read kwg file for human inspection
-  kbwg-nodes CSW24.kbwg CSW24.kbwg.raw
-    read kbwg file for human inspection
-  kwg-prob CSW24.kwg -
-    read kwg file (dawg) by probability (output format subject to changes)
-  prob word [word...]
-    show raw probability
-  klv-anagram- CSW24.klv2 - A?AC
-  klv-anagram CSW24.klv2 - A?AC
-  klv-anagram+ CSW24.klv2 - A?AC
-    list all leaves with subanagram, anagram, or superanagram
-  kwg-anagram- CSW24.kwg - A?AC
-  kwg-anagram CSW24.kwg - A?AC
-  kwg-anagram+ CSW24.kwg - A?AC
-  kbwg-anagram- CSW24.kbwg - A?AC
-  kbwg-anagram CSW24.kbwg - A?AC
-  kbwg-anagram+ CSW24.kbwg - A?AC
-    list all words with subanagram, anagram, or superanagram (using dawg)
-  kwg-check CSW24.kwg word [word...]
-  kbwg-check CSW24.kbwg word [word...]
-    checks if all words are valid (using dawg)
-  q2-ort something.ort something.csv
-    read .ort (format subject to change)
-  make-q2-ort something.csv something.ort num_buckets
-    generate .ort with the given num_buckets (ideally prime eg 5297687)
-  wmp-words something.wmp something.txt
-    read .wmp words (format subject to change)
-  wmp something.wmp something.txt
-    read .wmp (format subject to change)
-  make-wmp1 something.txt something.wmp
-  make-wmp1-overflow something.txt something.wmp
-    generate .wmp v1 (-overflow = allow overflows, disable 2-blank inlining)
-  make-wmp2 something.txt something.wmp
-  make-wmp2-overflow something.txt something.wmp
-    generate .wmp v2 (-overflow = allow overflows)
-  make-wmp something.txt something.wmp
-    generate .wmp v3
-  (the tiles are english unless --tiles gives other bundled tiles, such as
-    french, super-english or hex, or a file in the form of src/alphabets/*.txt,
-    as in --tiles french kwg words.kwg words.txt)
-  klv-kwg-extract CSW24.klv2 racks.kwg
-    just copy out the kwg for further analysis.
-  kwg-hitcheck CSW24.kwg cls csa ncs outfile
-    check dawg cache hit rate.
-    cls = cache line size, 64 is typical.
-    csa = cache set associativity, e.g. 8 for 8-way set associativity.
-    ncs = number of cache sets = L1D cache size / cores / csa / cls.
-    example for i7-8700B (192 kB, 6 cores, 8-way set assoc): 64 8 64.
-  kwg-hitcheck-gaddag CSW24.kwg cls csa ncs outfile
-    ditto for gaddag.
-  kbwg-hitcheck CSW24.kbwg cls csa ncs outfile
-  kbwg-hitcheck-gaddag CSW24.kbwg cls csa ncs outfile
-    ditto for kbwg.
-  quackle-make-superleaves CSW24.klv superleaves
-    read klv/klv2 file, save quackle superleaves (english/french)
-  quackle-superleaves superleaves something.csv
-    read quackle superleaves (english/french)
-  quackle something.dawg something.txt
-    read quackle dawg
-  quackle-small something.dawg something.txt
-    read quackle small dawg (for example, TWL-only words in older CSW files)
-  zyzzyva something.dwg something.txt
-    read zyzzyva dawg
-  lexpert something.lxd something.txt
-    read lexpert dawg
-  stats-zt
-    experimental statistics exploration showing the Z table
+    after_help = "the tiles are english unless --tiles gives other bundled tiles, such as
+french, super-english or hex, or a file in the form of src/alphabets/*.txt,
+as in --tiles french kwg words.kwg words.txt.
 input/output files can be \"-\" (not advisable for binary files)"
 )]
 struct Cli {
@@ -2783,18 +3096,16 @@ struct Cli {
         help = "bundled tiles or an alphabet file"
     )]
     tiles: String,
-    #[arg(help = "what to do, from the list below")]
-    task: String,
-    #[arg(allow_negative_numbers = true, help = "the task's files and values")]
-    args: Vec<String>,
+    #[command(subcommand)]
+    task: Task,
 }
 
 fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
     let t0 = std::time::Instant::now();
-    // the command line without its options, as the tasks read it
-    let mut args = vec![std::env::args().next().unwrap_or_default(), cli.task];
-    args.extend(cli.args);
+    // the command line as the tasks read it: the task word, then its files and values
+    let mut args = vec![std::env::args().next().unwrap_or_default()];
+    args.extend(cli.task.into_args()?);
     let done = do_task(&args, || {
         alphabet::make_alphabet_from(&cli.tiles, &|path| Ok(std::fs::read_to_string(path)?))
     })?;
