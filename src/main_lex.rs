@@ -49,7 +49,7 @@ fn parse_embedded_words_board(
     alphabet_reader: &alphabet::AlphabetReader,
     s: &str,
     v: &mut Vec<u8>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> error::Returns<()> {
     v.clear();
     if !s.is_empty() {
         v.reserve(s.len());

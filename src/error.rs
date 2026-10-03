@@ -24,7 +24,7 @@ pub fn new(s: String) -> MyError {
     MyError { s }
 }
 
-pub type BoxAnyError = Box<dyn std::error::Error>;
+pub type BoxAnyError = Box<dyn std::error::Error + Send + Sync>;
 pub type Returns<T> = Result<T, BoxAnyError>;
 
 #[macro_export]

@@ -2169,7 +2169,7 @@ fn parse_rack(
     alphabet_reader: &alphabet::AlphabetReader,
     s: &str,
     v: &mut Vec<u8>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> error::Returns<()> {
     alphabet_reader.set_word(s, v)
 }
 
