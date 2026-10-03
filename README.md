@@ -39,6 +39,30 @@ cargo run --release --bin buildlex -- kwg --words alphagrams CSW19.txt CSW19.kad
 cargo run --release
 ```
 
+## Quick start
+
+From src, with CSW24.kwg there (see Initial Setup).
+
+The strongest leaves measured, the census and self-play mixed (hours):
+
+```
+mkdir t && cd t && cp -ip ../CSW24.kwg . && ../../genblend.sh --preset english
+```
+
+Good leaves in minutes, the census alone:
+
+```
+cargo run --release --bin leave -- census CSW24.kwg - - 3x256,2048
+```
+
+Two leave tables played against each other:
+
+```
+cargo run --release --bin leave -- compare CSW24.kwg a.klv2 b.klv2
+```
+
+Every binary and every task takes --help; lab/*.txt explains the methods.
+
 ## Details
 
 Details are not in this short readme.
