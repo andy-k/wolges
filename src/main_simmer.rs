@@ -265,7 +265,7 @@ fn simulate<N: kwg::Node>(
     )?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
     let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
-    let arm_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
     move_generator.reset_for_another_kwg();
 
     // ok, let's sim...

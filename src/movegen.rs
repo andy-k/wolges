@@ -5940,8 +5940,12 @@ mod tests {
     #[inline]
     fn both_arms_agree(gc: &game_config::GameConfig, boards: &[&str], racks: &[&str]) {
         let kwg = sweep_kwg_covering(gc);
-        let held = anagrams::Anagrams::build_for_config(&kwg, gc).unwrap();
-        let rack_lengths = anagrams::RackLengths::build_for_config(&kwg, gc).unwrap();
+        let held = anagrams::Anagrams::build_for_config(&kwg, gc)
+            .unwrap()
+            .unwrap();
+        let rack_lengths = anagrams::RackLengths::build_for_config(&kwg, gc)
+            .unwrap()
+            .unwrap();
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
         for max_gen in [1usize, 5, 100_000] {
@@ -7224,7 +7228,7 @@ mod tests {
         let transposed_gc = uneven_game_config(cols, rows, star_col, star_row, true);
         let kwg = test_kwg(&gc);
         let layout = alphagram::KeyLayout::of(gc.alphabet(), rows.max(cols) as u8).unwrap();
-        let held = anagrams::Anagrams::build(&kwg, layout).unwrap();
+        let held = anagrams::Anagrams::build(&kwg, layout).unwrap().unwrap();
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let rack = parse_test_rack(gc.alphabet(), "AEST");
         let area = (rows as isize * cols as isize) as usize;

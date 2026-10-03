@@ -118,7 +118,7 @@ fn do_it<N: kwg::Node + Sync>(
     let mut fen_parser =
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
-    let arm_tables = anagrams::ArmTables::build(kwg, game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(kwg, game_config, lean)?;
 
     let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {
         tilt: move_filter::Tilt::new(game_config, kwg, move_filter::Tilt::length_importances()),
@@ -210,7 +210,7 @@ fn do_it<N: kwg::Node + Sync>(
         println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
         //std::fs::write("_word_62702.kwg", smaller_kwg_bytes)?;
         let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes)?;
-        let smaller_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean);
+        let smaller_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
         let test_rack = &[13, 15, 15, 15, 18, 18, 20]; // MOOORRT
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot,
@@ -354,7 +354,7 @@ fn do_it<N: kwg::Node + Sync>(
                     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
                     let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes)?;
                     let smaller_tables =
-                        anagrams::ArmTables::build(&smaller_kwg, game_config, lean);
+                        anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
                     move_generator.reset_for_another_kwg();
                     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                         board_snapshot: &movegen::BoardSnapshot {

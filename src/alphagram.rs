@@ -7,15 +7,21 @@ pub struct WordList {
 
 impl WordList {
     #[inline(always)]
-    pub fn build<N: super::kwg::Node>(g: &super::kwg::Kwg<N>) -> Self {
+    pub fn build<N: super::kwg::Node>(g: &super::kwg::Kwg<N>) -> super::error::Returns<Self> {
+        // a run entered again before the walk leaves it means the graph loops
         fn walk<N: super::kwg::Node>(
             g: &super::kwg::Kwg<N>,
             mut p: i32,
+            on_path: &mut [bool],
             w: &mut Vec<u8>,
             out: &mut WordList,
-        ) {
+        ) -> super::error::Returns<()> {
             if p <= 0 {
-                return;
+                return Ok(());
+            }
+            let entered = p as usize;
+            if std::mem::replace(&mut on_path[entered], true) {
+                return Err(format!("the word graph loops back to node {p}").into());
             }
             loop {
                 let node = g[p];
@@ -24,20 +30,28 @@ impl WordList {
                     out.blob.extend_from_slice(w);
                     out.ends.push(out.blob.len() as u32);
                 }
-                walk(g, node.arc_index(), w, out);
+                walk(g, node.arc_index(), on_path, w, out)?;
                 w.pop();
                 if node.is_end() {
-                    return;
+                    break;
                 }
                 p += 1;
             }
+            on_path[entered] = false;
+            Ok(())
         }
         let mut out = WordList {
             blob: Vec::new(),
             ends: Vec::new(),
         };
-        walk(g, g[0].arc_index(), &mut Vec::new(), &mut out);
-        out
+        walk(
+            g,
+            g[0].arc_index(),
+            &mut vec![false; g.0.len()],
+            &mut Vec::new(),
+            &mut out,
+        )?;
+        Ok(out)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &[u8]> {

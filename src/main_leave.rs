@@ -744,7 +744,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean);
+            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean)?;
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -852,7 +852,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimMutateCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean);
+            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean)?;
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -1189,7 +1189,7 @@ fn generate_autoplay_logs<
     }));
     let batch_size = 100;
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
     // a thread that fails sets this, so the others stop rather than wait on it
@@ -1948,7 +1948,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let mutexed_tick = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
     let t0 = std::time::Instant::now();
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -3737,7 +3737,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         game_config::GameRules::Jumbled => 1,
     };
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -4364,7 +4364,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let report_every = 10_000u64;
     let shared = std::sync::Mutex::new(win_pct::WinPctAccumulator::new());
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -4461,7 +4461,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
     let shared = std::sync::Mutex::new((0.0f64, 0.0f64, 0u64));
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
@@ -4570,7 +4570,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
 ) -> error::Returns<()> {
     let alphabet = game_config.alphabet();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -4754,7 +4754,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     if iters < 2 {
         return Err("sim-chunk-check needs at least two iterations".into());
     }
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -5332,7 +5332,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         lean,
     }: PositionParams<'_>,
 ) -> error::Returns<()> {
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
@@ -5566,7 +5566,7 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
         lean,
     }: HarvestParams,
 ) -> error::Returns<()> {
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
@@ -5839,7 +5839,7 @@ fn compare_seats<
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, LEAN);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, LEAN)?;
 
     let winpct_p0 = match &p0_win_pct {
         Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),

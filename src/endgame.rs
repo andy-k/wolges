@@ -1500,7 +1500,7 @@ mod tests {
         kwg: &kwg::Kwg<kwg::Node22>,
         gc: &game_config::GameConfig,
     ) -> [(bool, anagrams::ArmTables); 2] {
-        [false, true].map(|lean| (lean, anagrams::ArmTables::build(kwg, gc, lean)))
+        [false, true].map(|lean| (lean, anagrams::ArmTables::build(kwg, gc, lean).unwrap()))
     }
 
     #[inline]
@@ -2053,7 +2053,7 @@ mod tests {
         .unwrap();
         let kwg_bytes = tiny_kwg_bytes();
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
-        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         assert!(EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).is_err());
     }
 
@@ -2070,7 +2070,7 @@ mod tests {
         unseen_tally[8] = 1; // H
         unseen_tally[20] = 1; // T
 
-        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
@@ -2096,7 +2096,7 @@ mod tests {
         unseen_tally[8] = 1; // H
         unseen_tally[20] = 1; // T
 
-        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
@@ -2371,7 +2371,7 @@ mod tests {
 
         let board = empty_board();
         let racks = [vec![2u8, 2], vec![8u8, 20]];
-        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
 
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
@@ -2413,7 +2413,7 @@ mod tests {
             bag,
             false,
         );
-        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
@@ -2502,7 +2502,7 @@ mod tests {
         let racks = [vec![17u8], vec![1u8]]; // p0 = [Q], p1 = [A]
         let bag = 1u8; // one A in the bag
 
-        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
@@ -2529,7 +2529,7 @@ mod tests {
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
         unseen_tally[8] = 1; // H
         unseen_tally[20] = 1; // T
-        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
@@ -2539,7 +2539,7 @@ mod tests {
         assert_eq!(result.hypotheses.len(), 2);
 
         let gc_en = game_config::make_english_game_config();
-        let arm_tables_en = anagrams::ArmTables::build(&kwg, &gc_en, false);
+        let arm_tables_en = anagrams::ArmTables::build(&kwg, &gc_en, false).unwrap();
         let mut egs_en =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_en, &kwg, &arm_tables_en).unwrap();
         assert!(
@@ -2550,7 +2550,7 @@ mod tests {
         );
 
         let gc_bad = game_config::make_exchange_unsolvable_test_game_config();
-        let arm_tables_bad = anagrams::ArmTables::build(&kwg, &gc_bad, false);
+        let arm_tables_bad = anagrams::ArmTables::build(&kwg, &gc_bad, false).unwrap();
         let mut egs_bad =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_bad, &kwg, &arm_tables_bad).unwrap();
         assert!(matches!(

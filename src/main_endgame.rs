@@ -500,7 +500,7 @@ fn run_batch<N: kwg::Node>(
         vec_of_words.sort_unstable();
         let smaller_kwg_bytes = build_pruned_kwg(&game_config, &vec_of_words)?;
         let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
-        let arm_tables = solver_tables(&smaller_kwg, &game_config, lean);
+        let arm_tables = solver_tables(&smaller_kwg, &game_config, lean)?;
 
         let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(
             &game_config,
@@ -1367,11 +1367,11 @@ fn solver_tables(
     kwg: &kwg::Kwg<kwg::Node22>,
     game_config: &game_config::GameConfig,
     lean: bool,
-) -> anagrams::ArmTables {
+) -> error::Returns<anagrams::ArmTables> {
     if lean {
         anagrams::ArmTables::build(kwg, game_config, true)
     } else {
-        anagrams::ArmTables::None
+        Ok(anagrams::ArmTables::None)
     }
 }
 
@@ -1523,7 +1523,7 @@ fn solve_position<N: kwg::Node>(
     let smaller_kwg_bytes = build_pruned_kwg(game_config, &vec_of_words)?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
     let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
-    let arm_tables = solver_tables(&smaller_kwg, game_config, lean);
+    let arm_tables = solver_tables(&smaller_kwg, game_config, lean)?;
     move_generator.reset_for_another_kwg();
 
     let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(

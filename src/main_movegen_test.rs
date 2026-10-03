@@ -380,9 +380,9 @@ fn run<N: kwg::Node>(
     let mut total_elapsed = std::time::Duration::ZERO;
     let mut total_moves = 0usize;
 
-    let anagrams = wolges::anagrams::Anagrams::build_for_config(kwg, game_config)
+    let anagrams = wolges::anagrams::Anagrams::build_for_config(kwg, game_config)?
         .ok_or("this alphabet does not lay out a key")?;
-    let rack_lengths = wolges::anagrams::RackLengths::build_for_config(kwg, game_config)
+    let rack_lengths = wolges::anagrams::RackLengths::build_for_config(kwg, game_config)?
         .ok_or("this alphabet does not lay out a key")?;
     let mut disagreements = 0usize;
     for (case_idx, case) in TEST_CASES.iter().enumerate() {

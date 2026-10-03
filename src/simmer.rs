@@ -377,7 +377,7 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00").unwrap();
-        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(99);
