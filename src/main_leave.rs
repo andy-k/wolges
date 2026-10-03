@@ -2318,6 +2318,9 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     for (record_num, result) in csv_reader.records().enumerate() {
         let record = result?;
         if let Err(e) = (|| -> error::Returns<()> {
+            if record.len() < 11 {
+                return Err("a log line has fewer than 11 fields".into());
+            }
             if i16::from_str(&record[10])? > 0 {
                 let equity = f32::from_str(&record[9])? as f64;
                 //let score = i16::from_str(&record[5])? as i64;
@@ -2452,6 +2455,9 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     for result in csv_in.records() {
         let record = result?;
+        if record.len() < 3 {
+            return Err("a summary line has fewer than 3 fields".into());
+        }
         parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
         let thing = Cumulate {
             equity: f64::from_str(&record[1])?,
@@ -3436,6 +3442,9 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     let mut tick_periods = move_picker::Periods(0);
     for result in csv_in.records() {
         let record = result?;
+        if record.len() < 3 {
+            return Err("a summary line has fewer than 3 fields".into());
+        }
         parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
         let thing = Cumulate {
             equity: f64::from_str(&record[1])?,

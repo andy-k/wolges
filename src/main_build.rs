@@ -141,24 +141,31 @@ fn build_leaves_scaled_i16<Readable: std::io::Read>(
     let mut v = Vec::new();
     for result in csv_reader.records() {
         let record = result?;
+        if record.len() < 2 {
+            wolges::return_error!(format!(
+                "{:?} is not a leave and a value",
+                record.as_slice()
+            ));
+        }
         alphabet_reader.set_word(&record[0], &mut v)?;
         v.sort_unstable();
         let rounded_leave = (f32::from_str(&record[1])? * scale).round();
         let int_leave = rounded_leave as i16;
-        assert!(
-            (int_leave as f32 - rounded_leave).abs() == 0.0,
-            "for {}: {} (f32) {} (*{}) {} (round) {} (int) {} (float) {} (-) {} (abs) {}",
-            &record[0],
-            &record[1],
-            f32::from_str(&record[1])?,
-            scale,
-            f32::from_str(&record[1])? * scale,
-            rounded_leave,
-            int_leave,
-            int_leave as f32,
-            int_leave as f32 - rounded_leave,
-            (int_leave as f32 - rounded_leave).abs(),
-        );
+        if (int_leave as f32 - rounded_leave).abs() != 0.0 {
+            wolges::return_error!(format!(
+                "for {}: {} (f32) {} (*{}) {} (round) {} (int) {} (float) {} (-) {} (abs) {}",
+                &record[0],
+                &record[1],
+                f32::from_str(&record[1])?,
+                scale,
+                f32::from_str(&record[1])? * scale,
+                rounded_leave,
+                int_leave,
+                int_leave as f32,
+                int_leave as f32 - rounded_leave,
+                (int_leave as f32 - rounded_leave).abs(),
+            ));
+        }
         if leaves_map.insert(v[..].into(), int_leave).is_some() {
             wolges::return_error!(format!("duplicate record {}", &record[0]));
         }
@@ -239,6 +246,12 @@ fn read_leaves_f32<Readable: std::io::Read>(
     let mut v = Vec::new();
     for result in csv_reader.records() {
         let record = result?;
+        if record.len() < 2 {
+            wolges::return_error!(format!(
+                "{:?} is not a leave and a value",
+                record.as_slice()
+            ));
+        }
         alphabet_reader.set_word(&record[0], &mut v)?;
         v.sort_unstable();
         let float_leave = f32::from_str(&record[1])?;
