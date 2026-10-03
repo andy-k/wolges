@@ -32,6 +32,8 @@ struct Question {
 struct Cli {
     #[arg(long, help = "the word graph is a kbwg")]
     kbwg: bool,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
     #[arg(default_value = "lexbin/CSW24.kwg", help = "the word graph")]
     kwg: String,
     #[arg(
@@ -57,11 +59,11 @@ fn main() -> error::Returns<()> {
     if cli.kbwg {
         let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-        answer(&kwg, &klv, &game_config)
+        answer(&kwg, &klv, &game_config, cli.lean)
     } else {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-        answer(&kwg, &klv, &game_config)
+        answer(&kwg, &klv, &game_config, cli.lean)
     }
 }
 
@@ -85,6 +87,7 @@ fn answer<N: kwg::Node + Sync>(
     kwg: &kwg::Kwg<N>,
     klv: &klv::Klv<kwg::Node22>,
     game_config: &game_config::GameConfig,
+    lean: bool,
 ) -> error::Returns<()> {
     let data = r#"
       {
@@ -258,13 +261,13 @@ fn answer<N: kwg::Node + Sync>(
     game_state.bag.shuffle(&mut rng);
 
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
-    let anagram_table = wolges::anagrams::Anagrams::build_for_config(kwg, game_config);
+    let arm_tables = wolges::anagrams::ArmTables::build(kwg, game_config, lean);
     let board_snapshot = &movegen::BoardSnapshot {
         board_tiles: &kibitzer.board_tiles,
         game_config,
         kwg,
-        anagrams: anagram_table.as_ref(),
-        rack_lengths: None,
+        anagrams: arm_tables.anagrams(),
+        rack_lengths: arm_tables.rack_lengths(),
         klv,
     };
 
