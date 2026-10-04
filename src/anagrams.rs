@@ -72,7 +72,45 @@ impl std::hash::Hasher for KeyHasher {
     }
 }
 
-type Table = std::collections::HashMap<u128, Span, std::hash::BuildHasherDefault<KeyHasher>>;
+// a key as the tables keep it: a u128's bytes, so no record holding one is
+// padded to 16-byte alignment; equal, ordered and hashed as that u128
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct KeyBytes([u8; 16]);
+
+impl KeyBytes {
+    #[inline(always)]
+    fn of(key: u128) -> Self {
+        Self(key.to_ne_bytes())
+    }
+
+    #[inline(always)]
+    fn key(self) -> u128 {
+        u128::from_ne_bytes(self.0)
+    }
+}
+
+impl Ord for KeyBytes {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+impl PartialOrd for KeyBytes {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for KeyBytes {
+    #[inline(always)]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u128(self.key());
+    }
+}
+
+type Table = std::collections::HashMap<KeyBytes, Span, std::hash::BuildHasherDefault<KeyHasher>>;
 
 impl Anagrams {
     #[inline(always)]
@@ -102,14 +140,14 @@ impl Anagrams {
     ) -> Option<Self> {
         // each word the layout keys, by length, key, then its index in the
         // graph, which is its place in the word list
-        let mut keyed = Vec::<(u8, u128, u32)>::with_capacity(words);
+        let mut keyed = Vec::<(u8, KeyBytes, u32)>::with_capacity(words);
         let mut index = 0u32;
         let mut too_long = false;
         for_each_word(g, usize::MAX, &mut |w| {
             match u8::try_from(w.len()) {
                 Ok(len) => {
                     if let Some(key) = layout.key_of(w) {
-                        keyed.push((len, key, index));
+                        keyed.push((len, KeyBytes::of(key), index));
                     }
                 }
                 Err(_) => too_long = true,
@@ -128,7 +166,7 @@ impl Anagrams {
         let mut pairs_of = vec![0usize; lengths];
         for group in keyed.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
             keys_of[group[0].0 as usize] += 1;
-            pairs_of[group[0].0 as usize] += layout.tiles_in(group[0].1).count();
+            pairs_of[group[0].0 as usize] += layout.tiles_in(group[0].1.key()).count();
         }
 
         // where each word's letters go in the arena, by index; u32::MAX for a
@@ -141,10 +179,10 @@ impl Anagrams {
         let mut runs = keyed.chunk_by(|a, b| a.0 == b.0).peekable();
         for len in 0..lengths {
             let mut table = Table::with_capacity_and_hasher(keys_of[len], Default::default());
-            let mut pairs = Vec::<(u128, Span, u8)>::with_capacity(pairs_of[len]);
+            let mut pairs = Vec::<(KeyBytes, Span, u8)>::with_capacity(pairs_of[len]);
             if let Some(run) = runs.next_if(|run| run[0].0 as usize == len) {
                 for group in run.chunk_by(|a, b| a.1 == b.1) {
-                    let key = group[0].1;
+                    let key = group[0].1.key();
                     let span = Span {
                         at: u32::try_from(letters).ok()?,
                         n: u32::try_from(group.len()).ok()?,
@@ -153,9 +191,9 @@ impl Anagrams {
                         at[index as usize] = u32::try_from(letters).ok()?;
                         letters += len;
                     }
-                    table.insert(key, span);
+                    table.insert(group[0].1, span);
                     for tile in layout.tiles_in(key) {
-                        pairs.push((key - layout.place_value(tile), span, tile));
+                        pairs.push((KeyBytes::of(key - layout.place_value(tile)), span, tile));
                     }
                 }
             }
@@ -250,7 +288,7 @@ impl Anagrams {
         let mask = blocks - 1;
         for (len, table) in groups.iter().enumerate() {
             for &key in table.keys() {
-                let h = filter_hash(key, len as u8);
+                let h = filter_hash(key.key(), len as u8);
                 let base = ((h >> 32) as usize & mask) * FILTER_BLOCK_WORDS;
                 let mut probe = h;
                 for _ in 0..FILTER_PROBES {
@@ -279,7 +317,7 @@ impl Anagrams {
             std::mem::size_of_val(tables)
                 + tables
                     .iter()
-                    .map(|table| hashed_bytes::<(u128, Span)>(table.capacity()))
+                    .map(|table| hashed_bytes::<(KeyBytes, Span)>(table.capacity()))
                     .sum::<usize>()
         };
         self.arena.len()
@@ -302,7 +340,10 @@ impl Anagrams {
         if !self.filter_may_hold(key.0, len) {
             return None;
         }
-        Some(self.words_of(len, *self.groups.get(len as usize)?.get(&key.0)?))
+        Some(self.words_of(
+            len,
+            *self.groups.get(len as usize)?.get(&KeyBytes::of(key.0))?,
+        ))
     }
 
     #[inline(always)]
@@ -310,7 +351,10 @@ impl Anagrams {
         if !self.filter_may_hold(key.0, len) {
             return None;
         }
-        self.groups.get(len as usize)?.get(&key.0).copied()
+        self.groups
+            .get(len as usize)?
+            .get(&KeyBytes::of(key.0))
+            .copied()
     }
 
     #[inline(always)]
@@ -338,7 +382,7 @@ impl Anagrams {
         let Some(table) = self.blanked.get(len as usize) else {
             return;
         };
-        let Some(&run) = table.get(&key.0) else {
+        let Some(&run) = table.get(&KeyBytes::of(key.0)) else {
             return;
         };
         for &a in &self.answers[run.at as usize..][..run.n as usize] {
