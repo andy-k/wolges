@@ -90,29 +90,42 @@ impl Anagrams {
         g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
     ) -> error::Returns<Option<Self>> {
-        let list = alphagram::WordList::build(g)?;
-        Ok(Self::build_from_words(layout, list.iter()))
+        let words = dawg_words(g)?;
+        Ok(Self::build_counted(g, layout, words))
     }
 
-    #[inline(always)]
-    pub fn build_from_words<'a, I: IntoIterator<Item = &'a [u8]>>(
+    // g's dawg holds this many words and no loop
+    fn build_counted<N: kwg::Node>(
+        g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
-        words: I,
+        words: usize,
     ) -> Option<Self> {
-        let mut keyed = Vec::<(u8, u128, &[u8])>::new();
-        let mut longest = 0u8;
-        for w in words {
-            let len = u8::try_from(w.len()).ok()?;
-            let Some(key) = layout.key_of(w) else {
-                continue;
-            };
-            longest = longest.max(len);
-            keyed.push((len, key, w));
+        // each word the layout keys, by length, key, then its index in the
+        // graph, which is its place in the word list
+        let mut keyed = Vec::<(u8, u128, u32)>::with_capacity(words);
+        let mut index = 0u32;
+        let mut too_long = false;
+        for_each_word(g, usize::MAX, &mut |w| {
+            match u8::try_from(w.len()) {
+                Ok(len) => {
+                    if let Some(key) = layout.key_of(w) {
+                        keyed.push((len, key, index));
+                    }
+                }
+                Err(_) => too_long = true,
+            }
+            index += 1;
+        });
+        if too_long {
+            return None;
         }
         keyed.sort_unstable();
 
-        let lengths = longest as usize + 1;
-        let mut arena = Vec::<u8>::with_capacity(keyed.iter().map(|k| k.2.len()).sum());
+        // where each word's letters go in the arena, by index; u32::MAX for a
+        // word left out
+        let mut at = vec![u32::MAX; index as usize];
+        let mut letters = 0usize;
+        let lengths = keyed.last().map_or(0, |k| k.0 as usize) + 1;
         let mut groups = Vec::<Table>::new();
         groups.resize_with(lengths, Table::default);
         let mut pairs = vec![Vec::<(u128, Span, u8)>::new(); lengths];
@@ -121,21 +134,30 @@ impl Anagrams {
             for group in run.chunk_by(|a, b| a.1 == b.1) {
                 let key = group[0].1;
                 let span = Span {
-                    at: u32::try_from(arena.len()).ok()?,
+                    at: u32::try_from(letters).ok()?,
                     n: u32::try_from(group.len()).ok()?,
                 };
-                for &(_, _, w) in group {
-                    arena.extend_from_slice(w);
+                for &(_, _, index) in group {
+                    at[index as usize] = u32::try_from(letters).ok()?;
+                    letters += len;
                 }
                 groups[len].insert(key, span);
-                let mut tiles = group[0].2.to_vec();
-                tiles.sort_unstable();
-                tiles.dedup();
-                for &tile in &tiles {
+                for tile in layout.tiles_in(key) {
                     pairs[len].push((key - layout.place_value(tile), span, tile));
                 }
             }
         }
+        drop(keyed);
+
+        let mut arena = vec![0u8; letters].into_boxed_slice();
+        let mut index = 0usize;
+        for_each_word(g, usize::MAX, &mut |w| {
+            if at[index] != u32::MAX {
+                arena[at[index] as usize..][..w.len()].copy_from_slice(w);
+            }
+            index += 1;
+        });
+        drop(at);
 
         let mut blanked = Vec::<Table>::new();
         blanked.resize_with(lengths, Table::default);
@@ -168,7 +190,7 @@ impl Anagrams {
             filter_block_mask,
             blank_filter,
             blank_filter_block_mask,
-            arena: arena.into_boxed_slice(),
+            arena,
             groups: groups.into_boxed_slice(),
             blanked: blanked.into_boxed_slice(),
             answers: answers.into_boxed_slice(),
@@ -346,16 +368,14 @@ impl RackLengths {
         layout: alphagram::KeyLayout,
         max_tiles: usize,
     ) -> error::Returns<Self> {
-        let list = alphagram::WordList::build(g)?;
+        dawg_words(g)?;
         let mut present =
             std::collections::HashSet::<u128, std::hash::BuildHasherDefault<KeyHasher>>::default();
-        for w in list.iter() {
-            if w.len() <= max_tiles
-                && let Some(key) = layout.key_of(w)
-            {
+        for_each_word(g, max_tiles, &mut |w| {
+            if let Some(key) = layout.key_of(w) {
                 present.insert(key);
             }
-        }
+        });
         Ok(Self { layout, present })
     }
 
@@ -425,6 +445,46 @@ impl ArmTables {
     }
 }
 
+// the words in g's dawg, by a count that refuses a graph that loops
+#[inline(always)]
+fn dawg_words<N: kwg::Node>(g: &kwg::Kwg<N>) -> error::Returns<usize> {
+    let counts = g.count_dawg_words_alloc()?;
+    Ok(match g[0].arc_index() {
+        root if root > 0 => counts[root as usize] as usize,
+        _ => 0,
+    })
+}
+
+// each word of g's dawg of at most max_len tiles, in the graph's order; g was
+// counted first, so it does not loop
+fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(g: &kwg::Kwg<N>, max_len: usize, f: &mut F) {
+    fn walk<N: kwg::Node, F: FnMut(&[u8])>(
+        g: &kwg::Kwg<N>,
+        mut p: i32,
+        max_len: usize,
+        w: &mut Vec<u8>,
+        f: &mut F,
+    ) {
+        if p <= 0 || w.len() >= max_len {
+            return;
+        }
+        loop {
+            let node = g[p];
+            w.push(node.tile());
+            if node.accepts() {
+                f(w);
+            }
+            walk(g, node.arc_index(), max_len, w, f);
+            w.pop();
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+    }
+    walk(g, g[0].arc_index(), max_len, &mut Vec::new(), f);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,9 +509,29 @@ mod tests {
         layout_for_config(&crate::game_config::make_english_game_config()).unwrap()
     }
 
+    #[inline]
+    fn graph_of(words: &[Vec<u8>]) -> kwg::Kwg<kwg::Node22> {
+        let mut words = words.to_vec();
+        words.sort_unstable();
+        let words = words
+            .iter()
+            .map(|w| w[..].into())
+            .collect::<Vec<crate::bites::Bites>>();
+        let bytes = crate::build::build(
+            crate::build::BuildContent::Gaddawg,
+            crate::build::BuildLayout::Wolges,
+            crate::build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap()
+    }
+
     #[inline(always)]
     fn built(words: &[Vec<u8>]) -> Anagrams {
-        Anagrams::build_from_words(test_layout(), words.iter().map(|w| &w[..])).unwrap()
+        Anagrams::build(&graph_of(words), test_layout())
+            .unwrap()
+            .unwrap()
     }
 
     #[inline]
@@ -591,8 +671,7 @@ mod tests {
         let layout = test_layout();
         let sixteen = vec![1u8; 16];
         let words = [vec![1u8, 2], sixteen.clone()];
-        let held =
-            Anagrams::build_from_words(layout.clone(), words.iter().map(|w| &w[..])).unwrap();
+        let held = built(&words);
         assert!(layout.key_of(&sixteen).is_none());
         let key = alphagram::Fitted(layout.key_of(&[1, 2]).unwrap());
         assert_eq!(sorted(held.words(key, 2)), vec![vec![1u8, 2]]);
