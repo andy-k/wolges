@@ -121,51 +121,54 @@ impl Anagrams {
         }
         keyed.sort_unstable();
 
+        // every table and buffer below is made at its size: the keys of each
+        // length, and the pairs a blank makes of them, one per tile of a key
+        let lengths = keyed.last().map_or(0, |k| k.0 as usize) + 1;
+        let mut keys_of = vec![0usize; lengths];
+        let mut pairs_of = vec![0usize; lengths];
+        for group in keyed.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+            keys_of[group[0].0 as usize] += 1;
+            pairs_of[group[0].0 as usize] += layout.tiles_in(group[0].1).count();
+        }
+
         // where each word's letters go in the arena, by index; u32::MAX for a
         // word left out
         let mut at = vec![u32::MAX; index as usize];
         let mut letters = 0usize;
-        let lengths = keyed.last().map_or(0, |k| k.0 as usize) + 1;
-        let mut groups = Vec::<Table>::new();
-        groups.resize_with(lengths, Table::default);
-        let mut pairs = vec![Vec::<(u128, Span, u8)>::new(); lengths];
-        for run in keyed.chunk_by(|a, b| a.0 == b.0) {
-            let len = run[0].0 as usize;
-            for group in run.chunk_by(|a, b| a.1 == b.1) {
-                let key = group[0].1;
-                let span = Span {
-                    at: u32::try_from(letters).ok()?,
-                    n: u32::try_from(group.len()).ok()?,
-                };
-                for &(_, _, index) in group {
-                    at[index as usize] = u32::try_from(letters).ok()?;
-                    letters += len;
-                }
-                groups[len].insert(key, span);
-                for tile in layout.tiles_in(key) {
-                    pairs[len].push((key - layout.place_value(tile), span, tile));
+        let mut groups = Vec::<Table>::with_capacity(lengths);
+        let mut blanked = Vec::<Table>::with_capacity(lengths);
+        let mut answers = Vec::<BlankAnswer>::with_capacity(pairs_of.iter().sum());
+        let mut runs = keyed.chunk_by(|a, b| a.0 == b.0).peekable();
+        for len in 0..lengths {
+            let mut table = Table::with_capacity_and_hasher(keys_of[len], Default::default());
+            let mut pairs = Vec::<(u128, Span, u8)>::with_capacity(pairs_of[len]);
+            if let Some(run) = runs.next_if(|run| run[0].0 as usize == len) {
+                for group in run.chunk_by(|a, b| a.1 == b.1) {
+                    let key = group[0].1;
+                    let span = Span {
+                        at: u32::try_from(letters).ok()?,
+                        n: u32::try_from(group.len()).ok()?,
+                    };
+                    for &(_, _, index) in group {
+                        at[index as usize] = u32::try_from(letters).ok()?;
+                        letters += len;
+                    }
+                    table.insert(key, span);
+                    for tile in layout.tiles_in(key) {
+                        pairs.push((key - layout.place_value(tile), span, tile));
+                    }
                 }
             }
-        }
-        drop(keyed);
+            groups.push(table);
 
-        let mut arena = vec![0u8; letters].into_boxed_slice();
-        let mut index = 0usize;
-        for_each_word(g, usize::MAX, &mut |w| {
-            if at[index] != u32::MAX {
-                arena[at[index] as usize..][..w.len()].copy_from_slice(w);
-            }
-            index += 1;
-        });
-        drop(at);
-
-        let mut blanked = Vec::<Table>::new();
-        blanked.resize_with(lengths, Table::default);
-        let mut answers = Vec::<BlankAnswer>::new();
-        for (len, run) in pairs.iter_mut().enumerate() {
-            run.sort_unstable_by_key(|&(key, span, tile)| (key, span.at, tile));
-            for group in run.chunk_by(|a, b| a.0 == b.0) {
-                blanked[len].insert(
+            // a length's pairs, gone before the next length's are made
+            pairs.sort_unstable_by_key(|&(key, span, tile)| (key, span.at, tile));
+            let mut table = Table::with_capacity_and_hasher(
+                pairs.chunk_by(|a, b| a.0 == b.0).count(),
+                Default::default(),
+            );
+            for group in pairs.chunk_by(|a, b| a.0 == b.0) {
+                table.insert(
                     group[0].0,
                     Span {
                         at: u32::try_from(answers.len()).ok()?,
@@ -178,7 +181,19 @@ impl Anagrams {
                         .map(|&(_, span, tile)| BlankAnswer { span, tile }),
                 );
             }
+            blanked.push(table);
         }
+        drop(keyed);
+
+        let mut arena = vec![0u8; letters].into_boxed_slice();
+        let mut index = 0usize;
+        for_each_word(g, usize::MAX, &mut |w| {
+            if at[index] != u32::MAX {
+                arena[at[index] as usize..][..w.len()].copy_from_slice(w);
+            }
+            index += 1;
+        });
+        drop(at);
 
         let key_count = groups.iter().map(|t| t.len()).sum::<usize>();
         let (filter, filter_block_mask) = Self::filter_of(&groups, key_count);
