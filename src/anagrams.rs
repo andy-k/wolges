@@ -32,8 +32,13 @@ fn filter_bytes(keys: usize, bits: usize) -> usize {
     filter_blocks(keys, bits) * FILTER_BLOCK_WORDS * std::mem::size_of::<u64>()
 }
 
-// the longest word the anagram tables keep, its length a u8
-const MAX_WORD: usize = u8::MAX as usize;
+// the most tiles a play's word holds: no window is longer than the board, and a
+// rack's tiles alone spell no longer
+#[inline(always)]
+fn longest_play(game_config: &game_config::GameConfig) -> u8 {
+    let dim = game_config.board_layout().dim();
+    (dim.rows.max(dim.cols) as u8).max(game_config.rack_size())
+}
 
 // the bytes std's hash table of this capacity allocates: its slots, a power of
 // two keeping an eighth free (a quarter below eight), padded to where the
@@ -111,6 +116,7 @@ fn layout_for_config(
 // one arena, sorted by length, then alphagram, then word
 pub struct Anagrams {
     layout: alphagram::KeyLayout,
+    max_word_len: u8,
     arena: Box<[u8]>,
     groups: Box<[Table]>,
     blanked: Box<[Table]>,
@@ -211,7 +217,7 @@ impl Anagrams {
         ledger: &mut Ledger,
     ) -> error::Returns<Option<Self>> {
         match layout_for_config(game_config, ledger) {
-            Some(layout) => Self::build_within(g, layout, ledger),
+            Some(layout) => Self::build_within(g, layout, longest_play(game_config), ledger),
             None => Ok(None),
         }
     }
@@ -219,17 +225,19 @@ impl Anagrams {
     pub fn build<N: kwg::Node>(
         g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
+        longest: u8,
     ) -> error::Returns<Option<Self>> {
-        Self::build_within(g, layout, &mut Ledger::up_to(usize::MAX))
+        Self::build_within(g, layout, longest, &mut Ledger::up_to(usize::MAX))
     }
 
     fn build_within<N: kwg::Node>(
         g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
+        longest: u8,
         ledger: &mut Ledger,
     ) -> error::Returns<Option<Self>> {
         Ok(match dawg_words(g, ledger)? {
-            Some(words) => Self::build_counted(g, layout, words, ledger),
+            Some(words) => Self::build_counted(g, layout, longest, words, ledger),
             None => None,
         })
     }
@@ -238,26 +246,23 @@ impl Anagrams {
     fn build_counted<N: kwg::Node>(
         g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
+        longest: u8,
         words: usize,
         ledger: &mut Ledger,
     ) -> Option<Self> {
-        // each word the layout keys, by length, key, then its index in the
-        // graph, which is its place in the word list; a word too long for a u8
-        // length means no tables
+        // each word the layout keys, by length, key, then its place among the
+        // words walked, none longer than longest
         ledger.take(words * std::mem::size_of::<(u8, KeyBytes, u32)>())?;
         let mut keyed = Vec::<(u8, KeyBytes, u32)>::with_capacity(words);
         let mut index = 0u32;
-        ledger.take(MAX_WORD)?;
-        let cut = for_each_word(g, MAX_WORD, &mut |w| {
+        ledger.take(longest as usize)?;
+        for_each_word(g, longest as usize, &mut |w| {
             if let Some(key) = layout.key_of(w) {
                 keyed.push((w.len() as u8, KeyBytes::of(key), index));
             }
             index += 1;
         });
-        ledger.give(MAX_WORD);
-        if cut {
-            return None;
-        }
+        ledger.give(longest as usize);
         keyed.sort_unstable();
 
         // every table and buffer below is made at its size: the keys of each
@@ -337,14 +342,14 @@ impl Anagrams {
         ledger.take(letters)?;
         let mut arena = vec![0u8; letters].into_boxed_slice();
         let mut index = 0usize;
-        ledger.take(MAX_WORD)?;
-        for_each_word(g, MAX_WORD, &mut |w| {
+        ledger.take(longest as usize)?;
+        for_each_word(g, longest as usize, &mut |w| {
             if at[index] != u32::MAX {
                 arena[at[index] as usize..][..w.len()].copy_from_slice(w);
             }
             index += 1;
         });
-        ledger.give(MAX_WORD);
+        ledger.give(longest as usize);
         drop(at);
         ledger.give(index * std::mem::size_of::<u32>());
 
@@ -357,6 +362,7 @@ impl Anagrams {
             Self::filter_of(&blanked, blank_key_count, BLANK_FILTER_BITS);
         Some(Anagrams {
             layout,
+            max_word_len: longest,
             filter,
             filter_block_mask,
             blank_filter,
@@ -451,6 +457,15 @@ impl Anagrams {
     #[inline(always)]
     pub fn layout(&self) -> &alphagram::KeyLayout {
         &self.layout
+    }
+
+    // they hold every word a game of this config can play, keyed as it keys
+    #[inline(always)]
+    pub fn fit(&self, game_config: &game_config::GameConfig) -> bool {
+        let dim = game_config.board_layout().dim();
+        self.layout
+            .matches(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
+            && self.max_word_len >= longest_play(game_config)
     }
 
     #[inline(always)]
@@ -726,33 +741,24 @@ fn refuse_a_loop<N: kwg::Node>(g: &kwg::Kwg<N>, ledger: &mut Ledger) -> error::R
     Ok(Some(()))
 }
 
-// each word of g's dawg of at most max_len tiles, in the graph's order; true if
-// longer words were left out. g was counted first, so it does not loop
-fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(
-    g: &kwg::Kwg<N>,
-    max_len: usize,
-    f: &mut F,
-) -> bool {
+// each word of g's dawg of at most max_len tiles, in the graph's order; g was
+// counted first, so it does not loop
+fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(g: &kwg::Kwg<N>, max_len: usize, f: &mut F) {
     fn walk<N: kwg::Node, F: FnMut(&[u8])>(
         g: &kwg::Kwg<N>,
         mut p: i32,
         max_len: usize,
         w: &mut Vec<u8>,
         f: &mut F,
-    ) -> bool {
-        let mut cut = false;
+    ) {
         loop {
             let node = g[p];
             w.push(node.tile());
             if node.accepts() {
                 f(w);
             }
-            if node.arc_index() > 0 {
-                if w.len() < max_len {
-                    cut |= walk(g, node.arc_index(), max_len, w, f);
-                } else {
-                    cut = true;
-                }
+            if node.arc_index() > 0 && w.len() < max_len {
+                walk(g, node.arc_index(), max_len, w, f);
             }
             w.pop();
             if node.is_end() {
@@ -760,10 +766,11 @@ fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(
             }
             p += 1;
         }
-        cut
     }
     let root = g[0].arc_index();
-    root > 0 && max_len > 0 && walk(g, root, max_len, &mut Vec::with_capacity(max_len), f)
+    if root > 0 && max_len > 0 {
+        walk(g, root, max_len, &mut Vec::with_capacity(max_len), f);
+    }
 }
 
 #[cfg(test)]
@@ -814,7 +821,8 @@ mod tests {
 
     #[inline(always)]
     fn built(words: &[Vec<u8>]) -> Anagrams {
-        Anagrams::build(&graph_of(words), test_layout())
+        let longest = longest_play(&crate::game_config::make_english_game_config());
+        Anagrams::build(&graph_of(words), test_layout(), longest)
             .unwrap()
             .unwrap()
     }
@@ -954,12 +962,50 @@ mod tests {
     #[inline]
     fn a_word_the_layout_cannot_key_is_left_out_rather_than_kept() {
         let layout = test_layout();
-        let sixteen = vec![1u8; 16];
-        let words = [vec![1u8, 2], sixteen.clone()];
+        let twelve = vec![1u8; 12];
+        let words = [vec![1u8, 2], twelve.clone()];
         let held = built(&words);
-        assert!(layout.key_of(&sixteen).is_none());
+        assert!(layout.key_of(&twelve).is_none());
         let key = alphagram::Fitted(layout.key_of(&[1, 2]).unwrap());
         assert_eq!(sorted(held.words(key, 2)), vec![vec![1u8, 2]]);
+    }
+
+    #[test]
+    #[inline]
+    fn a_word_longer_than_any_play_is_left_out() {
+        let gc = crate::game_config::make_english_game_config();
+        let layout = test_layout();
+        let sixteen = (1u8..=16).collect::<Vec<_>>();
+        let g = graph_of(&[vec![1u8, 2], sixteen.clone()]);
+        let key = alphagram::Fitted(layout.key_of(&sixteen).unwrap());
+        let kept = |longest| {
+            let held = Anagrams::build(&g, layout.clone(), longest)
+                .unwrap()
+                .unwrap();
+            held.words(key, 16).is_some()
+        };
+        assert_eq!(longest_play(&gc), 15);
+        assert!(!kept(15));
+        assert!(kept(16));
+    }
+
+    #[test]
+    #[inline]
+    fn tables_fit_only_a_game_whose_plays_they_hold() {
+        let gc = crate::game_config::make_english_game_config();
+        let g = graph_of(&three_letter_words());
+        let longest = longest_play(&gc);
+        let fit = |longest| {
+            Anagrams::build(&g, test_layout(), longest)
+                .unwrap()
+                .unwrap()
+                .fit(&gc)
+        };
+        assert!(fit(longest));
+        assert!(!fit(longest - 1));
+        let wide = crate::game_config::make_super_english_game_config();
+        let held = Anagrams::build_for_config(&g, &gc).unwrap().unwrap();
+        assert!(!held.fit(&wide));
     }
 
     #[test]

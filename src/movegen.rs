@@ -732,13 +732,9 @@ impl WorkingBuffer {
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
-        self.anagrams_fit_config = match board_snapshot.anagrams.map(anagrams::Anagrams::layout) {
-            Some(layout) => {
-                let dim = board_snapshot.game_config.board_layout().dim();
-                layout.matches(alphabet, dim.rows.max(dim.cols) as u8)
-            }
-            None => false,
-        };
+        self.anagrams_fit_config = board_snapshot
+            .anagrams
+            .is_some_and(|anagrams| anagrams.fit(board_snapshot.game_config));
         self.num_tiles_on_rack = rack.len().try_into().unwrap();
         self.exchange_buffer.clear();
         self.exchange_buffer
@@ -7228,7 +7224,10 @@ mod tests {
         let transposed_gc = uneven_game_config(cols, rows, star_col, star_row, true);
         let kwg = test_kwg(&gc);
         let layout = alphagram::KeyLayout::of(gc.alphabet(), rows.max(cols) as u8).unwrap();
-        let held = anagrams::Anagrams::build(&kwg, layout).unwrap().unwrap();
+        let held = anagrams::Anagrams::build(&kwg, layout, rows.max(cols) as u8)
+            .unwrap()
+            .unwrap();
+        assert!(held.fit(&gc) && held.fit(&transposed_gc));
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let rack = parse_test_rack(gc.alphabet(), "AEST");
         let area = (rows as isize * cols as isize) as usize;
