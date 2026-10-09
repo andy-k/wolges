@@ -1402,9 +1402,8 @@ mod tests {
     #[test]
     #[inline]
     fn the_matrix_holds_every_alphabet_the_crate_ships() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src")
-            .join("alphabets");
+        // cargo runs each test from its package's root
+        let dir = std::path::Path::new("src").join("alphabets");
         let mut on_disk = std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
             .map(|entry| {
