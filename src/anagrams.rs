@@ -118,26 +118,18 @@ pub struct Anagrams {
     layout: alphagram::KeyLayout,
     max_word_len: u8,
     arena: Box<[u8]>,
-    groups: Box<[Table]>,
-    blanked: Box<[Table]>,
-    answers: Box<[BlankAnswer]>,
+    groups: Box<[Table<u32>]>,
+    blanked: Box<[Table<u32>]>,
+    answer_ats: Box<[u32]>,
+    answer_tiles: Box<[u8]>,
     filter: Box<[u64]>,
     filter_block_mask: usize,
     blank_filter: Box<[u64]>,
     blank_filter_block_mask: usize,
 }
 
-#[derive(Clone, Copy)]
-pub struct Span {
-    pub at: u32,
-    pub n: u32,
-}
-
-#[derive(Clone, Copy)]
-struct BlankAnswer {
-    span: Span,
-    tile: u8,
-}
+// in the tile of a blank's last answer for a key; no tile has it
+const LAST: u8 = 0x80;
 
 #[derive(Default)]
 struct KeyHasher(u64);
@@ -199,7 +191,7 @@ impl std::hash::Hash for KeyBytes {
     }
 }
 
-type Table = std::collections::HashMap<KeyBytes, Span, std::hash::BuildHasherDefault<KeyHasher>>;
+type Table<V> = std::collections::HashMap<KeyBytes, V, std::hash::BuildHasherDefault<KeyHasher>>;
 
 impl Anagrams {
     #[inline(always)]
@@ -281,56 +273,50 @@ impl Anagrams {
         ledger.take(index as usize * std::mem::size_of::<u32>())?;
         let mut at = vec![u32::MAX; index as usize];
         let mut letters = 0usize;
-        ledger.take(2 * lengths * std::mem::size_of::<Table>())?;
-        let mut groups = Vec::<Table>::with_capacity(lengths);
-        let mut blanked = Vec::<Table>::with_capacity(lengths);
+        ledger.take(2 * lengths * std::mem::size_of::<Table<u32>>())?;
+        let mut groups = Vec::<Table<u32>>::with_capacity(lengths);
+        let mut blanked = Vec::<Table<u32>>::with_capacity(lengths);
         let all_pairs = pairs_of.iter().sum::<usize>();
-        ledger.take(all_pairs * std::mem::size_of::<BlankAnswer>())?;
-        let mut answers = Vec::<BlankAnswer>::with_capacity(all_pairs);
+        ledger.take(all_pairs * (std::mem::size_of::<u32>() + std::mem::size_of::<u8>()))?;
+        let mut answer_ats = Vec::<u32>::with_capacity(all_pairs);
+        let mut answer_tiles = Vec::<u8>::with_capacity(all_pairs);
         let mut runs = keyed.chunk_by(|a, b| a.0 == b.0).peekable();
         for len in 0..lengths {
-            ledger.take(table_bytes::<(KeyBytes, Span)>(keys_of[len]))?;
+            ledger.take(table_bytes::<(KeyBytes, u32)>(keys_of[len]))?;
             let mut table = Table::with_capacity_and_hasher(keys_of[len], Default::default());
-            let pair_bytes = pairs_of[len] * std::mem::size_of::<(KeyBytes, Span, u8)>();
+            let pair_bytes = pairs_of[len] * std::mem::size_of::<(KeyBytes, u32, u8)>();
             ledger.take(pair_bytes)?;
-            let mut pairs = Vec::<(KeyBytes, Span, u8)>::with_capacity(pairs_of[len]);
+            let mut pairs = Vec::<(KeyBytes, u32, u8)>::with_capacity(pairs_of[len]);
             if let Some(run) = runs.next_if(|run| run[0].0 as usize == len) {
                 for group in run.chunk_by(|a, b| a.1 == b.1) {
                     let key = group[0].1.key();
-                    let span = Span {
-                        at: u32::try_from(letters).ok()?,
-                        n: u32::try_from(group.len()).ok()?,
-                    };
+                    let group_at = u32::try_from(letters).ok()?;
                     for &(_, _, index) in group {
                         at[index as usize] = u32::try_from(letters).ok()?;
                         letters += len;
                     }
-                    table.insert(group[0].1, span);
+                    // the group's words end at an END
+                    letters += 1;
+                    table.insert(group[0].1, group_at);
                     for tile in layout.tiles_in(key) {
-                        pairs.push((KeyBytes::of(key - layout.place_value(tile)), span, tile));
+                        pairs.push((KeyBytes::of(key - layout.place_value(tile)), group_at, tile));
                     }
                 }
             }
             groups.push(table);
 
             // a length's pairs, gone before the next length's are made
-            pairs.sort_unstable_by_key(|&(key, span, tile)| (key, span.at, tile));
+            pairs.sort_unstable_by_key(|&(key, at, tile)| (key, at, tile));
             let blank_keys = pairs.chunk_by(|a, b| a.0 == b.0).count();
-            ledger.take(table_bytes::<(KeyBytes, Span)>(blank_keys))?;
+            ledger.take(table_bytes::<(KeyBytes, u32)>(blank_keys))?;
             let mut table = Table::with_capacity_and_hasher(blank_keys, Default::default());
             for group in pairs.chunk_by(|a, b| a.0 == b.0) {
-                table.insert(
-                    group[0].0,
-                    Span {
-                        at: u32::try_from(answers.len()).ok()?,
-                        n: group.len() as u32,
-                    },
-                );
-                answers.extend(
-                    group
-                        .iter()
-                        .map(|&(_, span, tile)| BlankAnswer { span, tile }),
-                );
+                table.insert(group[0].0, u32::try_from(answer_ats.len()).ok()?);
+                answer_ats.extend(group.iter().map(|&(_, at, _)| at));
+                answer_tiles.extend(group.iter().map(|&(_, _, tile)| tile));
+                if let Some(last) = answer_tiles.last_mut() {
+                    *last |= LAST;
+                }
             }
             blanked.push(table);
             drop(pairs);
@@ -340,7 +326,7 @@ impl Anagrams {
         ledger.give(words * std::mem::size_of::<(u8, KeyBytes, u32)>());
 
         ledger.take(letters)?;
-        let mut arena = vec![0u8; letters].into_boxed_slice();
+        let mut arena = vec![alphagram::END; letters].into_boxed_slice();
         let mut index = 0usize;
         ledger.take(longest as usize)?;
         for_each_word(g, longest as usize, &mut |w| {
@@ -370,7 +356,8 @@ impl Anagrams {
             arena,
             groups: groups.into_boxed_slice(),
             blanked: blanked.into_boxed_slice(),
-            answers: answers.into_boxed_slice(),
+            answer_ats: answer_ats.into_boxed_slice(),
+            answer_tiles: answer_tiles.into_boxed_slice(),
         })
     }
 
@@ -403,7 +390,7 @@ impl Anagrams {
     }
 
     #[inline(always)]
-    fn filter_of(groups: &[Table], keys: usize, bits: usize) -> (Box<[u64]>, usize) {
+    fn filter_of<V>(groups: &[Table<V>], keys: usize, bits: usize) -> (Box<[u64]>, usize) {
         if keys == 0 {
             return (Box::new([]), 0);
         }
@@ -426,10 +413,9 @@ impl Anagrams {
     }
 
     #[inline(always)]
-    pub fn words_of(&self, len: u8, span: Span) -> alphagram::Words<'_> {
-        let from = span.at as usize;
+    pub fn words_of(&self, len: u8, at: u32) -> alphagram::Words<'_> {
         alphagram::Words {
-            words: &self.arena[from..from + span.n as usize * len as usize],
+            words: &self.arena[at as usize..],
             len,
         }
     }
@@ -437,17 +423,18 @@ impl Anagrams {
     // the bytes it holds
     #[inline(always)]
     fn bytes(&self) -> usize {
-        let tables = |tables: &[Table]| {
+        fn tables<V>(tables: &[Table<V>]) -> usize {
             std::mem::size_of_val(tables)
                 + tables
                     .iter()
-                    .map(|table| table_bytes::<(KeyBytes, Span)>(table.capacity()))
+                    .map(|table| table_bytes::<(KeyBytes, V)>(table.capacity()))
                     .sum::<usize>()
-        };
+        }
         self.arena.len()
             + tables(&self.groups)
             + tables(&self.blanked)
-            + std::mem::size_of_val(&*self.answers)
+            + std::mem::size_of_val(&*self.answer_ats)
+            + std::mem::size_of_val(&*self.answer_tiles)
             + std::mem::size_of_val(&*self.filter)
             + std::mem::size_of_val(&*self.blank_filter)
     }
@@ -480,7 +467,7 @@ impl Anagrams {
     }
 
     #[inline(always)]
-    pub fn span(&self, key: alphagram::Key, len: u8) -> Option<Span> {
+    pub fn group_at(&self, key: alphagram::Key, len: u8) -> Option<u32> {
         if !self.filter_may_hold(key.0, len) {
             return None;
         }
@@ -492,13 +479,7 @@ impl Anagrams {
 
     #[inline(always)]
     pub fn words_at(&self, at: alphagram::WordsAt) -> alphagram::Words<'_> {
-        self.words_of(
-            at.len,
-            Span {
-                at: at.at,
-                n: at.n as u32,
-            },
-        )
+        self.words_of(at.len, at.at)
     }
 
     #[inline(always)]
@@ -518,18 +499,15 @@ impl Anagrams {
         let Some(&run) = table.get(&KeyBytes::of(key.0)) else {
             return;
         };
-        for &a in &self.answers[run.at as usize..][..run.n as usize] {
-            if ok >> a.tile & 1 == 0 {
-                continue;
+        let run = run as usize;
+        for (&marked, &at) in self.answer_tiles[run..].iter().zip(&self.answer_ats[run..]) {
+            let tile = marked & !LAST;
+            if ok >> tile & 1 != 0 {
+                f(tile, alphagram::WordsAt { at, len });
             }
-            f(
-                a.tile,
-                alphagram::WordsAt {
-                    at: a.span.at,
-                    n: a.span.n as u16,
-                    len,
-                },
-            );
+            if marked & LAST != 0 {
+                break;
+            }
         }
     }
 }

@@ -2621,7 +2621,7 @@ struct Subrack {
 struct SpanMemo {
     turn: u32,
     slots: Vec<SpanMemoSlot>,
-    visits: Vec<(u32, anagrams::Span)>,
+    visits: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, Copy)]
@@ -3113,10 +3113,10 @@ fn gen_classic_place_moves<
     };
     let kept_from = env.params.span_memo.visits.len() as u32;
     for i in from..upto {
-        let (si, kept_span) = match kept {
+        let (si, kept_at) = match kept {
             Ok(_) => {
-                let (si, span) = env.params.span_memo.visits[i];
-                (si as usize, Some(span))
+                let (si, at) = env.params.span_memo.visits[i];
+                (si as usize, Some(at))
             }
             Err(_) => (i, None),
         };
@@ -3128,19 +3128,19 @@ fn gen_classic_place_moves<
         let key = e.playthrough_key + subrack.key;
         let source = env.source;
         if subrack.blanks == 0 {
-            let span = match kept_span {
-                Some(span) => span,
+            let at = match kept_at {
+                Some(at) => at,
                 None => {
-                    let Some(span) = source.span(alphagram::Fitted(key), len) else {
+                    let Some(at) = source.group_at(alphagram::Fitted(key), len) else {
                         continue;
                     };
-                    env.params.span_memo.visits.push((si as u32, span));
-                    span
+                    env.params.span_memo.visits.push((si as u32, at));
+                    at
                 }
             };
             fit_words::<false, _, _, _>(
                 &mut env,
-                source.words_of(len, span),
+                source.words_of(len, at),
                 subrack.leave_idx,
                 0,
                 0,
@@ -3148,10 +3148,7 @@ fn gen_classic_place_moves<
             continue;
         }
         if kept.is_err() {
-            env.params
-                .span_memo
-                .visits
-                .push((si as u32, anagrams::Span { at: 0, n: 0 }));
+            env.params.span_memo.visits.push((si as u32, 0));
         }
         if subrack.blanks >= 2 {
             let key_holds = env.layout.holds(key);

@@ -159,13 +159,16 @@ pub struct Fitted(pub u128);
 
 impl Fitted {}
 
+// no tile is this, so it ends a group of words
+pub const END: u8 = 0xff;
+
 #[derive(Clone, PartialEq)]
 pub struct WordsAt {
     pub at: u32,
-    pub n: u16,
     pub len: u8,
 }
 
+// words of one length from the first, up to an END
 pub struct Words<'a> {
     pub words: &'a [u8],
     pub len: u8,
@@ -174,7 +177,9 @@ pub struct Words<'a> {
 impl<'a> Words<'a> {
     #[inline(always)]
     pub fn iter(&self) -> impl Iterator<Item = &'a [u8]> {
-        self.words.chunks_exact(self.len as usize)
+        self.words
+            .chunks_exact(self.len as usize)
+            .take_while(|w| w[0] != END)
     }
 }
 
