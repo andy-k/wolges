@@ -6,6 +6,11 @@ const FILTER_BLOCK_BITS: usize = 512;
 const FILTER_BLOCK_WORDS: usize = FILTER_BLOCK_BITS / 64;
 const FILTER_BLOCK_SHIFT: u32 = FILTER_BLOCK_BITS.trailing_zeros();
 const FILTER_PROBES: usize = 3;
+// a filter spends at least this many bits on each key, then rounds its blocks
+// up to a power of two; the blank filter gets fewer, since only a rack with a
+// blank reads it
+const KEY_FILTER_BITS: usize = 32;
+const BLANK_FILTER_BITS: usize = 16;
 
 #[inline(always)]
 fn filter_hash(key: u128, len: u8) -> u64 {
@@ -13,16 +18,18 @@ fn filter_hash(key: u128, len: u8) -> u64 {
 }
 
 #[inline(always)]
-fn filter_blocks(keys: usize) -> usize {
-    (keys * 16).div_ceil(FILTER_BLOCK_BITS).next_power_of_two()
+fn filter_blocks(keys: usize, bits: usize) -> usize {
+    (keys * bits)
+        .div_ceil(FILTER_BLOCK_BITS)
+        .next_power_of_two()
 }
 
 #[inline(always)]
-fn filter_bytes(keys: usize) -> usize {
+fn filter_bytes(keys: usize, bits: usize) -> usize {
     if keys == 0 {
         return 0;
     }
-    filter_blocks(keys) * FILTER_BLOCK_WORDS * std::mem::size_of::<u64>()
+    filter_blocks(keys, bits) * FILTER_BLOCK_WORDS * std::mem::size_of::<u64>()
 }
 
 // the longest word the anagram tables keep, its length a u8
@@ -342,11 +349,12 @@ impl Anagrams {
         ledger.give(index * std::mem::size_of::<u32>());
 
         let key_count = groups.iter().map(|t| t.len()).sum::<usize>();
-        ledger.take(filter_bytes(key_count))?;
-        let (filter, filter_block_mask) = Self::filter_of(&groups, key_count);
+        ledger.take(filter_bytes(key_count, KEY_FILTER_BITS))?;
+        let (filter, filter_block_mask) = Self::filter_of(&groups, key_count, KEY_FILTER_BITS);
         let blank_key_count = blanked.iter().map(|t| t.len()).sum::<usize>();
-        ledger.take(filter_bytes(blank_key_count))?;
-        let (blank_filter, blank_filter_block_mask) = Self::filter_of(&blanked, blank_key_count);
+        ledger.take(filter_bytes(blank_key_count, BLANK_FILTER_BITS))?;
+        let (blank_filter, blank_filter_block_mask) =
+            Self::filter_of(&blanked, blank_key_count, BLANK_FILTER_BITS);
         Some(Anagrams {
             layout,
             filter,
@@ -389,11 +397,11 @@ impl Anagrams {
     }
 
     #[inline(always)]
-    fn filter_of(groups: &[Table], keys: usize) -> (Box<[u64]>, usize) {
+    fn filter_of(groups: &[Table], keys: usize, bits: usize) -> (Box<[u64]>, usize) {
         if keys == 0 {
             return (Box::new([]), 0);
         }
-        let blocks = filter_blocks(keys);
+        let blocks = filter_blocks(keys, bits);
         let mut filter = vec![0u64; blocks * FILTER_BLOCK_WORDS].into_boxed_slice();
         let mask = blocks - 1;
         for (len, table) in groups.iter().enumerate() {
