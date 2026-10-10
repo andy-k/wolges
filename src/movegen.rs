@@ -732,13 +732,9 @@ impl WorkingBuffer {
         dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
     ) {
         let alphabet = board_snapshot.game_config.alphabet();
-        self.anagrams_fit_config = match board_snapshot.anagrams.map(anagrams::Anagrams::layout) {
-            Some(layout) => {
-                let dim = board_snapshot.game_config.board_layout().dim();
-                layout.matches(alphabet, dim.rows.max(dim.cols) as u8)
-            }
-            None => false,
-        };
+        self.anagrams_fit_config = board_snapshot
+            .anagrams
+            .is_some_and(|anagrams| anagrams.fit(board_snapshot.game_config));
         self.num_tiles_on_rack = rack.len().try_into().unwrap();
         self.exchange_buffer.clear();
         self.exchange_buffer
@@ -2625,7 +2621,7 @@ struct Subrack {
 struct SpanMemo {
     turn: u32,
     slots: Vec<SpanMemoSlot>,
-    visits: Vec<(u32, anagrams::Span)>,
+    visits: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, Copy)]
@@ -3117,10 +3113,10 @@ fn gen_classic_place_moves<
     };
     let kept_from = env.params.span_memo.visits.len() as u32;
     for i in from..upto {
-        let (si, kept_span) = match kept {
+        let (si, kept_at) = match kept {
             Ok(_) => {
-                let (si, span) = env.params.span_memo.visits[i];
-                (si as usize, Some(span))
+                let (si, at) = env.params.span_memo.visits[i];
+                (si as usize, Some(at))
             }
             Err(_) => (i, None),
         };
@@ -3132,19 +3128,19 @@ fn gen_classic_place_moves<
         let key = e.playthrough_key + subrack.key;
         let source = env.source;
         if subrack.blanks == 0 {
-            let span = match kept_span {
-                Some(span) => span,
+            let at = match kept_at {
+                Some(at) => at,
                 None => {
-                    let Some(span) = source.span(alphagram::Fitted(key), len) else {
+                    let Some(at) = source.group_at(alphagram::Fitted(key), len) else {
                         continue;
                     };
-                    env.params.span_memo.visits.push((si as u32, span));
-                    span
+                    env.params.span_memo.visits.push((si as u32, at));
+                    at
                 }
             };
             fit_words::<false, _, _, _>(
                 &mut env,
-                source.words_of(len, span),
+                source.words_of(len, at),
                 subrack.leave_idx,
                 0,
                 0,
@@ -3152,10 +3148,7 @@ fn gen_classic_place_moves<
             continue;
         }
         if kept.is_err() {
-            env.params
-                .span_memo
-                .visits
-                .push((si as u32, anagrams::Span { at: 0, n: 0 }));
+            env.params.span_memo.visits.push((si as u32, 0));
         }
         if subrack.blanks >= 2 {
             let key_holds = env.layout.holds(key);
@@ -7228,7 +7221,10 @@ mod tests {
         let transposed_gc = uneven_game_config(cols, rows, star_col, star_row, true);
         let kwg = test_kwg(&gc);
         let layout = alphagram::KeyLayout::of(gc.alphabet(), rows.max(cols) as u8).unwrap();
-        let held = anagrams::Anagrams::build(&kwg, layout).unwrap().unwrap();
+        let held = anagrams::Anagrams::build(&kwg, layout, rows.max(cols) as u8)
+            .unwrap()
+            .unwrap();
+        assert!(held.fit(&gc) && held.fit(&transposed_gc));
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let rack = parse_test_rack(gc.alphabet(), "AEST");
         let area = (rows as isize * cols as isize) as usize;
