@@ -129,13 +129,15 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node, R: rand::Rng + SeedableRng + si
     table: Option<&win_pct::WinPctTable>,
 ) -> (f64, i32, f64) {
     let game_ended = simmer.simulate(game_config, kwg, klv, play);
-    let final_spread = simmer.final_equity_spread();
+    let final_spread = simmer.final_equity_spread().unwrap();
     let win_prob = if simmer.wants_win_prob() {
         simmer.compute_win_prob(game_ended, final_spread, table)
     } else {
         0.0
     };
-    let sim_spread = final_spread - simmer.initial_score_spread;
+    let sim_spread = final_spread
+        .checked_sub(simmer.initial_score_spread)
+        .expect("score overflow");
     let objective = simmer::sim_objective(sim_spread, win_prob, simmer.win_prob_weightage());
 
     (objective, sim_spread, win_prob)
