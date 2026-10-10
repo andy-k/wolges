@@ -32,6 +32,78 @@ fn parse_machine_words(
     Ok(machine_words)
 }
 
+// the lines, as they came, whose word holds from min_len to max_len tiles: a
+// word ends at its first blank, as in a word list; an empty line is no word
+#[inline(always)]
+fn trim_words(
+    alphabet_reader: &alphabet::AlphabetReader,
+    giant_string: &str,
+    min_len: usize,
+    max_len: usize,
+) -> error::Returns<String> {
+    let mut kept = String::new();
+    let mut v = Vec::new();
+    for s in giant_string.lines() {
+        if s.is_empty() {
+            continue;
+        }
+        let sb = s.as_bytes();
+        v.clear();
+        let mut ix = 0;
+        while ix < sb.len() {
+            if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                v.push(tile);
+                ix = end_ix;
+            } else if ix > 0 && sb[ix] <= b' ' {
+                break;
+            } else {
+                wolges::return_error!(format!("invalid tile after {v:?} in {s:?}"));
+            }
+        }
+        if (min_len..=max_len).contains(&v.len()) {
+            kept.push_str(s);
+            kept.push('\n');
+        }
+    }
+    Ok(kept)
+}
+
+// the first header records of a csv as they are, then those whose field at
+// column (0 the first) holds from min_len to max_len tiles, read and written by
+// the csv crate, so a quoted field counts unquoted
+#[inline(always)]
+fn trim_csv<R: std::io::Read, W: std::io::Write>(
+    alphabet_reader: &alphabet::AlphabetReader,
+    input: R,
+    output: W,
+    column: usize,
+    header: usize,
+    min_len: usize,
+    max_len: usize,
+) -> error::Returns<()> {
+    let mut csv_in = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(input);
+    let mut csv_out = csv::WriterBuilder::new().flexible(true).from_writer(output);
+    let mut v = Vec::new();
+    for (i, result) in csv_in.records().enumerate() {
+        let record = result?;
+        if i >= header {
+            let Some(field) = record.get(column) else {
+                wolges::return_error!(format!("record {} has no field {}", i + 1, column + 1));
+            };
+            alphabet_reader.set_word(field, &mut v)?;
+            if !(min_len..=max_len).contains(&v.len()) {
+                continue;
+            }
+        }
+        csv_out.write_record(&record)?;
+    }
+    csv_out.flush()?;
+    Ok(())
+}
+
 #[inline]
 fn read_machine_words(
     alphabet_reader: &alphabet::AlphabetReader,
@@ -417,6 +489,37 @@ struct SortLeaves {
     val: bool,
 }
 
+#[derive(clap::Args)]
+struct Trim {
+    #[arg(help = "the words, one a line; with --csv, a csv whose --column holds the tiles")]
+    input: String,
+    #[arg(help = "the words or records kept, in their order")]
+    out: String,
+    #[arg(long, help = "keep at least this many tiles")]
+    min_len: Option<usize>,
+    #[arg(long, help = "keep at most this many tiles")]
+    max_len: Option<usize>,
+    #[arg(
+        long,
+        help = "the input is a csv, read and written by the csv crate: leaves, summaries, playability or probability"
+    )]
+    csv: bool,
+    #[arg(
+        long,
+        requires = "csv",
+        default_value = "1",
+        help = "with --csv, the field that holds the tiles, 1 the first"
+    )]
+    column: std::num::NonZeroUsize,
+    #[arg(
+        long,
+        requires = "csv",
+        default_value_t = 0,
+        help = "with --csv, the first records kept as they are, such as a header"
+    )]
+    header: usize,
+}
+
 #[derive(clap::Subcommand)]
 enum Task {
     #[command(about = "just to test")]
@@ -437,6 +540,11 @@ enum Task {
     SortWords(SortWords),
     #[command(about = "rewrite leave,value lines, sorted")]
     SortLeaves(SortLeaves),
+    #[command(
+        about = "keep the words, or the csv records, whose tiles number from --min-len to --max-len",
+        group(clap::ArgGroup::new("lengths").args(["min_len", "max_len"]).required(true).multiple(true))
+    )]
+    Trim(Trim),
 }
 
 #[derive(clap::Parser)]
@@ -705,6 +813,36 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 csv_out.serialize((&s, v))?;
             }
             Ok(())
+        }
+        Task::Trim(args) => {
+            let min_len = args.min_len.unwrap_or(0);
+            let max_len = args.max_len.unwrap_or(usize::MAX);
+            if min_len > max_len {
+                return Err("--min-len is more than --max-len".into());
+            }
+            let alphabet = make_alphabet()?;
+            // a leave may hold ? (tile 0), as sort-words and sort-leaves allow
+            let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alphabet);
+            if args.csv {
+                trim_csv(
+                    &alphabet_reader,
+                    make_reader(&args.input)?,
+                    make_writer(&args.out)?,
+                    args.column.get() - 1,
+                    args.header,
+                    min_len,
+                    max_len,
+                )
+            } else {
+                let kept = trim_words(
+                    &alphabet_reader,
+                    &read_to_string(&mut make_reader(&args.input)?)?,
+                    min_len,
+                    max_len,
+                )?;
+                make_writer(&args.out)?.write_all(kept.as_bytes())?;
+                Ok(())
+            }
         }
     }
 }
@@ -1102,4 +1240,67 @@ fn old_main() -> error::Returns<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[inline]
+    fn trim_keeps_the_words_whose_tiles_fit() {
+        let english = alphabet::make_english_alphabet();
+        let reader = alphabet::AlphabetReader::new_for_racks(&english);
+        let words = "QI\nQUA\nQUIZ definition\n\nQUIZZED\n";
+        assert_eq!(
+            trim_words(&reader, words, 3, 4).unwrap(),
+            "QUA\nQUIZ definition\n"
+        );
+        assert_eq!(trim_words(&reader, words, 0, 2).unwrap(), "QI\n");
+        assert!(trim_words(&reader, "A#\n", 0, 9).is_err());
+        // a comma ends no word: a csv takes --csv
+        assert!(trim_words(&reader, "QI,5\n", 0, 9).is_err());
+        // tiles, not chars: [CH], also written 1, is one spanish tile
+        let spanish = alphabet::make_spanish_alphabet();
+        let reader = alphabet::AlphabetReader::new_for_racks(&spanish);
+        assert_eq!(
+            trim_words(&reader, "[CH]E\nCHE\n1E\n", 2, 2).unwrap(),
+            "[CH]E\n1E\n"
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn trim_keeps_the_csv_records_whose_column_fits() {
+        let english = alphabet::make_english_alphabet();
+        let reader = alphabet::AlphabetReader::new_for_racks(&english);
+        let trim = |input: &str, column, header, min_len, max_len| {
+            let mut out = Vec::new();
+            trim_csv(
+                &reader,
+                input.as_bytes(),
+                &mut out,
+                column,
+                header,
+                min_len,
+                max_len,
+            )
+            .map(|()| String::from_utf8(out).unwrap())
+        };
+        // a summary's total line holds no tiles; a quoted leave counts unquoted
+        let leaves = ",0.5,7\n?,25.1\n\"QU\",-3\nAEINST,30\n";
+        assert_eq!(trim(leaves, 0, 0, 0, 2).unwrap(), ",0.5,7\n?,25.1\nQU,-3\n");
+        assert_eq!(trim(leaves, 0, 0, 2, 2).unwrap(), "QU,-3\n");
+        assert_eq!(trim(leaves, 0, 1, 2, 2).unwrap(), ",0.5,7\nQU,-3\n");
+        // playability and probability records: the word is the first field
+        let words = "QI,773.0,824\nQUA,1.5,2\nQI,2,9,1,1\n";
+        assert_eq!(trim(words, 0, 0, 3, 3).unwrap(), "QUA,1.5,2\n");
+        assert!(trim("A#,1\n", 0, 0, 0, 9).is_err());
+        // the tiles in another field, after a header kept as it is
+        let ranked = "rank,word\n1,QI\n2,QUA\n3,\"ZA\"\n";
+        assert_eq!(trim(ranked, 1, 1, 2, 2).unwrap(), "rank,word\n1,QI\n3,ZA\n");
+        // without the header kept, it is judged as tiles: WORD has four
+        assert_eq!(trim(ranked, 1, 0, 4, 4).unwrap(), "rank,word\n");
+        assert!(trim("QI\n", 1, 0, 0, 9).is_err());
+    }
 }
