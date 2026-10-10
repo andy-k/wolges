@@ -24,6 +24,8 @@ struct Cli {
         help = "write each bag-empty position the games reach to FILE, as endgame --batch reads"
     )]
     harvest: Option<String>,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
     #[arg(default_value = "lexbin/CSW24.kwg", help = "the word graph")]
     kwg: String,
     #[arg(default_value = "lexbin/CSW24.klv2", help = "the leaves (- for none)")]
@@ -82,11 +84,11 @@ fn main() -> error::Returns<()> {
     if cli.kbwg {
         let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-        do_it(&kwg, &klv, &game_config, harvest)
+        do_it(&kwg, &klv, &game_config, harvest, cli.lean)
     } else {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
-        do_it(&kwg, &klv, &game_config, harvest)
+        do_it(&kwg, &klv, &game_config, harvest, cli.lean)
     }
 }
 
@@ -111,11 +113,12 @@ fn do_it<N: kwg::Node + Sync>(
     klv: &klv::Klv<kwg::Node22>,
     game_config: &game_config::GameConfig,
     harvest: Option<HarvestWriter>,
+    lean: bool,
 ) -> error::Returns<()> {
     let mut fen_parser =
         display::BoardFenParser::new(game_config.alphabet(), game_config.board_layout());
     let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
-    let anagrams = anagrams::Anagrams::build_for_config(kwg, game_config);
+    let arm_tables = anagrams::ArmTables::build(kwg, game_config, lean);
 
     let mut filtered_movegen_0 = move_filter::GenMoves::Tilt {
         tilt: move_filter::Tilt::new(game_config, kwg, move_filter::Tilt::length_importances()),
@@ -130,6 +133,7 @@ fn do_it<N: kwg::Node + Sync>(
     let mut move_picker_1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
         game_config,
         kwg,
+        &arm_tables,
         klv,
         move_picker::SimmerParams {
             num_sim_iters: move_picker::DEFAULT_NUM_SIM_ITERS,
@@ -183,8 +187,8 @@ fn do_it<N: kwg::Node + Sync>(
             board_tiles: &game_state.board_tiles,
             game_config,
             kwg,
-            anagrams: anagrams.as_ref(),
-            rack_lengths: None,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
             klv,
         };
         let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
@@ -206,6 +210,7 @@ fn do_it<N: kwg::Node + Sync>(
         println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
         //std::fs::write("_word_62702.kwg", smaller_kwg_bytes)?;
         let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes);
+        let smaller_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean);
         let test_rack = &[13, 15, 15, 15, 18, 18, 20]; // MOOORRT
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot,
@@ -220,8 +225,8 @@ fn do_it<N: kwg::Node + Sync>(
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &movegen::BoardSnapshot {
                 kwg: &smaller_kwg,
-                anagrams: None,
-                rack_lengths: None,
+                anagrams: smaller_tables.anagrams(),
+                rack_lengths: smaller_tables.rack_lengths(),
                 ..*board_snapshot
             },
             rack: test_rack,
@@ -311,8 +316,8 @@ fn do_it<N: kwg::Node + Sync>(
                 board_tiles: &game_state.board_tiles,
                 game_config,
                 kwg,
-                anagrams: anagrams.as_ref(),
-                rack_lengths: None,
+                anagrams: arm_tables.anagrams(),
+                rack_lengths: arm_tables.rack_lengths(),
                 klv,
             };
 
@@ -348,12 +353,14 @@ fn do_it<N: kwg::Node + Sync>(
                     )?;
                     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
                     let smaller_kwg = kwg::Kwg::<N>::from_bytes_alloc(&smaller_kwg_bytes);
+                    let smaller_tables =
+                        anagrams::ArmTables::build(&smaller_kwg, game_config, lean);
                     move_generator.reset_for_another_kwg();
                     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
                         board_snapshot: &movegen::BoardSnapshot {
                             kwg: &smaller_kwg,
-                            anagrams: None,
-                            rack_lengths: None,
+                            anagrams: smaller_tables.anagrams(),
+                            rack_lengths: smaller_tables.rack_lengths(),
                             ..*board_snapshot
                         },
                         rack: &game_state.current_player().rack,

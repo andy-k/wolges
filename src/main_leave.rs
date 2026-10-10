@@ -6,8 +6,9 @@ use std::io::Write as _;
 use std::str::FromStr;
 use wolges::simmer::CopyState;
 use wolges::{
-    alphabet, bites, board_layout, build, census, display, equity, error, fash, game_config,
-    game_state, klv, kwg, move_filter, move_picker, movegen, play_scorer, prob, stats, win_pct,
+    alphabet, anagrams, bites, board_layout, build, census, display, equity, error, fash,
+    game_config, game_state, klv, kwg, move_filter, move_picker, movegen, play_scorer, prob, stats,
+    win_pct,
 };
 
 mod game_args;
@@ -210,6 +211,8 @@ struct SelfPlay {
     min_samples: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -224,6 +227,8 @@ struct Gilles {
     games: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -310,6 +315,8 @@ struct SimStudyCheck {
     iters: u64,
     #[arg(default_value_t = 1)]
     seed: u64,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -329,6 +336,8 @@ struct HarvestBoards {
         help = "also write every kth ply's board (0: each finished board only)"
     )]
     stride: u32,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -377,6 +386,8 @@ struct Position {
         help = "write the board's dynamic leaves, from the tiles not on it, to FILE as a klv2 (needs a --full table)"
     )]
     dynamic: Option<String>,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -391,6 +402,8 @@ struct SimChunkCheck {
     seed: u64,
     #[arg(default_value_t = 8)]
     trials: u32,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -403,6 +416,8 @@ struct SimMutateCheck {
     iters: u64,
     #[arg(default_value_t = 1)]
     seed: u64,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -415,6 +430,8 @@ struct SimFieldCheck {
     seed: u64,
     #[arg(default_value_t = 12)]
     turns: u32,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -429,6 +446,8 @@ struct Winpct {
     games: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -443,6 +462,8 @@ struct WinpctEval {
     games: u64,
     #[arg(help = "prints the one it picks if omitted; use a held-out seed")]
     seed: Option<u64>,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Args)]
@@ -467,6 +488,8 @@ struct Playability {
     games: u64,
     #[arg(help = "prints the one it picks if omitted")]
     seed: Option<u64>,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
 }
 
 #[derive(clap::Subcommand)]
@@ -606,6 +629,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     min_samples: a.min_samples,
                     seed: a.seed,
                     threads,
+                    lean: a.lean,
                 },
             )
         }
@@ -622,6 +646,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     min_samples: a.min_samples,
                     seed: a.seed,
                     threads,
+                    lean: a.lean,
                 },
             )
         }
@@ -638,13 +663,25 @@ fn run<N: kwg::Node + Sync + Send>(
                     min_samples: a.min_samples,
                     seed: a.seed,
                     threads,
+                    lean: a.lean,
                 },
             )
         }
         Task::Gilles(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.leave0, &a.leave1)?;
-            generate_gilles_summary(game_config, kwg, klv0, klv1, a.games, a.seed, threads)
+            generate_gilles_summary(
+                game_config,
+                kwg,
+                klv0,
+                klv1,
+                GamesParams {
+                    num_games: a.games,
+                    seed: a.seed,
+                    threads,
+                    lean: a.lean,
+                },
+            )
         }
         Task::Census(a) => {
             let board_counts = parse_board_counts(&a.boards)?;
@@ -698,6 +735,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean);
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -708,8 +746,8 @@ fn run<N: kwg::Node + Sync + Send>(
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
-                    anagrams: None,
-                    rack_lengths: None,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
                     klv: &klv,
                 },
                 rack: &game_state.current_player().rack,
@@ -721,6 +759,7 @@ fn run<N: kwg::Node + Sync + Send>(
             let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
+                &arm_tables,
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
@@ -756,7 +795,18 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::HarvestBoards(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.leave)?;
-            harvest_boards(game_config, kwg, klv, &a.out, a.games, a.seed, a.stride)
+            harvest_boards(
+                game_config,
+                kwg,
+                klv,
+                &a.out,
+                HarvestParams {
+                    num_games: a.games,
+                    seed: a.seed,
+                    stride: a.stride,
+                    lean: a.lean,
+                },
+            )
         }
         Task::CensusBoard(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
@@ -781,17 +831,19 @@ fn run<N: kwg::Node + Sync + Send>(
                     num_moves: a.moves,
                     dynamic_out: a.dynamic.as_deref(),
                     threads,
+                    lean: a.lean,
                 },
             )
         }
         Task::SimChunkCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            sim_chunk_check(game_config, kwg, klv, a.iters, a.seed, a.trials)
+            sim_chunk_check(game_config, kwg, klv, a.iters, a.seed, a.trials, a.lean)
         }
         Task::SimMutateCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean);
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -802,8 +854,8 @@ fn run<N: kwg::Node + Sync + Send>(
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
-                    anagrams: None,
-                    rack_lengths: None,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
                     klv: &klv,
                 },
                 rack: &game_state.current_player().rack,
@@ -815,6 +867,7 @@ fn run<N: kwg::Node + Sync + Send>(
             let mut driver = move_picker::Simmer::<_, _, false>::new(
                 &game_config,
                 &kwg,
+                &arm_tables,
                 &klv,
                 move_picker::SimmerParams {
                     num_sim_iters: iters,
@@ -875,18 +928,40 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimFieldCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            sim_field_check(game_config, kwg, klv, a.seed, a.turns)
+            sim_field_check(game_config, kwg, klv, a.seed, a.turns, a.lean)
         }
         Task::Winpct(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
-            generate_winpct_table(game_config, kwg, klv, &a.out, a.games, a.seed, threads)
+            generate_winpct_table(
+                game_config,
+                kwg,
+                klv,
+                &a.out,
+                GamesParams {
+                    num_games: a.games,
+                    seed: a.seed,
+                    threads,
+                    lean: a.lean,
+                },
+            )
         }
         Task::WinpctEval(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = std::sync::Arc::new(read_klv(&game_config, &a.leave)?);
             let table = win_pct::WinPctTable::from_csv(make_reader(&a.table)?)?;
-            generate_winpct_eval(game_config, kwg, klv, table, a.games, a.seed, threads)
+            generate_winpct_eval(
+                game_config,
+                kwg,
+                klv,
+                table,
+                GamesParams {
+                    num_games: a.games,
+                    seed: a.seed,
+                    threads,
+                    lean: a.lean,
+                },
+            )
         }
         Task::WinpctCombine(a) => {
             let acc = win_pct::WinPctAccumulator::from_csv(make_reader(&a.input)?)?;
@@ -935,7 +1010,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::Playability(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.leave)?;
-            discover_playability(game_config, kwg, klv, a.games, a.seed, threads)
+            discover_playability(game_config, kwg, klv, a.games, a.seed, threads, a.lean)
         }
     }
 }
@@ -965,6 +1040,14 @@ struct SelfPlayParams {
     min_samples: u64,
     seed: Option<u64>,
     threads: usize,
+    lean: bool,
+}
+
+struct GamesParams {
+    num_games: u64,
+    seed: Option<u64>,
+    threads: usize,
+    lean: bool,
 }
 
 #[inline]
@@ -983,6 +1066,7 @@ fn generate_autoplay_logs<
         min_samples: min_samples_per_rack,
         seed,
         threads,
+        lean,
     }: SelfPlayParams,
 ) -> error::Returns<()> {
     if !SUMMARIZE && min_samples_per_rack != 0 {
@@ -1095,6 +1179,10 @@ fn generate_autoplay_logs<
         tick_periods,
     }));
     let batch_size = 100;
+
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let anagrams = arm_tables.anagrams();
+    let rack_lengths = arm_tables.rack_lengths();
 
     std::thread::scope(|s| {
         let mut threads = vec![];
@@ -1362,8 +1450,8 @@ fn generate_autoplay_logs<
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
                             kwg: &kwg,
-                            anagrams: None,
-                            rack_lengths: None,
+                            anagrams,
+                            rack_lengths,
                             klv: if game_state.turn == 0 {
                                 &arc_klv0
                             } else {
@@ -1781,9 +1869,12 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     kwg: kwg::Kwg<N>,
     arc_klv0: std::sync::Arc<klv::Klv<L>>,
     arc_klv1: std::sync::Arc<klv::Klv<L>>,
-    num_games: u64,
-    seed: Option<u64>,
-    threads: usize,
+    GamesParams {
+        num_games,
+        seed,
+        threads,
+        lean,
+    }: GamesParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -1819,6 +1910,10 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     }));
     let mutexed_tick = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
     let t0 = std::time::Instant::now();
+
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let anagrams = arm_tables.anagrams();
+    let rack_lengths = arm_tables.rack_lengths();
 
     std::thread::scope(|s| {
         let mut threads = vec![];
@@ -1927,8 +2022,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                                     board_tiles: &game_state.board_tiles,
                                     game_config: &game_config,
                                     kwg: &kwg,
-                                    anagrams: None,
-                                    rack_lengths: None,
+                                    anagrams,
+                                    rack_lengths,
                                     klv: if game_state.turn == 0 {
                                         &arc_klv0
                                     } else {
@@ -1968,8 +2063,8 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
                             kwg: &kwg,
-                            anagrams: None,
-                            rack_lengths: None,
+                            anagrams,
+                            rack_lengths,
                             klv: if game_state.turn == 0 {
                                 &arc_klv0
                             } else {
@@ -3542,6 +3637,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     num_games: u64,
     seed: Option<u64>,
     threads: usize,
+    lean: bool,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -3574,6 +3670,10 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         game_config::GameRules::Classic => 100,
         game_config::GameRules::Jumbled => 1,
     };
+
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let anagrams = arm_tables.anagrams();
+    let rack_lengths = arm_tables.rack_lengths();
 
     std::thread::scope(|s| {
         let mut threads = vec![];
@@ -3650,8 +3750,8 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             board_tiles: &game_state.board_tiles,
                             game_config: &game_config,
                             kwg: &kwg,
-                            anagrams: None,
-                            rack_lengths: None,
+                            anagrams,
+                            rack_lengths,
                             klv: &klv,
                         };
 
@@ -4106,6 +4206,8 @@ impl GamePairStats {
 struct WinpctTables<'a, N: kwg::Node, L: kwg::Node> {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
+    anagrams: Option<&'a wolges::anagrams::Anagrams>,
+    rack_lengths: Option<&'a wolges::anagrams::RackLengths>,
     arc_klv: &'a klv::Klv<L>,
 }
 
@@ -4121,6 +4223,8 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
     let WinpctTables {
         game_config,
         kwg,
+        anagrams,
+        rack_lengths,
         arc_klv,
     } = tables;
     snapshots.clear();
@@ -4140,8 +4244,8 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             board_tiles: &game_state.board_tiles,
             game_config,
             kwg,
-            anagrams: None,
-            rack_lengths: None,
+            anagrams,
+            rack_lengths,
             klv: arc_klv,
         };
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
@@ -4171,9 +4275,12 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     kwg: kwg::Kwg<N>,
     arc_klv: std::sync::Arc<klv::Klv<L>>,
     out_path: &str,
-    num_games: u64,
-    seed: Option<u64>,
-    threads: usize,
+    GamesParams {
+        num_games,
+        seed,
+        threads,
+        lean,
+    }: GamesParams,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
@@ -4187,6 +4294,10 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let next_game = std::sync::atomic::AtomicU64::new(0);
     let report_every = 10_000u64;
     let shared = std::sync::Mutex::new(win_pct::WinPctAccumulator::new());
+
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let anagrams = arm_tables.anagrams();
+    let rack_lengths = arm_tables.rack_lengths();
 
     std::thread::scope(|s| {
         for _ in 0..num_threads {
@@ -4208,6 +4319,8 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                         WinpctTables {
                             game_config: &game_config,
                             kwg: &kwg,
+                            anagrams,
+                            rack_lengths,
                             arc_klv: &arc_klv,
                         },
                         &mut move_generator,
@@ -4250,9 +4363,12 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     kwg: kwg::Kwg<N>,
     arc_klv: std::sync::Arc<klv::Klv<L>>,
     table: win_pct::WinPctTable,
-    num_games: u64,
-    seed: Option<u64>,
-    threads: usize,
+    GamesParams {
+        num_games,
+        seed,
+        threads,
+        lean,
+    }: GamesParams,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
@@ -4269,6 +4385,10 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let ln_ratio = (1.0f64 / 0.9 - 1.0).ln();
 
     let shared = std::sync::Mutex::new((0.0f64, 0.0f64, 0u64));
+
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let anagrams = arm_tables.anagrams();
+    let rack_lengths = arm_tables.rack_lengths();
 
     std::thread::scope(|s| {
         for _ in 0..num_threads {
@@ -4289,6 +4409,8 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         WinpctTables {
                             game_config: &game_config,
                             kwg: &kwg,
+                            anagrams,
+                            rack_lengths,
                             arc_klv: &arc_klv,
                         },
                         &mut move_generator,
@@ -4363,9 +4485,11 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
     klv: klv::Klv<L>,
     seed: u64,
     turns: u32,
+    lean: bool,
 ) -> error::Returns<()> {
     let alphabet = game_config.alphabet();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -4381,8 +4505,8 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                 board_tiles: &game_state.board_tiles,
                 game_config: &game_config,
                 kwg: &kwg,
-                anagrams: None,
-                rack_lengths: None,
+                anagrams: arm_tables.anagrams(),
+                rack_lengths: arm_tables.rack_lengths(),
                 klv: &klv,
             },
             rack: &game_state.current_player().rack,
@@ -4418,8 +4542,8 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
-            anagrams: None,
-            rack_lengths: None,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
             klv: &klv,
         };
         let rack = &game_state.current_player().rack;
@@ -4544,10 +4668,12 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     iters: u64,
     seed: u64,
     trials: u32,
+    lean: bool,
 ) -> error::Returns<()> {
     if iters < 2 {
         return Err("sim-chunk-check needs at least two iterations".into());
     }
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -4557,8 +4683,8 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
             kwg: &kwg,
-            anagrams: None,
-            rack_lengths: None,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
             klv: &klv,
         },
         rack: &game_state.current_player().rack,
@@ -4570,6 +4696,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     let mut driver = move_picker::Simmer::<_, _, true>::new(
         &game_config,
         &kwg,
+        &arm_tables,
         &klv,
         move_picker::SimmerParams {
             num_sim_iters: iters,
@@ -5107,6 +5234,7 @@ struct PositionParams<'a> {
     num_moves: usize,
     dynamic_out: Option<&'a str>,
     threads: usize,
+    lean: bool,
 }
 
 #[inline]
@@ -5120,8 +5248,12 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         num_moves,
         dynamic_out,
         threads,
+        lean,
     }: PositionParams<'_>,
 ) -> error::Returns<()> {
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let anagrams = arm_tables.anagrams();
+    let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
     let dim = board_layout.dim();
@@ -5280,8 +5412,8 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
             board_tiles: &board_tiles,
             game_config: &game_config,
             kwg: &kwg,
-            anagrams: None,
-            rack_lengths: None,
+            anagrams,
+            rack_lengths,
             klv: &klv,
         };
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -5333,16 +5465,29 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     Ok(())
 }
 
+struct HarvestParams {
+    num_games: u64,
+    seed: u64,
+    stride: u32,
+    lean: bool,
+}
+
 #[inline]
 fn harvest_boards<N: kwg::Node, L: kwg::Node>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     klv: klv::Klv<L>,
     out_path: &str,
-    num_games: u64,
-    seed: u64,
-    stride: u32,
+    HarvestParams {
+        num_games,
+        seed,
+        stride,
+        lean,
+    }: HarvestParams,
 ) -> error::Returns<()> {
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let anagrams = arm_tables.anagrams();
+    let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
     let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -5359,8 +5504,8 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
                     board_tiles: &game_state.board_tiles,
                     game_config: &game_config,
                     kwg: &kwg,
-                    anagrams: None,
-                    rack_lengths: None,
+                    anagrams,
+                    rack_lengths,
                     klv: &klv,
                 },
                 rack: &game_state.current_player().rack,
@@ -5557,6 +5702,7 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
     picker: SeatPicker,
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
+    arm_tables: &'a anagrams::ArmTables,
     klv: &'a klv::Klv<L>,
     dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
     simmer_params: move_picker::SimmerParams<'a>,
@@ -5567,6 +5713,7 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
         SeatPicker::Simmer => move_picker::MovePicker::Simmer(move_picker::Simmer::new(
             game_config,
             kwg,
+            arm_tables,
             klv,
             simmer_params,
         )),
@@ -5606,24 +5753,7 @@ fn compare_seats<
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let arc_anagrams = if LEAN {
-        None
-    } else {
-        let dim = game_config.board_layout().dim();
-        wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
-            .and_then(|layout| wolges::anagrams::Anagrams::build(&kwg, layout))
-            .map(std::sync::Arc::new)
-    };
-
-    let arc_rack_lengths = if LEAN {
-        let dim = game_config.board_layout().dim();
-        let max_tiles = game_config.rack_size() as usize + 1;
-        wolges::alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
-            .map(|layout| wolges::anagrams::RackLengths::build(&kwg, layout, max_tiles))
-            .map(std::sync::Arc::new)
-    } else {
-        None
-    };
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, LEAN);
 
     let winpct_p0 = match &p0_win_pct {
         Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
@@ -5684,8 +5814,7 @@ fn compare_seats<
             let kwg = std::sync::Arc::clone(&kwg);
             let arc_klv0 = std::sync::Arc::clone(&arc_klv0);
             let arc_klv1 = std::sync::Arc::clone(&arc_klv1);
-            let arc_anagrams = arc_anagrams.clone();
-            let arc_rack_lengths = arc_rack_lengths.clone();
+            let arm_tables = &arm_tables;
             let claimed_pairs = std::sync::Arc::clone(&claimed_pairs);
             let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
@@ -5696,6 +5825,7 @@ fn compare_seats<
                     p0_picker,
                     &game_config,
                     &kwg,
+                    arm_tables,
                     &arc_klv0,
                     dyn_refs.map(|refs| refs[0]),
                     move_picker::SimmerParams {
@@ -5708,6 +5838,7 @@ fn compare_seats<
                     p1_picker,
                     &game_config,
                     &kwg,
+                    arm_tables,
                     &arc_klv1,
                     dyn_refs.map(|refs| refs[1]),
                     move_picker::SimmerParams {
@@ -5754,8 +5885,8 @@ fn compare_seats<
                                 board_tiles: &game_state.board_tiles,
                                 game_config: &game_config,
                                 kwg: &kwg,
-                                anagrams: arc_anagrams.as_deref(),
-                                rack_lengths: arc_rack_lengths.as_deref(),
+                                anagrams: arm_tables.anagrams(),
+                                rack_lengths: arm_tables.rack_lengths(),
                                 klv: if is_p0_seat { &arc_klv0 } else { &arc_klv1 },
                             };
                             let driver = if is_p0_seat {

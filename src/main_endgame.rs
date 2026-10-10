@@ -2,8 +2,8 @@
 
 use rand::prelude::*;
 use wolges::{
-    alphabet, bites, build, display, endgame, equity, error, fash, game_config, game_state, klv,
-    kwg, matrix, movegen, play_scorer,
+    alphabet, anagrams, bites, build, display, endgame, equity, error, fash, game_config,
+    game_state, klv, kwg, matrix, movegen, play_scorer,
 };
 
 mod game_args;
@@ -439,6 +439,7 @@ fn run_batch<N: kwg::Node>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     path: &str,
+    lean: bool,
 ) -> error::Returns<()> {
     let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
     let alphabet = game_config.alphabet();
@@ -497,9 +498,13 @@ fn run_batch<N: kwg::Node>(
         vec_of_words.sort_unstable();
         let smaller_kwg_bytes = build_pruned_kwg(&game_config, &vec_of_words)?;
         let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
+        let arm_tables = solver_tables(&smaller_kwg, &game_config, lean);
 
-        let mut egs =
-            endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(&game_config, &smaller_kwg);
+        let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(
+            &game_config,
+            &smaller_kwg,
+            &arm_tables,
+        );
         egs.init(&board_tiles, [&rack0, &rack1]);
         let v = egs.solve(player);
         println!("{line_index}\t{v}");
@@ -512,6 +517,8 @@ fn run_batch<N: kwg::Node>(
 struct Cli {
     #[arg(long, help = "the word graph is a kbwg")]
     kbwg: bool,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
     #[arg(
         long,
         value_name = "FILE",
@@ -552,11 +559,11 @@ fn main() -> error::Returns<()> {
             return if cli.kbwg {
                 let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
                 refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
-                run_batch(game_config, kwg, &batch_path)
+                run_batch(game_config, kwg, &batch_path, cli.lean)
             } else {
                 let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
                 refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
-                run_batch(game_config, kwg, &batch_path)
+                run_batch(game_config, kwg, &batch_path, cli.lean)
             };
         }
         (None, Some(kwg_path), Some(fen), Some(rack)) => {
@@ -567,6 +574,7 @@ fn main() -> error::Returns<()> {
                 &fen,
                 &rack,
                 cli.score_diff,
+                cli.lean,
             );
         }
         (None, None, None, None) => {}
@@ -1287,7 +1295,7 @@ fn main() -> error::Returns<()> {
         "CGINTU?",
     )?;
 
-    solve_question(&question, 0)
+    solve_question(&question, 0, cli.lean)
 }
 
 #[inline(always)]
@@ -1298,6 +1306,7 @@ fn run_cli(
     fen: &str,
     rack: &str,
     score_diff: i32,
+    lean: bool,
 ) -> error::Returns<()> {
     let question = Question::from_fen(game_config, kwg_path, fen, rack)?;
     let kwg_bytes = std::fs::read(kwg_path)?;
@@ -1305,11 +1314,11 @@ fn run_cli(
     if kbwg {
         let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
         refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
-        solve_position(game_config, &kwg, &question, score_diff)
+        solve_position(game_config, &kwg, &question, score_diff, lean)
     } else {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
         refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
-        solve_position(game_config, &kwg, &question, score_diff)
+        solve_position(game_config, &kwg, &question, score_diff, lean)
     }
 }
 
@@ -1349,8 +1358,23 @@ fn build_pruned_kwg(
     }
 }
 
+// the solver generates every move raw, which reads no anagram table, so the
+// default arm builds none; the lean arm adds the rack lengths' prune
+#[inline]
+fn solver_tables(
+    kwg: &kwg::Kwg<kwg::Node22>,
+    game_config: &game_config::GameConfig,
+    lean: bool,
+) -> anagrams::ArmTables {
+    if lean {
+        anagrams::ArmTables::build(kwg, game_config, true)
+    } else {
+        anagrams::ArmTables::None
+    }
+}
+
 #[inline(always)]
-fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
+fn solve_question(question: &Question, score_diff: i32, lean: bool) -> error::Returns<()> {
     // of course this should be cached
     let (kwg, game_config) = match question.lexicon.as_str() {
         "CSW24" => (
@@ -1366,7 +1390,7 @@ fn solve_question(question: &Question, score_diff: i32) -> error::Returns<()> {
         }
     };
 
-    solve_position(&game_config, &kwg, question, score_diff)
+    solve_position(&game_config, &kwg, question, score_diff, lean)
 }
 
 #[inline(always)]
@@ -1375,6 +1399,7 @@ fn solve_position<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
     question: &Question,
     score_diff: i32,
+    lean: bool,
 ) -> error::Returns<()> {
     let alphabet = game_config.alphabet();
     let alphabet_len_without_blank = alphabet.len() - 1;
@@ -1496,10 +1521,14 @@ fn solve_position<N: kwg::Node>(
     let smaller_kwg_bytes = build_pruned_kwg(game_config, &vec_of_words)?;
     println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
     let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
+    let arm_tables = solver_tables(&smaller_kwg, game_config, lean);
     move_generator.reset_for_another_kwg();
 
-    let mut egs =
-        endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(game_config, &smaller_kwg);
+    let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(
+        game_config,
+        &smaller_kwg,
+        &arm_tables,
+    );
     if oppo_rack.len() == rack_size + 1 {
         let scaled_score_diff = equity::scale_score(score_diff) as f32;
         let result = egs.solve_peg_one_in_bag(

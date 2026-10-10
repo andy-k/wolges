@@ -12,6 +12,12 @@ fn filter_hash(key: u128, len: u8) -> u64 {
     alphagram::mixed(key).rotate_left(len as u32)
 }
 
+#[inline(always)]
+fn layout_for_config(game_config: &game_config::GameConfig) -> Option<alphagram::KeyLayout> {
+    let dim = game_config.board_layout().dim();
+    alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
+}
+
 // one arena, sorted by length, then alphagram, then word
 pub struct Anagrams {
     layout: alphagram::KeyLayout,
@@ -67,10 +73,7 @@ impl Anagrams {
         g: &kwg::Kwg<N>,
         game_config: &game_config::GameConfig,
     ) -> Option<Self> {
-        let dim = game_config.board_layout().dim();
-        let layout =
-            alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)?;
-        Self::build(g, layout)
+        Self::build(g, layout_for_config(game_config)?)
     }
 
     pub fn build<N: kwg::Node>(g: &kwg::Kwg<N>, layout: alphagram::KeyLayout) -> Option<Self> {
@@ -292,6 +295,18 @@ pub struct RackLengths {
 }
 
 impl RackLengths {
+    #[inline(always)]
+    pub fn build_for_config<N: kwg::Node>(
+        g: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+    ) -> Option<Self> {
+        Some(Self::build(
+            g,
+            layout_for_config(game_config)?,
+            game_config.rack_size() as usize + 1,
+        ))
+    }
+
     pub fn build<N: kwg::Node>(
         g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
@@ -321,6 +336,45 @@ impl RackLengths {
     }
 }
 
+// what the generator reads beside the word graph: the anagrams, or on the lean
+// arm the rack lengths alone
+pub enum ArmTables {
+    Anagrams(Anagrams),
+    RackLengths(RackLengths),
+    None,
+}
+
+impl ArmTables {
+    #[inline]
+    pub fn build<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+        lean: bool,
+    ) -> Self {
+        if lean {
+            RackLengths::build_for_config(kwg, game_config).map_or(Self::None, Self::RackLengths)
+        } else {
+            Anagrams::build_for_config(kwg, game_config).map_or(Self::None, Self::Anagrams)
+        }
+    }
+
+    #[inline(always)]
+    pub fn anagrams(&self) -> Option<&Anagrams> {
+        match self {
+            Self::Anagrams(anagrams) => Some(anagrams),
+            Self::RackLengths(_) | Self::None => None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn rack_lengths(&self) -> Option<&RackLengths> {
+        match self {
+            Self::RackLengths(rack_lengths) => Some(rack_lengths),
+            Self::Anagrams(_) | Self::None => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,9 +396,7 @@ mod tests {
 
     #[inline]
     fn test_layout() -> alphagram::KeyLayout {
-        let gc = crate::game_config::make_english_game_config();
-        let dim = gc.board_layout().dim();
-        alphagram::KeyLayout::of(gc.alphabet(), dim.rows.max(dim.cols) as u8).unwrap()
+        layout_for_config(&crate::game_config::make_english_game_config()).unwrap()
     }
 
     #[inline(always)]

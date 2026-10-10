@@ -3,7 +3,7 @@
 // note: this module is very slow and may need a lot of space
 // and it still has many bugs
 
-use super::{display, fash, game_config, klv, kwg, move_picker, movegen};
+use super::{anagrams, display, fash, game_config, klv, kwg, move_picker, movegen};
 
 // move one tile at a time from rack
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -154,6 +154,7 @@ pub struct FoundPlay<'a> {
 pub struct EndgameSolver<'a, N: kwg::Node, L: kwg::Node> {
     game_config: &'a game_config::GameConfig,
     kwg: &'a kwg::Kwg<N>,
+    arm_tables: &'a anagrams::ArmTables,
     klv: Box<klv::Klv<L>>,
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
@@ -162,13 +163,18 @@ pub struct EndgameSolver<'a, N: kwg::Node, L: kwg::Node> {
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
-    pub fn new(game_config: &'a game_config::GameConfig, kwg: &'a kwg::Kwg<N>) -> Self {
+    pub fn new(
+        game_config: &'a game_config::GameConfig,
+        kwg: &'a kwg::Kwg<N>,
+        arm_tables: &'a anagrams::ArmTables,
+    ) -> Self {
         if game_config.num_players() != 2 {
             panic!("cannot solve non-2-player endgames");
         }
         Self {
             game_config,
             kwg,
+            arm_tables,
             klv: Box::new(klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)),
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
@@ -492,8 +498,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 board_tiles: &current_ply_buffer.board_tiles,
                 game_config: self.game_config,
                 kwg: self.kwg,
-                anagrams: None,
-                rack_lengths: None,
+                anagrams: self.arm_tables.anagrams(),
+                rack_lengths: self.arm_tables.rack_lengths(),
                 klv: &self.klv,
             };
             let mut state_eval = StateEval {
@@ -801,8 +807,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     board_tiles,
                     game_config: self.game_config,
                     kwg: self.kwg,
-                    anagrams: None,
-                    rack_lengths: None,
+                    anagrams: self.arm_tables.anagrams(),
+                    rack_lengths: self.arm_tables.rack_lengths(),
                     klv: &self.klv,
                 }),
                 width = self.game_config.rack_size() as usize - rack.len(),
@@ -880,8 +886,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     pub fn solve_one_in_bag(&mut self, player_idx: u8, bag_tile: u8) -> f32 {
         let gc = self.game_config;
         let kwg = self.kwg;
+        let arm_tables = self.arm_tables;
 
-        let mut sub = EndgameSolver::<N, L>::new(gc, kwg);
+        let mut sub = EndgameSolver::<N, L>::new(gc, kwg, arm_tables);
 
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
 
@@ -893,6 +900,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut search = OneInBag {
             gc,
             kwg,
+            arm_tables,
             klv: &klv,
             sub: &mut sub,
             mg: &mut mg,
@@ -919,8 +927,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             board_tiles: board,
             game_config: search.gc,
             kwg: search.kwg,
-            anagrams: None,
-            rack_lengths: None,
+            anagrams: search.arm_tables.anagrams(),
+            rack_lengths: search.arm_tables.rack_lengths(),
             klv: search.klv,
         };
         search.mg.gen_moves_raw_all_unsorted(
@@ -1012,8 +1020,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             board_tiles: board,
             game_config: search.gc,
             kwg: search.kwg,
-            anagrams: None,
-            rack_lengths: None,
+            anagrams: search.arm_tables.anagrams(),
+            rack_lengths: search.arm_tables.rack_lengths(),
             klv: search.klv,
         };
         search.mg.gen_moves_raw_all_unsorted(
@@ -1201,6 +1209,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     ) -> PegResult {
         let gc = self.game_config;
         let kwg = self.kwg;
+        let arm_tables = self.arm_tables;
         let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let opp = mover ^ 1;
         let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
@@ -1211,8 +1220,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 board_tiles: board,
                 game_config: gc,
                 kwg,
-                anagrams: None,
-                rack_lengths: None,
+                anagrams: arm_tables.anagrams(),
+                rack_lengths: arm_tables.rack_lengths(),
                 klv: &klv,
             },
             mover_rack,
@@ -1227,7 +1236,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             }
         }
 
-        let mut sub = EndgameSolver::<N, L>::new(gc, kwg);
+        let mut sub = EndgameSolver::<N, L>::new(gc, kwg, arm_tables);
 
         let mut best_win = f32::NEG_INFINITY;
         let mut best_marg = f32::NEG_INFINITY;
@@ -1287,6 +1296,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                             &mut OneInBag {
                                 gc,
                                 kwg,
+                                arm_tables,
                                 klv: &klv,
                                 sub: &mut sub,
                                 mg: &mut mg,
@@ -1371,6 +1381,7 @@ impl std::fmt::Display for PegUnsupported {
 struct OneInBag<'s, 'a, N: kwg::Node, L: kwg::Node> {
     gc: &'s game_config::GameConfig,
     kwg: &'s kwg::Kwg<N>,
+    arm_tables: &'s anagrams::ArmTables,
     klv: &'s klv::Klv<L>,
     sub: &'s mut EndgameSolver<'a, N, L>,
     mg: &'s mut movegen::KurniaMoveGenerator,
@@ -1432,7 +1443,7 @@ pub fn peg_aggregate(hypotheses: &[(u32, f32)]) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::{EndgameSolver, PegMove};
-    use crate::{alphabet, bites, build, game_config, klv, kwg, movegen};
+    use crate::{alphabet, anagrams, bites, build, game_config, klv, kwg, movegen};
 
     #[inline]
     fn tiny_word_list() -> Vec<bites::Bites> {
@@ -1463,6 +1474,15 @@ mod tests {
             &tiny_word_list(),
         )
         .unwrap()
+    }
+
+    // each arm, flagged true for the lean one
+    #[inline]
+    fn both_arms(
+        kwg: &kwg::Kwg<kwg::Node22>,
+        gc: &game_config::GameConfig,
+    ) -> [(bool, anagrams::ArmTables); 2] {
+        [false, true].map(|lean| (lean, anagrams::ArmTables::build(kwg, gc, lean)))
     }
 
     #[inline]
@@ -1944,11 +1964,11 @@ mod tests {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
+        let arms = both_arms(&kwg, &gc);
 
         let mut disagreements = 0usize;
         let mut total = 0usize;
         for (name, pos) in all_positions() {
-            total += 1;
             let refv = reference(
                 &mut Reference {
                     gc: &gc,
@@ -1961,19 +1981,22 @@ mod tests {
                 0,
                 false,
             );
-            let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
-            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-            let solvev = egs.solve(0);
-            if refv.to_bits() != solvev.to_bits() {
-                disagreements += 1;
-                let ratio = if refv != 0.0 { solvev / refv } else { f32::NAN };
-                println!(
-                    "DISAGREE [{name}]: ref={refv} solve={solvev} ratio={ratio}\n   {}",
-                    describe(&gc, &pos)
-                );
+            for (lean, arm_tables) in &arms {
+                total += 1;
+                let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                let solvev = egs.solve(0);
+                if refv.to_bits() != solvev.to_bits() {
+                    disagreements += 1;
+                    let ratio = if refv != 0.0 { solvev / refv } else { f32::NAN };
+                    println!(
+                        "DISAGREE [{name}] lean={lean}: ref={refv} solve={solvev} ratio={ratio}\n   {}",
+                        describe(&gc, &pos)
+                    );
+                }
             }
         }
-        println!("differential: {disagreements} disagreements out of {total} positions");
+        println!("differential: {disagreements} disagreements out of {total} solves");
         assert_eq!(disagreements, 0, "solve() disagreed with the reference");
     }
 
@@ -2004,7 +2027,8 @@ mod tests {
         unseen_tally[8] = 1; // H
         unseen_tally[20] = 1; // T
 
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
         let result = egs
             .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
             .expect("english one-in-bag is always solvable");
@@ -2027,7 +2051,8 @@ mod tests {
         unseen_tally[8] = 1; // H
         unseen_tally[20] = 1; // T
 
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
         let result = egs
             .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 3000.0)
             .expect("english one-in-bag is always solvable");
@@ -2047,62 +2072,74 @@ mod tests {
         let mut ok = 0usize;
         let mut bad = 0usize;
         let mut pv: Vec<(f32, movegen::Play)> = Vec::new();
-        for (name, pos) in all_positions() {
-            let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
-            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-            let v = egs.solve(0);
-            egs.collect_pv(0, &mut pv);
+        let positions = all_positions();
+        for (lean, arm_tables) in &both_arms(&kwg, &gc) {
+            for (name, pos) in &positions {
+                let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                let v = egs.solve(0);
+                egs.collect_pv(0, &mut pv);
 
-            let a = gc.alphabet();
-            let mut board = pos.board.clone();
-            let mut racks = pos.racks.clone();
-            let mut mover = 0usize;
-            let mut sign = 1.0f32;
-            let mut realized = 0.0f32;
-            let mut prev_pass = false;
-            let mut ended = false;
-            for (_eq, play) in &pv {
-                match play {
-                    movegen::Play::Place {
-                        down,
-                        lane,
-                        idx,
-                        word,
-                        score,
-                    } => {
-                        realized += sign * (*score as f32);
-                        apply_place(&gc, &mut board, &mut racks[mover], *down, *lane, *idx, word);
-                        if racks[mover].is_empty() {
-                            realized += sign * (2 * a.scaled_rack_score(&racks[mover ^ 1])) as f32;
-                            ended = true;
+                let a = gc.alphabet();
+                let mut board = pos.board.clone();
+                let mut racks = pos.racks.clone();
+                let mut mover = 0usize;
+                let mut sign = 1.0f32;
+                let mut realized = 0.0f32;
+                let mut prev_pass = false;
+                let mut ended = false;
+                for (_eq, play) in &pv {
+                    match play {
+                        movegen::Play::Place {
+                            down,
+                            lane,
+                            idx,
+                            word,
+                            score,
+                        } => {
+                            realized += sign * (*score as f32);
+                            apply_place(
+                                &gc,
+                                &mut board,
+                                &mut racks[mover],
+                                *down,
+                                *lane,
+                                *idx,
+                                word,
+                            );
+                            if racks[mover].is_empty() {
+                                realized +=
+                                    sign * (2 * a.scaled_rack_score(&racks[mover ^ 1])) as f32;
+                                ended = true;
+                            }
+                            prev_pass = false;
                         }
-                        prev_pass = false;
+                        movegen::Play::Exchange { .. } => {
+                            if prev_pass {
+                                realized += sign
+                                    * (a.scaled_rack_score(&racks[mover ^ 1])
+                                        - a.scaled_rack_score(&racks[mover]))
+                                        as f32;
+                                ended = true;
+                            }
+                            prev_pass = true;
+                        }
                     }
-                    movegen::Play::Exchange { .. } => {
-                        if prev_pass {
-                            realized += sign
-                                * (a.scaled_rack_score(&racks[mover ^ 1])
-                                    - a.scaled_rack_score(&racks[mover]))
-                                    as f32;
-                            ended = true;
-                        }
-                        prev_pass = true;
+                    mover ^= 1;
+                    sign = -sign;
+                    if ended {
+                        break;
                     }
                 }
-                mover ^= 1;
-                sign = -sign;
-                if ended {
-                    break;
+                if realized.to_bits() == v.to_bits() {
+                    ok += 1;
+                } else {
+                    bad += 1;
+                    println!(
+                        "PV-REPLAY MISMATCH [{name}] lean={lean}: solve={v} realized={realized} pvlen={}",
+                        pv.len()
+                    );
                 }
-            }
-            if realized.to_bits() == v.to_bits() {
-                ok += 1;
-            } else {
-                bad += 1;
-                println!(
-                    "PV-REPLAY MISMATCH [{name}]: solve={v} realized={realized} pvlen={}",
-                    pv.len()
-                );
             }
         }
         println!("pv-playout: {ok} ok, {bad} mismatches");
@@ -2121,83 +2158,95 @@ mod tests {
         let mut illegal = 0usize;
         let mut oob = 0usize;
         let mut pv: Vec<(f32, movegen::Play)> = Vec::new();
-        for (name, pos) in all_positions() {
-            let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
-            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-            let v = egs.solve(0);
-            egs.collect_pv(0, &mut pv);
+        let positions = all_positions();
+        for (lean, arm_tables) in &both_arms(&kwg, &gc) {
+            for (name, pos) in &positions {
+                let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                let v = egs.solve(0);
+                egs.collect_pv(0, &mut pv);
 
-            let a = gc.alphabet();
-            let board_pts: i32 = pos.board.iter().map(|&t| a.scaled_score(t)).sum();
-            let rack_pts = a.scaled_rack_score(&pos.racks[0]) + a.scaled_rack_score(&pos.racks[1]);
-            let cap = 4.0 * (board_pts + rack_pts) as f32 + 10000.0;
-            if v.abs() > cap {
-                oob += 1;
-                println!("VALUE OOB [{name}]: v={v} cap={cap}");
-            }
-
-            let mut board = pos.board.clone();
-            let mut racks = pos.racks.clone();
-            let mut mover = 0usize;
-            let mut prev_pass = false;
-            let mut ended = false;
-            for (_eq, play) in &pv {
-                match play {
-                    movegen::Play::Place {
-                        down,
-                        lane,
-                        idx,
-                        word,
-                        ..
-                    } => {
-                        let snapshot = movegen::BoardSnapshot {
-                            board_tiles: &board,
-                            game_config: &gc,
-                            kwg: &kwg,
-                            anagrams: None,
-                            rack_lengths: None,
-                            klv: &klv,
-                        };
-                        mg.gen_moves_raw_all_unsorted(
-                            &snapshot,
-                            &racks[mover],
-                            0,
-                            movegen::PassPolicy::AsACandidate,
-                        );
-                        let found = mg.plays.iter().any(|vm| {
-                            if let movegen::Play::Place {
-                                down: d2,
-                                lane: l2,
-                                idx: i2,
-                                word: w2,
-                                ..
-                            } = &vm.play
-                            {
-                                d2 == down && l2 == lane && i2 == idx && w2[..] == word[..]
-                            } else {
-                                false
-                            }
-                        });
-                        if !found {
-                            illegal += 1;
-                            println!("ILLEGAL PV PLAY [{name}] mover={mover}");
-                        }
-                        apply_place(&gc, &mut board, &mut racks[mover], *down, *lane, *idx, word);
-                        if racks[mover].is_empty() {
-                            ended = true;
-                        }
-                        prev_pass = false;
-                    }
-                    movegen::Play::Exchange { .. } => {
-                        if prev_pass {
-                            ended = true;
-                        }
-                        prev_pass = true;
-                    }
+                let a = gc.alphabet();
+                let board_pts: i32 = pos.board.iter().map(|&t| a.scaled_score(t)).sum();
+                let rack_pts =
+                    a.scaled_rack_score(&pos.racks[0]) + a.scaled_rack_score(&pos.racks[1]);
+                let cap = 4.0 * (board_pts + rack_pts) as f32 + 10000.0;
+                if v.abs() > cap {
+                    oob += 1;
+                    println!("VALUE OOB [{name}] lean={lean}: v={v} cap={cap}");
                 }
-                mover ^= 1;
-                if ended {
-                    break;
+
+                let mut board = pos.board.clone();
+                let mut racks = pos.racks.clone();
+                let mut mover = 0usize;
+                let mut prev_pass = false;
+                let mut ended = false;
+                for (_eq, play) in &pv {
+                    match play {
+                        movegen::Play::Place {
+                            down,
+                            lane,
+                            idx,
+                            word,
+                            ..
+                        } => {
+                            let snapshot = movegen::BoardSnapshot {
+                                board_tiles: &board,
+                                game_config: &gc,
+                                kwg: &kwg,
+                                anagrams: None,
+                                rack_lengths: None,
+                                klv: &klv,
+                            };
+                            mg.gen_moves_raw_all_unsorted(
+                                &snapshot,
+                                &racks[mover],
+                                0,
+                                movegen::PassPolicy::AsACandidate,
+                            );
+                            let found = mg.plays.iter().any(|vm| {
+                                if let movegen::Play::Place {
+                                    down: d2,
+                                    lane: l2,
+                                    idx: i2,
+                                    word: w2,
+                                    ..
+                                } = &vm.play
+                                {
+                                    d2 == down && l2 == lane && i2 == idx && w2[..] == word[..]
+                                } else {
+                                    false
+                                }
+                            });
+                            if !found {
+                                illegal += 1;
+                                println!("ILLEGAL PV PLAY [{name}] lean={lean} mover={mover}");
+                            }
+                            apply_place(
+                                &gc,
+                                &mut board,
+                                &mut racks[mover],
+                                *down,
+                                *lane,
+                                *idx,
+                                word,
+                            );
+                            if racks[mover].is_empty() {
+                                ended = true;
+                            }
+                            prev_pass = false;
+                        }
+                        movegen::Play::Exchange { .. } => {
+                            if prev_pass {
+                                ended = true;
+                            }
+                            prev_pass = true;
+                        }
+                    }
+                    mover ^= 1;
+                    if ended {
+                        break;
+                    }
                 }
             }
         }
@@ -2216,6 +2265,7 @@ mod tests {
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
 
         let bag_tiles: [u8; 4] = [1, 8, 20, 0];
+        let arms = both_arms(&kwg, &gc);
 
         let mut disagreements = 0usize;
         let mut total = 0usize;
@@ -2225,7 +2275,6 @@ mod tests {
         for (name, pos) in positions {
             for &t in &bag_tiles {
                 for mover in 0u8..2 {
-                    total += 1;
                     let refv = reference_one_in_bag(
                         &mut Reference {
                             gc: &gc,
@@ -2239,15 +2288,19 @@ mod tests {
                         t,
                         false,
                     );
-                    let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
-                    egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                    let solvev = egs.solve_one_in_bag(mover, t);
-                    if refv.to_bits() != solvev.to_bits() {
-                        disagreements += 1;
-                        println!(
-                            "DISAGREE [{name}] mover={mover} bag={t}: ref={refv} solve={solvev}\n   {}",
-                            describe(&gc, &pos)
-                        );
+                    for (lean, arm_tables) in &arms {
+                        total += 1;
+                        let mut egs =
+                            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                        egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                        let solvev = egs.solve_one_in_bag(mover, t);
+                        if refv.to_bits() != solvev.to_bits() {
+                            disagreements += 1;
+                            println!(
+                                "DISAGREE [{name}] lean={lean} mover={mover} bag={t}: ref={refv} solve={solvev}\n   {}",
+                                describe(&gc, &pos)
+                            );
+                        }
                     }
                 }
             }
@@ -2268,14 +2321,15 @@ mod tests {
 
         let board = empty_board();
         let racks = [vec![2u8, 2], vec![8u8, 20]];
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
 
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
 
         let v0 = egs.solve_one_in_bag(0, 2);
         assert_eq!(v0, -1000.0, "p0 forced-pass leftover should be -1000");
 
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
         let v1 = egs.solve_one_in_bag(1, 2);
         assert_eq!(v1, 1000.0, "p1 forced-pass leftover should be +1000");
@@ -2307,7 +2361,8 @@ mod tests {
             bag,
             false,
         );
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
         let solvev = egs.solve_one_in_bag(0, bag);
         assert_eq!(solvev.to_bits(), refv.to_bits(), "bag layer vs reference");
@@ -2330,6 +2385,7 @@ mod tests {
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
 
         let bag_tiles: [u8; 2] = [1, 0]; // A, blank
+        let arms = both_arms(&kwg, &gc);
 
         let mut disagreements = 0usize;
         let mut total = 0usize;
@@ -2341,7 +2397,6 @@ mod tests {
         for (name, pos) in positions {
             for &t in &bag_tiles {
                 for mover in 0u8..2 {
-                    total += 1;
                     let refv = reference_one_in_bag_ex(
                         &mut Reference {
                             gc: &gc,
@@ -2356,15 +2411,19 @@ mod tests {
                         0,
                         0,
                     );
-                    let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
-                    egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
-                    let solvev = egs.solve_one_in_bag(mover, t);
-                    if refv.to_bits() != solvev.to_bits() {
-                        disagreements += 1;
-                        println!(
-                            "DISAGREE [{name}] mover={mover} bag={t}: ref={refv} solve={solvev}\n   {}",
-                            describe(&gc, &pos)
-                        );
+                    for (lean, arm_tables) in &arms {
+                        total += 1;
+                        let mut egs =
+                            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables);
+                        egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                        let solvev = egs.solve_one_in_bag(mover, t);
+                        if refv.to_bits() != solvev.to_bits() {
+                            disagreements += 1;
+                            println!(
+                                "DISAGREE [{name}] lean={lean} mover={mover} bag={t}: ref={refv} solve={solvev}\n   {}",
+                                describe(&gc, &pos)
+                            );
+                        }
                     }
                 }
             }
@@ -2389,7 +2448,8 @@ mod tests {
         let racks = [vec![17u8], vec![1u8]]; // p0 = [Q], p1 = [A]
         let bag = 1u8; // one A in the bag
 
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
         let solvev = egs.solve_one_in_bag(0, bag);
 
@@ -2414,14 +2474,17 @@ mod tests {
         let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
         unseen_tally[8] = 1; // H
         unseen_tally[20] = 1; // T
-        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false);
+        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables);
         let result = egs
             .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
             .expect("the exchange test config forces an end and is solvable");
         assert_eq!(result.hypotheses.len(), 2);
 
         let gc_en = game_config::make_english_game_config();
-        let mut egs_en = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_en, &kwg);
+        let arm_tables_en = anagrams::ArmTables::build(&kwg, &gc_en, false);
+        let mut egs_en =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_en, &kwg, &arm_tables_en);
         assert!(
             egs_en
                 .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
@@ -2429,7 +2492,9 @@ mod tests {
         );
 
         let gc_bad = game_config::make_exchange_unsolvable_test_game_config();
-        let mut egs_bad = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_bad, &kwg);
+        let arm_tables_bad = anagrams::ArmTables::build(&kwg, &gc_bad, false);
+        let mut egs_bad =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_bad, &kwg, &arm_tables_bad);
         assert!(matches!(
             egs_bad.solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0),
             Err(super::PegUnsupported::ExchangeWithoutForcedEnd)
@@ -2446,6 +2511,7 @@ mod tests {
         let mut mg = movegen::KurniaMoveGenerator::new(&gc);
         let a = gc.alphabet();
         let alen = a.len() as usize;
+        let arms = both_arms(&kwg, &gc);
 
         let committed = |board: &[u8],
                          mover_rack: &[u8],
@@ -2595,54 +2661,60 @@ mod tests {
                             unseen.push((tj, 1));
                         }
 
-                        let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
-                        let got = egs
-                            .solve_peg_one_in_bag(0, board, mrack, &unseen_tally, 0.0)
-                            .expect("english one-in-bag is always solvable");
-
                         let (ref_win, ref_marg, _ref_place, _ref_label) =
                             committed(board, mrack, &unseen, &mut mg);
 
-                        let mut egs2 = EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg);
-                        let clair =
-                            egs2.peg_clairvoyant_aggregate(0, board, mrack, &unseen_tally, 0.0);
+                        for (lean, arm_tables) in &arms {
+                            let mut egs = EndgameSolver::<kwg::Node22, kwg::Node22>::new(
+                                &gc, &kwg, arm_tables,
+                            );
+                            let got = egs
+                                .solve_peg_one_in_bag(0, board, mrack, &unseen_tally, 0.0)
+                                .expect("english one-in-bag is always solvable");
 
-                        assert!(got.committed, "english path must be committed");
-                        assert!(got.best_move.is_some(), "committed result must name a move");
-                        assert!(
-                            (got.win_pct - ref_win).abs() < 1e-6,
-                            "[{bname}] mover=[{}] unseen={unseen:?}: committed solver win% {} != reference {}",
-                            a.fmt_rack(mrack),
-                            got.win_pct,
-                            ref_win,
-                        );
-                        assert!(
-                            (got.expected_margin - ref_marg).abs() < 1e-1,
-                            "[{bname}] mover=[{}] unseen={unseen:?}: committed solver margin {} != reference {}",
-                            a.fmt_rack(mrack),
-                            got.expected_margin,
-                            ref_marg,
-                        );
-                        assert!(
-                            got.win_pct <= clair.win_pct + 1e-6,
-                            "[{bname}] mover=[{}] unseen={unseen:?}: committed win% {} exceeds clairvoyant bound {}",
-                            a.fmt_rack(mrack),
-                            got.win_pct,
-                            clair.win_pct,
-                        );
-                        let gap = clair.win_pct - got.win_pct;
-                        if gap > 1e-6 {
-                            n_gap += 1;
-                            if gap > worst_gap {
-                                worst_gap = gap;
-                            }
-                            n_gap_place +=
-                                matches!(got.best_move, Some(PegMove::Place(_))) as usize;
-                            if report.lines().count() < 25 {
-                                report.push_str(&format!(
-                                    "gap win%={gap:.3} [{bname}] mover=[{}] unseen={unseen:?}: clairvoyant {:.3} vs committed {:.3}\n",
-                                    a.fmt_rack(mrack), clair.win_pct, got.win_pct,
-                                ));
+                            let mut egs2 = EndgameSolver::<kwg::Node22, kwg::Node22>::new(
+                                &gc, &kwg, arm_tables,
+                            );
+                            let clair =
+                                egs2.peg_clairvoyant_aggregate(0, board, mrack, &unseen_tally, 0.0);
+
+                            assert!(got.committed, "english path must be committed");
+                            assert!(got.best_move.is_some(), "committed result must name a move");
+                            assert!(
+                                (got.win_pct - ref_win).abs() < 1e-6,
+                                "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed solver win% {} != reference {}",
+                                a.fmt_rack(mrack),
+                                got.win_pct,
+                                ref_win,
+                            );
+                            assert!(
+                                (got.expected_margin - ref_marg).abs() < 1e-1,
+                                "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed solver margin {} != reference {}",
+                                a.fmt_rack(mrack),
+                                got.expected_margin,
+                                ref_marg,
+                            );
+                            assert!(
+                                got.win_pct <= clair.win_pct + 1e-6,
+                                "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed win% {} exceeds clairvoyant bound {}",
+                                a.fmt_rack(mrack),
+                                got.win_pct,
+                                clair.win_pct,
+                            );
+                            let gap = clair.win_pct - got.win_pct;
+                            if gap > 1e-6 {
+                                n_gap += 1;
+                                if gap > worst_gap {
+                                    worst_gap = gap;
+                                }
+                                n_gap_place +=
+                                    matches!(got.best_move, Some(PegMove::Place(_))) as usize;
+                                if report.lines().count() < 25 {
+                                    report.push_str(&format!(
+                                        "gap win%={gap:.3} [{bname}] lean={lean} mover=[{}] unseen={unseen:?}: clairvoyant {:.3} vs committed {:.3}\n",
+                                        a.fmt_rack(mrack), clair.win_pct, got.win_pct,
+                                    ));
+                                }
                             }
                         }
                     }

@@ -382,11 +382,8 @@ fn run<N: kwg::Node>(
 
     let anagrams = wolges::anagrams::Anagrams::build_for_config(kwg, game_config)
         .ok_or("this alphabet does not lay out a key")?;
-    let rack_lengths = wolges::anagrams::RackLengths::build(
-        kwg,
-        anagrams.layout().clone(),
-        game_config.rack_size() as usize + 1,
-    );
+    let rack_lengths = wolges::anagrams::RackLengths::build_for_config(kwg, game_config)
+        .ok_or("this alphabet does not lay out a key")?;
     let mut disagreements = 0usize;
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
         let board_tiles = fen_parser.parse(case.fen)?;
