@@ -362,6 +362,57 @@ struct CensusBoard {
 }
 
 #[derive(clap::Args)]
+struct Infer {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(help = "the board before the move, as a fen")]
+    board: String,
+    #[arg(
+        help = "the move: \"8H QI\" (across from row 8, column H) or \"H8 Q.I\" (down), with . for a tile already on the board and lowercase for a blank; \"exch 3\"; or \"pass\""
+    )]
+    play: String,
+    #[arg(
+        long,
+        help = "the rack of the player who watched the move, such as AEINRST: none of its tiles is the mover's"
+    )]
+    rack: Option<String>,
+    #[arg(
+        long,
+        help = "how fuzzily this klv's equity predicts the move: the points of equity a move falls below a rack's best that make that rack e (2.718) times less likely to have made it; 0 keeps only the racks for which the move was best by this klv (infer-fit measures it for a lexicon and a mover)"
+    )]
+    fuzz: f64,
+    #[arg(long, default_value_t = 20, help = "how many racks to list")]
+    racks: usize,
+}
+
+#[derive(clap::Args)]
+struct InferFit {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves both players use (- for none)")]
+    klv: String,
+    #[arg(default_value_t = 100)]
+    games: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = SeatPicker::Simmer,
+        help = "how the mover picks its moves"
+    )]
+    mover: SeatPicker,
+    #[arg(long, default_value_t = move_picker::DEFAULT_NUM_SIM_ITERS, help = "rollouts a move")]
+    iters: u64,
+    #[arg(long, help = "generate with the lean arm")]
+    lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
+}
+
+#[derive(clap::Args)]
 struct Dynaleaves {
     #[arg(help = "a --full leave table")]
     klv: String,
@@ -524,6 +575,14 @@ enum Task {
     )]
     CensusBoard(CensusBoard),
     #[command(
+        about = "the racks the player who made one move could have held, each weighed by its chance to be dealt and by the equity the move gives up for it"
+    )]
+    Infer(Infer),
+    #[command(
+        about = "play games and find the fuzz of infer under which the movers' true racks were likeliest"
+    )]
+    InferFit(InferFit),
+    #[command(
         about = "what the pool reweight does to one rack on one board: the static and dynamic value of every kept subrack"
     )]
     Dynaleaves(Dynaleaves),
@@ -575,7 +634,7 @@ impl Task {
     fn needs_two_players(&self) -> bool {
         matches!(
             self,
-            Task::Compare(_) | Task::Winpct(_) | Task::WinpctEval(_)
+            Task::Compare(_) | Task::Winpct(_) | Task::WinpctEval(_) | Task::InferFit(_)
         )
     }
 }
@@ -827,6 +886,29 @@ fn run<N: kwg::Node + Sync + Send>(
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
             census_one_board(game_config, kwg, klv, &a.board, &a.racks)
+        }
+        Task::Infer(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = read_klv(&game_config, &a.klv)?;
+            infer_one_move(game_config, kwg, klv, &a)
+        }
+        Task::InferFit(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = read_klv(&game_config, &a.klv)?;
+            infer_fit(
+                game_config,
+                kwg,
+                klv,
+                InferFitParams {
+                    num_games: a.games,
+                    seed: a.seed,
+                    threads,
+                    num_sim_iters: a.iters,
+                    mover: a.mover,
+                    lean: a.lean,
+                    quiet: a.quiet,
+                },
+            )
         }
         Task::Dynaleaves(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
@@ -5131,6 +5213,1026 @@ fn best_split(
     kept[tile] += 1;
 }
 
+// what a move shows of the tiles it came from: the tiles it placed (none for a
+// pass), or only how many it exchanged
+enum MoveTiles<'a> {
+    Placed(&'a [u8]),
+    Exchanged(usize),
+}
+
+// ln C(n, k) for every n up to a pool's size
+struct LnBinom {
+    ln_fact: Vec<f64>,
+}
+
+impl LnBinom {
+    #[inline]
+    fn new(max_n: usize) -> Self {
+        let mut ln_fact = Vec::with_capacity(max_n + 1);
+        ln_fact.push(0.0);
+        for i in 1..=max_n {
+            ln_fact.push(ln_fact[i - 1] + (i as f64).ln());
+        }
+        Self { ln_fact }
+    }
+
+    #[inline(always)]
+    fn ln_binom(&self, n: usize, k: usize) -> f64 {
+        self.ln_fact[n] - self.ln_fact[k] - self.ln_fact[n - k]
+    }
+}
+
+// every tally of m tiles that avail holds, to f; cap[t] is how many tiles avail
+// holds from letter t on
+#[inline]
+fn each_tally_of_size(
+    avail: &[u8],
+    cap: &[usize],
+    t: usize,
+    left: usize,
+    cur: &mut [u8],
+    f: &mut impl FnMut(&[u8]),
+) {
+    if t == avail.len() {
+        if left == 0 {
+            f(cur);
+        }
+        return;
+    }
+    if cap[t] < left {
+        return;
+    }
+    for c in 0..=(avail[t] as usize).min(left) {
+        cur[t] = c as u8;
+        each_tally_of_size(avail, cap, t + 1, left - c, cur, f);
+    }
+    cur[t] = 0;
+}
+
+// the board's half of an inference: what each multiset of the pool, played, can
+// score at best (the census sheet), and what each multiset is worth kept
+struct InferSheet<'a> {
+    lat: &'a census::MultisetLattice,
+    sheet: &'a [i32],
+    leave: &'a [i32],
+    ln_binom: &'a LnBinom,
+}
+
+// every full rack the pool can deal that could have made the move, to f(rank of
+// the rack, ln of its chance to be dealt, the equity it gives up by making the
+// move). The gap is the rack's best equity on the board minus the move's: the
+// move's value plus what it keeps, for a placed move; the best that exchanging
+// so many tiles keeps, for an exchange. The best is over the moves that are not
+// a pass, and the move itself: a hasty mover never passes while it can move, a
+// simmer may, so a pass gives up the rack's best move over keeping it all, and
+// nothing when the rack had no move. xsheet is scratch the size of the lattice.
+#[inline]
+fn weigh_racks(
+    is: &InferSheet<'_>,
+    pool: &[u8],
+    tiles: MoveTiles<'_>,
+    move_value: i32,
+    xsheet: &mut Vec<i32>,
+    f: &mut impl FnMut(u32, f64, i32),
+) {
+    let lat = is.lat;
+    let num_letters = lat.num_letters();
+    let rack_size = lat.rack_size();
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+    let ln_deals = is.ln_binom.ln_binom(pool_size, rack_size);
+    let mut avail = pool.to_vec();
+    let mut rack = vec![0u8; num_letters];
+    let mut cur = vec![0u8; num_letters];
+    let none_placed = vec![0u8; num_letters];
+    let (placed, left) = match tiles {
+        MoveTiles::Placed(placed) => {
+            for (a, &p) in avail.iter_mut().zip(placed) {
+                *a -= p;
+            }
+            (
+                placed,
+                rack_size - placed.iter().map(|&c| c as usize).sum::<usize>(),
+            )
+        }
+        MoveTiles::Exchanged(n) => {
+            // exchanging n tiles scores 0 and keeps the rest: a sheet that is 0
+            // for every n tiles and unplayable for any other count
+            xsheet.clear();
+            xsheet.resize(lat.len(), census::UNPLAYABLE);
+            xsheet[lat.size_start(n)..lat.size_start(n + 1)]
+                .iter_mut()
+                .for_each(|v| *v = 0);
+            (&none_placed[..], rack_size)
+        }
+    };
+    let passed = matches!(tiles, MoveTiles::Placed(placed) if placed.iter().all(|&c| c == 0));
+    let mut cap = vec![0usize; num_letters + 1];
+    for t in (0..num_letters).rev() {
+        cap[t] = cap[t + 1] + avail[t] as usize;
+    }
+    each_tally_of_size(&avail, &cap, 0, left, &mut cur, &mut |drawn| {
+        for (r, (&d, &p)) in rack.iter_mut().zip(drawn.iter().zip(placed)) {
+            *r = d + p;
+        }
+        let rank = lat.rank(&rack);
+        let mut best = census::best_equity_of(lat, is.sheet, is.leave, &rack);
+        if passed {
+            best = best.max(is.leave[rank as usize]);
+        }
+        let value = match tiles {
+            MoveTiles::Placed(_) => move_value + is.leave[lat.rank(drawn) as usize],
+            MoveTiles::Exchanged(_) => census::best_equity_of(lat, xsheet, is.leave, &rack),
+        };
+        let ln_prior = rack
+            .iter()
+            .zip(pool)
+            .map(|(&r, &u)| is.ln_binom.ln_binom(u as usize, r as usize))
+            .sum::<f64>()
+            - ln_deals;
+        f(rank, ln_prior, best - value);
+    });
+}
+
+// the census sheet for the pool on this board: every multiset of the pool, the
+// best it can score played, floored at 0 when it could be exchanged instead.
+// Playing nothing is no entry at all: weigh_racks weighs a pass itself.
+#[inline]
+fn infer_sheet_for<N: kwg::Node, L: kwg::Node>(
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_tiles: &[u8],
+    tables: SpellTables<'_, N, L>,
+    pool: &[u8],
+    can_exchange: bool,
+    scratch: (&mut Vec<u8>, &mut Vec<(u8, i32)>),
+    sheet: &mut Vec<i32>,
+) {
+    let lat = tables.lat;
+    let game_config = tables.game_config;
+    let rack_size = lat.rack_size();
+    sheet.clear();
+    sheet.resize(lat.len(), if can_exchange { 0 } else { i32::MIN / 4 });
+    build_sheet_spell_once(
+        move_generator,
+        board_tiles,
+        tables,
+        SpellPool {
+            unseen_tally: pool,
+            num_blanks_eff: (pool[0] as usize).min(rack_size),
+            rack_size,
+            phase: BoardPhase::of_board(board_tiles, game_config),
+        },
+        scratch.0,
+        scratch.1,
+        sheet,
+    );
+    let empty = vec![0u8; lat.num_letters()];
+    sheet[lat.rank(&empty) as usize] = i32::MIN / 4;
+}
+
+// the tiles a move places, as a tally (a blank as tile 0), or how many it
+// exchanges; and its value as the census sheet values it: its score, with the
+// opening's adjustment
+#[inline]
+fn move_tiles_and_value<N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    play: &movegen::Play,
+    placed: &mut [u8],
+) -> (Option<usize>, i32) {
+    placed.iter_mut().for_each(|c| *c = 0);
+    match play {
+        movegen::Play::Exchange { tiles } => {
+            if tiles.is_empty() {
+                (None, 0)
+            } else {
+                (Some(tiles.len()), 0)
+            }
+        }
+        movegen::Play::Place {
+            down, idx, word, ..
+        } => {
+            for &tile in word.iter() {
+                if tile != 0 {
+                    placed[if tile & 0x80 != 0 { 0 } else { tile as usize }] += 1;
+                }
+            }
+            let game_config = board_snapshot.game_config;
+            let phase = BoardPhase::of_board(board_snapshot.board_tiles, game_config);
+            (
+                None,
+                play_scorer::PlayScorer::new().compute_score(board_snapshot, play)
+                    + opening_adjustment(phase, game_config, *down, *idx, word),
+            )
+        }
+    }
+}
+
+// a move written as "8H QI" (across from row 8, column H), "H8 Q.I" (down),
+// "exch 3", or "pass"; in the word, . (or the letter already there) for a tile
+// on the board, lowercase for a blank
+#[inline]
+fn parse_infer_play<N: kwg::Node, L: kwg::Node>(
+    board_snapshot: &movegen::BoardSnapshot<'_, N, L>,
+    s: &str,
+) -> error::Returns<movegen::Play> {
+    let game_config = board_snapshot.game_config;
+    let board_tiles = board_snapshot.board_tiles;
+    let mut tokens = s.split_whitespace();
+    let first = tokens.next().ok_or("the move is empty")?;
+    let second = tokens.next();
+    if tokens.next().is_some() {
+        wolges::return_error!(format!("{s:?}: a move is two words at most"));
+    }
+    match (first, second) {
+        ("pass", None) => Ok(movegen::Play::Exchange {
+            tiles: [][..].into(),
+        }),
+        ("exch", Some(n)) => {
+            let n = usize::from_str(n).map_err(|e| format!("{s:?}: {e}"))?;
+            if !(1..=game_config.rack_size() as usize).contains(&n) {
+                wolges::return_error!(format!("{s:?}: cannot exchange {n} tiles"));
+            }
+            // only the count is seen; the tiles stand in for it
+            Ok(movegen::Play::Exchange {
+                tiles: vec![0u8; n][..].into(),
+            })
+        }
+        (coord, Some(word_str)) => {
+            let dim = game_config.board_layout().dim();
+            let b = coord.as_bytes();
+            let digits = b.iter().take_while(|c| c.is_ascii_digit()).count();
+            let (down, row_str, col_str) = if digits > 0 {
+                (false, &coord[..digits], &coord[digits..])
+            } else {
+                let letters = b.iter().take_while(|c| c.is_ascii_alphabetic()).count();
+                (true, &coord[letters..], &coord[..letters])
+            };
+            // digits only: from_str would take a sign
+            let row = (!row_str.is_empty() && row_str.bytes().all(|c| c.is_ascii_digit()))
+                .then(|| i8::from_str(row_str).ok())
+                .flatten()
+                .filter(|r| (1..=dim.rows).contains(r))
+                .map(|r| r - 1)
+                .ok_or_else(|| format!("{coord:?} is not a square"))?;
+            let col = display::str_to_column_usize_ignore_case(col_str.as_bytes())
+                .and_then(|c| i8::try_from(c).ok())
+                .filter(|c| (0..dim.cols).contains(c))
+                .ok_or_else(|| format!("{coord:?} is not a square"))?;
+            let (lane, idx) = if down { (col, row) } else { (row, col) };
+            let reader = alphabet::AlphabetReader::new_for_plays(game_config.alphabet());
+            let wb = word_str.as_bytes();
+            let lane_len = (if down { dim.rows } else { dim.cols }) as isize;
+            let mut word = Vec::new();
+            let mut ix = 0;
+            while ix < wb.len() {
+                let at = idx as isize + word.len() as isize;
+                if at >= lane_len {
+                    wolges::return_error!(format!("{s:?} runs off the board"));
+                }
+                let (r, c) = if down {
+                    (at as i8, lane)
+                } else {
+                    (lane, at as i8)
+                };
+                let on_board = board_tiles[dim.at_row_col(r, c)];
+                if wb[ix] == b'.' {
+                    if on_board == 0 {
+                        wolges::return_error!(format!(
+                            "{s:?}: no tile under its . at {}",
+                            word.len() + 1
+                        ));
+                    }
+                    word.push(0);
+                    ix += 1;
+                    continue;
+                }
+                let (tile, end) = reader
+                    .next_tile(wb, ix)
+                    .ok_or_else(|| format!("{s:?}: no tile at {ix}"))?;
+                if on_board == 0 {
+                    word.push(tile);
+                } else if on_board == tile {
+                    word.push(0);
+                } else {
+                    wolges::return_error!(format!(
+                        "{s:?} crosses another tile at {}",
+                        word.len() + 1
+                    ));
+                }
+                ix = end;
+            }
+            if word.iter().all(|&t| t == 0) {
+                wolges::return_error!(format!("{s:?} places no tile"));
+            }
+            // the word as written must be the whole word: one tile alone is its
+            // word only the other way, and a tile just before or after it would
+            // be part of it, so either would score the move wrong
+            if word.len() < 2 {
+                wolges::return_error!(format!(
+                    "{s:?}: write a one-tile move along the word it makes"
+                ));
+            }
+            let square = |at: isize| {
+                let at = at as i8;
+                board_tiles[if down {
+                    dim.at_row_col(at, lane)
+                } else {
+                    dim.at_row_col(lane, at)
+                }]
+            };
+            let before = idx as isize - 1;
+            let after = idx as isize + word.len() as isize;
+            if (before >= 0 && square(before) != 0) || (after < lane_len && square(after) != 0) {
+                wolges::return_error!(format!("{s:?} leaves out a tile its word runs into"));
+            }
+            let mut play = movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word: word[..].into(),
+                score: 0,
+            };
+            let scored = play_scorer::PlayScorer::new().compute_score(board_snapshot, &play);
+            if let movegen::Play::Place { score, .. } = &mut play {
+                *score = scored;
+            }
+            Ok(play)
+        }
+        _ => wolges::return_error!(format!(
+            "{s:?} is not a move: a coordinate and a word, exch <n>, or pass"
+        )),
+    }
+}
+
+// fuzz, given in points, in the equity's own units. 0 is the exact limit, so
+// only NaN and a fuzz below 0 are refused.
+#[inline]
+fn equity_fuzz(fuzz: f64) -> error::Returns<f64> {
+    if fuzz.is_nan() || fuzz < 0.0 {
+        wolges::return_error!(format!("fuzz {fuzz} is not 0 or more"));
+    }
+    Ok(fuzz * equity::SCALE as f64)
+}
+
+// for a rack that gives up gap, where g0 is the smallest gap of the racks that
+// make the move: the log of the factor on its chance to be dealt, which is
+// -(gap - g0) / fuzz, a gap below 0 counting as 0. At fuzz 0, its limit: 0 at
+// the smallest gap, and minus infinity above it.
+#[inline(always)]
+fn fuzz_ln_weight(gap: i32, g0: i32, fuzz: f64) -> f64 {
+    let d = gap.max(0) - g0;
+    if fuzz == 0.0 {
+        if d == 0 { 0.0 } else { f64::NEG_INFINITY }
+    } else {
+        -(d as f64) / fuzz
+    }
+}
+
+// each rack (rank, ln of its chance to be dealt, gap) as (weight, chance to be
+// dealt, rank, gap); each weight is taken against the smallest gap, so none
+// underflows to 0
+#[inline]
+fn weigh_by_fuzz(racks: &[(u32, f64, i32)], fuzz: f64) -> Vec<(f64, f64, u32, i32)> {
+    let g0 = racks
+        .iter()
+        .map(|&(_, _, gap)| gap.max(0))
+        .min()
+        .unwrap_or(0);
+    racks
+        .iter()
+        .map(|&(rank, ln_prior, gap)| {
+            let prior = ln_prior.exp();
+            (
+                prior * fuzz_ln_weight(gap, g0, fuzz).exp(),
+                prior,
+                rank,
+                gap,
+            )
+        })
+        .collect()
+}
+
+// what one move says of the rack that made it: every rack the pool could have
+// dealt the mover, weighed by its chance to be dealt and by how far the move
+// falls short of the rack's best (exp(-gap / fuzz))
+#[inline]
+fn infer_one_move<N: kwg::Node, L: kwg::Node>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    params: &Infer,
+) -> error::Returns<()> {
+    let alphabet = game_config.alphabet();
+    let board_layout = game_config.board_layout();
+    let num_letters = alphabet.len() as usize;
+    let rack_size = game_config.rack_size() as usize;
+    let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
+    let board_tiles = fen_parser.parse(&params.board)?.to_vec();
+    let mut pool = game_config.tiles_off_board(&board_tiles)?;
+    let bag = if let Some(rack_str) = &params.rack {
+        let mut rack = Vec::new();
+        alphabet::AlphabetReader::new_for_racks(alphabet).set_word(rack_str, &mut rack)?;
+        game_config
+            .take_rack(&mut pool, &rack)
+            .map_err(|e| format!("{rack_str}: {e}"))?;
+        pool.iter().map(|&c| c as i64).sum::<i64>() - rack_size as i64
+    } else {
+        bag_size(&board_tiles, &game_config)
+    };
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+    if bag <= 0 {
+        wolges::return_error!(if params.rack.is_some() {
+            "the bag is empty: the watcher knows the mover's rack, the pool itself".to_string()
+        } else {
+            "the bag is empty: the watcher's --rack decides the mover's".to_string()
+        });
+    }
+    let fuzz = equity_fuzz(params.fuzz)?;
+    let board_snapshot = movegen::BoardSnapshot {
+        board_tiles: &board_tiles,
+        game_config: &game_config,
+        kwg: &kwg,
+        anagrams: None,
+        rack_lengths: None,
+        klv: &klv,
+    };
+    let play = parse_infer_play(&board_snapshot, &params.play)?;
+    let mut placed = vec![0u8; num_letters];
+    let (exchanged, move_value) = move_tiles_and_value(&board_snapshot, &play, &mut placed);
+    let num_placed: usize = placed.iter().map(|&c| c as usize).sum();
+    if num_placed > rack_size {
+        wolges::return_error!(format!(
+            "{:?} places {num_placed} tiles, more than a rack holds",
+            params.play
+        ));
+    }
+    if placed.iter().zip(&pool).any(|(&p, &u)| p > u) {
+        wolges::return_error!(format!(
+            "{:?} places tiles the pool does not hold",
+            params.play
+        ));
+    }
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
+    let mut leave = vec![0i32; lat.len()];
+    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    let ln_binom = LnBinom::new(pool_size);
+    let can_exchange = bag >= game_config.exchange_tile_limit() as i64;
+    if exchanged.is_some() && !can_exchange {
+        wolges::return_error!(format!("{bag} in the bag is too few to exchange"));
+    }
+    let mut sheet = Vec::new();
+    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let (mut movegen_rack, mut blank_deltas) = (Vec::new(), Vec::new());
+    let t0 = std::time::Instant::now();
+    infer_sheet_for(
+        &mut move_generator,
+        &board_tiles,
+        SpellTables {
+            game_config: &game_config,
+            kwg: &kwg,
+            klv: &klv,
+            lat: &lat,
+        },
+        &pool,
+        can_exchange,
+        (&mut movegen_rack, &mut blank_deltas),
+        &mut sheet,
+    );
+    let sheet_elapsed = t0.elapsed();
+    let tiles = match exchanged {
+        Some(n) => MoveTiles::Exchanged(n),
+        None => MoveTiles::Placed(&placed),
+    };
+    let is = InferSheet {
+        lat: &lat,
+        sheet: &sheet,
+        leave: &leave,
+        ln_binom: &ln_binom,
+    };
+    let mut xsheet = Vec::new();
+    let mut racks = Vec::new();
+    weigh_racks(
+        &is,
+        &pool,
+        tiles,
+        move_value,
+        &mut xsheet,
+        &mut |rank, ln_prior, gap| racks.push((rank, ln_prior, gap)),
+    );
+    if racks.is_empty() {
+        wolges::return_error!("no rack the pool can deal makes this move".to_string());
+    }
+    let mut weighed = weigh_by_fuzz(&racks, fuzz);
+    let num_short = racks.iter().filter(|&&(_, _, gap)| gap < 0).count();
+    let mut z = 0.0f64;
+    let mut z_prior = 0.0f64;
+    for &(w, prior, ..) in &weighed {
+        z += w;
+        z_prior += prior;
+    }
+    weighed.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.2.cmp(&b.2)));
+    let effective = z * z / weighed.iter().map(|&(w, ..)| w * w).sum::<f64>();
+    writeln!(
+        std::io::stdout(),
+        "{} tiles on the board, {pool_size} unseen by the watcher, {bag} in the bag; the sheet took {sheet_elapsed:?}",
+        board_tiles.iter().filter(|&&t| t != 0).count(),
+    )?;
+    let shown_move = match &play {
+        movegen::Play::Exchange { tiles } if tiles.is_empty() => "pass".to_string(),
+        movegen::Play::Exchange { tiles } => format!("exch {}", tiles.len()),
+        movegen::Play::Place { .. } => format!(
+            "{}, value {:.3}",
+            play.fmt(&board_snapshot),
+            equity::Equity::new(move_value).as_f64()
+        ),
+    };
+    writeln!(
+        std::io::stdout(),
+        "{shown_move}: {} racks could have made it, {effective:.1} of them in effect at fuzz {}",
+        racks.len(),
+        params.fuzz,
+    )?;
+    if num_short > 0 {
+        writeln!(
+            std::io::stdout(),
+            "  {num_short} racks have a best below the move itself: the sheet misses something"
+        )?;
+    }
+    let mut tally = vec![0u8; num_letters];
+    let mut expect = vec![0.0f64; num_letters];
+    let mut expect_prior = vec![0.0f64; num_letters];
+    for &(w, prior, rank, _) in &weighed {
+        lat.unrank_into(rank as usize, &mut tally);
+        for (((e, e_prior), &r), &p) in expect
+            .iter_mut()
+            .zip(expect_prior.iter_mut())
+            .zip(&tally)
+            .zip(&placed)
+        {
+            let k = (r - p) as f64;
+            *e += w / z * k;
+            *e_prior += prior / z_prior * k;
+        }
+    }
+    writeln!(
+        std::io::stdout(),
+        "  {:<10} {:>8} {:>8} {:>9}",
+        if exchanged.is_some() { "rack" } else { "kept" },
+        "chance",
+        "dealt",
+        "gap",
+    )?;
+    for &(w, prior, rank, gap) in weighed.iter().take(params.racks) {
+        lat.unrank_into(rank as usize, &mut tally);
+        let mut shown = String::new();
+        for (t, (&r, &p)) in tally.iter().zip(&placed).enumerate() {
+            for _ in p..r {
+                shown.push_str(alphabet.of_rack(t as u8).unwrap());
+            }
+        }
+        if shown.is_empty() {
+            shown.push('-');
+        }
+        writeln!(
+            std::io::stdout(),
+            "  {shown:<10} {:>7.3}% {:>7.3}% {:>9.3}",
+            100.0 * w / z,
+            100.0 * prior / z_prior,
+            equity::Equity::new(gap).as_f64(),
+        )?;
+    }
+    writeln!(
+        std::io::stdout(),
+        "  each letter the mover {}: expected count, then as the pool alone deals",
+        if exchanged.is_some() { "held" } else { "kept" },
+    )?;
+    let mut line = String::new();
+    for (t, ((&u, e), e_prior)) in pool.iter().zip(&expect).zip(&expect_prior).enumerate() {
+        if u > 0 {
+            write!(
+                line,
+                " {}={e:.2}/{e_prior:.2}",
+                alphabet.of_rack(t as u8).unwrap(),
+            )?;
+        }
+    }
+    writeln!(std::io::stdout(), " {line}")?;
+    Ok(())
+}
+
+// one move the fit saw (game and turn): the racks the pool could have dealt the
+// mover, summed by the equity each gives up (gap ascending, each with its
+// racks' chance to be dealt), and the true rack's chance and gap
+struct FitMove {
+    at: (u64, u32),
+    buckets: Vec<(i32, f64)>,
+    true_prior: f64,
+    true_gap: i32,
+    num_short: usize,
+    kind: MoveKind,
+}
+
+#[derive(PartialEq)]
+enum MoveKind {
+    Placed,
+    Exchanged,
+    Passed,
+}
+
+// the log of the chance that each true rack made its move, summed over the
+// moves: exp(-gap / fuzz) times the chance to be dealt, over the same for every
+// rack the pool could have dealt. At fuzz 0 it is minus infinity once a true
+// rack gave up more than the smallest gap.
+#[inline]
+fn fit_log_likelihood(moves: &[FitMove], fuzz: f64) -> f64 {
+    let fuzz = fuzz * equity::SCALE as f64;
+    moves
+        .iter()
+        .map(|m| {
+            let g0 = m.buckets[0].0.max(0);
+            let z: f64 = m
+                .buckets
+                .iter()
+                .map(|&(g, s)| s * fuzz_ln_weight(g, g0, fuzz).exp())
+                .sum();
+            m.true_prior.ln() + fuzz_ln_weight(m.true_gap, g0, fuzz) - z.ln()
+        })
+        .sum()
+}
+
+struct InferFitParams {
+    num_games: u64,
+    seed: Option<u64>,
+    threads: usize,
+    num_sim_iters: u64,
+    mover: SeatPicker,
+    lean: bool,
+    quiet: bool,
+}
+
+// play games, the mover against a hasty watcher, and at every move the mover
+// makes while the bag holds tiles weigh every rack the watcher cannot rule out,
+// as infer does; then the fuzz under which the true racks were likeliest
+#[inline]
+fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    InferFitParams {
+        num_games,
+        seed,
+        threads,
+        num_sim_iters,
+        mover,
+        lean,
+        quiet,
+    }: InferFitParams,
+) -> error::Returns<()> {
+    let seed = seed_or_random(seed)?;
+    writeln!(std::io::stdout(), "seed: {seed}")?;
+    let num_letters = game_config.alphabet().len() as usize;
+    let rack_size = game_config.rack_size() as usize;
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
+    let mut leave = vec![0i32; lat.len()];
+    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    let ln_binom = LnBinom::new(game_config.alphabet().num_tiles() as usize);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
+    let dyn_ctx = matches!(mover, SeatPicker::Dynamic).then(|| {
+        (
+            census::AddTable::new_with_threads(&lat, threads),
+            full_rack_values(&lat, &klv),
+        )
+    });
+    let dyn_ref = dyn_ctx.as_ref().map(|(add, full_v)| klv::DynamicLeavesRef {
+        lat: &lat,
+        add,
+        full_v,
+        min_keep: 0,
+    });
+    writeln!(
+        std::io::stdout(),
+        "infer-fit: the mover {}{}, the watcher hasty; {num_games} games on the {} arm",
+        picker_name(mover),
+        if matches!(mover, SeatPicker::Simmer) {
+            format!(" ({num_sim_iters} rollouts a move)")
+        } else {
+            String::new()
+        },
+        if lean { "lean" } else { "unadorned" },
+    )?;
+    let t0 = std::time::Instant::now();
+    let claimed_games = std::sync::atomic::AtomicU64::new(0);
+    let finished_games = std::sync::atomic::AtomicU64::new(0);
+    let tick = std::sync::atomic::AtomicU64::new(0);
+    let weighed = std::sync::atomic::AtomicU64::new(0);
+    let mut moves = std::thread::scope(|s| -> error::Returns<Vec<FitMove>> {
+        let mut thread_handles = Vec::new();
+        for _ in 0..threads {
+            let game_config = &game_config;
+            let kwg = &kwg;
+            let klv = &klv;
+            let arm_tables = &arm_tables;
+            let claimed_games = &claimed_games;
+            let (finished_games, tick, weighed) = (&finished_games, &tick, &weighed);
+            // each move's own sheet goes in at the move
+            let is = InferSheet {
+                lat: &lat,
+                sheet: &[],
+                leave: &leave,
+                ln_binom: &ln_binom,
+            };
+            thread_handles.push(s.spawn(move || -> error::Returns<Vec<FitMove>> {
+                let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+                let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
+                let mut driver = seat_picker(
+                    mover,
+                    game_config,
+                    kwg,
+                    arm_tables,
+                    klv,
+                    dyn_ref,
+                    move_picker::SimmerParams {
+                        num_sim_iters,
+                        sim_threads: 1,
+                        win_pct_table: None,
+                    },
+                );
+                let mut game_state = game_state::GameState::new(game_config);
+                let mut final_scores = vec![0i32; game_config.num_players() as usize];
+                let (mut sheet, mut xsheet) = (Vec::new(), Vec::new());
+                let (mut movegen_rack, mut blank_deltas) = (Vec::new(), Vec::new());
+                let mut placed = vec![0u8; num_letters];
+                let mut true_tally = vec![0u8; num_letters];
+                let mut racks = Vec::new();
+                let mut out = Vec::new();
+                loop {
+                    let game_idx = claimed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if game_idx >= num_games {
+                        break;
+                    }
+                    let mut rng = GameRng::from_stream(seed, game_idx);
+                    game_state.reset_and_draw_tiles(game_config, &mut rng);
+                    let mut num_turns = 0u32;
+                    loop {
+                        let is_mover = game_state.turn == 0;
+                        let board_snapshot = movegen::BoardSnapshot {
+                            board_tiles: &game_state.board_tiles,
+                            game_config,
+                            kwg,
+                            anagrams: arm_tables.anagrams(),
+                            rack_lengths: arm_tables.rack_lengths(),
+                            klv,
+                        };
+                        if !is_mover || matches!(driver, move_picker::MovePicker::Hasty) {
+                            let gen_params = movegen::GenMovesParams {
+                                board_snapshot: &board_snapshot,
+                                rack: &game_state.current_player().rack,
+                                max_gen: 1,
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            };
+                            if lean {
+                                move_generator.gen_moves_unfiltered_lean(&gen_params);
+                            } else {
+                                move_generator.gen_moves_unfiltered(&gen_params);
+                            }
+                        } else {
+                            if let move_picker::MovePicker::Simmer(simmer_driver) = &mut driver {
+                                // https://doi.org/10.1145/2714064.2660195
+                                // https://prng.di.unimi.it/splitmix64.c
+                                simmer_driver.reseed(census_mix64(seed.wrapping_add(
+                                    census_mix64(
+                                        game_idx
+                                            .wrapping_mul(0x9e3779b97f4a7c15)
+                                            .wrapping_add(num_turns as u64),
+                                    ),
+                                )));
+                            }
+                            driver.pick_a_move(
+                                &mut filtered_movegen,
+                                &mut move_generator,
+                                &board_snapshot,
+                                &game_state,
+                                &game_state.current_player().rack,
+                            )?;
+                        }
+                        let play = move_generator.plays[0].play.clone();
+                        if is_mover && !game_state.bag.is_empty() {
+                            // what the watcher cannot see: the bag and the mover's rack
+                            let mut pool = game_config.tiles_off_board(&game_state.board_tiles)?;
+                            game_config.take_rack(&mut pool, &game_state.players[1].rack)?;
+                            let (exchanged, move_value) =
+                                move_tiles_and_value(&board_snapshot, &play, &mut placed);
+                            let can_exchange = game_state.bag.len()
+                                >= game_config.exchange_tile_limit() as usize;
+                            infer_sheet_for(
+                                &mut move_generator,
+                                &game_state.board_tiles,
+                                SpellTables {
+                                    game_config,
+                                    kwg,
+                                    klv,
+                                    lat: is.lat,
+                                },
+                                &pool,
+                                can_exchange,
+                                (&mut movegen_rack, &mut blank_deltas),
+                                &mut sheet,
+                            );
+                            true_tally.iter_mut().for_each(|c| *c = 0);
+                            for &t in game_state.current_player().rack.iter() {
+                                true_tally[t as usize] += 1;
+                            }
+                            let true_rank = is.lat.rank(&true_tally);
+                            let kind = match exchanged {
+                                Some(_) => MoveKind::Exchanged,
+                                None if placed.iter().all(|&c| c == 0) => MoveKind::Passed,
+                                None => MoveKind::Placed,
+                            };
+                            let mut seen = None;
+                            let mut num_short = 0usize;
+                            racks.clear();
+                            weigh_racks(
+                                &InferSheet {
+                                    lat: is.lat,
+                                    sheet: &sheet,
+                                    leave: is.leave,
+                                    ln_binom: is.ln_binom,
+                                },
+                                &pool,
+                                match exchanged {
+                                    Some(n) => MoveTiles::Exchanged(n),
+                                    None => MoveTiles::Placed(&placed),
+                                },
+                                move_value,
+                                &mut xsheet,
+                                &mut |rank, ln_prior, gap| {
+                                    let prior = ln_prior.exp();
+                                    if rank == true_rank {
+                                        seen = Some((prior, gap));
+                                    }
+                                    num_short += (gap < 0) as usize;
+                                    racks.push((gap, prior));
+                                },
+                            );
+                            let (true_prior, true_gap) = seen.ok_or_else(|| {
+                                format!(
+                                    "game {game_idx} turn {num_turns}: the mover's own rack is not among the racks that make its move"
+                                )
+                            })?;
+                            racks.sort_unstable_by_key(|&(gap, _)| gap);
+                            let mut buckets: Vec<(i32, f64)> = Vec::new();
+                            for &(gap, prior) in &racks {
+                                match buckets.last_mut() {
+                                    Some(last) if last.0 == gap => last.1 += prior,
+                                    _ => buckets.push((gap, prior)),
+                                }
+                            }
+                            out.push(FitMove {
+                                at: (game_idx, num_turns),
+                                buckets,
+                                true_prior,
+                                true_gap,
+                                num_short,
+                                kind,
+                            });
+                            weighed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        game_state.play(game_config, &mut rng, &play)?;
+                        num_turns += 1;
+                        let secs = t0.elapsed().as_secs();
+                        // a line a second, from the first thread to end a turn in it
+                        if !quiet && tick.fetch_max(secs, std::sync::atomic::Ordering::Relaxed) < secs {
+                            writeln!(
+                                boxed_stdout_or_stderr(),
+                                "After {secs} seconds, have played {} of {num_games} games, weighed {} moves",
+                                finished_games.load(std::sync::atomic::Ordering::Relaxed),
+                                weighed.load(std::sync::atomic::Ordering::Relaxed),
+                            )
+                            .ok();
+                        }
+                        match game_state.check_game_ended(game_config, &mut final_scores)? {
+                            game_state::CheckGameEnded::PlayedOut
+                            | game_state::CheckGameEnded::ZeroScores => break,
+                            game_state::CheckGameEnded::NotEnded => {}
+                        }
+                        game_state.next_turn();
+                    }
+                    finished_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(out)
+            }));
+        }
+        let mut moves = Vec::new();
+        for handle in thread_handles {
+            moves.extend(handle.join().map_err(|_| "a fit thread panicked")??);
+        }
+        Ok(moves)
+    })?;
+    // in game and turn order, whichever thread played them, so the sums are the
+    // same at any thread count
+    moves.sort_unstable_by_key(|m| m.at);
+    let n = moves.len();
+    if n == 0 {
+        wolges::return_error!("no move with tiles in the bag: play more games".to_string());
+    }
+    let count_of = |kind: MoveKind| moves.iter().filter(|m| m.kind == kind).count();
+    writeln!(
+        std::io::stdout(),
+        "{n} moves with tiles in the bag ({} placing, {} exchanges, {} passes) in {:?}",
+        count_of(MoveKind::Placed),
+        count_of(MoveKind::Exchanged),
+        count_of(MoveKind::Passed),
+        t0.elapsed(),
+    )?;
+    let zero = moves.iter().filter(|m| m.true_gap <= 0).count();
+    let mut gaps: Vec<i32> = moves.iter().map(|m| m.true_gap.max(0)).collect();
+    gaps.sort_unstable();
+    let points = |g: i32| equity::Equity::new(g).as_f64();
+    writeln!(
+        std::io::stdout(),
+        "  the true rack gave up nothing in {zero} ({:.2}%); its gap: mean {:.3}, median {:.3}, 90th percentile {:.3}, largest {:.3}",
+        100.0 * zero as f64 / n as f64,
+        gaps.iter().map(|&g| points(g)).sum::<f64>() / n as f64,
+        points(gaps[n.div_ceil(2) - 1]),
+        points(gaps[(n * 9).div_ceil(10) - 1]),
+        points(gaps[n - 1]),
+    )?;
+    let num_short: usize = moves.iter().map(|m| m.num_short).sum();
+    let short_moves = moves.iter().filter(|m| m.num_short > 0).count();
+    writeln!(
+        std::io::stdout(),
+        "  racks whose best is below the move itself: {num_short} in {short_moves} moves"
+    )?;
+    let prior_only: f64 = moves
+        .iter()
+        .map(|m| (m.true_prior / m.buckets.iter().map(|&(_, s)| s).sum::<f64>()).ln())
+        .sum();
+    // fuzz is in points; the likelihood is read on a grid of 0.01 to 1000, then
+    // narrowed by golden sections around the grid's best
+    let grid: Vec<f64> = (0..=250)
+        .map(|i| 10f64.powf(-2.0 + i as f64 / 50.0))
+        .collect();
+    let lls: Vec<f64> = grid
+        .iter()
+        .map(|&fuzz| fit_log_likelihood(&moves, fuzz))
+        .collect();
+    let best_i = (1..grid.len()).fold(0, |best, i| if lls[i] > lls[best] { i } else { best });
+    let (mut lo, mut hi) = (
+        grid[best_i.saturating_sub(1)].ln(),
+        grid[(best_i + 1).min(grid.len() - 1)].ln(),
+    );
+    let golden = (5f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..60 {
+        let a = hi - golden * (hi - lo);
+        let b = lo + golden * (hi - lo);
+        if fit_log_likelihood(&moves, a.exp()) < fit_log_likelihood(&moves, b.exp()) {
+            lo = a;
+        } else {
+            hi = b;
+        }
+    }
+    let fuzz = ((lo + hi) / 2.0).exp();
+    let ll = fit_log_likelihood(&moves, fuzz);
+    // the likelihood's curvature in ln fuzz at its top gives one standard
+    // error; at the grid's edge there is no top to read it from
+    let h = 0.01f64;
+    let curvature = (fit_log_likelihood(&moves, fuzz * h.exp()) - 2.0 * ll
+        + fit_log_likelihood(&moves, fuzz / h.exp()))
+        / (h * h);
+    let within = if curvature < 0.0 {
+        let se = (-1.0 / curvature).sqrt();
+        format!(
+            " ({:.3} to {:.3} within one standard error)",
+            fuzz / se.exp(),
+            fuzz * se.exp()
+        )
+    } else {
+        String::new()
+    };
+    writeln!(
+        std::io::stdout(),
+        "fuzz {fuzz:.3} points is the likeliest{within}: {:.4} nats a move, against {:.4} for the pool alone; the move tells {:.3} bits of the rack",
+        ll / n as f64,
+        prior_only / n as f64,
+        (ll - prior_only) / n as f64 / std::f64::consts::LN_2,
+    )?;
+    if best_i == 0 || best_i == grid.len() - 1 {
+        writeln!(
+            std::io::stdout(),
+            "  at the grid's edge: the likeliest fuzz may lie beyond {:.2} points",
+            grid[best_i]
+        )?;
+    }
+    writeln!(std::io::stdout(), "  fuzz       nats a move")?;
+    for (fuzz, ll) in grid.iter().zip(&lls).step_by(25) {
+        writeln!(std::io::stdout(), "  {fuzz:<10.3} {:.4}", ll / n as f64)?;
+    }
+    Ok(())
+}
+
 #[inline]
 fn full_rack_values<L: kwg::Node>(lat: &census::MultisetLattice, klv: &klv::Klv<L>) -> Vec<i32> {
     let mut full_v = vec![0i32; lat.len()];
@@ -6289,5 +7391,270 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 10, "only {checked} leaves fit the pool");
+    }
+
+    #[test]
+    #[inline]
+    fn each_tally_of_size_deals_every_multiset_once() {
+        let avail = [2u8, 1, 1];
+        let cap = [4usize, 2, 1, 0];
+        let mut cur = [0u8; 3];
+        let mut seen = Vec::new();
+        each_tally_of_size(&avail, &cap, 0, 2, &mut cur, &mut |tally| {
+            seen.push(tally.to_vec())
+        });
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![vec![0, 1, 1], vec![1, 0, 1], vec![1, 1, 0], vec![2, 0, 0]]
+        );
+        assert_eq!(cur, [0, 0, 0]);
+    }
+
+    // a pool of AABC dealing racks of 2. Playing B scores 10 points, AB 12, AC
+    // 7, and nothing else plays (scoring 0 when it can be exchanged instead);
+    // keeping A is worth 1 point, C 3
+    #[inline]
+    fn weigh_racks_of_aabc(
+        can_exchange: bool,
+        tiles: MoveTiles<'_>,
+        move_value: i32,
+    ) -> Vec<(Vec<u8>, f64, i32)> {
+        let lat = census::MultisetLattice::new(3, 2).unwrap();
+        let ln_binom = LnBinom::new(4);
+        // as infer_sheet_for leaves it: playing nothing is no entry
+        let mut sheet = vec![if can_exchange { 0 } else { i32::MIN / 4 }; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        sheet[lat.rank(&[0, 0, 0]) as usize] = i32::MIN / 4;
+        sheet[lat.rank(&[0, 1, 0]) as usize] = 10_000;
+        sheet[lat.rank(&[1, 1, 0]) as usize] = 12_000;
+        sheet[lat.rank(&[1, 0, 1]) as usize] = 7_000;
+        leave[lat.rank(&[1, 0, 0]) as usize] = 1_000;
+        leave[lat.rank(&[0, 0, 1]) as usize] = 3_000;
+        let is = InferSheet {
+            lat: &lat,
+            sheet: &sheet,
+            leave: &leave,
+            ln_binom: &ln_binom,
+        };
+        let mut got = Vec::new();
+        weigh_racks(
+            &is,
+            &[2, 1, 1],
+            tiles,
+            move_value,
+            &mut Vec::new(),
+            &mut |rank, ln_prior, gap| got.push((lat.tally(rank as usize), ln_prior.exp(), gap)),
+        );
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        got
+    }
+
+    #[test]
+    #[inline]
+    fn weigh_racks_finds_the_racks_a_placed_move_could_come_from() {
+        // B played for 10: from BC (best: B, keeping C, 13) it gives up nothing;
+        // from AB (best: AB, 12; the move keeps A, 11) it gives up 1. Of the 6
+        // ways to deal 2 of AABC, 1 is BC and 2 are AB. Exchanging or not
+        // changes nothing here.
+        let got = weigh_racks_of_aabc(true, MoveTiles::Placed(&[0, 1, 0]), 10_000);
+        assert_eq!(got.len(), 2);
+        assert_eq!((&got[0].0[..], got[0].2), (&[0u8, 1, 1][..], 0));
+        assert_eq!((&got[1].0[..], got[1].2), (&[1u8, 1, 0][..], 1_000));
+        assert!((got[0].1 - 1.0 / 6.0).abs() < 1e-12);
+        assert!((got[1].1 - 2.0 / 6.0).abs() < 1e-12);
+        assert_eq!(
+            got,
+            weigh_racks_of_aabc(false, MoveTiles::Placed(&[0, 1, 0]), 10_000)
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn weigh_racks_weighs_a_pass_against_each_racks_best_move() {
+        // no exchanges: AA has no move, so its pass gives up nothing; AB gives
+        // up AB (12), AC gives up AC (7), BC gives up B keeping C (13)
+        let got = weigh_racks_of_aabc(false, MoveTiles::Placed(&[0, 0, 0]), 0);
+        let racks: Vec<(&[u8], i32)> = got.iter().map(|g| (&g.0[..], g.2)).collect();
+        assert_eq!(
+            racks,
+            vec![
+                (&[0u8, 1, 1][..], 13_000),
+                (&[1u8, 0, 1][..], 7_000),
+                (&[1u8, 1, 0][..], 12_000),
+                (&[2u8, 0, 0][..], 0),
+            ]
+        );
+        // with exchanges, AA's best is exchanging one A to keep the other (1)
+        let got = weigh_racks_of_aabc(true, MoveTiles::Placed(&[0, 0, 0]), 0);
+        assert_eq!((&got[3].0[..], got[3].2), (&[2u8, 0, 0][..], 1_000));
+    }
+
+    #[test]
+    #[inline]
+    fn weigh_racks_weighs_every_rack_behind_an_exchange() {
+        // one tile exchanged, the rest kept: AA keeps A (1, its best: gap 0);
+        // AB keeps A (1) for 12; AC keeps C (3) for 7; BC keeps C (3) for 13
+        let got = weigh_racks_of_aabc(true, MoveTiles::Exchanged(1), 0);
+        let racks: Vec<(&[u8], i32)> = got.iter().map(|g| (&g.0[..], g.2)).collect();
+        assert_eq!(
+            racks,
+            vec![
+                (&[0u8, 1, 1][..], 10_000),
+                (&[1u8, 0, 1][..], 4_000),
+                (&[1u8, 1, 0][..], 11_000),
+                (&[2u8, 0, 0][..], 0),
+            ]
+        );
+        assert!((got.iter().map(|g| g.1).sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    #[inline]
+    fn parse_infer_play_reads_a_move_whole_or_refuses_it() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let dim = game_config.board_layout().dim();
+        let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        // QI across row 8 from column H
+        board_tiles[dim.at_row_col(7, 7)] = 17;
+        board_tiles[dim.at_row_col(7, 8)] = 9;
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: None,
+            rack_lengths: None,
+            klv: &klv,
+        };
+        let read = |s: &str| parse_infer_play(&board_snapshot, s);
+        let refused = |s: &str| read(s).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(matches!(
+            read("8H QIS"),
+            Ok(movegen::Play::Place { down: false, lane: 7, idx: 7, ref word, .. })
+                if word[..] == [0, 0, 19]
+        ));
+        assert!(read("8H ..S").is_ok());
+        assert!(read("8H QIX").is_ok());
+        assert!(refused("8I IS").contains("leaves out a tile"));
+        assert!(refused("8J S").contains("one-tile move"));
+        assert!(refused("H8 Q.").contains("no tile under"));
+        assert!(refused("H-128 QI").contains("is not a square"));
+        assert!(refused("8+H QI").contains("is not a square"));
+        assert!(refused("16A QI").contains("is not a square"));
+        assert!(refused("8H QAS").contains("crosses another tile"));
+        assert!(
+            matches!(read("exch 3"), Ok(movegen::Play::Exchange { tiles }) if tiles.len() == 3)
+        );
+        assert!(refused("exch 8").contains("cannot exchange"));
+    }
+
+    #[test]
+    #[inline]
+    fn fit_log_likelihood_reads_the_true_rack_against_the_rest() {
+        let moves = [FitMove {
+            at: (0, 0),
+            buckets: vec![(0, 0.5), (1_000, 0.5)],
+            true_prior: 0.5,
+            true_gap: 0,
+            num_short: 0,
+            kind: MoveKind::Placed,
+        }];
+        let want = -(1.0 + (-1.0f64).exp()).ln();
+        assert!((fit_log_likelihood(&moves, 1.0) - want).abs() < 1e-12);
+    }
+
+    #[test]
+    #[inline]
+    fn equity_fuzz_refuses_nan_and_below_0_and_nothing_else() {
+        for fuzz in [f64::NAN, f64::NEG_INFINITY, -1.0, -f64::MIN_POSITIVE] {
+            assert!(equity_fuzz(fuzz).is_err(), "{fuzz} is taken");
+        }
+        for fuzz in [
+            0.0,
+            -0.0,
+            f64::MIN_POSITIVE,
+            0.5,
+            2.5,
+            f64::MAX,
+            f64::INFINITY,
+        ] {
+            assert!(equity_fuzz(fuzz).is_ok(), "{fuzz} is refused");
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn weigh_by_fuzz_at_0_keeps_the_racks_at_the_smallest_gap_alone() {
+        // two racks tie at the smallest gap, half a point; one gives up a
+        // thousandth of a point more
+        let racks = [
+            (0, 0.1f64.ln(), 500),
+            (1, 0.2f64.ln(), 501),
+            (2, 0.3f64.ln(), 500),
+            (3, 0.4f64.ln(), 9_000),
+        ];
+        let weighed = weigh_by_fuzz(&racks, 0.0);
+        let z: f64 = weighed.iter().map(|&(w, ..)| w).sum();
+        for (&(w, prior, rank, gap), &(r, ln_prior, g)) in weighed.iter().zip(&racks) {
+            assert_eq!((prior, rank, gap), (ln_prior.exp(), r, g));
+            assert_eq!(w, if g == 500 { prior } else { 0.0 });
+        }
+        assert!((weighed[0].0 / z - 0.25).abs() < 1e-12);
+        assert!((weighed[2].0 / z - 0.75).abs() < 1e-12);
+        // a gap below 0 counts as 0, so it ties with 0
+        let weighed = weigh_by_fuzz(
+            &[
+                (0, 0.1f64.ln(), -300),
+                (1, 0.2f64.ln(), 1),
+                (2, 0.3f64.ln(), 0),
+            ],
+            0.0,
+        );
+        let kept: Vec<f64> = weighed.iter().map(|&(w, ..)| w).collect();
+        assert_eq!(kept, vec![weighed[0].1, 0.0, weighed[2].1]);
+    }
+
+    #[test]
+    #[inline]
+    fn weigh_by_fuzz_above_0_takes_exp_of_the_gap_over_fuzz() {
+        let racks = [
+            (0, 0.1f64.ln(), -300),
+            (1, 0.2f64.ln(), 500),
+            (2, 0.3f64.ln(), 2_345),
+            (3, 0.4f64.ln(), 9_000),
+        ];
+        for points in [0.001, 0.5, 2.5, 1e6] {
+            let weighed = weigh_by_fuzz(&racks, equity_fuzz(points).unwrap());
+            for (&(w, prior, rank, gap), &(r, ln_prior, g)) in weighed.iter().zip(&racks) {
+                assert_eq!((prior, rank, gap), (ln_prior.exp(), r, g));
+                let fuzz = points * equity::SCALE as f64;
+                assert_eq!(w, prior * (-(g.max(0) as f64) / fuzz).exp());
+            }
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn fit_log_likelihood_at_0_is_minus_infinity_past_the_smallest_gap() {
+        let fit_move = |true_gap| FitMove {
+            at: (0, 0),
+            buckets: vec![(-300, 0.25), (0, 0.25), (1_000, 0.5)],
+            true_prior: 0.25,
+            true_gap,
+            num_short: 1,
+            kind: MoveKind::Placed,
+        };
+        assert_eq!(
+            fit_log_likelihood(&[fit_move(1_000)], 0.0),
+            f64::NEG_INFINITY
+        );
+        assert_eq!(
+            fit_log_likelihood(&[fit_move(0), fit_move(1_000)], 0.0),
+            f64::NEG_INFINITY
+        );
+        // at the smallest gap, the true rack's share of the racks there
+        assert!((fit_log_likelihood(&[fit_move(0)], 0.0) - 0.5f64.ln()).abs() < 1e-12);
     }
 }
