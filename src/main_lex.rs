@@ -15,7 +15,9 @@ fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) -> error::R
         loop {
             let t = env.g[p].tile();
             env.s.push_str(if t == 0 {
-                "@"
+                env.a
+                    .of_rack(0)
+                    .ok_or("the word graph has a tile the alphabet lacks")?
             } else if t & 0x80 == 0 {
                 env.a
                     .of_board(t)
