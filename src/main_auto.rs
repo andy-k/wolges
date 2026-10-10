@@ -130,7 +130,7 @@ fn do_it<N: kwg::Node + Sync>(
     }
 
     let mut move_picker_0 = move_picker::MovePicker::Hasty;
-    let mut move_picker_1 = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+    let mut move_picker_1 = move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
         game_config,
         kwg,
         &arm_tables,
@@ -140,7 +140,7 @@ fn do_it<N: kwg::Node + Sync>(
             sim_threads: 1,
             win_pct_table: None,
         },
-    ));
+    )));
     if true {
         move_picker_1 = move_picker::MovePicker::Hasty;
     }

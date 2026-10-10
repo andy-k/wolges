@@ -424,11 +424,10 @@ impl Periods {
     }
 }
 
-#[expect(clippy::large_enum_variant)]
 pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Hasty,
     Dynamic(klv::DynamicLeavesRef<'a>),
-    Simmer(Simmer<'a, N, L>),
+    Simmer(Box<Simmer<'a, N, L>>),
 }
 
 impl<

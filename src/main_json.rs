@@ -239,7 +239,7 @@ fn answer<N: kwg::Node + Sync>(
 
     let arm_tables = wolges::anagrams::ArmTables::build(kwg, game_config, lean);
     let mut move_filter = move_filter::GenMoves::Unfiltered;
-    let mut move_picker = move_picker::MovePicker::Simmer(move_picker::Simmer::new(
+    let mut move_picker = move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
         game_config,
         kwg,
         &arm_tables,
@@ -249,7 +249,7 @@ fn answer<N: kwg::Node + Sync>(
             sim_threads: 1,
             win_pct_table: None,
         },
-    ));
+    )));
     game_state
         .board_tiles
         .copy_from_slice(&kibitzer.board_tiles);
