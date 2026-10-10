@@ -5424,15 +5424,13 @@ fn board_shape(board_layout: &board_layout::BoardLayout, board_tiles: &[u8]) -> 
                 sum_r += r as f64;
                 sum_c += c as f64;
                 for (dr, dc) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                    if !filled(r + dr, c + dc) {
-                        perimeter += 1;
-                    }
+                    perimeter += !filled(r + dr, c + dc) as usize;
                 }
-            } else if [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                .iter()
-                .all(|&(dr, dc)| filled_or_off(r + dr, c + dc))
-            {
-                holes += 1;
+            } else {
+                holes += [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                    .iter()
+                    .all(|&(dr, dc)| filled_or_off(r + dr, c + dc))
+                    as usize;
             }
         }
     }
