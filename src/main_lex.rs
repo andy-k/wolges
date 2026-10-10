@@ -1,7 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::kwg::Node;
-use wolges::{alphabet, bites, error, fash, game_config, kwg};
+use wolges::{alphabet, bites, error, fash, kwg};
 
 #[inline(always)]
 fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) {
@@ -312,17 +311,52 @@ fn test_find_embedded_words<'a, N: kwg::Node>(
     Ok(())
 }
 
+#[derive(clap::Parser)]
+#[command(about = "find the words embedded in the built-in boards")]
+struct Cli {
+    #[arg(
+        long,
+        value_name = "NAME|FILE",
+        default_value = "english",
+        help = "bundled tiles or an alphabet file"
+    )]
+    tiles: String,
+    #[arg(long, help = "the word graphs are kbwg")]
+    kbwg: bool,
+    #[arg(default_value = "lexbin/CSW24.kwg", help = "the word graph")]
+    kwg: String,
+    #[arg(
+        default_value = "lexbin/NWL23.kwg",
+        help = "the word graph of the boards made from the other word list"
+    )]
+    kwg2: String,
+}
+
 fn main() -> error::Returns<()> {
+    let cli: Cli = clap::Parser::parse();
+    let alphabet =
+        alphabet::make_alphabet_from(&cli.tiles, &|path| Ok(std::fs::read_to_string(path)?))?;
+    if cli.kbwg {
+        find_words::<kwg::Node24>(&alphabet, &cli.kwg, &cli.kwg2)
+    } else {
+        find_words::<kwg::Node22>(&alphabet, &cli.kwg, &cli.kwg2)
+    }
+}
+
+#[inline(always)]
+fn find_words<N: kwg::Node>(
+    alphabet: &alphabet::Alphabet,
+    kwg_path: &str,
+    kwg2_path: &str,
+) -> error::Returns<()> {
     if false {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
-        print_dawg(&alphabet::make_english_alphabet(), &kwg);
+        let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?);
+        print_dawg(alphabet, &kwg);
         return Ok(());
     }
-    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?);
+    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?);
     if true {
-        let alphabet = alphabet::make_english_alphabet();
-        let nwl23_kwg =
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?);
+        let nwl23_kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg2_path)?);
         let known_boards = [
             &[
                 1, 1, 1, 1, //
@@ -356,14 +390,14 @@ fn main() -> error::Returns<()> {
             ][..],
         ];
         test_find_embedded_words(
-            &alphabet,
+            alphabet,
             &nwl23_kwg, // actually nwl18
             ["LIASERTAPGADID##KEMA##IRAIVZQAEFEGSY"],
             Some(known_boards[3]),
         )?;
-        test_find_embedded_words(&alphabet, &nwl23_kwg, ["LIASERTAIDKEMAIR"], None)?; // actually twl14
+        test_find_embedded_words(alphabet, &nwl23_kwg, ["LIASERTAIDKEMAIR"], None)?; // actually twl14
         test_find_embedded_words(
-            &alphabet,
+            alphabet,
             &kwg,
             "
 NQALBRYUDAMEWPAI
@@ -405,9 +439,8 @@ TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
         )?;
         return Ok(());
     }
-    let game_config = &game_config::make_english_game_config();
 
-    print_dawg(game_config.alphabet(), &kwg);
+    print_dawg(alphabet, &kwg);
     let t0 = std::time::Instant::now();
     let word_counts = kwg.count_words_alloc();
     println!("took {} ms", t0.elapsed().as_millis());

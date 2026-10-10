@@ -40,7 +40,7 @@ of minutes: the census table mixed half and half with a self-play table. One
 script builds it start to finish, and its defaults are the recipe that was
 measured:
 
-  ./genblend.sh english english
+  ./genblend.sh --preset english
 
 Reach for it when the table is one you mean to keep and you can spare an
 overnight run; reach for the census above when you want a good table now. Why
@@ -124,7 +124,7 @@ thinly sampled to trust borrow their value from their neighbors on the way out
 
 The fourth step compiles the csv into the binary klv2 the move generator reads:
 
-  cargo run --release --bin buildlex -- klv2 leaves.csv leaves.klv2
+  cargo run --release --bin buildlex -- klv leaves.csv leaves.klv2
 
 Feeding a finished table back in as the players' table and repeating from the
 first step lets each generation improve on the last:
@@ -1012,7 +1012,7 @@ genblend.sh runs exactly that, and keeps both ingredients so the mixture can be
 remade at another weight without replaying a game:
 
     mkdir t && cd t && cp -ip ../.../CSW24.kwg .
-    ../genblend.sh english english
+    ../genblend.sh --preset english
 
 Its decompose smooths the thin tail with the same fixed floor as genleaves.sh.
 At a hundred million games there is almost nothing left unmeasured to fill in:
@@ -1034,7 +1034,7 @@ Census and self-play mixed -- the strongest measured table, and hours rather
 than minutes. One script builds all of it: the census, two self-play
 generations seeded from it, and the half-and-half mix.
 
-    ./genblend.sh english english
+    ./genblend.sh --preset english
 
 Its defaults are the measured recipe; MIXING TWO TABLES BEATS EITHER ONE above
 has the numbers, and RUNNING GENBLEND.SH below has the options.
@@ -1071,14 +1071,14 @@ For dynamic leaves add --full to keep the full-length values.
 Board sampling (gilles) -- sample-efficient, a touch slower, no stronger. It
 manufactures rare racks by snapshotting midgame boards.
 
-    ./genleaves.sh --gilles english english 2000000 2000000 2000000
+    ./genleaves.sh --gilles --preset english 2000000 2000000 2000000
 
 The genleaves.sh arguments are explained under RUNNING GENLEAVES.SH below.
 
 Self-play autoplay -- wolges's original baseline. It plays games and learns
 from the racks held.
 
-    ./genleaves.sh english english 2000000 2000000 2000000
+    ./genleaves.sh --preset english 2000000 2000000 2000000
 
 It forces the rare tail by default; add genleaves.sh's --no-forcing option for
 plain natural sampling. The genleaves.sh arguments are explained under RUNNING
@@ -1090,30 +1090,31 @@ The autoplay and board-sampling recipes above are driven by the genleaves.sh
 script, which runs the whole build loop (play a generation, summarize,
 decompose, compile, then play the next generation with the table just built):
 
-    ./genleaves.sh [options] <play-config> <leave-config> <count-per-gen>...
+    ./genleaves.sh [options] <count-per-gen>...
 
-play-config is the tile distribution to play games with (english, norwegian,
-super-english, and so on); leave-config is the distribution the leave table is
-compiled for. They are usually the same, which is why the examples read
-"english english". Each trailing number is one generation's game count, so
-three numbers means three generations; append :N to a count to have autoplay
-gather N samples of every rack that generation.
+The game is given the way leave takes it: --preset english (the default),
+--preset norwegian, --preset super-english, and any of leave's other game
+options such as --tiles or --jumbled. The leave table is compiled with --tiles
+if given, else the preset's tiles. Each trailing number is one generation's
+game count, so three numbers means three generations; append :N to a count to
+have autoplay gather N samples of every rack that generation.
 
-Options, each written before the configs:
+Options, each written before the counts:
   --threads N   worker threads for every leave run (default: every core)
   --gilles      collect samples by board sampling instead of self-play autoplay
   --no-forcing  turn off autoplay's full-rack forcing, reverting to plain
                 natural sampling (ignored under --gilles)
   --full        also write the full-length leaves (what dynamic leaves read)
+  --klv N       the leave table written: 2 (klv2, the default), 1 or 16
 
 RUNNING GENBLEND.SH
 
 genblend.sh builds the mixed table of MIXING TWO TABLES BEATS EITHER ONE, all
 three stages in one command:
 
-    ./genblend.sh [options] <play-config> <leave-config> [count-per-gen]...
+    ./genblend.sh [options] [count-per-gen]...
 
-The configs mean what they mean for genleaves.sh. Trailing counts, if given,
+The game options mean what they mean for genleaves.sh. Trailing counts, if given,
 spell out the self-play generations as games:samples-of-every-rack, defaulting
 to 100000000:500 100000000:1000 -- two generations, the recipe that was
 measured. Each stage is skipped if its result is already on disk, so an
@@ -1121,12 +1122,13 @@ interrupted run carries on rather than replaying finished generations, and each
 generation's per-game log is deleted once its summary is renamed, because at
 these game counts that log runs to gigabytes and nothing downstream reads it.
 
-Options, each written before the configs:
+Options, each written before the counts:
   --recipe LIST     board counts for the census stage (default 3x256,2048)
   --weight W        how much of the self-play table the mix takes, 0 being the
                     census alone and 1 self-play alone (default 0.5)
   --census-seed S   fix the census stage's seed so that stage is reproducible
   --threads N       worker threads for every leave run (default every core)
+  and the game options, as for genleaves.sh
 
 
 OUTPUT FILE NAMES

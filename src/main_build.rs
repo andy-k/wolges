@@ -248,314 +248,202 @@ fn read_to_string(reader: &mut Box<dyn std::io::Read>) -> Result<String, std::io
     Ok(s)
 }
 
-#[inline]
-fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
-    args: &[String],
-    make_alphabet: AlphabetMaker,
-) -> error::Returns<bool> {
-    match args.get(1).map(String::as_str) {
-        Some(mut task) => {
-            let build_order;
-            if let Some(rest) = task.strip_prefix("reordered-") {
-                build_order = build::BuildOrder::Reordered;
-                task = rest;
-            } else {
-                build_order = build::BuildOrder::Sorted;
-            }
-            let build_layout;
-            if let Some(rest) = task.strip_prefix("magpiemerged-") {
-                build_layout = build::BuildLayout::MagpieMerged;
-                task = rest;
-            } else if let Some(rest) = task.strip_prefix("magpie-") {
-                build_layout = build::BuildLayout::Magpie;
-                task = rest;
-            } else if let Some(rest) = task.strip_prefix("legacy-") {
-                build_layout = build::BuildLayout::Legacy;
-                task = rest;
-            } else if let Some(rest) = task.strip_prefix("experimental-") {
-                build_layout = build::BuildLayout::Experimental;
-                task = rest;
-            } else {
-                build_layout = build::BuildLayout::Wolges;
-            }
-            if let build::BuildOrder::Reordered = build_order {
-                match task {
-                    "kwg" | "kbwg" | "kwg-dawg" | "kbwg-dawg" | "kwg-score" | "kbwg-score"
-                    | "kwg-score-dawg" | "kbwg-score-dawg" => {}
-                    _ => wolges::return_error!(format!("{} cannot be reordered", args[1])),
-                }
-            }
-            match task {
-                "klv" => {
-                    make_writer(&args[3])?.write_all(&build_leaves_scaled_i16(
-                        &mut make_reader(&args[2])?,
-                        make_alphabet()?,
-                        build_layout,
-                        256.0,
-                    )?)?;
-                    Ok(true)
-                }
-                "klv2" => {
-                    let alphabet = make_alphabet()?;
-                    make_writer(&args[3])?.write_all(&write_leaves_f32(
-                        read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?,
-                        build_layout,
-                    )?)?;
-                    Ok(true)
-                }
-                "blend" => {
-                    if args.len() < 6 {
-                        return Err("blend needs two klv files, a weight, and an output".into());
-                    }
-                    let weight = f64::from_str(&args[4])?;
-                    if !weight.is_finite() {
-                        return Err("blend needs a finite weight".into());
-                    }
-                    let leaves_a =
-                        klv::read_leaves_alloc::<kwg::Node22>(&std::fs::read(&args[2])?)?;
-                    let leaves_b =
-                        klv::read_leaves_alloc::<kwg::Node22>(&std::fs::read(&args[3])?)?;
-                    let num_a = leaves_a.len();
-                    let num_b = leaves_b.len();
-                    let mut scratch = String::new();
-                    let mut mixed = fash::MyHashMap::<bites::Bites, f64>::default();
-                    for (leave, value) in leaves_b {
-                        mixed.insert(leave, leave_as_decimal(value, &mut scratch));
-                    }
-                    let mut in_both = 0usize;
-                    for (leave, value) in leaves_a {
-                        let value_a = leave_as_decimal(value, &mut scratch);
-                        mixed
-                            .entry(leave)
-                            .and_modify(|value_b| {
-                                in_both += 1;
-                                *value_b = (1.0 - weight) * value_a + weight * *value_b;
-                            })
-                            .or_insert(value_a);
-                    }
-                    let mut leaves_map = fash::MyHashMap::<bites::Bites, f32>::default();
-                    leaves_map.reserve(mixed.len());
-                    for (leave, value) in mixed.drain() {
-                        leaves_map.insert(leave, leave_at_millipoint(value, &mut scratch));
-                    }
-                    drop(mixed);
-                    writeln!(
-                        boxed_stdout_or_stderr(),
-                        "blended {in_both} leaves at weight {weight}, kept {} found only in {} and {} found only in {}",
-                        num_a - in_both,
-                        args[2],
-                        num_b - in_both,
-                        args[3],
-                    )?;
-                    make_writer(&args[5])?
-                        .write_all(&write_leaves_f32(leaves_map, build_layout)?)?;
-                    Ok(true)
-                }
-                "klv16" => {
-                    make_writer(&args[3])?.write_all(&build_leaves_scaled_i16(
-                        &mut make_reader(&args[2])?,
-                        make_alphabet()?,
-                        build_layout,
-                        8.0,
-                    )?)?;
-                    Ok(true)
-                }
-                "kwg" | "kbwg" | "kwg-dawg" | "kbwg-dawg" | "kwg-alpha" | "kbwg-alpha"
-                | "kwg-score" | "kbwg-score" | "kwg-score-dawg" | "kbwg-score-dawg"
-                | "kwg-score-alpha" | "kbwg-score-alpha" => {
-                    let score = task.contains("score");
-                    let alpha = task.contains("alpha");
-                    let big = task.starts_with("kbwg");
-                    let alph = make_alphabet()?;
-                    let alphabet_reader = if score {
-                        alphabet::AlphabetReader::new_for_word_scores(&alph)
-                    } else {
-                        alphabet::AlphabetReader::new_for_words(&alph)
-                    };
-                    let words = read_machine_words(
-                        &alphabet_reader,
-                        &read_to_string(&mut make_reader(&args[2])?)?,
-                    )?;
-                    let words = if alpha {
-                        build::make_alphagrams(&words)
-                    } else {
-                        words
-                    };
-                    let build_content = if task.contains("dawg") || task.contains("alpha") {
-                        build::BuildContent::DawgOnly
-                    } else {
-                        build::BuildContent::Gaddawg
-                    };
-                    let built = if big {
-                        build::build_big(build_content, build_layout, build_order, &words)?
-                    } else {
-                        build::build(build_content, build_layout, build_order, &words)?
-                    };
-                    make_writer(&args[3])?.write_all(&built)?;
-                    Ok(true)
-                }
-                "macondo" => {
-                    let alphabet = make_alphabet()?;
-                    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args[2])?);
-                    refuse_a_wider_graph(&kwg, &alphabet, &args[2])?;
-                    make_writer(&args[4])?.write_all(&lexport::to_macondo(
-                        &kwg,
-                        &alphabet,
-                        &args[3],
-                        lexport::MacondoFormat::Dawg,
-                    ))?;
-                    make_writer(&args[5])?.write_all(&lexport::to_macondo(
-                        &kwg,
-                        &alphabet,
-                        &args[3],
-                        lexport::MacondoFormat::Gaddag,
-                    ))?;
-                    Ok(true)
-                }
-                "lxd" => {
-                    let alphabet = make_alphabet()?;
-                    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args[2])?);
-                    refuse_a_wider_graph(&kwg, &alphabet, &args[2])?;
-                    make_writer(&args[5])?
-                        .write_all(&lexport::to_lxd(&kwg, &alphabet, &args[3], &args[4])?)?;
-                    Ok(true)
-                }
-                "sort-words" => {
-                    let alphabet = make_alphabet()?;
-                    // allow "?" for more flexibility.
-                    let words = &read_machine_words(
-                        &alphabet::AlphabetReader::new_for_racks(&alphabet),
-                        &read_to_string(&mut make_reader(&args[2])?)?,
-                    )?;
-                    let mut ret = String::new();
-                    for word in words {
-                        for &tile in &word[..] {
-                            ret.push_str(alphabet.of_rack(tile).unwrap());
-                        }
-                        ret.push('\n');
-                    }
-                    make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                    Ok(true)
-                }
-                "sort-words-len" => {
-                    let alphabet = make_alphabet()?;
-                    // allow "?" for more flexibility.
-                    let words = &read_machine_words_sorted_by_length(
-                        &alphabet::AlphabetReader::new_for_racks(&alphabet),
-                        &read_to_string(&mut make_reader(&args[2])?)?,
-                    )?;
-                    let mut ret = String::new();
-                    for word in words {
-                        for &tile in &word[..] {
-                            ret.push_str(alphabet.of_rack(tile).unwrap());
-                        }
-                        ret.push('\n');
-                    }
-                    make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                    Ok(true)
-                }
-                "sort-leaves" | "sort-leaves-len" | "sort-leaves-val" | "sort-leaves-lenval" => {
-                    let alphabet = make_alphabet()?;
-                    let mut leaves = read_leaves_f32(&mut make_reader(&args[2])?, &alphabet)?
-                        .drain()
-                        .collect::<Box<_>>();
-                    match task {
-                        "sort-leaves" => {
-                            leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                        }
-                        "sort-leaves-len" => {
-                            leaves.sort_unstable_by(|a, b| {
-                                a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0))
-                            });
-                        }
-                        "sort-leaves-val" => {
-                            leaves.sort_unstable_by(|a, b| {
-                                b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0))
-                            });
-                        }
-                        "sort-leaves-lenval" => {
-                            leaves.sort_unstable_by(|a, b| {
-                                a.0.len()
-                                    .cmp(&b.0.len())
-                                    .then_with(|| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)))
-                            });
-                        }
-                        _ => unreachable!(),
-                    }
-                    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                    let mut s = String::new();
-                    for (k, v) in leaves {
-                        s.clear();
-                        for &tile in &k[..] {
-                            s.push_str(alphabet.of_rack(tile).unwrap());
-                        }
-                        csv_out.serialize((&s, v))?;
-                    }
-                    Ok(true)
-                }
-                _ => Ok(false),
-            }
+#[derive(Clone, clap::ValueEnum)]
+enum Graph {
+    Gaddawg,
+    Dawg,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum Words {
+    Plain,
+    Alphagrams,
+    Reversed,
+    #[value(name = "plain+reversed")]
+    PlainReversed,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Layout {
+    Wolges,
+    Magpie,
+    Magpiemerged,
+    Legacy,
+    Experimental,
+}
+
+impl Layout {
+    #[inline(always)]
+    fn build_layout(self) -> build::BuildLayout {
+        match self {
+            Layout::Wolges => build::BuildLayout::Wolges,
+            Layout::Magpie => build::BuildLayout::Magpie,
+            Layout::Magpiemerged => build::BuildLayout::MagpieMerged,
+            Layout::Legacy => build::BuildLayout::Legacy,
+            Layout::Experimental => build::BuildLayout::Experimental,
         }
-        None => Ok(false),
     }
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum KlvFormat {
+    #[value(name = "1")]
+    One,
+    #[value(name = "2")]
+    Two,
+    #[value(name = "16")]
+    Sixteen,
+}
+
+#[derive(clap::Args)]
+struct Kwg {
+    #[arg(help = "the words, one a line")]
+    word_list: String,
+    #[arg(help = "the word graph to write")]
+    out: String,
+    #[arg(
+        long,
+        value_enum,
+        help = "gaddawg (dawg and gaddag) or dawg alone [default: gaddawg; dawg for --words alphagrams or --blanks]"
+    )]
+    graph: Option<Graph>,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "plain",
+        help = "the words as listed, their alphagrams, the words written backward, or the words both ways"
+    )]
+    words: Words,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "wolges",
+        help = "where the nodes go: magpie is bigger and magpie-style, magpiemerged is magpie ordering with wolges merging, legacy is the former default"
+    )]
+    layout: Layout,
+    #[arg(
+        long,
+        help = "a smaller graph: each node's children in whatever order shares the most nodes, instead of in tile order (not for alphagrams)"
+    )]
+    reordered: bool,
+    #[arg(long, help = "one representative tile for each score")]
+    score: bool,
+    #[arg(
+        long,
+        help = "the wider format, kbwg (16M nodes instead of 4M; not widely read)"
+    )]
+    kbwg: bool,
+    #[arg(long, help = "a word may hold ? (tile 0); the graph is then a dawg")]
+    blanks: bool,
+}
+
+#[derive(clap::Args)]
+struct Klv {
+    #[arg(help = "the leaves and their values, leave,value a line")]
+    leaves: String,
+    #[arg(help = "the leave table to write")]
+    out: String,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "2",
+        help = "2 (klv2, preferred), 1 (klv, deprecated?) or 16 (klv16, magpie-retro)"
+    )]
+    klv: KlvFormat,
+    #[arg(long, value_enum, default_value = "wolges", help = "as for kwg")]
+    layout: Layout,
+}
+
+#[derive(clap::Args)]
+struct Blend {
+    #[arg(help = "the first leave table")]
+    a: String,
+    #[arg(help = "the second leave table")]
+    b: String,
+    #[arg(
+        allow_negative_numbers = true,
+        help = "how much of the second table to take: 0 is the first table alone, 1 the second"
+    )]
+    weight: f64,
+    #[arg(help = "the klv2 to write")]
+    out: String,
+    #[arg(long, value_enum, default_value = "wolges", help = "as for kwg")]
+    layout: Layout,
+}
+
+#[derive(clap::Args)]
+struct Macondo {
+    #[arg(help = "the word graph")]
+    kwg: String,
+    #[arg(help = "the lexicon name to save")]
+    name: String,
+    #[arg(help = "the dawg to write")]
+    dawg: String,
+    #[arg(help = "the gaddag to write")]
+    gaddag: String,
+}
+
+#[derive(clap::Args)]
+struct Lxd {
+    #[arg(help = "the word graph")]
+    kwg: String,
+    #[arg(help = "the title, such as \"CSW24 something\"")]
+    title: String,
+    #[arg(help = "the date, such as \"17 June 2021\"")]
+    date: String,
+    #[arg(help = "the lxd to write")]
+    out: String,
+}
+
+#[derive(clap::Args)]
+struct SortWords {
+    #[arg(help = "the words, one a line")]
+    word_list: String,
+    #[arg(help = "the sorted words to write")]
+    out: String,
+    #[arg(long, help = "by length first")]
+    len: bool,
+}
+
+#[derive(clap::Args)]
+struct SortLeaves {
+    #[arg(help = "the leaves and their values, leave,value a line")]
+    leaves: String,
+    #[arg(help = "the sorted leaves to write")]
+    out: String,
+    #[arg(long, help = "by length first")]
+    len: bool,
+    #[arg(long, help = "by value, highest first (after length, with --len)")]
+    val: bool,
+}
+
+#[derive(clap::Subcommand)]
+enum Task {
+    #[command(about = "just to test")]
+    Auto,
+    #[command(about = "generate a word graph from a word list")]
+    Kwg(Kwg),
+    #[command(about = "generate a leave table from a csv")]
+    Klv(Klv),
+    #[command(
+        about = "blend two leave tables into one klv2; a leave only one table lists keeps that table's value"
+    )]
+    Blend(Blend),
+    #[command(about = "read a word graph, save macondo dawg and gaddag with the lexicon name")]
+    Macondo(Macondo),
+    #[command(about = "read a word graph, save lxd with the title and date")]
+    Lxd(Lxd),
+    #[command(about = "rewrite words, unique and sorted")]
+    SortWords(SortWords),
+    #[command(about = "rewrite leave,value lines, sorted")]
+    SortLeaves(SortLeaves),
 }
 
 #[derive(clap::Parser)]
 #[command(
     about = "build word graphs and leave tables",
     arg_required_else_help = true,
-    after_help = "tasks:
-  auto
-    just to test
-  klv CSW24.csv CSW24.klv
-    generate klv file (deprecated?)
-  klv2 CSW24.csv CSW24.klv2
-    generate klv2 file (preferred)
-  blend CSW24a.klv2 CSW24b.klv2 0.5 CSW24.klv2
-    blend two leave tables into one klv2. the weight says how much of
-    the second table to take: 0 is the first table alone, 1 the second.
-    a leave only one table lists keeps that table's value.
-  klv16 CSW24.csv CSW24.klv16
-    generate klv16 file (magpie-retro)
-  kwg CSW24.txt CSW24.kwg
-    generate kwg file containing gaddawg (supports 4M nodes)
-  kbwg CSW24.txt CSW24.kbwg
-    generate kbwg file containing gaddawg (big variant supports 16M nodes)
-  macondo CSW24.kwg CSW24 CSW24.dawg CSW24.gaddag
-    read kwg file, with lexicon name save macondo dawg/gaddag
-  lxd CSW24.kwg \"CSW24 something\" \"17 June 2021\" UKNA.lxd
-    read kwg file, with title and date, save lxd
-  kwg-alpha CSW24.txt CSW24.kad
-    generate kad file containing alpha dawg
-  kwg-dawg CSW24.txt outfile.dwg
-    generate dawg-only file
-  kwg-score CSW24.txt CSW24.kwg
-  kwg-score-alpha CSW24.txt CSW24.kad
-  kwg-score-dawg CSW24.txt outfile.dwg
-    same as above but with representative same-score tiles
-  (kbwg-alpha, kbwg-dawg, kbwg-score, kbwg-score-alpha, kbwg-score-dawg
-    also exist but produce a different format not widely supported by readers)
-  sort-words in.txt out.txt
-  sort-words-len in.txt out.txt
-    rewrite words uniq/sorted by alpha/len
-  sort-leaves in.csv out.csv
-  sort-leaves-len in.csv out.csv
-  sort-leaves-val in.csv out.csv
-  sort-leaves-lenval in.csv out.csv
-    rewrite word,f32_leaves sorted by alpha/len/value/both
-  (a task can also be magpie-... for bigger magpie-style kwg,
-    magpiemerged-... for magpie ordering with wolges merging,
-    experimental-... for experimental,
-    legacy-... for legacy (which is the former default),
-    this is applicable for kwg, kwg-anything, klv/klv2)
-  (reordered-... makes a smaller kwg by putting each node's children in
-    whatever order shares the most nodes, instead of in tile order. only for kwg,
-    kbwg, kwg-dawg, kwg-score and kwg-score-dawg: an alpha dawg and a klv are
-    both walked in tile order. can be combined, as reordered-magpie-kwg)
-  (the tiles are english unless --tiles gives other bundled tiles, such as
-    french, super-english or hex, or a file in the form of src/alphabets/*.txt,
-    as in --tiles french kwg words.txt out.kwg)
-input/output files can be \"-\" (not advisable for binary files)"
+    after_help = "input/output files can be \"-\" (not advisable for binary files)"
 )]
 struct Cli {
     #[arg(
@@ -565,27 +453,271 @@ struct Cli {
         help = "bundled tiles or an alphabet file"
     )]
     tiles: String,
-    #[arg(help = "what to do, from the list below")]
-    task: String,
-    #[arg(allow_negative_numbers = true, help = "the task's files and values")]
-    args: Vec<String>,
+    #[command(subcommand)]
+    task: Task,
+}
+
+#[inline]
+fn make_kwg(args: &Kwg, alph: &alphabet::Alphabet) -> error::Returns<bites::Bites> {
+    let dawg = match args.graph {
+        Some(Graph::Dawg) => true,
+        Some(Graph::Gaddawg) => {
+            if args.blanks {
+                return Err("--blanks makes a dawg: tile 0 is the gaddag's separator".into());
+            }
+            false
+        }
+        None => args.blanks || matches!(args.words, Words::Alphagrams),
+    };
+    if args.reordered && matches!(args.words, Words::Alphagrams) {
+        return Err("alphagrams cannot be reordered: an alpha dawg is walked in tile order".into());
+    }
+    let alphabet_reader = if args.blanks {
+        alphabet::AlphabetReader::new_for_racks(alph)
+    } else if args.score {
+        alphabet::AlphabetReader::new_for_word_scores(alph)
+    } else {
+        alphabet::AlphabetReader::new_for_words(alph)
+    };
+    let mut words = read_machine_words(
+        &alphabet_reader,
+        &read_to_string(&mut make_reader(&args.word_list)?)?,
+    )?;
+    if args.blanks && args.score {
+        let mut scored = words
+            .iter()
+            .map(|word| {
+                word.iter()
+                    .map(|&tile| alph.representative_same_score_tile(tile))
+                    .collect::<Vec<_>>()[..]
+                    .into()
+            })
+            .collect::<Vec<bites::Bites>>();
+        scored.sort_unstable();
+        scored.dedup();
+        words = scored.into_boxed_slice();
+    }
+    let words = match args.words {
+        Words::Plain => words,
+        Words::Alphagrams => build::make_alphagrams(&words),
+        Words::Reversed | Words::PlainReversed => {
+            let mut all = Vec::with_capacity(words.len() * 2);
+            if matches!(args.words, Words::PlainReversed) {
+                all.extend_from_slice(&words);
+            }
+            let mut v = Vec::new();
+            for word in &words[..] {
+                v.clear();
+                v.extend_from_slice(word);
+                v.reverse();
+                all.push(v[..].into());
+            }
+            all.sort_unstable();
+            all.dedup();
+            all.into_boxed_slice()
+        }
+    };
+    let build_content = if dawg {
+        build::BuildContent::DawgOnly
+    } else {
+        build::BuildContent::Gaddawg
+    };
+    let build_order = if args.reordered {
+        build::BuildOrder::Reordered
+    } else {
+        build::BuildOrder::Sorted
+    };
+    if args.kbwg {
+        build::build_big(
+            build_content,
+            args.layout.build_layout(),
+            build_order,
+            &words,
+        )
+    } else {
+        build::build(
+            build_content,
+            args.layout.build_layout(),
+            build_order,
+            &words,
+        )
+    }
+}
+
+#[inline]
+fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
+    task: &Task,
+    make_alphabet: AlphabetMaker,
+) -> error::Returns<()> {
+    match task {
+        Task::Auto => old_main(),
+        Task::Kwg(args) => {
+            let built = make_kwg(args, &make_alphabet()?)?;
+            make_writer(&args.out)?.write_all(&built)?;
+            Ok(())
+        }
+        Task::Klv(args) => {
+            let alphabet = make_alphabet()?;
+            let built = match args.klv {
+                KlvFormat::Two => write_leaves_f32(
+                    read_leaves_f32(&mut make_reader(&args.leaves)?, &alphabet)?,
+                    args.layout.build_layout(),
+                )?,
+                KlvFormat::One | KlvFormat::Sixteen => build_leaves_scaled_i16(
+                    &mut make_reader(&args.leaves)?,
+                    alphabet,
+                    args.layout.build_layout(),
+                    if matches!(args.klv, KlvFormat::One) {
+                        256.0
+                    } else {
+                        8.0
+                    },
+                )?,
+            };
+            make_writer(&args.out)?.write_all(&built)?;
+            Ok(())
+        }
+        Task::Blend(args) => {
+            let weight = args.weight;
+            if !weight.is_finite() {
+                return Err("blend needs a finite weight".into());
+            }
+            let leaves_a = klv::read_leaves_alloc::<kwg::Node22>(&std::fs::read(&args.a)?)?;
+            let leaves_b = klv::read_leaves_alloc::<kwg::Node22>(&std::fs::read(&args.b)?)?;
+            let num_a = leaves_a.len();
+            let num_b = leaves_b.len();
+            let mut scratch = String::new();
+            let mut mixed = fash::MyHashMap::<bites::Bites, f64>::default();
+            for (leave, value) in leaves_b {
+                mixed.insert(leave, leave_as_decimal(value, &mut scratch));
+            }
+            let mut in_both = 0usize;
+            for (leave, value) in leaves_a {
+                let value_a = leave_as_decimal(value, &mut scratch);
+                mixed
+                    .entry(leave)
+                    .and_modify(|value_b| {
+                        in_both += 1;
+                        *value_b = (1.0 - weight) * value_a + weight * *value_b;
+                    })
+                    .or_insert(value_a);
+            }
+            let mut leaves_map = fash::MyHashMap::<bites::Bites, f32>::default();
+            leaves_map.reserve(mixed.len());
+            for (leave, value) in mixed.drain() {
+                leaves_map.insert(leave, leave_at_millipoint(value, &mut scratch));
+            }
+            drop(mixed);
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "blended {in_both} leaves at weight {weight}, kept {} found only in {} and {} found only in {}",
+                num_a - in_both,
+                args.a,
+                num_b - in_both,
+                args.b,
+            )?;
+            make_writer(&args.out)?
+                .write_all(&write_leaves_f32(leaves_map, args.layout.build_layout())?)?;
+            Ok(())
+        }
+        Task::Macondo(args) => {
+            let alphabet = make_alphabet()?;
+            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args.kwg)?);
+            refuse_a_wider_graph(&kwg, &alphabet, &args.kwg)?;
+            make_writer(&args.dawg)?.write_all(&lexport::to_macondo(
+                &kwg,
+                &alphabet,
+                &args.name,
+                lexport::MacondoFormat::Dawg,
+            ))?;
+            make_writer(&args.gaddag)?.write_all(&lexport::to_macondo(
+                &kwg,
+                &alphabet,
+                &args.name,
+                lexport::MacondoFormat::Gaddag,
+            ))?;
+            Ok(())
+        }
+        Task::Lxd(args) => {
+            let alphabet = make_alphabet()?;
+            let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&args.kwg)?);
+            refuse_a_wider_graph(&kwg, &alphabet, &args.kwg)?;
+            make_writer(&args.out)?.write_all(&lexport::to_lxd(
+                &kwg,
+                &alphabet,
+                &args.title,
+                &args.date,
+            )?)?;
+            Ok(())
+        }
+        Task::SortWords(args) => {
+            let alphabet = make_alphabet()?;
+            // allow "?" for more flexibility.
+            let alphabet_reader = alphabet::AlphabetReader::new_for_racks(&alphabet);
+            let giant_string = read_to_string(&mut make_reader(&args.word_list)?)?;
+            let words = &if args.len {
+                read_machine_words_sorted_by_length(&alphabet_reader, &giant_string)?
+            } else {
+                read_machine_words(&alphabet_reader, &giant_string)?
+            };
+            let mut ret = String::new();
+            for word in words {
+                for &tile in &word[..] {
+                    ret.push_str(alphabet.of_rack(tile).unwrap());
+                }
+                ret.push('\n');
+            }
+            make_writer(&args.out)?.write_all(ret.as_bytes())?;
+            Ok(())
+        }
+        Task::SortLeaves(args) => {
+            let alphabet = make_alphabet()?;
+            let mut leaves = read_leaves_f32(&mut make_reader(&args.leaves)?, &alphabet)?
+                .drain()
+                .collect::<Box<_>>();
+            match (args.len, args.val) {
+                (false, false) => {
+                    leaves.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                }
+                (true, false) => {
+                    leaves.sort_unstable_by(|a, b| {
+                        a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0))
+                    });
+                }
+                (false, true) => {
+                    leaves.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                }
+                (true, true) => {
+                    leaves.sort_unstable_by(|a, b| {
+                        a.0.len()
+                            .cmp(&b.0.len())
+                            .then_with(|| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)))
+                    });
+                }
+            }
+            let mut csv_out = csv::Writer::from_writer(make_writer(&args.out)?);
+            let mut s = String::new();
+            for (k, v) in leaves {
+                s.clear();
+                for &tile in &k[..] {
+                    s.push_str(alphabet.of_rack(tile).unwrap());
+                }
+                csv_out.serialize((&s, v))?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
-    if cli.task == "auto" {
+    if let Task::Auto = cli.task {
         return old_main();
     }
     let t0 = std::time::Instant::now();
-    // the command line without its options, as do_task reads it
-    let mut args = vec![std::env::args().next().unwrap_or_default(), cli.task];
-    args.extend(cli.args);
-    let done = do_task(&args, || {
+    do_task(&cli.task, || {
         alphabet::make_alphabet_from(&cli.tiles, &|path| Ok(std::fs::read_to_string(path)?))
     })?;
-    if !done {
-        return Err("invalid argument".into());
-    }
     writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
     Ok(())
 }

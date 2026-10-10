@@ -2,6 +2,8 @@
 
 use wolges::{alphabet, display, error, fash, game_config, klv, kwg, movegen, return_error};
 
+mod game_args;
+
 const LEXICON_LINES: usize = 2;
 
 static USED_STDOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -272,51 +274,119 @@ fn parse_rack(alphabet: &alphabet::Alphabet, rack_str: &str) -> error::Returns<V
     Ok(rack)
 }
 
+#[derive(clap::Args)]
+struct Files {
+    #[arg(help = "the word graph")]
+    kwg: String,
+    #[arg(help = "the leaves")]
+    klv: String,
+    #[arg(help = "the baseline")]
+    baseline: String,
+}
+
+#[derive(clap::Subcommand)]
+enum Task {
+    #[command(
+        about = "generate every case's moves on both arms and compare them with the baseline"
+    )]
+    Check(Files),
+    #[command(about = "generate every case's moves on both arms and write them as the baseline")]
+    Write(Files),
+}
+
+#[derive(clap::Parser)]
+#[command(
+    about = "generate moves for fixed positions and check them against a baseline",
+    arg_required_else_help = true
+)]
+struct Cli {
+    #[arg(long, help = "the word graph is a kbwg")]
+    kbwg: bool,
+    #[command(subcommand)]
+    task: Task,
+    #[command(flatten)]
+    game: game_args::GameArgs,
+}
+
 fn main() -> error::Returns<()> {
-    use std::fmt::Write;
-    let args = std::env::args().collect::<Vec<_>>();
-    if args.len() != 5 || (args[1] != "check" && args[1] != "write") {
-        return_error!("usage: movegen-test check|write kwg klv baseline".into());
-    }
-    let kwg_bytes = std::fs::read(&args[2])?;
-    let klv_bytes = std::fs::read(&args[3])?;
-    let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+    let cli: Cli = clap::Parser::parse();
+    let (check_mode, files) = match &cli.task {
+        Task::Check(files) => (true, files),
+        Task::Write(files) => (false, files),
+    };
+    let kwg_bytes = std::fs::read(&files.kwg)?;
+    let klv_bytes = std::fs::read(&files.klv)?;
     let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv_bytes);
-    let game_config = game_config::make_english_game_config();
+    let game_config = cli.game.make_game_config()?;
+    game_config.check_leaves(klv.leave_range())?;
+    if cli.kbwg {
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        run(
+            &kwg,
+            &klv,
+            &game_config,
+            check_mode,
+            files,
+            &kwg_bytes,
+            &klv_bytes,
+        )
+    } else {
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        run(
+            &kwg,
+            &klv,
+            &game_config,
+            check_mode,
+            files,
+            &kwg_bytes,
+            &klv_bytes,
+        )
+    }
+}
+
+#[inline(always)]
+fn run<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    klv: &klv::Klv<kwg::Node22>,
+    game_config: &game_config::GameConfig,
+    check_mode: bool,
+    files: &Files,
+    kwg_bytes: &[u8],
+    klv_bytes: &[u8],
+) -> error::Returns<()> {
+    use std::fmt::Write;
     let alphabet_len = game_config.alphabet().len();
     if !kwg.fits_alphabet(alphabet_len) {
         return_error!(format!(
             "{} has tiles past this game's {alphabet_len}",
-            args[2]
+            files.kwg
         ));
     }
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
 
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
-    let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+    let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
 
-    let check_mode = args[1] == "check";
     let baseline = if check_mode {
-        Some(std::fs::read_to_string(&args[4])?)
+        Some(std::fs::read_to_string(&files.baseline)?)
     } else {
         None
     };
 
     let mut output = String::new();
-    writeln!(output, "{}", lexicon_line("kwg", &kwg_bytes)).unwrap();
-    writeln!(output, "{}", lexicon_line("klv", &klv_bytes)).unwrap();
+    writeln!(output, "{}", lexicon_line("kwg", kwg_bytes)).unwrap();
+    writeln!(output, "{}", lexicon_line("klv", klv_bytes)).unwrap();
     let mut total_elapsed = std::time::Duration::ZERO;
     let mut total_moves = 0usize;
 
-    let anagrams = wolges::anagrams::Anagrams::build_for_config(&kwg, &game_config)
+    let anagrams = wolges::anagrams::Anagrams::build_for_config(kwg, game_config)
         .ok_or("this alphabet does not lay out a key")?;
     let rack_lengths = wolges::anagrams::RackLengths::build(
-        &kwg,
+        kwg,
         anagrams.layout().clone(),
         game_config.rack_size() as usize + 1,
     );
-
     let mut disagreements = 0usize;
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
         let board_tiles = fen_parser.parse(case.fen)?;
@@ -326,11 +396,11 @@ fn main() -> error::Returns<()> {
         for (arm, table) in [("lean", None), ("unadorned", Some(&anagrams))] {
             let board_snapshot = movegen::BoardSnapshot {
                 board_tiles,
-                game_config: &game_config,
-                kwg: &kwg,
+                game_config,
+                kwg,
                 anagrams: table,
                 rack_lengths: table.is_none().then_some(&rack_lengths),
-                klv: &klv,
+                klv,
             };
             let params = movegen::GenMovesParams {
                 board_snapshot: &board_snapshot,
@@ -411,7 +481,7 @@ fn main() -> error::Returns<()> {
             return_error!("output differs from baseline".into());
         }
     } else {
-        make_writer(&args[4])?.write_all(output.as_bytes())?;
+        make_writer(&files.baseline)?.write_all(output.as_bytes())?;
     }
     Ok(())
 }

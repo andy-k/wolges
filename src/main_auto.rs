@@ -24,9 +24,9 @@ struct Cli {
         help = "write each bag-empty position the games reach to FILE, as endgame --batch reads"
     )]
     harvest: Option<String>,
-    #[arg(help = "the word graph")]
+    #[arg(default_value = "lexbin/CSW24.kwg", help = "the word graph")]
     kwg: String,
-    #[arg(help = "the leaves (- for none)")]
+    #[arg(default_value = "lexbin/CSW24.klv2", help = "the leaves (- for none)")]
     klv: String,
     #[command(flatten)]
     game: game_args::GameArgs,
