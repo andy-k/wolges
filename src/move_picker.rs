@@ -105,6 +105,8 @@ pub fn gen_simmer_candidates<N: kwg::Node, L: kwg::Node>(
     std::mem::swap(&mut move_generator.plays, scratch);
 }
 
+// https://doi.org/10.1145/2714064.2660195
+// https://prng.di.unimi.it/splitmix64.c
 // an iteration's draw depends only on (decision seed, iteration index), which is
 // what makes the parallel result independent of the thread count.
 #[inline(always)]

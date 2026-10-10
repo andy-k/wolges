@@ -1877,6 +1877,8 @@ mod tests {
         out
     }
 
+    // https://doi.org/10.1145/2714064.2660195
+    // https://prng.di.unimi.it/splitmix64.c
     #[inline]
     fn splitmix64(s: &mut u64) -> u64 {
         *s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
