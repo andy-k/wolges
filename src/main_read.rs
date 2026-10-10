@@ -953,6 +953,7 @@ fn do_wg_nodes<R: CheckedWg>(
     out: &str,
     alphabet: &alphabet::Alphabet,
     reader: &R,
+    blank_str: Option<&str>,
 ) -> error::Returns<()> {
     let alphabet_label = &WolgesAlphabetLabel { alphabet };
     let kwg_bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
@@ -973,7 +974,7 @@ fn do_wg_nodes<R: CheckedWg>(
         ret.push(' ');
         let t = reader.tile(kwg_bytes, p);
         if t == 0 {
-            ret.push('@');
+            ret.push_str(blank_str.unwrap_or("@"));
         } else {
             alphabet_label.label(&mut ret, t)?;
         }
@@ -1842,12 +1843,17 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 )
             }
         }
-        Task::KwgNodes { graph_file, out } => {
+        Task::KwgNodes {
+            graph_file,
+            out,
+            blanks,
+        } => {
             let alphabet = make_alphabet()?;
+            let blank_str = if blanks { alphabet.of_rack(0) } else { None };
             if graph_file.kbwg {
-                do_wg_nodes(&graph_file.kwg, &out, &alphabet, &KbwgReader {})
+                do_wg_nodes(&graph_file.kwg, &out, &alphabet, &KbwgReader {}, blank_str)
             } else {
-                do_wg_nodes(&graph_file.kwg, &out, &alphabet, &KwgReader {})
+                do_wg_nodes(&graph_file.kwg, &out, &alphabet, &KwgReader {}, blank_str)
             }
         }
         Task::KwgProb { graph_file, out } => {
@@ -3114,6 +3120,11 @@ enum Task {
         graph_file: WordGraph,
         #[arg(help = "the nodes to write")]
         out: String,
+        #[arg(
+            long,
+            help = "tile 0 as ?, not @, such as for klv-kwg-extract's output (dawg only)"
+        )]
+        blanks: bool,
     },
     #[command(about = "read kwg file (dawg) by probability (output format subject to changes)")]
     KwgProb {
