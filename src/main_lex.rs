@@ -1,30 +1,33 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
+use std::io::Write;
 use wolges::{alphabet, bites, error, fash, kwg};
 
 #[inline(always)]
-fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) {
+fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) -> error::Returns<()> {
     struct Env<'a, N: kwg::Node> {
         a: &'a alphabet::Alphabet,
         g: &'a kwg::Kwg<N>,
         s: &'a mut String,
     }
-    fn iter<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32) {
+    fn iter<N: kwg::Node>(env: &mut Env<'_, N>, mut p: i32) -> error::Returns<()> {
         let l = env.s.len();
         loop {
             let t = env.g[p].tile();
             env.s.push_str(if t == 0 {
                 "@"
             } else if t & 0x80 == 0 {
-                env.a.of_board(t).unwrap()
+                env.a
+                    .of_board(t)
+                    .ok_or("the word graph has a tile the alphabet lacks")?
             } else {
-                panic!()
+                return Err("the word graph has a blank".into());
             });
             if env.g[p].accepts() {
-                println!("{}", env.s);
+                writeln!(std::io::stdout(), "{}", env.s)?;
             }
             if env.g[p].arc_index() != 0 {
-                iter(env, env.g[p].arc_index());
+                iter(env, env.g[p].arc_index())?;
             }
             env.s.truncate(l);
             if env.g[p].is_end() {
@@ -32,6 +35,7 @@ fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) {
             }
             p += 1;
         }
+        Ok(())
     }
     iter(
         &mut Env {
@@ -40,7 +44,7 @@ fn print_dawg<N: kwg::Node>(a: &alphabet::Alphabet, g: &kwg::Kwg<N>) {
             s: &mut String::new(),
         },
         g[0].arc_index(),
-    );
+    )
 }
 
 // parses '#' as 0
@@ -49,7 +53,7 @@ fn parse_embedded_words_board(
     alphabet_reader: &alphabet::AlphabetReader,
     s: &str,
     v: &mut Vec<u8>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> error::Returns<()> {
     v.clear();
     if !s.is_empty() {
         v.reserve(s.len());
@@ -236,12 +240,13 @@ fn test_find_embedded_words<'a, N: kwg::Node>(
         }
         let rows = board_dim;
         let cols = board_dim;
-        println!("Board:");
+        writeln!(std::io::stdout(), "Board:")?;
         for r in 0..rows {
-            print!("  ");
+            write!(std::io::stdout(), "  ")?;
             for c in 0..cols {
                 let tile = board[r * cols + c];
-                print!(
+                write!(
+                    std::io::stdout(),
                     "{}{}",
                     if tile == 0 {
                         "#"
@@ -253,11 +258,11 @@ fn test_find_embedded_words<'a, N: kwg::Node>(
                     } else {
                         ' '
                     }
-                );
+                )?;
             }
-            println!();
+            writeln!(std::io::stdout())?;
         }
-        println!();
+        writeln!(std::io::stdout())?;
         ewf.resize(rows, cols);
         let mut ans_map = fash::MyHashMap::default();
         let t0 = std::time::Instant::now();
@@ -287,26 +292,36 @@ fn test_find_embedded_words<'a, N: kwg::Node>(
                     .or_insert(v);
             },
         });
-        println!("Found {} words in {:?}", ans_map.len(), t0.elapsed());
+        writeln!(
+            std::io::stdout(),
+            "Found {} words in {:?}",
+            ans_map.len(),
+            t0.elapsed()
+        )?;
         let mut ans: Box<[(bites::Bites, _)]> = ans_map.into_iter().collect();
         ans.sort_unstable_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
         let mut pt = 0;
         while pt < ans.len() {
             let cur_len = ans[pt].0.len();
             let pt2 = pt + ans[pt..].partition_point(|x| x.0.len() == cur_len);
-            println!("{} words of length {}:", pt2 - pt, cur_len);
-            print!(" ");
+            writeln!(
+                std::io::stdout(),
+                "{} words of length {}:",
+                pt2 - pt,
+                cur_len
+            )?;
+            write!(std::io::stdout(), " ")?;
             for (word, score) in &ans[pt..pt2] {
-                print!(" ");
+                write!(std::io::stdout(), " ")?;
                 for &tile in &word[..] {
-                    print!("{}", alphabet.of_rack(tile).unwrap());
+                    write!(std::io::stdout(), "{}", alphabet.of_rack(tile).unwrap())?;
                 }
-                print!(" ({score})");
+                write!(std::io::stdout(), " ({score})")?;
             }
-            println!();
+            writeln!(std::io::stdout())?;
             pt = pt2;
         }
-        println!();
+        writeln!(std::io::stdout())?;
     }
     Ok(())
 }
@@ -350,13 +365,13 @@ fn find_words<N: kwg::Node>(
     kwg2_path: &str,
 ) -> error::Returns<()> {
     if false {
-        let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?);
-        print_dawg(alphabet, &kwg);
+        let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?)?;
+        print_dawg(alphabet, &kwg)?;
         return Ok(());
     }
-    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?);
+    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg_path)?)?;
     if true {
-        let nwl23_kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg2_path)?);
+        let nwl23_kwg = kwg::Kwg::<N>::from_bytes_alloc(&std::fs::read(kwg2_path)?)?;
         let known_boards = [
             &[
                 1, 1, 1, 1, //
@@ -440,20 +455,20 @@ TABCEEAWNREEOSRLLDGN####F#UN#OIAESTYNKACEPIHUEIST#AZRET#IDTYMUOE
         return Ok(());
     }
 
-    print_dawg(alphabet, &kwg);
+    print_dawg(alphabet, &kwg)?;
     let t0 = std::time::Instant::now();
-    let word_counts = kwg.count_words_alloc();
-    println!("took {} ms", t0.elapsed().as_millis());
-    println!("{:?}", &word_counts[0..100]);
+    let word_counts = kwg.count_words_alloc()?;
+    writeln!(std::io::stdout(), "took {} ms", t0.elapsed().as_millis())?;
+    writeln!(std::io::stdout(), "{:?}", &word_counts[0..100])?;
     let mut out_vec = Vec::new();
     let dawg_root = kwg[0].arc_index();
     for i in 0..word_counts[dawg_root as usize] {
         out_vec.clear();
         kwg.get_word_by_index(&word_counts, dawg_root, i, |v| {
             out_vec.push(v);
-        });
+        })?;
         let j = kwg.get_word_index(&word_counts, dawg_root, &out_vec);
-        println!("{i} {j} {out_vec:?}");
+        writeln!(std::io::stdout(), "{i} {j} {out_vec:?}")?;
         assert_eq!(i, j);
     }
     assert_eq!(kwg.get_word_index(&word_counts, dawg_root, &[5, 3, 1]), !0);

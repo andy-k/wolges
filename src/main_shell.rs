@@ -4,6 +4,7 @@ use wolges::error;
 mod rlhelper;
 
 use std::io::BufRead;
+use std::io::Write;
 
 fn main() -> error::Returns<()> {
     let mut rl = rlhelper::new_rl_editor()?;
@@ -11,14 +12,14 @@ fn main() -> error::Returns<()> {
     loop {
         if let Some((line, source)) = cmd_stack.pop() {
             if let Some((filename, line_num)) = source {
-                println!("{filename}:{line_num}> {line}");
+                writeln!(std::io::stdout(), "{filename}:{line_num}> {line}")?;
             }
             match shell_words::split(&line) {
                 Ok(strings) => {
                     if !strings.is_empty() {
                         match strings[0].as_str() {
                             "help" => {
-                                println!("no help, try reading the source");
+                                writeln!(std::io::stdout(), "no help, try reading the source")?;
                             }
                             "exit" => {
                                 break;
@@ -41,20 +42,20 @@ fn main() -> error::Returns<()> {
                                         cmd_stack[v..].reverse();
                                         Ok(())
                                     })() {
-                                        println!("cannot read file: {err:?}");
+                                        writeln!(std::io::stdout(), "cannot read file: {err:?}")?;
                                     }
                                 } else {
-                                    println!("need another arg");
+                                    writeln!(std::io::stdout(), "need another arg")?;
                                 }
                             }
                             _ => {
-                                println!("invalid input, help for help");
+                                writeln!(std::io::stdout(), "invalid input, help for help")?;
                             }
                         }
                     }
                 }
                 Err(err) => {
-                    println!("Bad quoting: {err:?}");
+                    writeln!(std::io::stdout(), "Bad quoting: {err:?}")?;
                 }
             }
         } else {
@@ -64,15 +65,15 @@ fn main() -> error::Returns<()> {
                     cmd_stack.push((line, None));
                 }
                 Err(rustyline::error::ReadlineError::Interrupted) => {
-                    println!("CTRL-C");
+                    writeln!(std::io::stdout(), "CTRL-C")?;
                     break;
                 }
                 Err(rustyline::error::ReadlineError::Eof) => {
-                    println!("CTRL-D");
+                    writeln!(std::io::stdout(), "CTRL-D")?;
                     break;
                 }
                 Err(err) => {
-                    println!("Error: {err:?}");
+                    writeln!(std::io::stdout(), "Error: {err:?}")?;
                     break;
                 }
             }

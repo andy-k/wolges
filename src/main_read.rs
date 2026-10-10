@@ -1,9 +1,10 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use wolges::{alphabet, alphagram, bites, error, fash, kwg, prob, stats};
+use wolges::{alphabet, alphagram, bites, error, fash, klv, kwg, prob, stats};
 
 use kwg::{read_le_u16, read_le_u32};
 use std::fmt::Write;
+use std::io::Write as _;
 use std::str::FromStr;
 
 trait WgReader {
@@ -42,6 +43,28 @@ impl WgReader for KwgReader {
     #[inline(always)]
     fn len(&self, bytes: &[u8]) -> usize {
         bytes.len() / 4
+    }
+}
+
+// a word graph read here node by node is first loaded and counted by the
+// library, which refuses one that is cut short, points outside itself or loops
+trait CheckedWg: WgReader {
+    fn check(&self, bytes: &[u8]) -> error::Returns<()>;
+}
+
+impl CheckedWg for KwgReader {
+    #[inline]
+    fn check(&self, bytes: &[u8]) -> error::Returns<()> {
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(bytes)?.count_words_alloc()?;
+        Ok(())
+    }
+}
+
+impl CheckedWg for KbwgReader {
+    #[inline]
+    fn check(&self, bytes: &[u8]) -> error::Returns<()> {
+        kwg::Kwg::<kwg::Node24>::from_bytes_alloc(bytes)?.count_words_alloc()?;
+        Ok(())
     }
 }
 
@@ -294,6 +317,7 @@ fn iter_dawg<
         accepts: &'a mut F,
         on_in: &'a mut In,
         on_out: &'a mut Out,
+        runs_on_path: Vec<bool>,
     }
     fn iter<
         F: FnMut(&str) -> error::Returns<()>,
@@ -305,6 +329,14 @@ fn iter_dawg<
         env: &mut Env<'_, F, In, Out, A, R>,
         first_p: usize,
     ) -> error::Returns<()> {
+        // a run entered again before the walk leaves it is a loop
+        match env.runs_on_path.get_mut(first_p) {
+            None => return Err("out of bounds".into()),
+            Some(true) => {
+                return Err(format!("the word graph loops back to node {first_p}").into());
+            }
+            Some(on_path) => *on_path = true,
+        }
         let l = env.s.len();
         let mut prev_tile = 0u8;
         let mut took_any = false;
@@ -351,6 +383,7 @@ fn iter_dawg<
             }
             env.s.truncate(l);
         }
+        env.runs_on_path[first_p] = false;
         Ok(())
     }
     if initial_idx >= r.len(b) {
@@ -366,6 +399,7 @@ fn iter_dawg<
             accepts,
             on_in,
             on_out,
+            runs_on_path: vec![false; r.len(b)],
         },
         initial_idx,
     )
@@ -497,6 +531,38 @@ fn wmp_read_bit_rack(
     }
 }
 
+// inlining it slows the dump
+#[inline(never)]
+fn check_wmp_buckets(
+    bytes: &[u8],
+    ofs: usize,
+    num_buckets: u32,
+    num_entries: u32,
+) -> error::Returns<()> {
+    let mut prev = 0;
+    for i in 0..=num_buckets as usize {
+        let idx = read_le_u32(bytes, ofs + i * 4);
+        if idx < prev || (i == 0 && idx != 0) || (i == num_buckets as usize && idx != num_entries) {
+            return Err("invalid buckets".into());
+        }
+        prev = idx;
+    }
+    Ok(())
+}
+
+#[inline(always)]
+fn check_wmp_run(
+    initial_ofs: u32,
+    num_elts: u32,
+    width: usize,
+    section_len: usize,
+) -> error::Returns<()> {
+    if initial_ofs as u64 + num_elts as u64 * width as u64 > section_len as u64 {
+        return Err("an entry's words run past their section".into());
+    }
+    Ok(())
+}
+
 struct KlvParts<'a> {
     kwg_bytes: &'a [u8],
     r: usize,
@@ -527,6 +593,15 @@ fn parse_klv(klv_bytes: &[u8]) -> error::Returns<KlvParts<'_>> {
     })
 }
 
+// a leave table read here raw is first loaded by the library, which refuses one
+// that is cut short, sized wrong or loops, or that has a value too few or too
+// many for its leaves
+#[inline(always)]
+fn check_klv(klv_bytes: &[u8]) -> error::Returns<()> {
+    klv::Klv::<kwg::Node22>::from_bytes_alloc(klv_bytes)?;
+    Ok(())
+}
+
 #[inline(always)]
 fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Returns<f32> {
     if is_klv2 && klv_bytes.len() >= *r + 4 {
@@ -543,7 +618,7 @@ fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Re
 }
 
 #[inline]
-fn do_wg_check<R: WgReader>(
+fn do_wg_check<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
@@ -553,9 +628,7 @@ fn do_wg_check<R: WgReader>(
     }
     let alphabet_reader = &alphabet::AlphabetReader::new_for_words(alphabet);
     let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-    if 0 == reader.len(kwg_bytes) {
-        return Err("out of bounds".into());
-    }
+    reader.check(kwg_bytes)?;
     let mut not_found = false;
     for word in &args[3..] {
         let sb = &word.as_bytes();
@@ -589,14 +662,15 @@ fn do_wg_check<R: WgReader>(
             not_found = true;
         }
     }
-    println!(
+    writeln!(
+        std::io::stdout(),
         "{}",
         if not_found {
             "Play is NOT acceptable"
         } else {
             "Play is Acceptable"
         }
-    );
+    )?;
     Ok(())
 }
 
@@ -608,7 +682,7 @@ enum AnagramMode {
 }
 
 #[inline]
-fn do_wg_anagram<R: WgReader>(
+fn do_wg_anagram<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
@@ -616,9 +690,7 @@ fn do_wg_anagram<R: WgReader>(
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
     let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-    if 0 == reader.len(kwg_bytes) {
-        return Err("out of bounds".into());
-    }
+    reader.check(kwg_bytes)?;
     let mut rack = vec![0; alphabet.len().into()];
     let mut given_num_tiles = 0usize;
     let sb = &args[4].as_bytes();
@@ -739,13 +811,11 @@ fn do_klv_anagram<R: WgReader>(
     mode: AnagramMode,
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
+    check_klv(klv_bytes)?;
     let parts = parse_klv(klv_bytes)?;
     let kwg_bytes = parts.kwg_bytes;
     let mut r = parts.r;
     let is_klv2 = parts.is_klv2;
-    if 0 == reader.len(kwg_bytes) {
-        return Err("out of bounds".into());
-    }
     let mut rack = vec![0; alphabet.len().into()];
     let mut given_num_tiles = 0usize;
     let sb = &args[4].as_bytes();
@@ -823,7 +893,7 @@ fn do_klv_anagram<R: WgReader>(
 }
 
 #[inline]
-fn do_wg_dawg<R: WgReader>(
+fn do_wg_dawg<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
@@ -831,6 +901,7 @@ fn do_wg_dawg<R: WgReader>(
     blank_str: Option<&str>,
 ) -> error::Returns<()> {
     let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    reader.check(bytes)?;
     if initial_node_idx >= reader.len(bytes) {
         return Err("out of bounds".into());
     }
@@ -845,13 +916,14 @@ fn do_wg_dawg<R: WgReader>(
 }
 
 #[inline]
-fn do_wg_nodes<R: WgReader>(
+fn do_wg_nodes<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
 ) -> error::Returns<()> {
     let alphabet_label = &WolgesAlphabetLabel { alphabet };
     let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    reader.check(kwg_bytes)?;
     let kwg_len = reader.len(kwg_bytes);
     let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
     let mut kwg_pointed_to = vec![false; kwg_len];
@@ -889,7 +961,7 @@ fn do_wg_nodes<R: WgReader>(
 }
 
 #[inline]
-fn do_wg_prob<R: WgReader>(
+fn do_wg_prob<R: CheckedWg>(
     args: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
@@ -897,9 +969,7 @@ fn do_wg_prob<R: WgReader>(
     let mut word_prob = prob::WordProbability::new(alphabet);
     let word_cell = std::cell::RefCell::new(Vec::new());
     let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-    if 0 == reader.len(kwg_bytes) {
-        return Err("out of bounds".into());
-    }
+    reader.check(kwg_bytes)?;
     let vec_out_cell = std::cell::RefCell::new(Vec::new());
     iter_dawg(
         DawgSource {
@@ -968,7 +1038,7 @@ fn do_quackle<R: WgReader>(
     make_reader_fn: impl FnOnce(usize) -> R,
 ) -> error::Returns<()> {
     let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-    if 20 > quackle_bytes.len() {
+    if 20 >= quackle_bytes.len() {
         return Err("out of bounds".into());
     }
     let alpha_size = quackle_bytes[20] as usize;
@@ -977,7 +1047,7 @@ fn do_quackle<R: WgReader>(
     for _ in 0..alpha_size {
         let p0 = p;
         loop {
-            if p > quackle_bytes.len() {
+            if p >= quackle_bytes.len() {
                 return Err("out of bounds".into());
             }
             if quackle_bytes[p] == b' ' {
@@ -1016,11 +1086,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 let alphabet = make_alphabet()?;
                 let reader = &KwgReader {};
                 let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+                check_klv(klv_bytes)?;
                 let parts = parse_klv(klv_bytes)?;
                 let kwg_bytes = parts.kwg_bytes;
-                if 0 == reader.len(kwg_bytes) {
-                    return Err("out of bounds".into());
-                }
                 let mut r = parts.r;
                 let is_klv2 = !is_klv16 && parts.is_klv2;
                 if r + parts.lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
@@ -1126,7 +1194,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                             return Err("invalid tile".into());
                         }
                     }
-                    println!("{}", word_prob.word_draw_ways(&v));
+                    writeln!(std::io::stdout(), "{}", word_prob.word_draw_ways(&v))?;
                 }
                 Ok(true)
             }
@@ -1183,7 +1251,11 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 r += 4;
                 let ort_num_values = read_le_u32(ort_bytes, r);
                 r += 4;
-                if ort_bytes.len() < r + ((ort_num_buckets + 1 + ort_num_values) * 4) as usize {
+                // both counts come from the file: in 64 bits, no pair of them
+                // can wrap the size
+                if (ort_bytes.len() as u64)
+                    < r as u64 + (ort_num_buckets as u64 + 1 + ort_num_values as u64) * 4
+                {
                     return Err("out of bounds".into());
                 }
                 let mut ort_buckets = Vec::with_capacity(ort_num_buckets as usize + 1);
@@ -1268,6 +1340,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                 let mut v = Vec::new();
                 for result in csv_reader.records() {
                     let record = result?;
+                    if record.len() < 7 {
+                        return Err("a line has fewer than 7 fields".into());
+                    }
                     let sb = record[0].as_bytes();
                     v.clear();
                     let mut ix = 0;
@@ -1408,7 +1483,8 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     let wmp_bylen_num_words = read_le_u32(wmp_bytes, r);
                     r += 4;
                     let wmp_bylen_words_ofs = r;
-                    r += (len as u32 * wmp_bylen_num_words) as usize;
+                    let wmp_bylen_words_len = len as usize * wmp_bylen_num_words as usize;
+                    r += wmp_bylen_words_len;
 
                     if wmp_bytes.len() < r + 4 {
                         return Err("out of bounds".into());
@@ -1446,6 +1522,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                     let wmp_bylen_double_blank_entries_ofs = r;
                     r += wmp_entry_size * wmp_bylen_num_double_blank_entries as usize;
                     let wmp_bylen_blank_pairs_ofs;
+                    let wmp_bylen_blank_pairs_len;
                     if wmp_ver < 2 {
                         if wmp_bytes.len() < r + 4 {
                             return Err("out of bounds".into());
@@ -1453,14 +1530,34 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                         let wmp_bylen_num_blank_pairs = read_le_u32(wmp_bytes, r);
                         r += 4;
                         wmp_bylen_blank_pairs_ofs = r;
-                        r += 2 * wmp_bylen_num_blank_pairs as usize;
+                        wmp_bylen_blank_pairs_len = 2 * wmp_bylen_num_blank_pairs as usize;
+                        r += wmp_bylen_blank_pairs_len;
                     } else {
                         wmp_bylen_blank_pairs_ofs = 0;
+                        wmp_bylen_blank_pairs_len = 0;
                     }
 
                     if wmp_bytes.len() < r {
                         return Err("out of bounds".into());
                     }
+                    check_wmp_buckets(
+                        wmp_bytes,
+                        wmp_bylen_word_buckets_ofs,
+                        wmp_bylen_num_word_buckets,
+                        wmp_bylen_num_word_entries,
+                    )?;
+                    check_wmp_buckets(
+                        wmp_bytes,
+                        wmp_bylen_blank_buckets_ofs,
+                        wmp_bylen_num_blank_buckets,
+                        wmp_bylen_num_blank_entries,
+                    )?;
+                    check_wmp_buckets(
+                        wmp_bytes,
+                        wmp_bylen_double_blank_buckets_ofs,
+                        wmp_bylen_num_double_blank_buckets,
+                        wmp_bylen_num_double_blank_entries,
+                    )?;
                     if words_only {
                         // inlined words
                         for bucket_idx in 0..wmp_bylen_num_word_buckets {
@@ -1479,6 +1576,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     let initial_ofs = read_le_u32(wmp_bytes, p);
                                     p += 4;
                                     num_elts = read_le_u32(wmp_bytes, p);
+                                    check_wmp_run(
+                                        initial_ofs,
+                                        num_elts,
+                                        len as usize,
+                                        wmp_bylen_words_len,
+                                    )?;
                                     p = wmp_bylen_words_ofs + initial_ofs as usize;
                                 } else {
                                     // inlined words
@@ -1544,6 +1647,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                         let initial_ofs = read_le_u32(wmp_bytes, p);
                                         p += 4;
                                         num_elts = read_le_u32(wmp_bytes, p);
+                                        check_wmp_run(
+                                            initial_ofs,
+                                            num_elts,
+                                            len as usize,
+                                            wmp_bylen_words_len,
+                                        )?;
                                         p = wmp_bylen_words_ofs + initial_ofs as usize;
                                     } else {
                                         // inlined words
@@ -1617,6 +1726,13 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                             ret,
                             "\ndouble blank buckets: {wmp_bylen_num_double_blank_buckets}"
                         )?;
+                        // else the lookups below divide by 0
+                        if wmp_bylen_num_double_blank_entries != 0
+                            && (wmp_bylen_num_word_buckets == 0
+                                || (wmp_ver >= 2 && wmp_bylen_num_blank_buckets == 0))
+                        {
+                            return Err("invalid double blank entry".into());
+                        }
                         if wmp_ver < 2 {
                             for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
                                 let mut p =
@@ -1652,6 +1768,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                             let initial_ofs = read_le_u32(wmp_bytes, p);
                                             p += 4;
                                             num_elts = read_le_u32(wmp_bytes, p);
+                                            check_wmp_run(
+                                                initial_ofs,
+                                                num_elts,
+                                                2,
+                                                wmp_bylen_blank_pairs_len,
+                                            )?;
                                             p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
                                         } else {
                                             num_elts = (wmp_bytes[p..p + 16]
@@ -1666,7 +1788,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                             let mut unblanked_bit_rack = bit_rack & !0xf;
                                             for _ in 0..2 {
                                                 let tile = wmp_bytes[p];
-                                                unblanked_bit_rack += 1 << (4 * tile);
+                                                // 32 tiles, four bits each
+                                                if tile >= 32 {
+                                                    return Err("invalid tile".into());
+                                                }
+                                                unblanked_bit_rack = unblanked_bit_rack
+                                                    .wrapping_add(1 << (4 * tile));
                                                 alphabet_label.label(&mut ret, tile)?;
                                                 p += 1;
                                             }
@@ -1710,7 +1837,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                                                 / len as usize)
                                                                 as u32
                                                         };
-                                                        this_word_lookup_results += num_elts;
+                                                        this_word_lookup_results =
+                                                            this_word_lookup_results
+                                                                .saturating_add(num_elts);
                                                         found = true;
                                                         break;
                                                     }
@@ -1721,10 +1850,13 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                             }
                                         }
                                         expected_max_word_lookup_results =
-                                            expected_max_word_lookup_results
-                                                .max(len as u32 * this_word_lookup_results);
+                                            expected_max_word_lookup_results.max(
+                                                (len as u32)
+                                                    .saturating_mul(this_word_lookup_results),
+                                            );
                                         expected_max_blank_pair_results =
-                                            expected_max_blank_pair_results.max(2 * num_elts);
+                                            expected_max_blank_pair_results
+                                                .max(num_elts.saturating_mul(2));
                                         ret.push('\n');
                                     }
                                 }
@@ -1771,8 +1903,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                         let mut this_word_lookup_results = 0u32;
                                         for first_i in 0..32 {
                                             if bits & (1 << first_i) != 0 {
-                                                let b1_bit_rack =
-                                                    (bit_rack - 1) + (1 << (4 * first_i));
+                                                // a corrupt bit rack wraps
+                                                let b1_bit_rack = bit_rack
+                                                    .wrapping_sub(1)
+                                                    .wrapping_add(1 << (4 * first_i));
                                                 {
                                                     // shadow all the variables inside here.
                                                     let mut sought_quotient = 0;
@@ -1832,7 +1966,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
 
                                                                         let unblanked_bit_rack =
                                                                             (b1_bit_rack & !0xf)
-                                                                                + (1 << (4 * i));
+                                                                                .wrapping_add(
+                                                                                    1 << (4 * i),
+                                                                                );
                                                                         {
                                                                             // shadow all the variables inside here.
                                                                             let mut sought_quotient =
@@ -1916,8 +2052,9 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                                                                 / len as usize)
                                                                                 as u32
                                                                                         };
-                                                                                    this_word_lookup_results +=
-                                                                            num_elts;
+                                                                                    this_word_lookup_results =
+                                                                                        this_word_lookup_results
+                                                                                            .saturating_add(num_elts);
                                                                                     found = true;
                                                                                     break;
                                                                                 }
@@ -1942,8 +2079,10 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                             }
                                         }
                                         expected_max_word_lookup_results =
-                                            expected_max_word_lookup_results
-                                                .max(len as u32 * this_word_lookup_results);
+                                            expected_max_word_lookup_results.max(
+                                                (len as u32)
+                                                    .saturating_mul(this_word_lookup_results),
+                                            );
                                         ret.push('\n');
                                     }
                                 }
@@ -2199,6 +2338,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
 
                     // 0-blank section
                     {
+                        let mut written = Ok(());
                         let mut linearized_buckets = b0_bits
                             .keys()
                             .map(|bits| {
@@ -2211,16 +2351,18 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                 if quotient >> 96 != 0 {
                                     quotient &= (1u128 << 96) - 1;
                                     // hopefully this does not crash
-                                    writeln!(
-                                        boxed_stdout_or_stderr(),
-                                        "OVERFLOW: 0x{bits_u128:032x}.divmod({num_word_buckets})=[0x{quotient:024x},{remainder}]"
-                                    )
-                                    .unwrap();
+                                    if written.is_ok() {
+                                        written = writeln!(
+                                            boxed_stdout_or_stderr(),
+                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_word_buckets})=[0x{quotient:024x},{remainder}]"
+                                        );
+                                    }
                                 }
                                 (remainder, quotient, bits)
                                 }
                             })
                             .collect::<Box<_>>();
+                        written?;
                         linearized_buckets.sort_unstable();
                         write_u32(&mut ret, num_word_buckets);
                         write_u32(&mut ret, 0);
@@ -2277,6 +2419,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
 
                     // 1-blank section
                     {
+                        let mut written = Ok(());
                         let mut linearized_buckets = b1_bits
                             .keys()
                             .map(|bits| {
@@ -2293,16 +2436,18 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     if quotient >> 96 != 0 {
                                         quotient &= (1u128 << 96) - 1;
                                         // hopefully this does not crash
-                                        writeln!(
-                                            boxed_stdout_or_stderr(),
-                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_blank_buckets})=[0x{quotient:024x},{remainder}]"
-                                        )
-                                        .unwrap();
+                                        if written.is_ok() {
+                                            written = writeln!(
+                                                boxed_stdout_or_stderr(),
+                                                "OVERFLOW: 0x{bits_u128:032x}.divmod({num_blank_buckets})=[0x{quotient:024x},{remainder}]"
+                                            );
+                                        }
                                     }
                                     (remainder, quotient, bits)
                                 }
                             })
                             .collect::<Box<_>>();
+                        written?;
                         linearized_buckets.sort_unstable();
                         write_u32(&mut ret, num_blank_buckets);
                         write_u32(&mut ret, 0);
@@ -2339,6 +2484,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                         let mut max_word_lookup_results_before_multiplying_len = 0u32;
                         if is_v1 {
                             let mut b2_chars = Vec::<u8>::new(); // even number of elements to be interpreted in pairs.
+                            let mut written = Ok(());
                             let mut linearized_buckets = b2_bits
                                 .iter()
                                 .map(|(bits_from_b2, b1)| {
@@ -2351,11 +2497,12 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     if quotient >> 96 != 0 {
                                         quotient &= (1u128 << 96) - 1;
                                         // hopefully this does not crash
-                                        writeln!(
-                                            boxed_stdout_or_stderr(),
-                                            "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
-                                        )
-                                        .unwrap();
+                                        if written.is_ok() {
+                                            written = writeln!(
+                                                boxed_stdout_or_stderr(),
+                                                "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
+                                            );
+                                        }
                                     }
                                     let start_idx = b2_chars.len() as u32;
                                     let mut num_words_here = 0u32;
@@ -2390,6 +2537,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     (remainder, quotient, start_idx, end_idx)
                                 })
                                 .collect::<Box<_>>();
+                            written?;
                             linearized_buckets.sort_unstable();
                             write_u32(&mut ret, num_double_blank_buckets);
                             write_u32(&mut ret, 0);
@@ -2440,6 +2588,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                 }
                             }
                         } else {
+                            let mut written = Ok(());
                             let mut linearized_buckets = b2_bits
                                 .iter()
                                 .map(|(key_bits, val_bits)| {
@@ -2488,16 +2637,18 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                         if quotient >> 96 != 0 {
                                             quotient &= (1u128 << 96) - 1;
                                             // hopefully this does not crash
-                                            writeln!(
-                                                boxed_stdout_or_stderr(),
-                                                "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
-                                            )
-                                            .unwrap();
+                                            if written.is_ok() {
+                                                written = writeln!(
+                                                    boxed_stdout_or_stderr(),
+                                                    "OVERFLOW: 0x{bits_u128:032x}.divmod({num_double_blank_buckets})=[0x{quotient:024x},{remainder}]"
+                                                );
+                                            }
                                         }
                                         (remainder, quotient, key_bits)
                                     }
                                 })
                                 .collect::<Box<_>>();
+                            written?;
                             linearized_buckets.sort_unstable();
                             write_u32(&mut ret, num_double_blank_buckets);
                             write_u32(&mut ret, 0);
@@ -2551,7 +2702,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
 // note: kwg in legacy layout is reported to be slower than the newer layouts.
 // this cache simulation contradicts that observation. can someone explain?
 #[inline]
-fn kwg_hitcheck<R: WgReader>(
+fn kwg_hitcheck<R: CheckedWg>(
     ret: &mut String,
     r: &R,
     b: &[u8],
@@ -2560,6 +2711,10 @@ fn kwg_hitcheck<R: WgReader>(
     cache_set_associativity: u32,
     num_cache_sets: u32,
 ) -> error::Returns<()> {
+    r.check(b)?;
+    if cache_line_size == 0 || cache_set_associativity == 0 || num_cache_sets == 0 {
+        return Err("a cache has lines, ways and sets of 1 or more".into());
+    }
     struct Cache {
         cache_line_size: u32,
         cache_set_associativity: u32,
@@ -3133,6 +3288,7 @@ fn main() -> error::Returns<()> {
     if done {
     } else if args[1] == "klv-kwg-extract" {
         let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        check_klv(klv_bytes)?;
         let parts = parse_klv(klv_bytes)?;
         // binary output
         make_writer(&args[3])?.write_all(parts.kwg_bytes)?;
@@ -3169,13 +3325,11 @@ fn main() -> error::Returns<()> {
     } else if args[1] == "quackle-make-superleaves" {
         let reader = &KwgReader {};
         let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+        check_klv(klv_bytes)?;
         let parts = parse_klv(klv_bytes)?;
         let kwg_bytes = parts.kwg_bytes;
         let mut r = parts.r;
         let is_klv2 = parts.is_klv2;
-        if 0 == reader.len(kwg_bytes) {
-            return Err("out of bounds".into());
-        }
         let mut ret = Vec::new();
         iter_dawg(
             DawgSource {
@@ -3300,7 +3454,7 @@ fn main() -> error::Returns<()> {
             let v = y as f32 * 0.1;
             writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
         }
-        print!("{ret}");
+        write!(std::io::stdout(), "{ret}")?;
     } else {
         return Err("invalid argument".into());
     }

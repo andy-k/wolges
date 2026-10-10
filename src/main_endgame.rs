@@ -108,6 +108,7 @@ fn is_cum_token(coord: &str) -> bool {
     l1 == b.len()
 }
 
+use std::io::Write;
 use std::str::FromStr;
 
 impl Question {
@@ -119,8 +120,10 @@ impl Question {
         gcg: &str,
         rack: &str,
     ) -> Result<Question, error::MyError> {
-        let empty_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES);
-        let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+        let empty_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES)
+            .map_err(|e| error::new(format!("{}", e)))?;
+        let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+            .map_err(|e| error::new(format!("{}", e)))?;
         let mut ps = play_scorer::PlayScorer::new();
         let alphabet = game_config.alphabet();
         let plays_alphabet_reader = alphabet::AlphabetReader::new_for_plays(alphabet);
@@ -441,7 +444,7 @@ fn run_batch<N: kwg::Node>(
     path: &str,
     lean: bool,
 ) -> error::Returns<()> {
-    let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
+    let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?;
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
     let racks_alphabet_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
@@ -479,6 +482,12 @@ fn run_batch<N: kwg::Node>(
                 "line {line_index}: bad player {player_str:?}: the player to move is 0 or 1"
             ));
         }
+        let mut off_board = game_config.tiles_off_board(&board_tiles)?;
+        for rack in [&rack0, &rack1] {
+            game_config
+                .take_rack(&mut off_board, rack)
+                .map_err(|e| error::new(format!("line {line_index}: {e}")))?;
+        }
 
         let mut set_of_words = fash::MyHashSet::<bites::Bites>::default();
         move_generator.gen_remaining_words(
@@ -497,17 +506,17 @@ fn run_batch<N: kwg::Node>(
         let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
         vec_of_words.sort_unstable();
         let smaller_kwg_bytes = build_pruned_kwg(&game_config, &vec_of_words)?;
-        let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
-        let arm_tables = solver_tables(&smaller_kwg, &game_config, lean);
+        let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
+        let arm_tables = solver_tables(&smaller_kwg, &game_config, lean)?;
 
         let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(
             &game_config,
             &smaller_kwg,
             &arm_tables,
-        );
+        )?;
         egs.init(&board_tiles, [&rack0, &rack1]);
-        let v = egs.solve(player);
-        println!("{line_index}\t{v}");
+        let v = egs.solve(player)?;
+        writeln!(std::io::stdout(), "{line_index}\t{v}")?;
     }
     Ok(())
 }
@@ -557,11 +566,11 @@ fn main() -> error::Returns<()> {
         (Some(batch_path), Some(kwg_path), None, None) => {
             let kwg_bytes = std::fs::read(&kwg_path)?;
             return if cli.kbwg {
-                let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+                let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
                 refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
                 run_batch(game_config, kwg, &batch_path, cli.lean)
             } else {
-                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+                let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
                 refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
                 run_batch(game_config, kwg, &batch_path, cli.lean)
             };
@@ -1312,11 +1321,11 @@ fn run_cli(
     let kwg_bytes = std::fs::read(kwg_path)?;
 
     if kbwg {
-        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
         solve_position(game_config, &kwg, &question, score_diff, lean)
     } else {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
         solve_position(game_config, &kwg, &question, score_diff, lean)
     }
@@ -1365,11 +1374,11 @@ fn solver_tables(
     kwg: &kwg::Kwg<kwg::Node22>,
     game_config: &game_config::GameConfig,
     lean: bool,
-) -> anagrams::ArmTables {
+) -> error::Returns<anagrams::ArmTables> {
     if lean {
         anagrams::ArmTables::build(kwg, game_config, true)
     } else {
-        anagrams::ArmTables::None
+        Ok(anagrams::ArmTables::None)
     }
 }
 
@@ -1378,11 +1387,11 @@ fn solve_question(question: &Question, score_diff: i32, lean: bool) -> error::Re
     // of course this should be cached
     let (kwg, game_config) = match question.lexicon.as_str() {
         "CSW24" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?),
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/CSW24.kwg")?)?,
             game_config::make_english_game_config(),
         ),
         "NWL23" => (
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?),
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&std::fs::read("lexbin/NWL23.kwg")?)?,
             game_config::make_english_game_config(),
         ),
         _ => {
@@ -1409,6 +1418,13 @@ fn solve_position<N: kwg::Node>(
         .map(|tile| alphabet.freq(tile))
         .collect::<Box<_>>();
 
+    if question.rack.len() > game_config.rack_size() as usize {
+        wolges::return_error!(format!(
+            "rack has {} tiles, a rack holds {}",
+            question.rack.len(),
+            game_config.rack_size(),
+        ));
+    }
     for &tile in &question.rack {
         if tile > alphabet_len_without_blank {
             wolges::return_error!(format!(
@@ -1509,26 +1525,34 @@ fn solve_position<N: kwg::Node>(
             kwg,
             anagrams: None,
             rack_lengths: None,
-            klv: &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES),
+            klv: &klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?,
         },
         |word: &[u8]| {
             set_of_words.insert(word.into());
         },
     );
-    println!("word_prune: {} words", set_of_words.len());
+    writeln!(
+        std::io::stdout(),
+        "word_prune: {} words",
+        set_of_words.len()
+    )?;
     let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
     vec_of_words.sort_unstable();
     let smaller_kwg_bytes = build_pruned_kwg(game_config, &vec_of_words)?;
-    println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
-    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
-    let arm_tables = solver_tables(&smaller_kwg, game_config, lean);
+    writeln!(
+        std::io::stdout(),
+        "word_prune: {} bytes kwg",
+        smaller_kwg_bytes.len()
+    )?;
+    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
+    let arm_tables = solver_tables(&smaller_kwg, game_config, lean)?;
     move_generator.reset_for_another_kwg();
 
     let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(
         game_config,
         &smaller_kwg,
         &arm_tables,
-    );
+    )?;
     if oppo_rack.len() == rack_size + 1 {
         let scaled_score_diff = equity::scale_score(score_diff) as f32;
         let result = egs.solve_peg_one_in_bag(
@@ -1537,12 +1561,12 @@ fn solve_position<N: kwg::Node>(
             &question.rack,
             &available_tally,
             scaled_score_diff,
-        );
+        )?;
 
         let result = match result {
             Ok(result) => result,
             Err(unsupported) => {
-                println!("peg: {unsupported}");
+                writeln!(std::io::stdout(), "peg: {unsupported}")?;
                 return Ok(());
             }
         };
@@ -1550,7 +1574,10 @@ fn solve_position<N: kwg::Node>(
 
         match &result.best_move {
             Some(endgame::PegMove::Pass) => {
-                println!("peg: model = committed; best move = pass");
+                writeln!(
+                    std::io::stdout(),
+                    "peg: model = committed; best move = pass"
+                )?;
             }
             Some(endgame::PegMove::Place(movegen::Play::Place {
                 down,
@@ -1572,21 +1599,26 @@ fn solve_position<N: kwg::Node>(
                         word_str.push_str(alphabet.of_board(t).unwrap_or("?"));
                     }
                 }
-                println!("peg: model = committed; best move = {coord} {word_str} (scores {score})");
+                writeln!(
+                    std::io::stdout(),
+                    "peg: model = committed; best move = {coord} {word_str} (scores {score})"
+                )?;
             }
             Some(endgame::PegMove::Place(_)) => unreachable!("Place holds a Play::Place"),
             None => {
-                println!(
+                writeln!(
+                    std::io::stdout(),
                     "peg: model = clairvoyant bound (exchange-legal config; not the in-game value)"
-                );
+                )?;
             }
         }
-        println!(
+        writeln!(
+            std::io::stdout(),
             "peg: one tile in the bag, {} distinct hypotheses over {} unseen tiles \
              (current score {score_diff:+})",
             result.hypotheses.len(),
             total_unseen,
-        );
+        )?;
         for &(bag_tile, weight, value) in &result.hypotheses {
             let mut opp = Vec::new();
             for (u, &c) in available_tally.iter().enumerate() {
@@ -1601,29 +1633,32 @@ fn solve_position<N: kwg::Node>(
             } else {
                 "loss"
             };
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "  bag={} (x{}): opp rack [{}] -> game margin {} ({})",
                 alphabet.of_rack(bag_tile).unwrap_or("?"),
                 weight,
                 alphabet.fmt_rack(&opp),
                 value / equity::SCALE as f32,
                 outcome,
-            );
+            )?;
         }
-        println!(
+        writeln!(
+            std::io::stdout(),
             "peg: win% {:.4}, expected game margin {}",
             result.win_pct * 100.0,
             result.expected_margin / equity::SCALE as f32,
-        );
+        )?;
     } else {
         egs.init(&board_tiles, [&question.rack, &oppo_rack]);
-        let future_margin = egs.evaluate(0);
+        let future_margin = egs.evaluate(0)?;
         let total_margin = equity::scale_score(score_diff) as f32 + future_margin;
-        println!(
+        writeln!(
+            std::io::stdout(),
             "total game margin (current score {score_diff:+} + future {}) = {}",
             future_margin / equity::SCALE as f32,
             total_margin / equity::SCALE as f32,
-        );
+        )?;
     }
 
     Ok(())
@@ -1678,18 +1713,20 @@ mod tests {
         let words = [word.clone()];
 
         let present = |kwg: &kwg::Kwg<kwg::Node22>, w: &[u8]| {
-            let counts = kwg.count_dawg_words_alloc();
+            let counts = kwg.count_dawg_words_alloc().unwrap();
             kwg.get_word_index(&counts, kwg[0].arc_index(), w) != !0
         };
 
         let classic_kwg =
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&classic, &words).unwrap());
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&classic, &words).unwrap())
+                .unwrap();
 
         assert!(present(&classic_kwg, &word));
         assert!(!present(&classic_kwg, &sorted));
 
         let jumbled_kwg =
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&jumbled, &words).unwrap());
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&build_pruned_kwg(&jumbled, &words).unwrap())
+                .unwrap();
 
         assert!(present(&jumbled_kwg, &sorted));
         assert!(!present(&jumbled_kwg, &word));

@@ -15,12 +15,14 @@ pub fn to_macondo<'a, N: kwg::Node>(
     alphabet: &'a alphabet::Alphabet,
     lexicon_name: &'a str,
     build_format: MacondoFormat,
-) -> Box<[u8]> {
+) -> error::Returns<Box<[u8]>> {
     let alphabet_len_excluding_blank = alphabet.len() - 1;
-    assert!(
-        alphabet_len_excluding_blank < 0x32,
-        "too many letters for gaddag"
-    );
+    if alphabet_len_excluding_blank >= 0x32 {
+        return Err("too many letters for gaddag".into());
+    }
+    if lexicon_name.len() > 0xff {
+        return Err("lexicon name too long".into());
+    }
     let mut letter_sets = Default::default();
     let mut nodes = Vec::new();
     let mut node_indexes = vec![0u32; kwg.0.len()];
@@ -144,7 +146,6 @@ pub fn to_macondo<'a, N: kwg::Node>(
     w += 4;
 
     bin[w] = lexicon_name.len() as u8;
-    assert_eq!(bin[w] as usize, lexicon_name.len(), "lexicon name too long");
     w += 1;
     bin[w..w + lexicon_name.len()].copy_from_slice(lexicon_name.as_bytes());
     w += lexicon_name.len();
@@ -155,8 +156,10 @@ pub fn to_macondo<'a, N: kwg::Node>(
         let z = w + tile_mapping[tile as usize] as usize * 4;
         // This format only supports one codepoint per alphabet.
         let mut char_iter = alphabet.of_rack(tile).unwrap().chars();
-        bin[z..z + 4].copy_from_slice(&(char_iter.next().unwrap() as u32).to_be_bytes());
-        assert!(char_iter.next().is_none(), "tile has multiple codepoints");
+        let (Some(c), None) = (char_iter.next(), char_iter.next()) else {
+            return Err("tile is not one codepoint".into());
+        };
+        bin[z..z + 4].copy_from_slice(&(c as u32).to_be_bytes());
     }
     w += alphabet_len_excluding_blank as usize * 4;
 
@@ -180,7 +183,7 @@ pub fn to_macondo<'a, N: kwg::Node>(
         w += 4;
     }
 
-    bin.into_boxed_slice()
+    Ok(bin.into_boxed_slice())
 }
 
 #[inline(always)]
@@ -280,7 +283,10 @@ pub fn to_lxd<'a, N: kwg::Node>(
             }
             env.nodes[w as usize] = ((node.is_end() as u32) << 31)
                 | ((node.accepts() as u32) << 30)
-                | ((str1_to_windows_u8(env.alphabet.of_rack(node.tile()).unwrap())
+                | ((env
+                    .alphabet
+                    .of_rack(node.tile())
+                    .and_then(str1_to_windows_u8)
                     .ok_or("unrepresentable letter")? as u32)
                     << 22)
                 | (next_w & 0x3fffff);
@@ -323,4 +329,21 @@ pub fn to_lxd<'a, N: kwg::Node>(
     }
 
     Ok(bin.into_boxed_slice())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[inline]
+    fn a_macondo_export_refuses_what_its_format_cannot_hold() {
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(kwg::EMPTY_KWG_BYTES).unwrap();
+        let english = alphabet::make_english_alphabet();
+        assert!(to_macondo(&kwg, &english, "CSW24", MacondoFormat::Dawg).is_ok());
+        assert!(to_macondo(&kwg, &english, &"X".repeat(256), MacondoFormat::Dawg).is_err());
+        // its [CH] is one tile of four codepoints
+        let spanish = alphabet::make_spanish_alphabet();
+        assert!(to_macondo(&kwg, &spanish, "test", MacondoFormat::Gaddag).is_err());
+    }
 }

@@ -1081,11 +1081,70 @@ impl GameConfig {
         }
         Ok(())
     }
+
+    // the tiles not on a board, by tile: what the game has, less what the board
+    // holds (a blank as tile 0); a board holding more of a tile than the game
+    // has is refused
+    #[inline]
+    pub fn tiles_off_board(&self, board_tiles: &[u8]) -> error::Returns<Vec<u8>> {
+        let alphabet = self.alphabet();
+        let mut off_board = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile))
+            .collect::<Vec<_>>();
+        for &tile in board_tiles {
+            if tile != 0 {
+                let tile = if tile & 0x80 != 0 { 0 } else { tile };
+                match off_board.get_mut(tile as usize) {
+                    Some(count) if *count > 0 => *count -= 1,
+                    _ => return_error!("the board holds more of a tile than the bag has".into()),
+                }
+            }
+        }
+        Ok(off_board)
+    }
+
+    // takes a rack out of the tiles it is drawn from: no more tiles than a rack
+    // holds, and none of a tile they have run out of
+    #[inline]
+    pub fn take_rack(&self, tiles: &mut [u8], rack: &[u8]) -> error::Returns<()> {
+        if rack.len() > self.rack_size() as usize {
+            return_error!("that is more tiles than a rack holds".into());
+        }
+        for &tile in rack {
+            match tiles.get_mut(tile as usize) {
+                Some(count) if *count > 0 => *count -= 1,
+                _ => return_error!("the rack holds a tile that is all used up".into()),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[inline]
+    fn a_rack_comes_out_of_the_tiles_off_the_board() {
+        let gc = make_english_game_config();
+        let (a, z) = (1u8, 26u8);
+        let freq = |tile| gc.alphabet().freq(tile);
+        let mut board = vec![0u8; 225];
+        board[112] = z;
+        board[113] = 0x80 | a; // a blank played as A
+        let mut off = gc.tiles_off_board(&board).unwrap();
+        assert_eq!(
+            (off[0], off[a as usize], off[z as usize]),
+            (freq(0) - 1, freq(a), 0)
+        );
+        assert!(gc.take_rack(&mut off.clone(), &[z]).is_err());
+        assert!(gc.take_rack(&mut off.clone(), &[a; 8]).is_err());
+        gc.take_rack(&mut off, &[0, a, a]).unwrap();
+        assert_eq!((off[0], off[a as usize]), (freq(0) - 2, freq(a) - 2));
+        board[114] = z;
+        assert!(gc.tiles_off_board(&board).is_err());
+    }
 
     #[test]
     #[inline]

@@ -620,13 +620,13 @@ impl AlphabetReader {
     }
 
     #[inline(always)]
-    pub fn set_word(&self, s: &str, v: &mut Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn set_word(&self, s: &str, v: &mut Vec<u8>) -> error::Returns<()> {
         v.clear();
         self.append_word(s, v)
     }
 
     #[inline(always)]
-    pub fn append_word(&self, s: &str, v: &mut Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn append_word(&self, s: &str, v: &mut Vec<u8>) -> error::Returns<()> {
         if !s.is_empty() {
             v.reserve(s.len());
             let sb = s.as_bytes();

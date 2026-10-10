@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{alphabet, board_layout, equity, error, game_config, game_state, game_timers};
+use std::io::Write;
 use std::str::FromStr;
 
 #[inline(always)]
@@ -208,15 +209,16 @@ pub fn print_board(
     alphabet: &alphabet::Alphabet,
     board_layout: &board_layout::BoardLayout,
     board_tiles: &[u8],
-) {
-    print!(
+) -> std::io::Result<()> {
+    write!(
+        std::io::stdout(),
         "{}",
         BoardPrinter {
             alphabet,
             board_layout,
             board_tiles
         }
-    );
+    )
 }
 
 pub struct BoardFenner<'a> {
@@ -467,15 +469,16 @@ pub fn print_game_state(
     game_config: &game_config::GameConfig,
     game_state: &game_state::GameState,
     optional_game_timers: Option<&game_timers::GameTimers>,
-) {
-    print!(
+) -> std::io::Result<()> {
+    write!(
+        std::io::stdout(),
         "{}",
         GameStatePrinter {
             game_config,
             game_state,
             optional_game_timers
         }
-    );
+    )
 }
 
 #[cfg(test)]

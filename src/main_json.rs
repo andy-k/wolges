@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use rand::prelude::*;
+use std::io::Write;
 use wolges::{
     display, equity, error, game_config, game_state, kibitzer, klv, kwg, move_filter, move_picker,
     movegen, play_scorer,
@@ -50,18 +51,18 @@ fn main() -> error::Returns<()> {
     let game_config = cli.game.make_game_config()?;
     // of course this should be cached
     let klv = if cli.klv == "-" {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?
     } else {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)?
     };
     game_config.check_leaves(klv.leave_range())?;
     let kwg_bytes = std::fs::read(&cli.kwg)?;
     if cli.kbwg {
-        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
         answer(&kwg, &klv, &game_config, cli.lean)
     } else {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
         answer(&kwg, &klv, &game_config, cli.lean)
     }
@@ -224,6 +225,9 @@ fn answer<N: kwg::Node + Sync>(
 
     let mut rng = rand_xoshiro::Xoshiro256PlusPlus::try_from_rng(&mut rand::rngs::SysRng)?;
     let mut game_state = game_state::GameState::new(game_config);
+    if game_state.players.len() < 2 {
+        wolges::return_error!("the question scores two players".to_string());
+    }
     // temp hardcode
     game_state.players[0].score = equity::scale_score(16);
     game_state.players[1].score = equity::scale_score(44);
@@ -235,9 +239,9 @@ fn answer<N: kwg::Node + Sync>(
         game_config.alphabet(),
         game_config.board_layout(),
         &kibitzer.board_tiles,
-    );
+    )?;
 
-    let arm_tables = wolges::anagrams::ArmTables::build(kwg, game_config, lean);
+    let arm_tables = wolges::anagrams::ArmTables::build(kwg, game_config, lean)?;
     let mut move_filter = move_filter::GenMoves::Unfiltered;
     let mut move_picker = move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
         game_config,
@@ -249,7 +253,7 @@ fn answer<N: kwg::Node + Sync>(
             sim_threads: 1,
             win_pct_table: None,
         },
-    )));
+    )?));
     game_state
         .board_tiles
         .copy_from_slice(&kibitzer.board_tiles);
@@ -282,11 +286,16 @@ fn answer<N: kwg::Node + Sync>(
             board_snapshot,
             &game_state,
             &game_state.current_player().rack,
-        );
+        )?;
         let plays = &move_generator.plays;
-        println!("found {} moves", plays.len());
+        writeln!(std::io::stdout(), "found {} moves", plays.len())?;
         for play in plays.iter() {
-            println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+            writeln!(
+                std::io::stdout(),
+                "{} {}",
+                play.equity,
+                play.play.fmt(board_snapshot)
+            )?;
         }
     }
 
@@ -300,10 +309,15 @@ fn answer<N: kwg::Node + Sync>(
     });
     let plays = &move_generator.plays;
 
-    println!("found {} moves", plays.len());
+    writeln!(std::io::stdout(), "found {} moves", plays.len())?;
     let mut ps = play_scorer::PlayScorer::new();
     for play in plays.iter() {
-        println!("{} {}", play.equity, play.play.fmt(board_snapshot));
+        writeln!(
+            std::io::stdout(),
+            "{} {}",
+            play.equity,
+            play.play.fmt(board_snapshot)
+        )?;
 
         let movegen_score = match &play.play {
             movegen::Play::Exchange { .. } => 0,
@@ -311,12 +325,13 @@ fn answer<N: kwg::Node + Sync>(
         };
         let recounted_score = ps.compute_score(board_snapshot, &play.play);
         if movegen_score != recounted_score {
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "{} should score {} instead of {}!",
                 play.play.fmt(board_snapshot),
                 recounted_score,
                 movegen_score
-            );
+            )?;
         }
     }
 
@@ -325,8 +340,8 @@ fn answer<N: kwg::Node + Sync>(
         .map(|x| x.into())
         .collect::<Vec<kibitzer::JsonPlayWithEquity>>();
     let ret = serde_json::to_value(result)?;
-    println!("{ret}");
-    println!("{}", serde_json::to_string_pretty(&ret)?);
+    writeln!(std::io::stdout(), "{ret}")?;
+    writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&ret)?)?;
 
     Ok(())
 }

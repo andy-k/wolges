@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{alphagram, game_config, kwg};
+use super::{alphagram, error, game_config, kwg};
 
 const FILTER_BLOCK_BITS: usize = 512;
 const FILTER_BLOCK_WORDS: usize = FILTER_BLOCK_BITS / 64;
@@ -72,13 +72,19 @@ impl Anagrams {
     pub fn build_for_config<N: kwg::Node>(
         g: &kwg::Kwg<N>,
         game_config: &game_config::GameConfig,
-    ) -> Option<Self> {
-        Self::build(g, layout_for_config(game_config)?)
+    ) -> error::Returns<Option<Self>> {
+        match layout_for_config(game_config) {
+            Some(layout) => Self::build(g, layout),
+            None => Ok(None),
+        }
     }
 
-    pub fn build<N: kwg::Node>(g: &kwg::Kwg<N>, layout: alphagram::KeyLayout) -> Option<Self> {
-        let list = alphagram::WordList::build(g);
-        Self::build_from_words(layout, list.iter())
+    pub fn build<N: kwg::Node>(
+        g: &kwg::Kwg<N>,
+        layout: alphagram::KeyLayout,
+    ) -> error::Returns<Option<Self>> {
+        let list = alphagram::WordList::build(g)?;
+        Ok(Self::build_from_words(layout, list.iter()))
     }
 
     #[inline(always)]
@@ -299,20 +305,23 @@ impl RackLengths {
     pub fn build_for_config<N: kwg::Node>(
         g: &kwg::Kwg<N>,
         game_config: &game_config::GameConfig,
-    ) -> Option<Self> {
-        Some(Self::build(
-            g,
-            layout_for_config(game_config)?,
-            game_config.rack_size() as usize + 1,
-        ))
+    ) -> error::Returns<Option<Self>> {
+        match layout_for_config(game_config) {
+            Some(layout) => Ok(Some(Self::build(
+                g,
+                layout,
+                game_config.rack_size() as usize + 1,
+            )?)),
+            None => Ok(None),
+        }
     }
 
     pub fn build<N: kwg::Node>(
         g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
         max_tiles: usize,
-    ) -> Self {
-        let list = alphagram::WordList::build(g);
+    ) -> error::Returns<Self> {
+        let list = alphagram::WordList::build(g)?;
         let mut present =
             std::collections::HashSet::<u128, std::hash::BuildHasherDefault<KeyHasher>>::default();
         for w in list.iter() {
@@ -322,7 +331,7 @@ impl RackLengths {
                 present.insert(key);
             }
         }
-        Self { layout, present }
+        Ok(Self { layout, present })
     }
 
     #[inline(always)]
@@ -350,12 +359,12 @@ impl ArmTables {
         kwg: &kwg::Kwg<N>,
         game_config: &game_config::GameConfig,
         lean: bool,
-    ) -> Self {
-        if lean {
-            RackLengths::build_for_config(kwg, game_config).map_or(Self::None, Self::RackLengths)
+    ) -> error::Returns<Self> {
+        Ok(if lean {
+            RackLengths::build_for_config(kwg, game_config)?.map_or(Self::None, Self::RackLengths)
         } else {
-            Anagrams::build_for_config(kwg, game_config).map_or(Self::None, Self::Anagrams)
-        }
+            Anagrams::build_for_config(kwg, game_config)?.map_or(Self::None, Self::Anagrams)
+        })
     }
 
     #[inline(always)]
@@ -546,5 +555,35 @@ mod tests {
         assert!(layout.key_of(&sixteen).is_none());
         let key = alphagram::Fitted(layout.key_of(&[1, 2]).unwrap());
         assert_eq!(sorted(held.words(key, 2)), vec![vec![1u8, 2]]);
+    }
+
+    #[test]
+    #[inline]
+    fn a_word_graph_that_loops_builds_no_tables() {
+        use kwg::Node;
+        let gc = crate::game_config::make_english_game_config();
+        let words: Vec<crate::bites::Bites> =
+            vec![[19u8, 5, 1, 20][..].into(), [20u8, 5, 1][..].into()]; // SEAT, TEA
+        let bytes = crate::build::build(
+            crate::build::BuildContent::Gaddawg,
+            crate::build::BuildLayout::Wolges,
+            crate::build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
+        for lean in [false, true] {
+            assert!(ArmTables::build(&kwg, &gc, lean).is_ok());
+        }
+        // the S that starts the dawg's first run now leads back to that run
+        let dawg_root = kwg[0].arc_index() as usize;
+        let at = dawg_root * 4;
+        let mut looping = bytes.to_vec();
+        let node = kwg::read_le_u32(&looping, at);
+        looping[at..at + 4].copy_from_slice(&((node & !0x3fffff) | dawg_root as u32).to_le_bytes());
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&looping).unwrap();
+        for lean in [false, true] {
+            assert!(ArmTables::build(&kwg, &gc, lean).is_err());
+        }
     }
 }

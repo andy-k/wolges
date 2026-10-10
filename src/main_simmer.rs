@@ -1,5 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
+use std::io::Write;
 use wolges::{
     alphabet, anagrams, bites, build, display, error, fash, game_config, game_state, klv, kwg,
     move_picker, movegen,
@@ -87,18 +88,18 @@ fn main() -> error::Returns<()> {
     let game_config = cli.game.make_game_config()?;
     // of course this should be cached
     let klv = if cli.klv == "-" {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?
     } else {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(&cli.klv)?)?
     };
     game_config.check_leaves(klv.leave_range())?;
     let kwg_bytes = std::fs::read(&cli.kwg)?;
     if cli.kbwg {
-        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
         simulate(&kwg, &klv, &game_config, cli.seed, cli.lean)
     } else {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, &game_config, &cli.kwg)?;
         simulate(&kwg, &klv, &game_config, cli.seed, cli.lean)
     }
@@ -219,6 +220,9 @@ fn simulate<N: kwg::Node>(
 
     // rebuild game state
     let mut game_state = game_state::GameState::new(game_config);
+    if game_state.players.len() < scores.len() {
+        wolges::return_error!(format!("the question scores {} players", scores.len()));
+    }
     for (i, &score) in scores.iter().enumerate() {
         game_state.players[i].score = score;
     }
@@ -234,7 +238,7 @@ fn simulate<N: kwg::Node>(
             .bag
             .replenish(&mut player.rack, game_config.rack_size() as usize, i);
     }
-    display::print_game_state(game_config, &game_state, None);
+    display::print_game_state(game_config, &game_state, None)?;
 
     // perform word prune.
 
@@ -254,7 +258,11 @@ fn simulate<N: kwg::Node>(
             set_of_words.insert(word.into());
         },
     );
-    println!("word_prune: {} words", set_of_words.len());
+    writeln!(
+        std::io::stdout(),
+        "word_prune: {} words",
+        set_of_words.len()
+    )?;
     let mut vec_of_words = set_of_words.into_iter().collect::<Vec<_>>();
     vec_of_words.sort_unstable();
     let smaller_kwg_bytes = build::build(
@@ -263,9 +271,13 @@ fn simulate<N: kwg::Node>(
         build::BuildOrder::Sorted,
         &vec_of_words.into_boxed_slice(),
     )?;
-    println!("word_prune: {} bytes kwg", smaller_kwg_bytes.len());
-    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes);
-    let arm_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean);
+    writeln!(
+        std::io::stdout(),
+        "word_prune: {} bytes kwg",
+        smaller_kwg_bytes.len()
+    )?;
+    let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
+    let arm_tables = anagrams::ArmTables::build(&smaller_kwg, game_config, lean)?;
     move_generator.reset_for_another_kwg();
 
     // ok, let's sim...
@@ -298,30 +310,31 @@ fn simulate<N: kwg::Node>(
             sim_threads: 1,
             win_pct_table: None,
         },
-    );
+    )?;
     if let Some(seed) = seed {
         driver.reseed(seed);
     }
 
     let chunk = 50u64;
     let mut done = 0u64;
-    driver.begin_decision(&move_generator, &game_state, chunk);
+    driver.begin_decision(&move_generator, &game_state, chunk)?;
     done += chunk;
     loop {
-        println!("\niter {done}");
+        writeln!(std::io::stdout(), "\niter {done}")?;
         for (i, (play_index, _obj, equity_mean, win_rate)) in (1..).zip(driver.leaderboard(10)) {
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "{:3} {:6.2} {:6.2} {}",
                 i,
                 equity_mean,
                 100.0 * win_rate,
                 move_generator.plays[play_index].play.fmt(board_snapshot)
-            );
+            )?;
         }
         if done >= sim_iters {
             break;
         }
-        driver.resume(&move_generator, chunk);
+        driver.resume(&move_generator, chunk)?;
         done += chunk;
     }
 

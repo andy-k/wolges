@@ -61,6 +61,15 @@ fn make_writer(filename: &str) -> Result<Box<dyn std::io::Write>, std::io::Error
     })
 }
 
+// the given seed, else one drawn from the system
+#[inline]
+fn seed_or_random(seed: Option<u64>) -> error::Returns<u64> {
+    Ok(match seed {
+        Some(seed) => seed,
+        None => GameRng::try_from_rng(&mut rand::rngs::SysRng)?.next_u64(),
+    })
+}
+
 #[inline]
 fn run_stamp() -> String {
     let d = std::time::SystemTime::now()
@@ -155,7 +164,7 @@ fn read_kwg<N: kwg::Node>(
     game_config: &game_config::GameConfig,
     path: &str,
 ) -> error::Returns<kwg::Kwg<N>> {
-    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(path)?)?);
+    let kwg = kwg::Kwg::<N>::from_bytes_alloc(&read_to_end(&mut make_reader(path)?)?)?;
     refuse_a_wider_graph(&kwg, game_config, path)?;
     Ok(kwg)
 }
@@ -166,9 +175,9 @@ fn read_klv(
     path: &str,
 ) -> error::Returns<klv::Klv<kwg::Node22>> {
     let klv = if path == "-" {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?
     } else {
-        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(path)?)
+        klv::Klv::<kwg::Node22>::from_bytes_alloc(&std::fs::read(path)?)?
     };
     game_config.check_leaves(klv.leave_range())?;
     Ok(klv)
@@ -735,7 +744,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimStudyCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean);
+            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean)?;
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -766,25 +775,31 @@ fn run<N: kwg::Node + Sync + Send>(
                     sim_threads: 1,
                     win_pct_table: None,
                 },
-            );
+            )?;
             driver.reseed(seed);
-            driver.begin_decision(&move_generator, &game_state, iters);
+            driver.begin_decision(&move_generator, &game_state, iters)?;
             let one_shot = driver.leader_summary();
             driver.reseed(seed);
             let half = iters / 2;
-            driver.begin_decision(&move_generator, &game_state, half);
-            driver.resume(&move_generator, iters - half);
+            driver.begin_decision(&move_generator, &game_state, half)?;
+            driver.resume(&move_generator, iters - half)?;
             let split = driver.leader_summary();
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "one_shot leader play_index={} mean={} count={}",
-                one_shot.0, one_shot.1, one_shot.2,
-            );
-            println!(
+                one_shot.0,
+                one_shot.1,
+                one_shot.2,
+            )?;
+            writeln!(
+                std::io::stdout(),
                 "split    leader play_index={} mean={} count={}",
-                split.0, split.1, split.2,
-            );
+                split.0,
+                split.1,
+                split.2,
+            )?;
             if one_shot == split {
-                println!("SIM_RESUME_OK");
+                writeln!(std::io::stdout(), "SIM_RESUME_OK")?;
                 Ok(())
             } else {
                 wolges::return_error!(
@@ -843,7 +858,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimMutateCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean);
+            let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, a.lean)?;
             let (iters, seed) = (a.iters, a.seed);
             let mut rng = GameRng::seed_from_u64(seed);
             let mut game_state = game_state::GameState::new(&game_config);
@@ -874,10 +889,10 @@ fn run<N: kwg::Node + Sync + Send>(
                     sim_threads: 1,
                     win_pct_table: None,
                 },
-            );
+            )?;
             driver.reseed(seed);
             let opening = (iters / 4).max(1);
-            driver.begin_decision(&move_generator, &game_state, opening);
+            driver.begin_decision(&move_generator, &game_state, opening)?;
             {
                 let by_hand = driver
                     .active_stream_ids()
@@ -888,9 +903,10 @@ fn run<N: kwg::Node + Sync + Send>(
                 let now_retired = driver.retired_stream_ids().any(|id| id == by_hand);
                 let still_active = driver.active_stream_ids().any(|id| id == by_hand);
                 let kept = driver.stream_count(by_hand).unwrap();
-                println!(
+                writeln!(
+                    std::io::stdout(),
                     "retire stream {by_hand}: count {at_retire} -> {kept}, retired={now_retired} active={still_active}",
-                );
+                )?;
                 if !retired_by_hand || !now_retired || still_active || kept != at_retire {
                     wolges::return_error!(
                         "hand retire did not move the candidate intact".to_string()
@@ -904,7 +920,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     );
                 }
             }
-            driver.resume(&move_generator, iters.saturating_sub(opening));
+            driver.resume(&move_generator, iters.saturating_sub(opening))?;
             let pruned_id = driver.retired_stream_ids().next();
             match pruned_id {
                 None => wolges::return_error!(
@@ -913,11 +929,14 @@ fn run<N: kwg::Node + Sync + Send>(
                 Some(id) => {
                     let before = driver.stream_count(id).unwrap();
                     let readmitted = driver.readmit_with_history(id);
-                    driver.resume(&move_generator, iters);
+                    driver.resume(&move_generator, iters)?;
                     let after = driver.stream_count(id).unwrap();
-                    println!("readmit stream {id}: count before={before} after={after}");
+                    writeln!(
+                        std::io::stdout(),
+                        "readmit stream {id}: count before={before} after={after}"
+                    )?;
                     if readmitted && after >= before {
-                        println!("SIM_MUTATE_OK");
+                        writeln!(std::io::stdout(), "SIM_MUTATE_OK")?;
                         Ok(())
                     } else {
                         wolges::return_error!("readmit dropped history: count reset".to_string())
@@ -1080,7 +1099,7 @@ fn generate_autoplay_logs<
             .map(|x| format!("p{x}"))
             .collect::<Box<[String]>>(),
     );
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = threads;
 
@@ -1180,11 +1199,13 @@ fn generate_autoplay_logs<
     }));
     let batch_size = 100;
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
+    // a thread that fails sets this, so the others stop rather than wait on it
+    let failed = std::sync::atomic::AtomicBool::new(false);
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
         let mut threads = vec![];
 
         for _ in 0..num_threads {
@@ -1207,7 +1228,12 @@ fn generate_autoplay_logs<
             let undersampling_remediation_generation_id =
                 std::sync::Arc::clone(&undersampling_remediation_generation_id);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
-            threads.push(s.spawn(move || {
+            let failed = &failed;
+            threads.push(s.spawn(move || -> error::Returns<()> {
+                let fail = |e: error::BoxAnyError| {
+                    failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    e
+                };
                 let mut game_id = String::with_capacity(8);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
@@ -1260,6 +1286,9 @@ fn generate_autoplay_logs<
                 let mut undersampling_remediation_thread_generation_id = 0;
                 let mut undersampling_remediation_thread_begun = false;
                 loop {
+                    if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Ok(());
+                    }
                     let mut num_prior_games =
                         num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let mut rng = GameRng::from_stream(seed, num_prior_games);
@@ -1279,7 +1308,11 @@ fn generate_autoplay_logs<
                             while undersampling_remediation_submission
                                 .load(std::sync::atomic::Ordering::Relaxed)
                                 != num_threads as u64
+                                && !failed.load(std::sync::atomic::Ordering::Relaxed)
                             {}
+                            if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                                return Ok(());
+                            }
                             match undersampling_remediation_state.compare_exchange(
                                 0,
                                 1,
@@ -1340,7 +1373,11 @@ fn generate_autoplay_logs<
                                     while undersampling_remediation_state
                                         .load(std::sync::atomic::Ordering::Relaxed)
                                         <= 1
+                                        && !failed.load(std::sync::atomic::Ordering::Relaxed)
                                     {}
+                                    if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                                        return Ok(());
+                                    }
                                 }
                             }
                             undersampling_remediation_thread_begun = true;
@@ -1615,7 +1652,9 @@ fn generate_autoplay_logs<
                             }
                         };
 
-                        game_state.play(&game_config, &mut rng, &play.play).unwrap();
+                        game_state
+                            .play(&game_config, &mut rng, &play.play)
+                            .map_err(fail)?;
 
                         let old_turn = game_state.turn;
                         num_turns[old_turn as usize] += 1;
@@ -1636,8 +1675,9 @@ fn generate_autoplay_logs<
                         }
 
                         let res = {
-                            let game_ended =
-                                game_state.check_game_ended(&game_config, &mut final_scores).unwrap();
+                            let game_ended = game_state
+                                .check_game_ended(&game_config, &mut final_scores)
+                                .map_err(fail)?;
 
                             match game_ended {
                                 game_state::CheckGameEnded::NotEnded
@@ -1711,12 +1751,13 @@ fn generate_autoplay_logs<
                                         if WRITE_LOGS
                                             && let Some(c) = &mut mutex_guard.csv_log_writer
                                         {
-                                            c.write_all(&batched_csv_log_buf).unwrap()
+                                            c.write_all(&batched_csv_log_buf)
+                                                .map_err(|e| fail(e.into()))?;
                                         }
                                         mutex_guard
                                             .csv_game_writer
                                             .write_all(&batched_csv_game_buf)
-                                            .unwrap();
+                                            .map_err(|e| fail(e.into()))?;
                                         if mutex_guard.tick_periods.update(elapsed_time_secs) {
                                             write!(boxed_stdout_or_stderr(),
                                                 "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves)").ok();
@@ -1773,25 +1814,31 @@ fn generate_autoplay_logs<
                 let batched_csv_game_buf = batched_csv_game.into_inner().unwrap();
                 let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                 if WRITE_LOGS && let Some(c) = &mut mutex_guard.csv_log_writer {
-                    c.write_all(&batched_csv_log_buf).unwrap();
+                    c.write_all(&batched_csv_log_buf)
+                        .map_err(|e| fail(e.into()))?;
                 }
                 mutex_guard
                     .csv_game_writer
                     .write_all(&batched_csv_game_buf)
-                    .unwrap();
+                    .map_err(|e| fail(e.into()))?;
 
                 if SUMMARIZE {
                     merge_rack_map(&mut mutex_guard.full_rack_map, &mut thread_full_rack_map);
                 }
+                Ok(())
             }));
         }
 
         for thread in threads {
-            if let Err(e) = thread.join() {
-                writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+            match thread.join() {
+                Ok(done) => done?,
+                Err(e) => {
+                    writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+                }
             }
         }
-    });
+        Ok(())
+    })?;
 
     if SUMMARIZE {
         let mutex_guard = mutexed_stuffs.lock().unwrap();
@@ -1878,7 +1925,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = threads;
 
@@ -1911,11 +1958,11 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
     let mutexed_tick = std::sync::Arc::new(std::sync::Mutex::new(move_picker::Periods(0)));
     let t0 = std::time::Instant::now();
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
         let mut threads = vec![];
         for _ in 0..num_threads {
             let game_config = std::sync::Arc::clone(&game_config);
@@ -1928,7 +1975,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
             let mutexed = std::sync::Arc::clone(&mutexed);
             let mutexed_tick = std::sync::Arc::clone(&mutexed_tick);
             let run_identifier = run_identifier.clone();
-            threads.push(s.spawn(move || {
+            threads.push(s.spawn(move || -> error::Returns<()> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let alphabet = game_config.alphabet();
@@ -2081,10 +2128,9 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
                         });
 
                         let play = &move_generator.plays[0];
-                        game_state.play(&game_config, &mut rng, &play.play).unwrap();
-                        let game_ended = game_state
-                            .check_game_ended(&game_config, &mut final_scores)
-                            .unwrap();
+                        game_state.play(&game_config, &mut rng, &play.play)?;
+                        let game_ended =
+                            game_state.check_game_ended(&game_config, &mut final_scores)?;
                         game_state.next_turn();
                         turn_idx += 1;
                         if !matches!(game_ended, game_state::CheckGameEnded::NotEnded) {
@@ -2108,14 +2154,19 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
                 let mut g = mutexed.lock().unwrap();
                 merge_rack_map(&mut g.full_rack_map, &mut thread_map);
+                Ok(())
             }));
         }
         for thread in threads {
-            if let Err(e) = thread.join() {
-                writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+            match thread.join() {
+                Ok(done) => done?,
+                Err(e) => {
+                    writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+                }
             }
         }
-    });
+        Ok(())
+    })?;
 
     let g = mutexed.lock().unwrap();
     let map = &g.full_rack_map;
@@ -2160,7 +2211,7 @@ fn parse_rack(
     alphabet_reader: &alphabet::AlphabetReader,
     s: &str,
     v: &mut Vec<u8>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> error::Returns<()> {
     alphabet_reader.set_word(s, v)
 }
 
@@ -2277,6 +2328,9 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     for (record_num, result) in csv_reader.records().enumerate() {
         let record = result?;
         if let Err(e) = (|| -> error::Returns<()> {
+            if record.len() < 11 {
+                return Err("a log line has fewer than 11 fields".into());
+            }
             if i16::from_str(&record[10])? > 0 {
                 let equity = f32::from_str(&record[9])? as f64;
                 //let score = i16::from_str(&record[5])? as i64;
@@ -2411,6 +2465,9 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     for result in csv_in.records() {
         let record = result?;
+        if record.len() < 3 {
+            return Err("a summary line has fewer than 3 fields".into());
+        }
         parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
         let thing = Cumulate {
             equity: f64::from_str(&record[1])?,
@@ -2781,7 +2838,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let sheet_cache_len = if sheet_reuse { sheet_cache_len } else { 0 };
 
-    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let empty_rank = lat.rank(&vec![0u8; num_letters]) as usize;
     writeln!(
         boxed_stdout_or_stderr(),
@@ -2808,7 +2865,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
 
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
 
     let mut leave_cur = vec![0i32; lat.len()];
     let mut tally_buf = vec![0u8; num_letters];
@@ -2834,7 +2891,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
             ))
         };
         let bytes = std::fs::read(&path)?;
-        let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes);
+        let resume_klv = klv::Klv::<L>::from_bytes_alloc(&bytes)?;
         for (idx, slot) in leave_cur.iter_mut().enumerate() {
             lat.unrank_into(idx, &mut tally_buf);
             *slot = resume_klv.leave_value_from_tally(&tally_buf);
@@ -2887,6 +2944,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
     ));
 
     let barrier = std::sync::Barrier::new(num_threads);
+    // a thread that fails sets this; every thread then stops at the next
+    // barrier instead of leaving the others waiting there
+    let failed = std::sync::atomic::AtomicBool::new(false);
 
     let sheet_cache: Vec<SheetCacheSlot> = (0..sheet_cache_len)
         .map(|_| std::sync::Mutex::new(None))
@@ -2896,9 +2956,11 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         "census: {num_threads} threads over {board_counts:?} boards/gen"
     )?;
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
+        let mut handles = Vec::with_capacity(num_threads);
         for _ in 0..num_threads {
-            s.spawn(|| {
+            handles.push(s.spawn(|| -> error::Returns<()> {
+                let mut error = None;
 
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
@@ -3054,7 +3116,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         let leave = leave_lock.read().unwrap();
 
                         let null_leave = leave.iter().all(|&x| x == 0);
-                        loop {
+                        'boards: loop {
+                            if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
                             let b = next_board.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             if b >= num_boards {
                                 break;
@@ -3110,11 +3175,18 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
                             });
-                            game_state
+                            let ended = match game_state
                                 .play(&game_config, &mut rng, &move_generator.plays[0].play)
-                                .unwrap();
-                            let ended =
-                                game_state.check_game_ended(&game_config, &mut final_scores).unwrap();
+                                .and_then(|()| {
+                                    game_state.check_game_ended(&game_config, &mut final_scores)
+                                }) {
+                                Ok(ended) => ended,
+                                Err(e) => {
+                                    error = Some(e);
+                                    failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    break 'boards;
+                                }
+                            };
                             game_state.next_turn();
                             if !matches!(ended, game_state::CheckGameEnded::NotEnded) {
                                 break; // game ended before the window; try a fresh game.
@@ -3155,7 +3227,9 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
 
                     if multigen {
-                        if barrier.wait().is_leader() {
+                        if barrier.wait().is_leader()
+                            && !failed.load(std::sync::atomic::Ordering::Relaxed)
+                        {
 
                             {
                                 let mut g = shared.lock().unwrap();
@@ -3221,7 +3295,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                         }
                         barrier.wait();
-                        if gen_idx + 1 < gens {
+                        if gen_idx + 1 < gens && !failed.load(std::sync::atomic::Ordering::Relaxed) {
 
                             prior_max_boards = prior_max_boards.max(num_boards as usize);
                             gen_idx += 1;
@@ -3231,9 +3305,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                     }
                     break;
                 }
-            });
+                match error {
+                    Some(e) => Err(e),
+                    None => Ok(()),
+                }
+            }));
         }
-    });
+        for handle in handles {
+            handle.join().unwrap()?;
+        }
+        Ok(())
+    })?;
 
     let (accum_sum, accum_cnt, _, _, ever) = shared.into_inner().unwrap();
     let leave_final = leave_lock.into_inner().unwrap();
@@ -3370,6 +3452,9 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     let mut tick_periods = move_picker::Periods(0);
     for result in csv_in.records() {
         let record = result?;
+        if record.len() < 3 {
+            return Err("a summary line has fewer than 3 fields".into());
+        }
         parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
         let thing = Cumulate {
             equity: f64::from_str(&record[1])?,
@@ -3461,6 +3546,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         .collect::<Box<_>>();
     let mut neighbor_buffer = Vec::with_capacity(game_config.rack_size() as usize);
     let mut num_smoothed = 0u64;
+    let mut written = Ok(());
     generate_exchanges(&mut ExchangeEnv {
         found_exchange_move: |rack_bytes: &[u8]| {
             let mut new_v = if let Some(v) = subrack_map.get(rack_bytes) {
@@ -3501,15 +3587,14 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
             }
             ev_map.insert(rack_bytes.into(), new_v);
             let elapsed_time_secs = t0.elapsed().as_secs();
-            if tick_periods.update(elapsed_time_secs) {
-                writeln!(
+            if tick_periods.update(elapsed_time_secs) && written.is_ok() {
+                written = writeln!(
                     stdout_or_stderr,
                     "After {} seconds, have processed {} subracks and smoothed {}",
                     elapsed_time_secs,
                     ev_map.len(),
                     num_smoothed,
-                )
-                .unwrap();
+                );
             }
         },
         rack_tally: &mut alphabet_freqs,
@@ -3517,6 +3602,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
         max_len: leave_size,
         exchange_buffer: &mut exchange_buffer,
     });
+    written?;
     drop(neighbor_buffer);
     writeln!(
         stdout_or_stderr,
@@ -3545,6 +3631,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
 
     let mut subrack_bytes = Vec::with_capacity(leave_size as usize);
     for len_to_complete in 2..=leave_size {
+        let mut written = Ok(());
         let len_minus_one = len_to_complete as usize - 1;
         // ensure every subrack of each length has samples.
         // if not, fill it in based on subracks one tile fewer.
@@ -3583,12 +3670,11 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
                         // just use straight average.
                         ev_map.insert(rack_bytes.into(), vn / vd as f64);
                         num_filled_in += 1;
-                    } else {
-                        writeln!(
+                    } else if written.is_ok() {
+                        written = writeln!(
                             stdout_or_stderr,
                             "not enough samples to derive {rack_bytes:?}"
-                        )
-                        .unwrap();
+                        );
                     }
                 }
             },
@@ -3597,6 +3683,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
             max_len: len_to_complete,
             exchange_buffer: &mut exchange_buffer,
         });
+        written?;
     }
     writeln!(
         stdout_or_stderr,
@@ -3642,7 +3729,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
     let klv = std::sync::Arc::new(klv);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = threads;
     let num_processed_games = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -3671,11 +3758,11 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         game_config::GameRules::Jumbled => 1,
     };
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
         let mut threads = vec![];
 
         for _thread_id in 0..num_threads {
@@ -3688,7 +3775,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let logged_games = std::sync::Arc::clone(&logged_games);
             let completed_moves = std::sync::Arc::clone(&completed_moves);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
-            threads.push(s.spawn(move || {
+            threads.push(s.spawn(move || -> error::Returns<()> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0; game_config.num_players() as usize];
@@ -3867,9 +3954,9 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             let plays = &move_generator.plays;
                             let play = &plays[0];
 
-                            game_state.play(&game_config, &mut rng, &play.play).unwrap();
+                            game_state.play(&game_config, &mut rng, &play.play)?;
 
-                            match game_state.check_game_ended(&game_config, &mut final_scores).unwrap() {
+                            match game_state.check_game_ended(&game_config, &mut final_scores)? {
                                 game_state::CheckGameEnded::PlayedOut
                                 | game_state::CheckGameEnded::ZeroScores => 1,
                                 game_state::CheckGameEnded::NotEnded => !0,
@@ -3925,15 +4012,20 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             .or_insert(thread_v);
                     }
                 }
+                Ok(())
             }));
         }
 
         for thread in threads {
-            if let Err(e) = thread.join() {
-                writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+            match thread.join() {
+                Ok(done) => done?,
+                Err(e) => {
+                    writeln!(boxed_stdout_or_stderr(), "{e:?}").ok();
+                }
             }
         }
-    });
+        Ok(())
+    })?;
 
     {
         let mutex_guard = mutexed_stuffs.lock().unwrap();
@@ -4057,34 +4149,38 @@ impl GameStats {
     }
 
     #[inline]
-    fn print(&self, label: &str) {
+    fn print(&self, label: &str) -> std::io::Result<()> {
         let total = self.total_games();
         if total == 0 {
-            return;
+            return Ok(());
         }
         let p0_total = self.p0_wins as f64 + self.p0_draws as f64 / 2.0;
         let p1_total = total as f64 - p0_total;
-        println!("{label}");
-        println!(
+        writeln!(std::io::stdout(), "{label}")?;
+        writeln!(
+            std::io::stdout(),
             "  turns per game: {:.2} (sd={:.2})",
             self.turns.mean(),
             self.turns.standard_deviation(),
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "  played out: {} ({:.2}%)  zero scores: {} ({:.2}%)",
             self.played_out,
             self.played_out as f64 / total as f64 * 100.0,
             self.zero_scores,
             self.zero_scores as f64 / total as f64 * 100.0,
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "  p0 (klv0): {:.1} ({:.2}%)  p1 (klv1): {:.1} ({:.2}%)",
             p0_total,
             p0_total / total as f64 * 100.0,
             p1_total,
             p1_total / total as f64 * 100.0,
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "  wins: {} ({:.2}%)  losses: {} ({:.2}%)  draws: {} ({:.2}%)",
             self.p0_wins,
             self.p0_wins as f64 / total as f64 * 100.0,
@@ -4092,14 +4188,15 @@ impl GameStats {
             self.p0_losses as f64 / total as f64 * 100.0,
             self.p0_draws,
             self.p0_draws as f64 / total as f64 * 100.0,
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "  score: p0={:.2} (sd={:.2})  p1={:.2} (sd={:.2})",
             self.p0_score.mean(),
             self.p0_score.standard_deviation(),
             self.p1_score.mean(),
             self.p1_score.standard_deviation(),
-        );
+        )?;
         let corrected_pct = (p0_total.max(p1_total) - 0.5) / total as f64;
         if corrected_pct > 0.5 {
             let z = (corrected_pct - 0.5) * 2.0 * (total as f64).sqrt();
@@ -4109,17 +4206,21 @@ impl GameStats {
             } else {
                 "p1 (klv1)"
             };
-            println!("  {leading} leads, confidence: {confidence:.2}%");
+            writeln!(
+                std::io::stdout(),
+                "  {leading} leads, confidence: {confidence:.2}%"
+            )?;
         } else {
-            println!("  no significant difference");
+            writeln!(std::io::stdout(), "  no significant difference")?;
         }
+        Ok(())
     }
 
     #[inline]
-    fn print_porcelain(&self) {
+    fn print_porcelain(&self) -> std::io::Result<()> {
         let total = self.total_games();
         if total == 0 {
-            return;
+            return Ok(());
         }
         let p0_total = self.p0_wins as f64 + self.p0_draws as f64 / 2.0;
         let p1_total = total as f64 - p0_total;
@@ -4130,20 +4231,35 @@ impl GameStats {
         } else {
             0.0
         };
-        println!("WCMP_P0_PCT {:.4}", p0_total / total as f64 * 100.0);
-        println!("WCMP_P1_PCT {:.4}", p1_total / total as f64 * 100.0);
-        println!(
+        writeln!(
+            std::io::stdout(),
+            "WCMP_P0_PCT {:.4}",
+            p0_total / total as f64 * 100.0
+        )?;
+        writeln!(
+            std::io::stdout(),
+            "WCMP_P1_PCT {:.4}",
+            p1_total / total as f64 * 100.0
+        )?;
+        writeln!(
+            std::io::stdout(),
             "WCMP_P0_WINS_PCT {:.4}",
             self.p0_wins as f64 / total as f64 * 100.0
-        );
-        println!(
+        )?;
+        writeln!(
+            std::io::stdout(),
             "WCMP_DRAWS_PCT {:.4}",
             self.p0_draws as f64 / total as f64 * 100.0
-        );
-        println!("WCMP_CONF_PCT {confidence:.4}");
-        println!("WCMP_LEADER {}", if p0_total >= p1_total { 0 } else { 1 });
-        println!("WCMP_GAMES {total}");
-        println!("WCMP_PAIRS {}", total / 2);
+        )?;
+        writeln!(std::io::stdout(), "WCMP_CONF_PCT {confidence:.4}")?;
+        writeln!(
+            std::io::stdout(),
+            "WCMP_LEADER {}",
+            if p0_total >= p1_total { 0 } else { 1 }
+        )?;
+        writeln!(std::io::stdout(), "WCMP_GAMES {total}")?;
+        writeln!(std::io::stdout(), "WCMP_PAIRS {}", total / 2)?;
+        Ok(())
     }
 }
 
@@ -4180,14 +4296,14 @@ impl GamePairStats {
         self.divergent.merge(&other.divergent);
     }
 
-    fn print(&self) {
+    fn print(&self) -> std::io::Result<()> {
         let all_total = self.all.total_games();
         let all_pairs = all_total / 2;
         self.all.print(&format!(
             "{all_total} {} ({all_pairs} {}):",
             plural(all_total, "game", "games"),
             plural(all_pairs, "pair", "pairs"),
-        ));
+        ))?;
         let div_total = self.divergent.total_games();
         if div_total > 0 && div_total < all_total {
             let div_pairs = div_total / 2;
@@ -4196,10 +4312,10 @@ impl GamePairStats {
                 plural(div_total, "game", "games"),
                 plural(div_pairs, "pair", "pairs"),
                 div_pairs as f64 / all_pairs as f64 * 100.0,
-            ));
+            ))?;
         }
 
-        self.all.print_porcelain();
+        self.all.print_porcelain()
     }
 }
 
@@ -4219,7 +4335,7 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
     rng: &mut GameRng,
     snapshots: &mut Vec<(usize, usize, usize, usize, i32)>,
     final_scores: &mut [i32],
-) {
+) -> error::Returns<()> {
     let WinpctTables {
         game_config,
         kwg,
@@ -4257,16 +4373,14 @@ fn winpct_play_game<N: kwg::Node, L: kwg::Node>(
             dynamic_leaves: None,
         });
         let play = &move_generator.plays[0].play;
-        game_state.play(game_config, rng, play).unwrap();
-        match game_state
-            .check_game_ended(game_config, final_scores)
-            .unwrap()
-        {
+        game_state.play(game_config, rng, play)?;
+        match game_state.check_game_ended(game_config, final_scores)? {
             game_state::CheckGameEnded::NotEnded => {}
             _ => break,
         }
         game_state.next_turn();
     }
+    Ok(())
 }
 
 #[inline]
@@ -4284,7 +4398,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     let num_threads = threads.max(1).min(num_games.max(1) as usize);
     writeln!(
         boxed_stdout_or_stderr(),
@@ -4295,13 +4409,14 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     let report_every = 10_000u64;
     let shared = std::sync::Mutex::new(win_pct::WinPctAccumulator::new());
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
+        let mut handles = Vec::with_capacity(num_threads);
         for _ in 0..num_threads {
-            s.spawn(|| {
+            handles.push(s.spawn(|| -> error::Returns<()> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -4328,7 +4443,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                         &mut rng,
                         &mut snapshots,
                         &mut final_scores,
-                    );
+                    )?;
 
                     for &(bag, my, opp, mover, lead) in &snapshots {
                         let mover_final = equity::descale_score(final_scores[mover])
@@ -4340,9 +4455,14 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                     }
                 }
                 shared.lock().unwrap().merge(&acc);
-            });
+                Ok(())
+            }));
         }
-    });
+        for handle in handles {
+            handle.join().unwrap()?;
+        }
+        Ok(())
+    })?;
 
     let acc = shared.into_inner().unwrap();
 
@@ -4373,7 +4493,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let t0 = std::time::Instant::now();
     let game_config = std::sync::Arc::new(game_config);
     let table = std::sync::Arc::new(table);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     let num_threads = threads.max(1).min(num_games.max(1) as usize);
     writeln!(
         boxed_stdout_or_stderr(),
@@ -4386,13 +4506,14 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
 
     let shared = std::sync::Mutex::new((0.0f64, 0.0f64, 0u64));
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
 
-    std::thread::scope(|s| {
+    std::thread::scope(|s| -> error::Returns<()> {
+        let mut handles = Vec::with_capacity(num_threads);
         for _ in 0..num_threads {
-            s.spawn(|| {
+            handles.push(s.spawn(|| -> error::Returns<()> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -4418,7 +4539,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         &mut rng,
                         &mut snapshots,
                         &mut final_scores,
-                    );
+                    )?;
                     for &(bag, my, opp, mover, lead) in &snapshots {
                         let mover_final = equity::descale_score(final_scores[mover])
                             - equity::descale_score(final_scores[1 - mover]);
@@ -4440,9 +4561,14 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 acc.0 += bt;
                 acc.1 += bs;
                 acc.2 += n;
-            });
+                Ok(())
+            }));
         }
-    });
+        for handle in handles {
+            handle.join().unwrap()?;
+        }
+        Ok(())
+    })?;
 
     let (bt, bs, n) = shared.into_inner().unwrap();
     let d = n.max(1) as f64;
@@ -4489,7 +4615,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
 ) -> error::Returns<()> {
     let alphabet = game_config.alphabet();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -4537,7 +4663,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                      move_generator: &mut movegen::KurniaMoveGenerator,
                      scratch: &mut Vec<movegen::ValuedMove>,
                      label: &str|
-     -> usize {
+     -> std::io::Result<usize> {
         let board_snapshot = movegen::BoardSnapshot {
             board_tiles: &game_state.board_tiles,
             game_config: &game_config,
@@ -4584,7 +4710,8 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             scratch,
         );
         let with = count_nonplacing_plays(&move_generator.plays);
-        println!(
+        writeln!(
+            std::io::stdout(),
             "{label}: {}; field of {} holds {without} without the quota, {with} with it",
             match rank {
                 Some(rank) => format!(
@@ -4594,8 +4721,8 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
                 None => "only tile plays are generated".to_string(),
             },
             move_picker::SIMMER_FIELD.max_gen,
-        );
-        with
+        )?;
+        Ok(with)
     };
 
     for rack_str in SIM_FIELD_PROBE_RACKS {
@@ -4607,7 +4734,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
             &mut move_generator,
             &mut scratch,
             &format!("rack {rack_str}"),
-        );
+        )?;
         if with == 0 {
             writeln!(
                 boxed_stdout_or_stderr(),
@@ -4625,17 +4752,18 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
         }
         extra_turns += 1;
     }
-    println!(
+    writeln!(
+        std::io::stdout(),
         "after {} more turns the bag holds {}, under the {exchange_tile_limit} an exchange needs",
         extra_turns,
         move_generator.num_tiles_in_bag(),
-    );
+    )?;
     let with = probe(
         &game_state,
         &mut move_generator,
         &mut scratch,
         "bag too short to exchange",
-    );
+    )?;
     if with == 0 {
         writeln!(
             boxed_stdout_or_stderr(),
@@ -4645,7 +4773,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
     }
 
     if failures == 0 {
-        println!("SIM_FIELD_OK");
+        writeln!(std::io::stdout(), "SIM_FIELD_OK")?;
         Ok(())
     } else {
         wolges::return_error!(format!("{failures} field checks failed"))
@@ -4673,7 +4801,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     if iters < 2 {
         return Err("sim-chunk-check needs at least two iterations".into());
     }
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let mut rng = GameRng::seed_from_u64(seed);
     let mut game_state = game_state::GameState::new(&game_config);
     game_state.reset_and_draw_tiles(&game_config, &mut rng);
@@ -4703,11 +4831,15 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             sim_threads: 1,
             win_pct_table: None,
         },
-    );
+    )?;
     driver.reseed(seed);
-    driver.begin_decision(&move_generator, &game_state, iters);
+    driver.begin_decision(&move_generator, &game_state, iters)?;
     let whole = driver.leaderboard(usize::MAX);
-    println!("one call of {iters}: {} candidates", whole.len());
+    writeln!(
+        std::io::stdout(),
+        "one call of {iters}: {} candidates",
+        whole.len()
+    )?;
 
     let mut mismatches = 0u32;
     for trial in 0..trials {
@@ -4719,13 +4851,17 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             left -= take;
         }
         driver.reseed(seed);
-        driver.begin_decision(&move_generator, &game_state, chunks[0]);
+        driver.begin_decision(&move_generator, &game_state, chunks[0])?;
         for &chunk in &chunks[1..] {
-            driver.resume(&move_generator, chunk);
+            driver.resume(&move_generator, chunk)?;
         }
         let split = driver.leaderboard(usize::MAX);
         if split == whole {
-            println!("trial {trial}: {} chunks {chunks:?} match", chunks.len());
+            writeln!(
+                std::io::stdout(),
+                "trial {trial}: {} chunks {chunks:?} match",
+                chunks.len()
+            )?;
         } else {
             mismatches += 1;
             writeln!(
@@ -4744,7 +4880,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
         }
     }
     if mismatches == 0 {
-        println!("SIM_CHUNK_OK");
+        writeln!(std::io::stdout(), "SIM_CHUNK_OK")?;
         Ok(())
     } else {
         wolges::return_error!(format!("{mismatches} of {trials} chunkings disagreed"))
@@ -4774,17 +4910,9 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
     let board_tiles = fen_parser.parse(board_fen)?.to_vec();
     let tiles_on_board = board_tiles.iter().filter(|&&t| t != 0).count();
     let phase = BoardPhase::of_board(&board_tiles, &game_config);
-    let mut unseen_tally = (0..alphabet.len())
-        .map(|t| alphabet.freq(t))
-        .collect::<Vec<u8>>();
-    for &t in &board_tiles {
-        if t != 0 {
-            let base = t & !((t as i8) >> 7) as u8;
-            unseen_tally[base as usize] = unseen_tally[base as usize].saturating_sub(1);
-        }
-    }
+    let unseen_tally = game_config.tiles_off_board(&board_tiles)?;
     let unseen: usize = unseen_tally.iter().map(|&c| c as usize).sum();
-    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let can_exchange =
         bag_size(&board_tiles, &game_config) >= game_config.exchange_tile_limit() as i64;
     let sheet_floor = if can_exchange { 0 } else { i32::MIN / 4 };
@@ -4834,11 +4962,13 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             });
         }
     }
-    println!(
+    writeln!(
+        std::io::stdout(),
         "{tiles_on_board} tiles on the board, {unseen} unseen, {num_candidates} candidate plays \
          in {sheet_elapsed:?}",
-    );
-    println!(
+    )?;
+    writeln!(
+        std::io::stdout(),
         "  valued as {} ({})",
         phase.name(),
         match phase {
@@ -4848,19 +4978,15 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             BoardPhase::Endgame =>
                 "no leave table: going out is worth twice what the opponent holds",
         },
-    );
+    )?;
     let rack_reader = alphabet::AlphabetReader::new_for_racks(alphabet);
     let mut rack = Vec::new();
     let mut tally = vec![0u8; num_letters];
     for rack_str in rack_strs {
         rack_reader.set_word(rack_str, &mut rack)?;
-        if rack.len() > rack_size {
-            return Err(format!(
-                "{rack_str} has {} tiles; a rack holds {rack_size}",
-                rack.len(),
-            )
-            .into());
-        }
+        game_config
+            .take_rack(&mut unseen_tally.clone(), &rack)
+            .map_err(|e| format!("{rack_str}: {e}"))?;
         tally.iter_mut().for_each(|c| *c = 0);
         for &t in &rack {
             tally[t as usize] += 1;
@@ -4946,7 +5072,8 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             .iter()
             .all(|&t| tally[t as usize] <= unseen_tally[t as usize]);
         let sheet_best = equity::Equity::new(best).as_f64();
-        println!(
+        writeln!(
+            std::io::stdout(),
             "  {rack_str:<10} best equity {sheet_best:>8.3}  (the move generator says \
              {movegen_best:>8.3} for {movegen_play}{}){}",
             if (sheet_best - movegen_best).abs() < 0.0005 {
@@ -4959,7 +5086,7 @@ fn census_one_board<N: kwg::Node, L: kwg::Node>(
             } else {
                 "   (not drawable from this board's unseen pool)"
             },
-        );
+        )?;
     }
     Ok(())
 }
@@ -5026,34 +5153,16 @@ fn inspect_dynamic_leaves<L: kwg::Node>(
     let mut rack = Vec::new();
     alphabet::AlphabetReader::new_for_racks(alphabet).set_word(rack_str, &mut rack)?;
     rack.sort_unstable();
-    if rack.len() > rack_size {
-        return Err("that is more tiles than a rack holds".into());
-    }
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
-    let board_tiles = fen_parser.parse(board_fen)?;
-    let mut pool = vec![0u8; num_letters];
-    for (tile, slot) in (0u8..).zip(pool.iter_mut()) {
-        *slot = alphabet.freq(tile);
-    }
-    for &tile in board_tiles {
-        if tile != 0 {
-            let tile = if tile & 0x80 != 0 { 0 } else { tile } as usize;
-            if pool[tile] == 0 {
-                return Err("the board holds more of a tile than the bag has".into());
-            }
-            pool[tile] -= 1;
-        }
-    }
-    for &tile in &rack {
-        if pool[tile as usize] == 0 {
-            return Err("the rack holds a tile the board has already used up".into());
-        }
-        pool[tile as usize] -= 1;
-    }
+    let mut pool = game_config.tiles_off_board(fen_parser.parse(board_fen)?)?;
+    game_config.take_rack(&mut pool, &rack)?;
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
     let (lat, add, full_v) = lattice_leaves(&klv, num_letters, rack_size, threads)?;
-    println!("rack {rack_str}, {pool_size} tiles unseen");
-    print_rack_keeps(alphabet, &klv, &lat, &add, &full_v, &pool, &rack);
+    writeln!(
+        std::io::stdout(),
+        "rack {rack_str}, {pool_size} tiles unseen"
+    )?;
+    print_rack_keeps(alphabet, &klv, &lat, &add, &full_v, &pool, &rack)?;
     Ok(())
 }
 
@@ -5066,7 +5175,7 @@ fn lattice_leaves<L: kwg::Node>(
     rack_size: usize,
     threads: usize,
 ) -> error::Returns<(census::MultisetLattice, census::AddTable, Vec<i32>)> {
-    let lat = census::MultisetLattice::new(num_letters, rack_size);
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let full_v = full_rack_values(&lat, klv);
     let add = census::AddTable::new_with_threads(&lat, threads);
     Ok((lat, add, full_v))
@@ -5083,11 +5192,14 @@ fn print_rack_keeps<L: kwg::Node>(
     full_v: &[i32],
     pool: &[u8],
     rack: &[u8],
-) {
+) -> std::io::Result<()> {
     let num_letters = alphabet.len() as usize;
     let rack_size = lat.rack_size();
     let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
-    println!("  keep                 static    dynamic     delta");
+    writeln!(
+        std::io::stdout(),
+        "  keep                 static    dynamic     delta"
+    )?;
     let mut distinct: Vec<(u8, u8)> = Vec::new();
     for &tile in rack {
         match distinct.last_mut() {
@@ -5134,19 +5246,22 @@ fn print_rack_keeps<L: kwg::Node>(
     for (_, kept, static_value, dynamic) in rows {
         let scale = equity::SCALE as f64;
         if dynamic == census::UNPLAYABLE {
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "  {kept:<16} {:>10.3}  undrawable",
                 static_value as f64 / scale,
-            );
+            )?;
         } else {
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "  {kept:<16} {:>10.3} {:>10.3} {:>9.3}",
                 static_value as f64 / scale,
                 dynamic as f64 / scale,
                 (dynamic - static_value) as f64 / scale,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 // each multiset's value once the tiles still to draw come from the pool less
@@ -5210,7 +5325,7 @@ fn print_moves<N: kwg::Node, L: kwg::Node>(
     rack: &[u8],
     num_moves: usize,
     dynamic_leaves: Option<klv::DynamicLeavesRef<'_>>,
-) {
+) -> std::io::Result<()> {
     move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
         board_snapshot,
         rack,
@@ -5220,12 +5335,14 @@ fn print_moves<N: kwg::Node, L: kwg::Node>(
         dynamic_leaves,
     });
     for play in &move_generator.plays {
-        println!(
+        writeln!(
+            std::io::stdout(),
             "  {:>9.3}  {}",
             play.equity.raw() as f64 / equity::SCALE as f64,
             play.play.fmt(board_snapshot),
-        );
+        )?;
     }
+    Ok(())
 }
 
 struct PositionParams<'a> {
@@ -5251,7 +5368,7 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         lean,
     }: PositionParams<'_>,
 ) -> error::Returns<()> {
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
@@ -5261,41 +5378,27 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
     let rack_size = game_config.rack_size() as usize;
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
     let board_tiles = fen_parser.parse(fen)?.to_vec();
-    display::print_board(alphabet, board_layout, &board_tiles);
+    display::print_board(alphabet, board_layout, &board_tiles)?;
 
-    let mut off_board = vec![0u8; num_letters];
-    for (tile, slot) in (0u8..).zip(off_board.iter_mut()) {
-        *slot = alphabet.freq(tile);
-    }
-    for &tile in &board_tiles {
-        if tile != 0 {
-            let tile = if tile & 0x80 != 0 { 0 } else { tile } as usize;
-            if off_board[tile] == 0 {
-                return Err("the board holds more of a tile than the bag has".into());
-            }
-            off_board[tile] -= 1;
-        }
-    }
+    let off_board = game_config.tiles_off_board(&board_tiles)?;
     let mut unseen = off_board.clone();
     let mut rack_tiles = Vec::new();
     if let Some(rack) = rack {
         alphabet::AlphabetReader::new_for_racks(alphabet).set_word(rack, &mut rack_tiles)?;
         rack_tiles.sort_unstable();
-        if rack_tiles.len() > rack_size {
-            return Err("that is more tiles than a rack holds".into());
-        }
-        for &tile in &rack_tiles {
-            if unseen[tile as usize] == 0 {
-                return Err("the rack holds a tile the board has already used up".into());
-            }
-            unseen[tile as usize] -= 1;
-        }
+        game_config.take_rack(&mut unseen, &rack_tiles)?;
     }
     let unseen_size: usize = unseen.iter().map(|&c| c as usize).sum();
     if rack.is_some() {
-        println!("unseen: {unseen_size} tiles, the bag and the other racks");
+        writeln!(
+            std::io::stdout(),
+            "unseen: {unseen_size} tiles, the bag and the other racks"
+        )?;
     } else {
-        println!("not on the board: {unseen_size} tiles, the bag and every rack");
+        writeln!(
+            std::io::stdout(),
+            "not on the board: {unseen_size} tiles, the bag and every rack"
+        )?;
     }
     let (mut vowels, mut consonants) = (0usize, 0usize);
     let mut cells = Vec::with_capacity(num_letters);
@@ -5315,27 +5418,29 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         ));
     }
     for line in cells.chunks(8) {
-        println!("  {}", line.join("  ").trim_end());
+        writeln!(std::io::stdout(), "  {}", line.join("  ").trim_end())?;
     }
-    println!(
+    writeln!(
+        std::io::stdout(),
         "  vowels {vowels}, consonants {consonants}, blanks {}",
         unseen[0]
-    );
+    )?;
     if rack.is_some() {
         let others = (game_config.num_players() as usize).saturating_sub(1) * rack_size;
         if unseen_size > others {
-            println!("  in the bag: {}", unseen_size - others);
+            writeln!(std::io::stdout(), "  in the bag: {}", unseen_size - others)?;
         } else if game_config.num_players() == 2 {
             let mut other = Vec::new();
             for (tile, &count) in (0u8..).zip(unseen.iter()) {
                 other.extend(std::iter::repeat_n(tile, count as usize));
             }
-            println!(
+            writeln!(
+                std::io::stdout(),
                 "  the bag is empty: the other rack is {}",
                 alphabet.fmt_rack(&other)
-            );
+            )?;
         } else {
-            println!("  the bag is empty");
+            writeln!(std::io::stdout(), "  the bag is empty")?;
         }
     }
 
@@ -5369,16 +5474,21 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         }
     }
     if not_words.is_empty() {
-        println!("words: {num_words}, every one in the lexicon");
+        writeln!(
+            std::io::stdout(),
+            "words: {num_words}, every one in the lexicon"
+        )?;
     } else {
-        println!(
+        writeln!(
+            std::io::stdout(),
             "words: {num_words}, {} not in the lexicon: {}",
             not_words.len(),
             not_words.join(" ")
-        );
+        )?;
     }
     let shape = board_shape(board_layout, &board_tiles);
-    println!(
+    writeln!(
+        std::io::stdout(),
         "shape: {} tiles, mean word length {:.3}, perimeter per tile {:.3}, radius of gyration {:.3}, {} holes",
         shape.area,
         if shape.num_words > 0 {
@@ -5393,13 +5503,13 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
         },
         shape.radius_of_gyration,
         shape.holes,
-    );
+    )?;
 
     let lattice = if rack.is_some() || dynamic_out.is_some() {
         match lattice_leaves(&klv, num_letters, rack_size, threads) {
             Ok(lattice) => Some(lattice),
             Err(e) if dynamic_out.is_none() => {
-                println!("no dynamic leaves: {e}");
+                writeln!(std::io::stdout(), "no dynamic leaves: {e}")?;
                 None
             }
             Err(e) => return Err(e),
@@ -5417,16 +5527,22 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
             klv: &klv,
         };
         let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
-        println!("rack {rack}: the best {num_moves} moves by the leaves");
+        writeln!(
+            std::io::stdout(),
+            "rack {rack}: the best {num_moves} moves by the leaves"
+        )?;
         print_moves(
             &mut move_generator,
             &board_snapshot,
             &rack_tiles,
             num_moves,
             None,
-        );
+        )?;
         if let Some((lat, add, full_v)) = &lattice {
-            println!("rack {rack}: the best {num_moves} moves by dynamic leaves");
+            writeln!(
+                std::io::stdout(),
+                "rack {rack}: the best {num_moves} moves by dynamic leaves"
+            )?;
             print_moves(
                 &mut move_generator,
                 &board_snapshot,
@@ -5438,9 +5554,12 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
                     full_v,
                     min_keep: 0,
                 }),
-            );
-            println!("rack {rack}: every subrack kept, {unseen_size} tiles unseen");
-            print_rack_keeps(alphabet, &klv, lat, add, full_v, &unseen, &rack_tiles);
+            )?;
+            writeln!(
+                std::io::stdout(),
+                "rack {rack}: every subrack kept, {unseen_size} tiles unseen"
+            )?;
+            print_rack_keeps(alphabet, &klv, lat, add, full_v, &unseen, &rack_tiles)?;
         }
     }
     if let (Some(path), Some((lat, add, full_v))) = (dynamic_out, &lattice) {
@@ -5457,10 +5576,11 @@ fn inspect_position<N: kwg::Node, L: kwg::Node>(
             false,
             path,
         )?;
-        println!(
+        writeln!(
+            std::io::stdout(),
             "dynamic leaves: wrote {written} to {path}, keeping nothing worth {:.3}",
             baseline / equity::SCALE as f64
-        );
+        )?;
     }
     Ok(())
 }
@@ -5485,7 +5605,7 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
         lean,
     }: HarvestParams,
 ) -> error::Returns<()> {
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
     let alphabet = game_config.alphabet();
@@ -5667,7 +5787,7 @@ fn board_stats(
     if boards == 0 {
         return Err("no boards to measure".into());
     }
-    println!("boards: {boards}");
+    writeln!(std::io::stdout(), "boards: {boards}")?;
     for (label, stat) in [
         ("tiles on board", &area),
         ("words", &words),
@@ -5676,11 +5796,12 @@ fn board_stats(
         ("radius of gyration", &radius),
         ("holes", &holes),
     ] {
-        println!(
+        writeln!(
+            std::io::stdout(),
             "  {label}: {:.3} (sd={:.3})",
             stat.mean(),
             stat.standard_deviation(),
-        );
+        )?;
     }
     Ok(())
 }
@@ -5710,13 +5831,18 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
     match picker {
         SeatPicker::Hasty => move_picker::MovePicker::Hasty,
         SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dynamic_leaves.unwrap()),
-        SeatPicker::Simmer => move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::new(
-            game_config,
-            kwg,
-            arm_tables,
-            klv,
-            simmer_params,
-        ))),
+        // reseeded before each of its turns, so its first generator is fixed
+        // rather than drawn from the system
+        SeatPicker::Simmer => {
+            move_picker::MovePicker::Simmer(Box::new(move_picker::Simmer::with_rng(
+                game_config,
+                kwg,
+                arm_tables,
+                klv,
+                simmer_params,
+                wolges::simmer::DefaultRng::seed_from_u64(0),
+            )))
+        }
     }
 }
 
@@ -5745,7 +5871,7 @@ fn compare_seats<
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
-    let seed = seed.unwrap_or_else(rand::random);
+    let seed = seed_or_random(seed)?;
     writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
     let num_threads = threads;
     let claimed_pairs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -5753,7 +5879,7 @@ fn compare_seats<
     let reported_secs = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
 
-    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, LEAN);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, LEAN)?;
 
     let winpct_p0 = match &p0_win_pct {
         Some(path) => Some(win_pct::WinPctTable::from_csv(make_reader(path)?)?),
@@ -5769,7 +5895,7 @@ fn compare_seats<
         if matches!(p0_picker, SeatPicker::Dynamic) || matches!(p1_picker, SeatPicker::Dynamic) {
             let num_letters = game_config.alphabet().len() as usize;
             let rack_size = game_config.rack_size() as usize;
-            let lat = census::MultisetLattice::new(num_letters, rack_size);
+            let lat = census::MultisetLattice::new(num_letters, rack_size)?;
             let full_v_of = |picker: SeatPicker, klv: &klv::Klv<L>| match picker {
                 SeatPicker::Dynamic => full_rack_values(&lat, klv),
                 SeatPicker::Hasty | SeatPicker::Simmer => Vec::new(),
@@ -5818,7 +5944,7 @@ fn compare_seats<
             let claimed_pairs = std::sync::Arc::clone(&claimed_pairs);
             let finished_pairs = std::sync::Arc::clone(&finished_pairs);
             let reported_secs = &reported_secs;
-            thread_handles.push(s.spawn(move || {
+            thread_handles.push(s.spawn(move || -> error::Returns<GamePairStats> {
                 let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut filtered_movegen = move_filter::GenMoves::Unfiltered;
                 let mut driver_p0 = seat_picker(
@@ -5930,7 +6056,7 @@ fn compare_seats<
                                     &board_snapshot,
                                     &game_state,
                                     &game_state.current_player().rack,
-                                );
+                                )?;
                             }
                             let play = &move_generator.plays[0].play;
                             if seat_swapped {
@@ -5943,11 +6069,10 @@ fn compare_seats<
                             } else {
                                 first_game_moves.push(play.clone());
                             }
-                            game_state.play(&game_config, &mut rng, play).unwrap();
+                            game_state.play(&game_config, &mut rng, play)?;
                             num_turns += 1;
-                            let end = game_state
-                                .check_game_ended(&game_config, &mut final_scores)
-                                .unwrap();
+                            let end =
+                                game_state.check_game_ended(&game_config, &mut final_scores)?;
                             match end {
                                 game_state::CheckGameEnded::PlayedOut
                                 | game_state::CheckGameEnded::ZeroScores => break end,
@@ -5984,17 +6109,17 @@ fn compare_seats<
                     }
                 }
 
-                stats
+                Ok(stats)
             }));
         }
 
         let mut combined = GamePairStats::new();
         for handle in thread_handles {
-            combined.merge(&handle.join().unwrap());
+            combined.merge(&handle.join().unwrap()?);
         }
 
-        println!();
-        combined.print();
+        writeln!(std::io::stdout())?;
+        combined.print()?;
 
         Ok(())
     })
@@ -6133,7 +6258,7 @@ mod tests {
     #[test]
     #[inline]
     fn dynamic_leaves_of_a_pool_match_each_leave_drawn_alone() {
-        let lat = census::MultisetLattice::new(4, 3);
+        let lat = census::MultisetLattice::new(4, 3).unwrap();
         let add = census::AddTable::new_with_threads(&lat, 1);
         let full_v = (0..lat.len() as i32)
             .map(|i| i * 7919 % 1000 - 500)

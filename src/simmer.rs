@@ -93,11 +93,11 @@ pub struct Simmer<R = DefaultRng> {
 
 impl Simmer {
     // The other methods must be called with the same game_config.
-    pub fn new(game_config: &game_config::GameConfig) -> Self {
-        Self::with_rng(
+    pub fn new(game_config: &game_config::GameConfig) -> error::Returns<Self> {
+        Ok(Self::with_rng(
             game_config,
-            DefaultRng::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
-        )
+            DefaultRng::try_from_rng(&mut rand::rngs::SysRng)?,
+        ))
     }
 }
 
@@ -128,12 +128,10 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         self.rng = R::seed_from_u64(seed);
     }
 
+    // the clone's generator starts fixed: reseed it before it draws.
     #[inline(always)]
     pub fn prepared_clone(&self, game_config: &game_config::GameConfig) -> Self {
-        let mut clone = Self::with_rng(
-            game_config,
-            R::try_from_rng(&mut rand::rngs::SysRng).unwrap(),
-        );
+        let mut clone = Self::with_rng(game_config, R::seed_from_u64(0));
         clone.prepare(
             game_config,
             &self.initial_game_state,
@@ -229,7 +227,7 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         arm_tables: &anagrams::ArmTables,
         klv: &klv::Klv<L>,
         candidate_play: &movegen::Play,
-    ) -> bool {
+    ) -> error::Returns<bool> {
         self.game_state.clone_from(&self.initial_game_state);
         // reset leave values from previous iteration
         self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
@@ -272,11 +270,10 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             self.last_seen_leave_values[self.game_state.turn as usize] =
                 klv.leave_value_from_tally(&self.rack_tally);
             let rng = rollout_rng.get_or_insert_with(|| self.rng.copy_state());
-            self.game_state.play(game_config, rng, &next_play).unwrap();
+            self.game_state.play(game_config, rng, &next_play)?;
             match self
                 .game_state
-                .check_game_ended(game_config, &mut self.final_scores)
-                .unwrap()
+                .check_game_ended(game_config, &mut self.final_scores)?
             {
                 game_state::CheckGameEnded::NotEnded => {}
                 _ => {
@@ -285,12 +282,12 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                         player.score = self.final_scores[i];
                     }
                     self.last_seen_leave_values.iter_mut().for_each(|m| *m = 0);
-                    return true;
+                    return Ok(true);
                 }
             }
             self.game_state.next_turn();
         }
-        false
+        Ok(false)
     }
 
     #[inline(always)]
@@ -379,10 +376,10 @@ mod tests {
         let mut deal_rng = DefaultRng::seed_from_u64(3);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00");
-        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false);
-        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES);
-        let mut simmer = Simmer::new(&game_config);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00").unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(99);
         simmer.prepare(&game_config, &game_state, 0, false);
         simmer.prepare_iteration();
@@ -395,14 +392,18 @@ mod tests {
 
         let shared_state = simmer.rng.clone();
 
-        simmer.simulate(&game_config, &kwg, &arm_tables, &klv, &candidate);
+        simmer
+            .simulate(&game_config, &kwg, &arm_tables, &klv, &candidate)
+            .unwrap();
         let rack_after_first = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();
 
         assert_eq!(simmer.rng, shared_state);
 
-        simmer.simulate(&game_config, &kwg, &arm_tables, &klv, &candidate);
+        simmer
+            .simulate(&game_config, &kwg, &arm_tables, &klv, &candidate)
+            .unwrap();
         let rack_after_second = simmer.game_state.players[simmer.initial_game_state.turn as usize]
             .rack
             .clone();
@@ -448,7 +449,7 @@ mod tests {
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
 
         let opponent_draw = |seed: u64| -> Vec<u8> {
-            let mut simmer = Simmer::new(&game_config);
+            let mut simmer = Simmer::new(&game_config).unwrap();
             simmer.prepare(&game_config, &game_state, 2, false);
             simmer.reseed(seed);
             simmer.prepare_iteration();
@@ -467,7 +468,7 @@ mod tests {
         let mut game_state = game_state::GameState::new(&game_config);
         let mut deal_rng = DefaultRng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
-        let mut simmer = Simmer::new(&game_config);
+        let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.prepare(&game_config, &game_state, 2, false);
         let bag = simmer.game_state.bag.len();
         let turn = simmer.initial_game_state.turn as usize;

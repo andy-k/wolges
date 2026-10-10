@@ -1173,7 +1173,7 @@ mod tests {
         let bytes = build(BuildContent::Gaddawg, layout, order, &machine_words).unwrap();
         (
             machine_words,
-            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes),
+            kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap(),
         )
     }
 
@@ -1280,7 +1280,8 @@ mod tests {
         expected.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(expected, crate::klv::EMPTY_KLV_BYTES);
 
-        let klv = crate::klv::Klv::<kwg::Node22>::from_bytes_alloc(crate::klv::EMPTY_KLV_BYTES);
+        let klv =
+            crate::klv::Klv::<kwg::Node22>::from_bytes_alloc(crate::klv::EMPTY_KLV_BYTES).unwrap();
         assert_eq!(klv.leave_value_from_tally(&[0, 1]), 0);
     }
 
@@ -1326,7 +1327,7 @@ mod tests {
 
     #[inline]
     fn words_in_graph<N: kwg::Node>(bytes: &[u8]) -> Vec<bites::Bites> {
-        let kwg = kwg::Kwg::<N>::from_bytes_alloc(bytes);
+        let kwg = kwg::Kwg::<N>::from_bytes_alloc(bytes).unwrap();
         let mut got = Vec::new();
         collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
         got.sort_unstable();
@@ -1492,7 +1493,7 @@ mod tests {
             &machine_words,
         )
         .unwrap();
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
         let mut got = Vec::new();
         collect_dawg_words(&kwg, kwg[0].arc_index(), &mut Vec::new(), &mut got);
         got.sort_unstable();

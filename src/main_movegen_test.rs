@@ -316,11 +316,11 @@ fn main() -> error::Returns<()> {
     };
     let kwg_bytes = std::fs::read(&files.kwg)?;
     let klv_bytes = std::fs::read(&files.klv)?;
-    let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv_bytes);
+    let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(&klv_bytes)?;
     let game_config = cli.game.make_game_config()?;
     game_config.check_leaves(klv.leave_range())?;
     if cli.kbwg {
-        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
         run(
             &kwg,
             &klv,
@@ -331,7 +331,7 @@ fn main() -> error::Returns<()> {
             &klv_bytes,
         )
     } else {
-        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes);
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
         run(
             &kwg,
             &klv,
@@ -380,9 +380,9 @@ fn run<N: kwg::Node>(
     let mut total_elapsed = std::time::Duration::ZERO;
     let mut total_moves = 0usize;
 
-    let anagrams = wolges::anagrams::Anagrams::build_for_config(kwg, game_config)
+    let anagrams = wolges::anagrams::Anagrams::build_for_config(kwg, game_config)?
         .ok_or("this alphabet does not lay out a key")?;
-    let rack_lengths = wolges::anagrams::RackLengths::build_for_config(kwg, game_config)
+    let rack_lengths = wolges::anagrams::RackLengths::build_for_config(kwg, game_config)?
         .ok_or("this alphabet does not lay out a key")?;
     let mut disagreements = 0usize;
     for (case_idx, case) in TEST_CASES.iter().enumerate() {
