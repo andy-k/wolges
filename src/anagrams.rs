@@ -28,6 +28,14 @@ fn filter_hash(part: u128) -> u64 {
     (part >> 64) as u64
 }
 
+// a key's hash for a table that picks its slot by the low bits: the filters'
+// hash with its bytes swapped, so the low byte is the product's top byte, which
+// every bit of the key reaches
+#[inline(always)]
+pub fn key_hash(key: u128) -> u64 {
+    filter_hash(key_part(key)).swap_bytes()
+}
+
 #[inline(always)]
 fn filter_blocks(keys: usize, bits: usize) -> usize {
     (keys * bits).div_ceil(FILTER_BLOCK_BITS)
@@ -164,7 +172,7 @@ impl std::hash::Hasher for KeyHasher {
 
     #[inline(always)]
     fn write_u128(&mut self, v: u128) {
-        self.0 ^= alphagram::mixed(v);
+        self.0 ^= key_hash(v);
     }
 }
 
