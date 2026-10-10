@@ -1,0 +1,93 @@
+name: Release
+'on':
+  push:
+    tags:
+    - 'v*'
+  workflow_dispatch:
+env:
+  CARGO_TERM_COLOR: always
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+        - os: ubuntu-24.04
+          target: x86_64-unknown-linux-gnu
+          cpu: x86-64-v3
+        - os: ubuntu-24.04-arm
+          target: aarch64-unknown-linux-gnu
+          cpu: generic
+        - os: macos-latest
+          target: aarch64-apple-darwin
+          cpu: apple-m1
+        - os: windows-latest
+          target: x86_64-pc-windows-msvc
+          cpu: x86-64-v3
+    runs-on: "${{ matrix.os }}"
+    steps:
+    - uses: actions/checkout@v7
+    - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable, 2026-10-09
+      with:
+        toolchain: stable
+    - name: Stable Rust version
+      run: cargo version
+    - name: Build
+      shell: bash
+      run: |
+        reg="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+        std="$(rustc --print sysroot)/lib/rustlib/src/rust"
+        if [ "$RUNNER_OS" = Windows ]; then reg=$(cygpath -w "$reg"); std=$(cygpath -w "$std"); fi
+        hash=$(rustc -vV | sed -n 's/^commit-hash: //p')
+        export RUSTFLAGS="-C target-cpu=${{ matrix.cpu }} --remap-path-prefix=$reg=/cargo --remap-path-prefix=$std=/rustc/$hash --remap-path-prefix=$GITHUB_WORKSPACE=/wolges"
+        cargo build --release --verbose --bin buildlex --bin read --bin leave
+    - name: No path of this machine in what ships
+      shell: bash
+      run: |
+        exe=
+        home=$HOME
+        if [ "$RUNNER_OS" = Windows ]; then exe=.exe; home=$(cygpath -w "$HOME"); fi
+        bad=0
+        for b in buildlex read leave; do
+          n=$(grep -a -c -F -e "$home" -e "$GITHUB_WORKSPACE" "target/release/$b$exe" || true)
+          echo "$b: $n"
+          [ "$n" = 0 ] || bad=1
+        done
+        exit "$bad"
+    - name: Pack
+      shell: bash
+      run: |
+        exe=
+        if [ "$RUNNER_OS" = Windows ]; then exe=.exe; fi
+        name="wolges-$GITHUB_REF_NAME-${{ matrix.target }}"
+        mkdir "$name"
+        for b in buildlex read leave; do cp "target/release/$b$exe" "$name/"; done
+        cp LICENSE.txt README.md "$name/"
+        if [ "$RUNNER_OS" = Windows ]; then 7z a "$name.zip" "$name"; else tar czf "$name.tar.gz" "$name"; fi
+        echo "PACKED=$name" >>"$GITHUB_ENV"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: "${{ env.PACKED }}"
+        path: "${{ env.PACKED }}.*"
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v8
+      with:
+        path: dist
+        merge-multiple: true
+    - name: Create the release
+      env:
+        GH_TOKEN: "${{ github.token }}"
+      run: >-
+        gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag
+        --title "$GITHUB_REF_NAME"
+        --notes "Built for x86-64-v3 (x86_64 Linux and Windows), apple-m1 (Apple Silicon Macs) and generic arm64 (Linux).
+        On Windows they need Microsoft's Visual C++ Redistributable (VCRUNTIME140.dll).
+        Anywhere else -- an x86-64 CPU without AVX2, which stops these with an illegal instruction, a Linux that says a GLIBC version is not found (its glibc is older than the Ubuntu 24.04 these were built on), or an Intel Mac -- build from source: cargo build --release.
+        To time one, build it for your own CPU the same way."
