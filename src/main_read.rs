@@ -386,6 +386,10 @@ fn iter_dawg<
         env.runs_on_path[first_p] = false;
         Ok(())
     }
+    // an arc of 0 is no list: the graph holds no words there
+    if initial_idx == 0 {
+        return Ok(());
+    }
     if initial_idx >= r.len(b) {
         return Err("out of bounds".into());
     }
