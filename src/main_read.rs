@@ -619,18 +619,16 @@ fn read_leave_value(klv_bytes: &[u8], r: &mut usize, is_klv2: bool) -> error::Re
 
 #[inline]
 fn do_wg_check<R: CheckedWg>(
-    args: &[String],
+    kwg_path: &str,
+    words: &[String],
     alphabet: &alphabet::Alphabet,
     reader: &R,
 ) -> error::Returns<()> {
-    if args.len() < 4 {
-        return Err("need more argument".into());
-    }
     let alphabet_reader = &alphabet::AlphabetReader::new_for_words(alphabet);
-    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    let kwg_bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
     reader.check(kwg_bytes)?;
     let mut not_found = false;
-    for word in &args[3..] {
+    for word in words {
         let sb = &word.as_bytes();
         let mut p = 0;
         let mut ix = 0;
@@ -683,17 +681,19 @@ enum AnagramMode {
 
 #[inline]
 fn do_wg_anagram<R: CheckedWg>(
-    args: &[String],
+    kwg_path: &str,
+    out: &str,
+    rack_str: &str,
     alphabet: &alphabet::Alphabet,
     reader: &R,
     mode: AnagramMode,
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
-    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    let kwg_bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
     reader.check(kwg_bytes)?;
     let mut rack = vec![0; alphabet.len().into()];
     let mut given_num_tiles = 0usize;
-    let sb = &args[4].as_bytes();
+    let sb = &rack_str.as_bytes();
     let mut ix = 0;
     while ix < sb.len() {
         if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
@@ -768,13 +768,42 @@ fn do_wg_anagram<R: CheckedWg>(
             Ok(())
         },
     )?;
-    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    make_writer(out)?.write_all(ret.as_bytes())?;
     Ok(())
 }
 
 #[inline]
+fn wg_anagram(
+    graph_file: &WordGraph,
+    out: &str,
+    rack_str: &str,
+    alphabet: &alphabet::Alphabet,
+    mode: AnagramMode,
+) -> error::Returns<()> {
+    if graph_file.kbwg {
+        do_wg_anagram(
+            &graph_file.kwg,
+            out,
+            rack_str,
+            alphabet,
+            &KbwgReader {},
+            mode,
+        )
+    } else {
+        do_wg_anagram(
+            &graph_file.kwg,
+            out,
+            rack_str,
+            alphabet,
+            &KwgReader {},
+            mode,
+        )
+    }
+}
+
+#[inline]
 fn dump_dawg<R: WgReader, A: AlphabetLabel>(
-    args: &[String],
+    out: &str,
     label: &A,
     reader: &R,
     bytes: &[u8],
@@ -798,19 +827,21 @@ fn dump_dawg<R: WgReader, A: AlphabetLabel>(
         &mut default_in,
         &mut default_out,
     )?;
-    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    make_writer(out)?.write_all(ret.as_bytes())?;
     Ok(())
 }
 
 #[inline]
 fn do_klv_anagram<R: WgReader>(
-    args: &[String],
+    klv_path: &str,
+    out: &str,
+    rack_str: &str,
     alphabet: &alphabet::Alphabet,
     reader: &R,
-    klv_bytes: &[u8],
     mode: AnagramMode,
 ) -> error::Returns<()> {
     let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(alphabet);
+    let klv_bytes = &read_to_end(&mut make_reader(klv_path)?)?;
     check_klv(klv_bytes)?;
     let parts = parse_klv(klv_bytes)?;
     let kwg_bytes = parts.kwg_bytes;
@@ -818,7 +849,7 @@ fn do_klv_anagram<R: WgReader>(
     let is_klv2 = parts.is_klv2;
     let mut rack = vec![0; alphabet.len().into()];
     let mut given_num_tiles = 0usize;
-    let sb = &args[4].as_bytes();
+    let sb = &rack_str.as_bytes();
     let mut ix = 0;
     while ix < sb.len() {
         if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
@@ -832,7 +863,7 @@ fn do_klv_anagram<R: WgReader>(
     let rack_cell = std::cell::RefCell::new(rack);
     let num_tiles = std::sync::atomic::AtomicUsize::new(0);
     let num_unspecified = std::sync::atomic::AtomicUsize::new(0);
-    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+    let mut csv_out = csv::Writer::from_writer(make_writer(out)?);
     iter_dawg(
         DawgSource {
             a: &WolgesAlphabetLabel { alphabet },
@@ -894,19 +925,20 @@ fn do_klv_anagram<R: WgReader>(
 
 #[inline]
 fn do_wg_dawg<R: CheckedWg>(
-    args: &[String],
+    kwg_path: &str,
+    out: &str,
     alphabet: &alphabet::Alphabet,
     reader: &R,
     initial_node_idx: usize,
     blank_str: Option<&str>,
 ) -> error::Returns<()> {
-    let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    let bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
     reader.check(bytes)?;
     if initial_node_idx >= reader.len(bytes) {
         return Err("out of bounds".into());
     }
     dump_dawg(
-        args,
+        out,
         &WolgesAlphabetLabel { alphabet },
         reader,
         bytes,
@@ -917,12 +949,13 @@ fn do_wg_dawg<R: CheckedWg>(
 
 #[inline]
 fn do_wg_nodes<R: CheckedWg>(
-    args: &[String],
+    kwg_path: &str,
+    out: &str,
     alphabet: &alphabet::Alphabet,
     reader: &R,
 ) -> error::Returns<()> {
     let alphabet_label = &WolgesAlphabetLabel { alphabet };
-    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    let kwg_bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
     reader.check(kwg_bytes)?;
     let kwg_len = reader.len(kwg_bytes);
     let kwg_len_width = format!("{}", kwg_len.saturating_sub(1)).len();
@@ -956,19 +989,20 @@ fn do_wg_nodes<R: CheckedWg>(
         }
         ret.push('\n');
     }
-    make_writer(&args[3])?.write_all(ret.as_bytes())?;
+    make_writer(out)?.write_all(ret.as_bytes())?;
     Ok(())
 }
 
 #[inline]
 fn do_wg_prob<R: CheckedWg>(
-    args: &[String],
+    kwg_path: &str,
+    out: &str,
     alphabet: &alphabet::Alphabet,
     reader: &R,
 ) -> error::Returns<()> {
     let mut word_prob = prob::WordProbability::new(alphabet);
     let word_cell = std::cell::RefCell::new(Vec::new());
-    let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    let kwg_bytes = &read_to_end(&mut make_reader(kwg_path)?)?;
     reader.check(kwg_bytes)?;
     let vec_out_cell = std::cell::RefCell::new(Vec::new());
     iter_dawg(
@@ -1006,7 +1040,7 @@ fn do_wg_prob<R: CheckedWg>(
                 .then_with(|| a.1.0.cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
         })
     });
-    let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
+    let mut csv_out = csv::Writer::from_writer(make_writer(out)?);
     let mut last_anagram_key = Vec::new();
     let mut num_sets = 0;
     let mut num_in_set = 0;
@@ -1034,10 +1068,11 @@ fn wmp3_hash(bit_rack: u128) -> u32 {
 
 #[inline]
 fn do_quackle<R: WgReader>(
-    args: &[String],
+    dawg_path: &str,
+    out: &str,
     make_reader_fn: impl FnOnce(usize) -> R,
 ) -> error::Returns<()> {
-    let quackle_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
+    let quackle_bytes = &read_to_end(&mut make_reader(dawg_path)?)?;
     if 20 >= quackle_bytes.len() {
         return Err("out of bounds".into());
     }
@@ -1063,7 +1098,7 @@ fn do_quackle<R: WgReader>(
         return Err("out of bounds".into());
     }
     dump_dawg(
-        args,
+        out,
         &QuackleAlphabetLabel { alpha: &alpha },
         &reader,
         quackle_bytes,
@@ -1073,1273 +1108,1253 @@ fn do_quackle<R: WgReader>(
 }
 
 #[inline]
-fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
-    args: &[String],
-    make_alphabet: AlphabetMaker,
-) -> error::Returns<bool> {
-    match args.get(1).map(String::as_str) {
-        Some(task) => match task {
-            "klv" | "klv16" => {
-                // klv16: same as klv1, but scales by 8.0 instead of 256.0.
-                // for use with olaugh/magpie-retro.
-                let is_klv16 = task == "klv16";
-                let alphabet = make_alphabet()?;
-                let reader = &KwgReader {};
-                let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                check_klv(klv_bytes)?;
-                let parts = parse_klv(klv_bytes)?;
-                let kwg_bytes = parts.kwg_bytes;
-                let mut r = parts.r;
-                let is_klv2 = !is_klv16 && parts.is_klv2;
-                if r + parts.lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
-                    return Err("incorrect number of leave values".into());
-                }
-                let scale = if is_klv16 { 1.0 / 8.0 } else { 1.0 / 256.0 };
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                iter_dawg(
-                    DawgSource {
-                        a: &WolgesAlphabetLabel {
-                            alphabet: &alphabet,
-                        },
-                        r: reader,
-                        b: kwg_bytes,
-                        initial_idx: reader.arc_index(kwg_bytes, 0),
-                        blank_str: alphabet.of_rack(0),
-                    },
-                    &mut |s: &str| {
-                        let v = if is_klv2 && klv_bytes.len() >= r + 4 {
-                            let v = f32::from_bits(read_le_u32(klv_bytes, r));
-                            r += 4;
-                            v
-                        } else if !is_klv2 && klv_bytes.len() >= r + 2 {
-                            r += 2;
-                            (read_le_u16(klv_bytes, r - 2) as i16) as f32 * scale
-                        } else {
-                            return Err("missing leaves".into());
-                        };
-                        csv_out.serialize((s, v))?;
-                        Ok(())
-                    },
-                    &mut default_in,
-                    &mut default_out,
-                )?;
-                if r != klv_bytes.len() {
-                    return Err("too many leaves".into());
-                }
-                Ok(true)
-            }
-            "kwg" | "kbwg" => {
-                let alphabet = make_alphabet()?;
-                let is_kbwg = task == "kbwg";
-                if is_kbwg {
-                    do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, None)?;
-                } else {
-                    do_wg_dawg(args, &alphabet, &KwgReader {}, 0, None)?;
-                }
-                Ok(true)
-            }
-            "kwg0" | "kbwg0" => {
-                let alphabet = make_alphabet()?;
-                if task == "kbwg0" {
-                    do_wg_dawg(args, &alphabet, &KbwgReader {}, 0, alphabet.of_rack(0))?;
-                } else {
-                    do_wg_dawg(args, &alphabet, &KwgReader {}, 0, alphabet.of_rack(0))?;
-                }
-                Ok(true)
-            }
-            "kwg-gaddag" | "kbwg-gaddag" => {
-                let alphabet = make_alphabet()?;
-                if task == "kbwg-gaddag" {
-                    do_wg_dawg(args, &alphabet, &KbwgReader {}, 1, Some("@"))?;
-                } else {
-                    do_wg_dawg(args, &alphabet, &KwgReader {}, 1, Some("@"))?;
-                }
-                Ok(true)
-            }
-            "kwg-nodes" | "kbwg-nodes" => {
-                let alphabet = make_alphabet()?;
-                if task == "kbwg-nodes" {
-                    do_wg_nodes(args, &alphabet, &KbwgReader {})?;
-                } else {
-                    do_wg_nodes(args, &alphabet, &KwgReader {})?;
-                }
-                Ok(true)
-            }
-            "kwg-prob" | "kbwg-prob" => {
-                let alphabet = make_alphabet()?;
-                if task == "kbwg-prob" {
-                    do_wg_prob(args, &alphabet, &KbwgReader {})?;
-                } else {
-                    do_wg_prob(args, &alphabet, &KwgReader {})?;
-                }
-                Ok(true)
-            }
-            "prob" => {
-                if args.len() < 3 {
-                    return Err("need more argument".into());
-                }
-                let alphabet = make_alphabet()?;
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
-                let mut word_prob = prob::WordProbability::new(&alphabet);
-                let mut v = Vec::new();
-                for word in &args[2..] {
-                    v.clear();
-                    let sb = &word.as_bytes();
-                    let mut ix = 0;
-                    while ix < sb.len() {
-                        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                            v.push(tile);
-                            ix = end_ix;
-                        } else {
-                            return Err("invalid tile".into());
-                        }
-                    }
-                    writeln!(std::io::stdout(), "{}", word_prob.word_draw_ways(&v))?;
-                }
-                Ok(true)
-            }
-            "klv-anagram-" | "klv-anagram" | "klv-anagram+" => {
-                let mode = if task.ends_with('-') {
-                    AnagramMode::Sub
-                } else if task.ends_with('+') {
-                    AnagramMode::Super
-                } else {
-                    AnagramMode::Exact
-                };
-                let alphabet = make_alphabet()?;
-                let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                do_klv_anagram(args, &alphabet, &KwgReader {}, klv_bytes, mode)?;
-                Ok(true)
-            }
-            "kwg-anagram-" | "kbwg-anagram-" | "kwg-anagram" | "kbwg-anagram" | "kwg-anagram+"
-            | "kbwg-anagram+" => {
-                let mode = if task.ends_with('-') {
-                    AnagramMode::Sub
-                } else if task.ends_with('+') {
-                    AnagramMode::Super
-                } else {
-                    AnagramMode::Exact
-                };
-                let alphabet = make_alphabet()?;
-                if task.starts_with("kbwg") {
-                    do_wg_anagram(args, &alphabet, &KbwgReader {}, mode)?;
-                } else {
-                    do_wg_anagram(args, &alphabet, &KwgReader {}, mode)?;
-                }
-                Ok(true)
-            }
-            "kwg-check" | "kbwg-check" => {
-                let alphabet = make_alphabet()?;
-                if task == "kbwg-check" {
-                    do_wg_check(args, &alphabet, &KbwgReader {})?;
-                } else {
-                    do_wg_check(args, &alphabet, &KwgReader {})?;
-                }
-                Ok(true)
-            }
-            "q2-ort" => {
-                let alphabet = make_alphabet()?;
-                // ort: olaugh rack table.
-                // the format was discussed in woogles discord.
-                // https://discord.com/channels/741321677828522035/1157118170398724176/1164983643836530759
-                let ort_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if ort_bytes.len() < 8 {
-                    return Err("out of bounds".into());
-                }
-                let mut r = 0;
-                let ort_num_buckets = read_le_u32(ort_bytes, r);
-                r += 4;
-                let ort_num_values = read_le_u32(ort_bytes, r);
-                r += 4;
-                // both counts come from the file: in 64 bits, no pair of them
-                // can wrap the size
-                if (ort_bytes.len() as u64)
-                    < r as u64 + (ort_num_buckets as u64 + 1 + ort_num_values as u64) * 4
-                {
-                    return Err("out of bounds".into());
-                }
-                let mut ort_buckets = Vec::with_capacity(ort_num_buckets as usize + 1);
-                for _ in 0..=ort_num_buckets {
-                    ort_buckets.push(read_le_u32(ort_bytes, r));
-                    r += 4;
-                }
-                let mut ort_values = Vec::with_capacity(ort_num_values as usize);
-                for _ in 0..ort_num_values {
-                    ort_values.push(read_le_u32(ort_bytes, r));
-                    r += 4;
-                }
-                if r != ort_bytes.len() {
-                    return Err("too many bytes".into());
-                }
-                if ort_buckets[0] != 0
-                    || ort_buckets[ort_num_buckets as usize] != ort_num_values
-                    || ort_buckets.windows(2).any(|x| x[0] > x[1])
-                {
-                    return Err("invalid buckets".into());
-                }
-                let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-                let mut rack_str = String::new();
-                for bucket_num in 0..ort_num_buckets {
-                    let mut next_allowed_quotient = 0;
-                    for value in &ort_values[ort_buckets[bucket_num as usize] as usize
-                        ..ort_buckets[bucket_num as usize + 1] as usize]
-                    {
-                        let quotient = value & 0x3fff; // 14 bits
-                        if quotient < next_allowed_quotient {
-                            return Err("quotients not sorted/unique".into());
-                        }
-                        next_allowed_quotient = quotient + 1;
-                        // bucket_num is remainder, i.e. orig_hash % ort_num_buckets == bucket_num.
-                        let orig_hash =
-                            quotient as u64 * ort_num_buckets as u64 + bucket_num as u64;
-                        rack_str.clear();
-                        // recover rack_str from orig_hash, each tile uses 5 bits but can be shorter than 7 elements.
-                        let mut last_seen_tile = 0;
-                        if (orig_hash >> 35) != 0 {
-                            return Err("too many tiles".into());
-                        }
-                        for shift in &[30, 25, 20, 15, 10, 5, 0] {
-                            let tile = ((orig_hash >> shift) & 0x1f) as u8;
-                            if tile < last_seen_tile {
-                                return Err("tiles not sorted".into());
-                            }
-                            last_seen_tile = tile;
-                            if tile != 0 {
-                                rack_str.push_str(
-                                    alphabet
-                                        .of_rack(if tile == alphabet.len() { 0 } else { tile })
-                                        .ok_or("invalid tile")?,
-                                );
-                            }
-                        }
-                        // last 6 numbers are f(0)..f(5) where f(b) = max r (0..7) such
-                        // that there exists a word of length b+r with r tiles from
-                        // rack and b additional tiles on board.
-                        csv_out.serialize((
-                            &rack_str,
-                            (value >> 14) & 7,
-                            (value >> 17) & 7,
-                            (value >> 20) & 7,
-                            (value >> 23) & 7,
-                            (value >> 26) & 7,
-                            (value >> 29) & 7,
-                        ))?;
-                    }
-                }
-                Ok(true)
-            }
-            "make-q2-ort" => {
-                // assume input is good (e.g. no duplicates)
-                let num_buckets = u32::from_str(&args[4])?;
-                let alphabet = make_alphabet()?;
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
-                let mut csv_reader = csv::ReaderBuilder::new()
-                    .has_headers(false)
-                    .from_reader(make_reader(&args[2])?);
-                let mut values = Vec::new();
-                let mut v = Vec::new();
-                for result in csv_reader.records() {
-                    let record = result?;
-                    if record.len() < 7 {
-                        return Err("a line has fewer than 7 fields".into());
-                    }
-                    let sb = record[0].as_bytes();
-                    v.clear();
-                    let mut ix = 0;
-                    while ix < sb.len() {
-                        if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
-                            v.push(tile);
-                            ix = end_ix;
-                        } else {
-                            return Err("invalid tile".into());
-                        }
-                    }
-                    let val = ((u8::from_str(&record[6])? as u32) << 29)
-                        | ((u8::from_str(&record[5])? as u32) << 26)
-                        | ((u8::from_str(&record[4])? as u32) << 23)
-                        | ((u8::from_str(&record[3])? as u32) << 20)
-                        | ((u8::from_str(&record[2])? as u32) << 17)
-                        | ((u8::from_str(&record[1])? as u32) << 14);
-                    let mut orig_hash = 0u64;
-                    v.sort_unstable();
-                    for &i in &v {
-                        if i != 0 {
-                            orig_hash <<= 5;
-                            orig_hash |= i as u64;
-                        }
-                    }
-                    for &i in &v {
-                        if i == 0 {
-                            orig_hash <<= 5;
-                            orig_hash |= alphabet.len() as u64;
-                        }
-                    }
-                    let quotient = (orig_hash / (num_buckets as u64)) as u32;
-                    if quotient & 0x3fff != quotient {
-                        return Err("quotient does not fit in 14 bits".into());
-                    }
-                    let bucket_num = (orig_hash % (num_buckets as u64)) as u32;
-                    values.push((bucket_num, quotient, val));
-                }
-                values.sort_unstable();
-                let num_values = values.len() as u32;
-                let mut ret =
-                    Vec::with_capacity(4 * (3 + num_buckets as usize + num_values as usize));
-                ret.extend(&num_buckets.to_le_bytes());
-                ret.extend(&num_values.to_le_bytes());
-                let mut bucket_start = 0u32;
-                ret.extend(&bucket_start.to_le_bytes());
-                let mut max_bucket_size = 0u32;
-                for bucket_num in 0..num_buckets {
-                    let this_bucket_start = bucket_start;
-                    while bucket_start < num_values && values[bucket_start as usize].0 <= bucket_num
-                    {
-                        bucket_start += 1
-                    }
-                    ret.extend(&bucket_start.to_le_bytes());
-                    max_bucket_size = max_bucket_size.max(bucket_start - this_bucket_start);
-                }
-                if bucket_start != num_values {
-                    return Err("something wrong".into());
-                }
-                for (_, quotient, val) in values {
-                    ret.extend(&(quotient | val).to_le_bytes());
-                }
-                // binary output
-                make_writer(&args[3])?.write_all(&ret)?;
-                writeln!(
-                    boxed_stdout_or_stderr(),
-                    "each bucket has at most {max_bucket_size} values"
-                )?;
-                Ok(true)
-            }
-            "wmp" | "wmp-words" => {
-                let words_only = task == "wmp-words";
-                let alphabet = make_alphabet()?;
-                let alphabet_label = &WolgesAlphabetLabel {
-                    alphabet: &alphabet,
-                };
-                let alphabet_label_allow_blank = &WolgesAlphabetLabelAllowBlank {
-                    alphabet: &alphabet,
-                };
+fn do_wmp(
+    wmp_path: &str,
+    out: &str,
+    alphabet: &alphabet::Alphabet,
+    words_only: bool,
+) -> error::Returns<()> {
+    let alphabet_label = &WolgesAlphabetLabel { alphabet };
+    let alphabet_label_allow_blank = &WolgesAlphabetLabelAllowBlank { alphabet };
 
-                // wmp: olaugh's wordmap from jvc56/MAGPIE.
-                let wmp_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-                if wmp_bytes.len() < 6 {
-                    return Err("out of bounds".into());
-                }
+    // wmp: olaugh's wordmap from jvc56/MAGPIE.
+    let wmp_bytes = &read_to_end(&mut make_reader(wmp_path)?)?;
+    if wmp_bytes.len() < 6 {
+        return Err("out of bounds".into());
+    }
 
-                let mut ret = String::new();
+    let mut ret = String::new();
 
-                let wmp_ver = wmp_bytes[0];
-                let wmp_entry_size: usize = if wmp_ver < 3 { 28 } else { 32 };
-                let max_len = wmp_bytes[1];
-                let mut r = 2;
-                let max_word_lookup_results = read_le_u32(wmp_bytes, r);
-                r += 4;
-                if wmp_bytes.len() < 10 {
-                    return Err("out of bounds".into());
-                }
-                let max_blank_pair_results;
-                if wmp_ver < 2 {
-                    max_blank_pair_results = read_le_u32(wmp_bytes, r);
-                    r += 4;
-                } else {
-                    max_blank_pair_results = 0;
-                }
-                if !words_only {
-                    write!(
-                        ret,
-                        "wmp {wmp_ver} len 2..{max_len} max_word_lookup_results={max_word_lookup_results}"
-                    )?;
-                    if wmp_ver < 2 {
-                        write!(ret, " max_blank_pair_results={max_blank_pair_results}")?;
-                    }
-                    ret.push('\n');
-                }
-                let mut expected_max_word_lookup_results = 0;
-                let mut expected_max_blank_pair_results = 0;
-                for len in 2..=max_len {
-                    if wmp_bytes.len() < r + 4 {
-                        return Err("out of bounds".into());
-                    }
-                    let wmp_bylen_num_word_buckets = read_le_u32(wmp_bytes, r);
-                    if wmp_ver >= 3 && !wmp_bylen_num_word_buckets.is_power_of_two() {
-                        return Err("unsupported bucket size".into());
-                    }
-                    r += 4;
-                    let wmp_bylen_word_buckets_ofs = r;
-                    r += 4 * (1 + wmp_bylen_num_word_buckets as usize);
-                    if wmp_bytes.len() < r + 4 {
-                        return Err("out of bounds".into());
-                    }
-                    let wmp_bylen_num_word_entries = read_le_u32(wmp_bytes, r);
-                    r += 4;
-                    let wmp_bylen_word_entries_ofs = r;
-                    r += wmp_entry_size * wmp_bylen_num_word_entries as usize;
-                    if wmp_bytes.len() < r + 4 {
-                        return Err("out of bounds".into());
-                    }
-                    let wmp_bylen_num_words = read_le_u32(wmp_bytes, r);
-                    r += 4;
-                    let wmp_bylen_words_ofs = r;
-                    let wmp_bylen_words_len = len as usize * wmp_bylen_num_words as usize;
-                    r += wmp_bylen_words_len;
+    let wmp_ver = wmp_bytes[0];
+    let wmp_entry_size: usize = if wmp_ver < 3 { 28 } else { 32 };
+    let max_len = wmp_bytes[1];
+    let mut r = 2;
+    let max_word_lookup_results = read_le_u32(wmp_bytes, r);
+    r += 4;
+    if wmp_bytes.len() < 10 {
+        return Err("out of bounds".into());
+    }
+    let max_blank_pair_results;
+    if wmp_ver < 2 {
+        max_blank_pair_results = read_le_u32(wmp_bytes, r);
+        r += 4;
+    } else {
+        max_blank_pair_results = 0;
+    }
+    if !words_only {
+        write!(
+            ret,
+            "wmp {wmp_ver} len 2..{max_len} max_word_lookup_results={max_word_lookup_results}"
+        )?;
+        if wmp_ver < 2 {
+            write!(ret, " max_blank_pair_results={max_blank_pair_results}")?;
+        }
+        ret.push('\n');
+    }
+    let mut expected_max_word_lookup_results = 0;
+    let mut expected_max_blank_pair_results = 0;
+    for len in 2..=max_len {
+        if wmp_bytes.len() < r + 4 {
+            return Err("out of bounds".into());
+        }
+        let wmp_bylen_num_word_buckets = read_le_u32(wmp_bytes, r);
+        if wmp_ver >= 3 && !wmp_bylen_num_word_buckets.is_power_of_two() {
+            return Err("unsupported bucket size".into());
+        }
+        r += 4;
+        let wmp_bylen_word_buckets_ofs = r;
+        r += 4 * (1 + wmp_bylen_num_word_buckets as usize);
+        if wmp_bytes.len() < r + 4 {
+            return Err("out of bounds".into());
+        }
+        let wmp_bylen_num_word_entries = read_le_u32(wmp_bytes, r);
+        r += 4;
+        let wmp_bylen_word_entries_ofs = r;
+        r += wmp_entry_size * wmp_bylen_num_word_entries as usize;
+        if wmp_bytes.len() < r + 4 {
+            return Err("out of bounds".into());
+        }
+        let wmp_bylen_num_words = read_le_u32(wmp_bytes, r);
+        r += 4;
+        let wmp_bylen_words_ofs = r;
+        let wmp_bylen_words_len = len as usize * wmp_bylen_num_words as usize;
+        r += wmp_bylen_words_len;
 
-                    if wmp_bytes.len() < r + 4 {
-                        return Err("out of bounds".into());
-                    }
-                    let wmp_bylen_num_blank_buckets = read_le_u32(wmp_bytes, r);
-                    if wmp_ver >= 3 && !wmp_bylen_num_blank_buckets.is_power_of_two() {
-                        return Err("unsupported bucket size".into());
-                    }
-                    r += 4;
-                    let wmp_bylen_blank_buckets_ofs = r;
-                    r += 4 * (1 + wmp_bylen_num_blank_buckets as usize);
-                    if wmp_bytes.len() < r + 4 {
-                        return Err("out of bounds".into());
-                    }
-                    let wmp_bylen_num_blank_entries = read_le_u32(wmp_bytes, r);
-                    r += 4;
-                    let wmp_bylen_blank_entries_ofs = r;
-                    r += wmp_entry_size * wmp_bylen_num_blank_entries as usize;
+        if wmp_bytes.len() < r + 4 {
+            return Err("out of bounds".into());
+        }
+        let wmp_bylen_num_blank_buckets = read_le_u32(wmp_bytes, r);
+        if wmp_ver >= 3 && !wmp_bylen_num_blank_buckets.is_power_of_two() {
+            return Err("unsupported bucket size".into());
+        }
+        r += 4;
+        let wmp_bylen_blank_buckets_ofs = r;
+        r += 4 * (1 + wmp_bylen_num_blank_buckets as usize);
+        if wmp_bytes.len() < r + 4 {
+            return Err("out of bounds".into());
+        }
+        let wmp_bylen_num_blank_entries = read_le_u32(wmp_bytes, r);
+        r += 4;
+        let wmp_bylen_blank_entries_ofs = r;
+        r += wmp_entry_size * wmp_bylen_num_blank_entries as usize;
 
-                    if wmp_bytes.len() < r + 4 {
-                        return Err("out of bounds".into());
-                    }
-                    let wmp_bylen_num_double_blank_buckets = read_le_u32(wmp_bytes, r);
-                    if wmp_ver >= 3 && !wmp_bylen_num_double_blank_buckets.is_power_of_two() {
-                        return Err("unsupported bucket size".into());
-                    }
-                    r += 4;
-                    let wmp_bylen_double_blank_buckets_ofs = r;
-                    r += 4 * (1 + wmp_bylen_num_double_blank_buckets as usize);
-                    if wmp_bytes.len() < r + 4 {
-                        return Err("out of bounds".into());
-                    }
-                    let wmp_bylen_num_double_blank_entries = read_le_u32(wmp_bytes, r);
-                    r += 4;
-                    let wmp_bylen_double_blank_entries_ofs = r;
-                    r += wmp_entry_size * wmp_bylen_num_double_blank_entries as usize;
-                    let wmp_bylen_blank_pairs_ofs;
-                    let wmp_bylen_blank_pairs_len;
-                    if wmp_ver < 2 {
-                        if wmp_bytes.len() < r + 4 {
-                            return Err("out of bounds".into());
-                        }
-                        let wmp_bylen_num_blank_pairs = read_le_u32(wmp_bytes, r);
-                        r += 4;
-                        wmp_bylen_blank_pairs_ofs = r;
-                        wmp_bylen_blank_pairs_len = 2 * wmp_bylen_num_blank_pairs as usize;
-                        r += wmp_bylen_blank_pairs_len;
+        if wmp_bytes.len() < r + 4 {
+            return Err("out of bounds".into());
+        }
+        let wmp_bylen_num_double_blank_buckets = read_le_u32(wmp_bytes, r);
+        if wmp_ver >= 3 && !wmp_bylen_num_double_blank_buckets.is_power_of_two() {
+            return Err("unsupported bucket size".into());
+        }
+        r += 4;
+        let wmp_bylen_double_blank_buckets_ofs = r;
+        r += 4 * (1 + wmp_bylen_num_double_blank_buckets as usize);
+        if wmp_bytes.len() < r + 4 {
+            return Err("out of bounds".into());
+        }
+        let wmp_bylen_num_double_blank_entries = read_le_u32(wmp_bytes, r);
+        r += 4;
+        let wmp_bylen_double_blank_entries_ofs = r;
+        r += wmp_entry_size * wmp_bylen_num_double_blank_entries as usize;
+        let wmp_bylen_blank_pairs_ofs;
+        let wmp_bylen_blank_pairs_len;
+        if wmp_ver < 2 {
+            if wmp_bytes.len() < r + 4 {
+                return Err("out of bounds".into());
+            }
+            let wmp_bylen_num_blank_pairs = read_le_u32(wmp_bytes, r);
+            r += 4;
+            wmp_bylen_blank_pairs_ofs = r;
+            wmp_bylen_blank_pairs_len = 2 * wmp_bylen_num_blank_pairs as usize;
+            r += wmp_bylen_blank_pairs_len;
+        } else {
+            wmp_bylen_blank_pairs_ofs = 0;
+            wmp_bylen_blank_pairs_len = 0;
+        }
+
+        if wmp_bytes.len() < r {
+            return Err("out of bounds".into());
+        }
+        check_wmp_buckets(
+            wmp_bytes,
+            wmp_bylen_word_buckets_ofs,
+            wmp_bylen_num_word_buckets,
+            wmp_bylen_num_word_entries,
+        )?;
+        check_wmp_buckets(
+            wmp_bytes,
+            wmp_bylen_blank_buckets_ofs,
+            wmp_bylen_num_blank_buckets,
+            wmp_bylen_num_blank_entries,
+        )?;
+        check_wmp_buckets(
+            wmp_bytes,
+            wmp_bylen_double_blank_buckets_ofs,
+            wmp_bylen_num_double_blank_buckets,
+            wmp_bylen_num_double_blank_entries,
+        )?;
+        if words_only {
+            // inlined words
+            for bucket_idx in 0..wmp_bylen_num_word_buckets {
+                let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
+                let bucket_start_idx = read_le_u32(wmp_bytes, p);
+                p += 4;
+                let bucket_end_idx = read_le_u32(wmp_bytes, p);
+                for entry_idx in bucket_start_idx..bucket_end_idx {
+                    p = wmp_bylen_word_entries_ofs + entry_idx as usize * wmp_entry_size;
+                    let num_elts;
+                    if wmp_bytes[p] == 0 {
+                        // uninlined words
+                        // this is len * index, in bytes.
+                        p += 8;
+                        let initial_ofs = read_le_u32(wmp_bytes, p);
+                        p += 4;
+                        num_elts = read_le_u32(wmp_bytes, p);
+                        check_wmp_run(initial_ofs, num_elts, len as usize, wmp_bylen_words_len)?;
+                        p = wmp_bylen_words_ofs + initial_ofs as usize;
                     } else {
-                        wmp_bylen_blank_pairs_ofs = 0;
-                        wmp_bylen_blank_pairs_len = 0;
-                    }
-
-                    if wmp_bytes.len() < r {
-                        return Err("out of bounds".into());
-                    }
-                    check_wmp_buckets(
-                        wmp_bytes,
-                        wmp_bylen_word_buckets_ofs,
-                        wmp_bylen_num_word_buckets,
-                        wmp_bylen_num_word_entries,
-                    )?;
-                    check_wmp_buckets(
-                        wmp_bytes,
-                        wmp_bylen_blank_buckets_ofs,
-                        wmp_bylen_num_blank_buckets,
-                        wmp_bylen_num_blank_entries,
-                    )?;
-                    check_wmp_buckets(
-                        wmp_bytes,
-                        wmp_bylen_double_blank_buckets_ofs,
-                        wmp_bylen_num_double_blank_buckets,
-                        wmp_bylen_num_double_blank_entries,
-                    )?;
-                    if words_only {
                         // inlined words
-                        for bucket_idx in 0..wmp_bylen_num_word_buckets {
-                            let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = read_le_u32(wmp_bytes, p);
-                            p += 4;
-                            let bucket_end_idx = read_le_u32(wmp_bytes, p);
-                            for entry_idx in bucket_start_idx..bucket_end_idx {
-                                p = wmp_bylen_word_entries_ofs
-                                    + entry_idx as usize * wmp_entry_size;
-                                let num_elts;
-                                if wmp_bytes[p] == 0 {
-                                    // uninlined words
-                                    // this is len * index, in bytes.
-                                    p += 8;
-                                    let initial_ofs = read_le_u32(wmp_bytes, p);
-                                    p += 4;
-                                    num_elts = read_le_u32(wmp_bytes, p);
-                                    check_wmp_run(
-                                        initial_ofs,
-                                        num_elts,
-                                        len as usize,
-                                        wmp_bylen_words_len,
-                                    )?;
-                                    p = wmp_bylen_words_ofs + initial_ofs as usize;
-                                } else {
-                                    // inlined words
-                                    num_elts = (wmp_bytes[p..p + 16]
-                                        .iter()
-                                        .position(|&b| b == 0)
-                                        .unwrap_or(16)
-                                        / len as usize)
-                                        as u32;
-                                }
-                                for _ in 0..num_elts {
-                                    for _ in 0..len {
-                                        alphabet_label.label(&mut ret, wmp_bytes[p])?;
-                                        p += 1;
-                                    }
-                                    ret.push('\n');
-                                }
+                        num_elts = (wmp_bytes[p..p + 16]
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(16)
+                            / len as usize) as u32;
+                    }
+                    for _ in 0..num_elts {
+                        for _ in 0..len {
+                            alphabet_label.label(&mut ret, wmp_bytes[p])?;
+                            p += 1;
+                        }
+                        ret.push('\n');
+                    }
+                }
+            }
+        } else {
+            writeln!(ret, "\nlength: {len}")?;
+
+            // if there are n buckets, there are n+1 indexes:
+            // [0==s0, e0==s1, e1==s2, ..., en==num_entries].
+            writeln!(ret, "\nword buckets: {wmp_bylen_num_word_buckets}")?;
+            for bucket_idx in 0..wmp_bylen_num_word_buckets {
+                let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
+                let bucket_start_idx = read_le_u32(wmp_bytes, p);
+                p += 4;
+                let bucket_end_idx = read_le_u32(wmp_bytes, p);
+                if bucket_start_idx != bucket_end_idx {
+                    writeln!(ret, "bucket {bucket_idx}/{wmp_bylen_num_word_buckets}:")?;
+                    for entry_idx in bucket_start_idx..bucket_end_idx {
+                        p = wmp_bylen_word_entries_ofs + entry_idx as usize * wmp_entry_size + 16;
+                        let bit_rack = wmp_read_bit_rack(
+                            wmp_bytes,
+                            p,
+                            wmp_ver,
+                            wmp_bylen_num_word_buckets,
+                            bucket_idx,
+                        );
+                        if wmp_ver >= 3
+                            && bucket_idx != wmp3_hash(bit_rack) % wmp_bylen_num_word_buckets
+                        {
+                            return Err("mishashed entry".into());
+                        }
+                        write!(ret, "  {bit_rack:032x} ")?;
+                        for i in 0..32 {
+                            for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
+                                alphabet_label.label(&mut ret, i)?;
                             }
                         }
-                    } else {
-                        writeln!(ret, "\nlength: {len}")?;
-
-                        // if there are n buckets, there are n+1 indexes:
-                        // [0==s0, e0==s1, e1==s2, ..., en==num_entries].
-                        writeln!(ret, "\nword buckets: {wmp_bylen_num_word_buckets}")?;
-                        for bucket_idx in 0..wmp_bylen_num_word_buckets {
-                            let mut p = wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = read_le_u32(wmp_bytes, p);
+                        ret.push_str(" =");
+                        p -= 16;
+                        let num_elts;
+                        if wmp_bytes[p] == 0 {
+                            // uninlined words
+                            // this is len * index, in bytes.
+                            p += 8;
+                            let initial_ofs = read_le_u32(wmp_bytes, p);
                             p += 4;
-                            let bucket_end_idx = read_le_u32(wmp_bytes, p);
-                            if bucket_start_idx != bucket_end_idx {
-                                writeln!(ret, "bucket {bucket_idx}/{wmp_bylen_num_word_buckets}:")?;
-                                for entry_idx in bucket_start_idx..bucket_end_idx {
-                                    p = wmp_bylen_word_entries_ofs
-                                        + entry_idx as usize * wmp_entry_size
-                                        + 16;
-                                    let bit_rack = wmp_read_bit_rack(
-                                        wmp_bytes,
-                                        p,
-                                        wmp_ver,
-                                        wmp_bylen_num_word_buckets,
-                                        bucket_idx,
-                                    );
-                                    if wmp_ver >= 3
-                                        && bucket_idx
-                                            != wmp3_hash(bit_rack) % wmp_bylen_num_word_buckets
-                                    {
-                                        return Err("mishashed entry".into());
-                                    }
-                                    write!(ret, "  {bit_rack:032x} ")?;
-                                    for i in 0..32 {
-                                        for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
-                                            alphabet_label.label(&mut ret, i)?;
-                                        }
-                                    }
-                                    ret.push_str(" =");
-                                    p -= 16;
-                                    let num_elts;
-                                    if wmp_bytes[p] == 0 {
-                                        // uninlined words
-                                        // this is len * index, in bytes.
-                                        p += 8;
-                                        let initial_ofs = read_le_u32(wmp_bytes, p);
-                                        p += 4;
-                                        num_elts = read_le_u32(wmp_bytes, p);
-                                        check_wmp_run(
-                                            initial_ofs,
-                                            num_elts,
-                                            len as usize,
-                                            wmp_bylen_words_len,
-                                        )?;
-                                        p = wmp_bylen_words_ofs + initial_ofs as usize;
-                                    } else {
-                                        // inlined words
-                                        num_elts = (wmp_bytes[p..p + 16]
-                                            .iter()
-                                            .position(|&b| b == 0)
-                                            .unwrap_or(16)
-                                            / len as usize)
-                                            as u32;
-                                    }
-                                    for _ in 0..num_elts {
-                                        ret.push(' ');
-                                        for _ in 0..len {
-                                            alphabet_label.label(&mut ret, wmp_bytes[p])?;
-                                            p += 1;
-                                        }
-                                    }
-                                    ret.push('\n');
-                                }
+                            num_elts = read_le_u32(wmp_bytes, p);
+                            check_wmp_run(
+                                initial_ofs,
+                                num_elts,
+                                len as usize,
+                                wmp_bylen_words_len,
+                            )?;
+                            p = wmp_bylen_words_ofs + initial_ofs as usize;
+                        } else {
+                            // inlined words
+                            num_elts = (wmp_bytes[p..p + 16]
+                                .iter()
+                                .position(|&b| b == 0)
+                                .unwrap_or(16)
+                                / len as usize) as u32;
+                        }
+                        for _ in 0..num_elts {
+                            ret.push(' ');
+                            for _ in 0..len {
+                                alphabet_label.label(&mut ret, wmp_bytes[p])?;
+                                p += 1;
                             }
                         }
+                        ret.push('\n');
+                    }
+                }
+            }
 
-                        writeln!(ret, "\nblank buckets: {wmp_bylen_num_blank_buckets}")?;
-                        for bucket_idx in 0..wmp_bylen_num_blank_buckets {
-                            let mut p = wmp_bylen_blank_buckets_ofs + bucket_idx as usize * 4;
-                            let bucket_start_idx = read_le_u32(wmp_bytes, p);
-                            p += 4;
-                            let bucket_end_idx = read_le_u32(wmp_bytes, p);
-                            if bucket_start_idx != bucket_end_idx {
-                                writeln!(
-                                    ret,
-                                    "bucket {bucket_idx}/{wmp_bylen_num_blank_buckets}:"
-                                )?;
-                                for entry_idx in bucket_start_idx..bucket_end_idx {
-                                    p = wmp_bylen_blank_entries_ofs
-                                        + entry_idx as usize * wmp_entry_size
-                                        + 8;
-                                    let bits = read_le_u32(wmp_bytes, p);
-                                    p += 8;
-                                    let bit_rack = wmp_read_bit_rack(
-                                        wmp_bytes,
-                                        p,
-                                        wmp_ver,
-                                        wmp_bylen_num_blank_buckets,
-                                        bucket_idx,
-                                    );
-                                    if wmp_ver >= 3
-                                        && bucket_idx
-                                            != wmp3_hash(bit_rack) % wmp_bylen_num_blank_buckets
-                                    {
-                                        return Err("mishashed entry".into());
-                                    }
-                                    write!(ret, "  {bit_rack:032x} ")?;
-                                    for i in 0..32 {
-                                        for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
-                                            alphabet_label_allow_blank.label(&mut ret, i)?;
-                                        }
-                                    }
-                                    ret.push_str(" = ");
-                                    for i in 0..32 {
-                                        if bits & (1 << i) != 0 {
-                                            alphabet_label.label(&mut ret, i)?;
-                                        }
-                                    }
-                                    ret.push('\n');
-                                }
+            writeln!(ret, "\nblank buckets: {wmp_bylen_num_blank_buckets}")?;
+            for bucket_idx in 0..wmp_bylen_num_blank_buckets {
+                let mut p = wmp_bylen_blank_buckets_ofs + bucket_idx as usize * 4;
+                let bucket_start_idx = read_le_u32(wmp_bytes, p);
+                p += 4;
+                let bucket_end_idx = read_le_u32(wmp_bytes, p);
+                if bucket_start_idx != bucket_end_idx {
+                    writeln!(ret, "bucket {bucket_idx}/{wmp_bylen_num_blank_buckets}:")?;
+                    for entry_idx in bucket_start_idx..bucket_end_idx {
+                        p = wmp_bylen_blank_entries_ofs + entry_idx as usize * wmp_entry_size + 8;
+                        let bits = read_le_u32(wmp_bytes, p);
+                        p += 8;
+                        let bit_rack = wmp_read_bit_rack(
+                            wmp_bytes,
+                            p,
+                            wmp_ver,
+                            wmp_bylen_num_blank_buckets,
+                            bucket_idx,
+                        );
+                        if wmp_ver >= 3
+                            && bucket_idx != wmp3_hash(bit_rack) % wmp_bylen_num_blank_buckets
+                        {
+                            return Err("mishashed entry".into());
+                        }
+                        write!(ret, "  {bit_rack:032x} ")?;
+                        for i in 0..32 {
+                            for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
+                                alphabet_label_allow_blank.label(&mut ret, i)?;
                             }
                         }
+                        ret.push_str(" = ");
+                        for i in 0..32 {
+                            if bits & (1 << i) != 0 {
+                                alphabet_label.label(&mut ret, i)?;
+                            }
+                        }
+                        ret.push('\n');
+                    }
+                }
+            }
 
+            writeln!(
+                ret,
+                "\ndouble blank buckets: {wmp_bylen_num_double_blank_buckets}"
+            )?;
+            // else the lookups below divide by 0
+            if wmp_bylen_num_double_blank_entries != 0
+                && (wmp_bylen_num_word_buckets == 0
+                    || (wmp_ver >= 2 && wmp_bylen_num_blank_buckets == 0))
+            {
+                return Err("invalid double blank entry".into());
+            }
+            if wmp_ver < 2 {
+                for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
+                    let mut p = wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
+                    let bucket_start_idx = read_le_u32(wmp_bytes, p);
+                    p += 4;
+                    let bucket_end_idx = read_le_u32(wmp_bytes, p);
+                    if bucket_start_idx != bucket_end_idx {
                         writeln!(
                             ret,
-                            "\ndouble blank buckets: {wmp_bylen_num_double_blank_buckets}"
+                            "bucket {bucket_idx}/{wmp_bylen_num_double_blank_buckets}:"
                         )?;
-                        // else the lookups below divide by 0
-                        if wmp_bylen_num_double_blank_entries != 0
-                            && (wmp_bylen_num_word_buckets == 0
-                                || (wmp_ver >= 2 && wmp_bylen_num_blank_buckets == 0))
-                        {
-                            return Err("invalid double blank entry".into());
-                        }
-                        if wmp_ver < 2 {
-                            for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
-                                let mut p =
-                                    wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
-                                let bucket_start_idx = read_le_u32(wmp_bytes, p);
+                        for entry_idx in bucket_start_idx..bucket_end_idx {
+                            p = wmp_bylen_double_blank_entries_ofs
+                                + entry_idx as usize * wmp_entry_size
+                                + 16;
+                            let quotient = read_le_u96(wmp_bytes, p);
+                            let bit_rack = quotient * wmp_bylen_num_double_blank_buckets as u128
+                                + bucket_idx as u128;
+                            write!(ret, "  {bit_rack:032x} ")?;
+                            for i in 0..32 {
+                                for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
+                                    alphabet_label_allow_blank.label(&mut ret, i)?;
+                                }
+                            }
+                            ret.push_str(" =");
+                            let mut this_word_lookup_results = 0u32;
+                            p -= 16;
+                            let num_elts;
+                            if wmp_bytes[p] == 0 {
+                                p += 8;
+                                let initial_ofs = read_le_u32(wmp_bytes, p);
                                 p += 4;
-                                let bucket_end_idx = read_le_u32(wmp_bytes, p);
-                                if bucket_start_idx != bucket_end_idx {
-                                    writeln!(
-                                        ret,
-                                        "bucket {bucket_idx}/{wmp_bylen_num_double_blank_buckets}:"
-                                    )?;
+                                num_elts = read_le_u32(wmp_bytes, p);
+                                check_wmp_run(initial_ofs, num_elts, 2, wmp_bylen_blank_pairs_len)?;
+                                p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
+                            } else {
+                                num_elts = (wmp_bytes[p..p + 16]
+                                    .iter()
+                                    .position(|&b| b == 0)
+                                    .unwrap_or(16)
+                                    >> 1) as u32;
+                            }
+                            for _ in 0..num_elts {
+                                ret.push(' ');
+                                let mut unblanked_bit_rack = bit_rack & !0xf;
+                                for _ in 0..2 {
+                                    let tile = wmp_bytes[p];
+                                    // 32 tiles, four bits each
+                                    if tile >= 32 {
+                                        return Err("invalid tile".into());
+                                    }
+                                    unblanked_bit_rack =
+                                        unblanked_bit_rack.wrapping_add(1 << (4 * tile));
+                                    alphabet_label.label(&mut ret, tile)?;
+                                    p += 1;
+                                }
+
+                                {
+                                    // shadow all the variables inside here.
+                                    let mut sought_quotient =
+                                        unblanked_bit_rack / wmp_bylen_num_word_buckets as u128;
+                                    let bucket_idx = (unblanked_bit_rack
+                                        % wmp_bylen_num_word_buckets as u128)
+                                        as u32;
+                                    // write something if ZA/ZE/ZO overflow.
+                                    if sought_quotient >> 96 != 0 {
+                                        sought_quotient &= (1u128 << 96) - 1;
+                                        write!(
+                                            ret,
+                                            " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
+                                        )?;
+                                    }
+                                    let mut p =
+                                        wmp_bylen_word_buckets_ofs + bucket_idx as usize * 4;
+                                    let bucket_start_idx = read_le_u32(wmp_bytes, p);
+                                    p += 4;
+                                    let bucket_end_idx = read_le_u32(wmp_bytes, p);
+                                    let mut found = false;
                                     for entry_idx in bucket_start_idx..bucket_end_idx {
-                                        p = wmp_bylen_double_blank_entries_ofs
+                                        p = wmp_bylen_word_entries_ofs
                                             + entry_idx as usize * wmp_entry_size
                                             + 16;
                                         let quotient = read_le_u96(wmp_bytes, p);
-                                        let bit_rack = quotient
-                                            * wmp_bylen_num_double_blank_buckets as u128
-                                            + bucket_idx as u128;
-                                        write!(ret, "  {bit_rack:032x} ")?;
-                                        for i in 0..32 {
-                                            for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
-                                                alphabet_label_allow_blank.label(&mut ret, i)?;
-                                            }
+                                        if quotient == sought_quotient {
+                                            p -= 16;
+                                            let num_elts = if wmp_bytes[p] == 0 {
+                                                p += 12;
+                                                read_le_u32(wmp_bytes, p)
+                                            } else {
+                                                (wmp_bytes[p..p + 16]
+                                                    .iter()
+                                                    .position(|&b| b == 0)
+                                                    .unwrap_or(16)
+                                                    / len as usize)
+                                                    as u32
+                                            };
+                                            this_word_lookup_results =
+                                                this_word_lookup_results.saturating_add(num_elts);
+                                            found = true;
+                                            break;
                                         }
-                                        ret.push_str(" =");
-                                        let mut this_word_lookup_results = 0u32;
-                                        p -= 16;
-                                        let num_elts;
-                                        if wmp_bytes[p] == 0 {
-                                            p += 8;
-                                            let initial_ofs = read_le_u32(wmp_bytes, p);
-                                            p += 4;
-                                            num_elts = read_le_u32(wmp_bytes, p);
-                                            check_wmp_run(
-                                                initial_ofs,
-                                                num_elts,
-                                                2,
-                                                wmp_bylen_blank_pairs_len,
-                                            )?;
-                                            p = wmp_bylen_blank_pairs_ofs + initial_ofs as usize;
-                                        } else {
-                                            num_elts = (wmp_bytes[p..p + 16]
-                                                .iter()
-                                                .position(|&b| b == 0)
-                                                .unwrap_or(16)
-                                                >> 1)
-                                                as u32;
-                                        }
-                                        for _ in 0..num_elts {
-                                            ret.push(' ');
-                                            let mut unblanked_bit_rack = bit_rack & !0xf;
-                                            for _ in 0..2 {
-                                                let tile = wmp_bytes[p];
-                                                // 32 tiles, four bits each
-                                                if tile >= 32 {
-                                                    return Err("invalid tile".into());
-                                                }
-                                                unblanked_bit_rack = unblanked_bit_rack
-                                                    .wrapping_add(1 << (4 * tile));
-                                                alphabet_label.label(&mut ret, tile)?;
-                                                p += 1;
-                                            }
-
-                                            {
-                                                // shadow all the variables inside here.
-                                                let mut sought_quotient = unblanked_bit_rack
-                                                    / wmp_bylen_num_word_buckets as u128;
-                                                let bucket_idx = (unblanked_bit_rack
-                                                    % wmp_bylen_num_word_buckets as u128)
-                                                    as u32;
-                                                // write something if ZA/ZE/ZO overflow.
-                                                if sought_quotient >> 96 != 0 {
-                                                    sought_quotient &= (1u128 << 96) - 1;
-                                                    write!(
-                                                        ret,
-                                                        " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
-                                                    )?;
-                                                }
-                                                let mut p = wmp_bylen_word_buckets_ofs
-                                                    + bucket_idx as usize * 4;
-                                                let bucket_start_idx = read_le_u32(wmp_bytes, p);
-                                                p += 4;
-                                                let bucket_end_idx = read_le_u32(wmp_bytes, p);
-                                                let mut found = false;
-                                                for entry_idx in bucket_start_idx..bucket_end_idx {
-                                                    p = wmp_bylen_word_entries_ofs
-                                                        + entry_idx as usize * wmp_entry_size
-                                                        + 16;
-                                                    let quotient = read_le_u96(wmp_bytes, p);
-                                                    if quotient == sought_quotient {
-                                                        p -= 16;
-                                                        let num_elts = if wmp_bytes[p] == 0 {
-                                                            p += 12;
-                                                            read_le_u32(wmp_bytes, p)
-                                                        } else {
-                                                            (wmp_bytes[p..p + 16]
-                                                                .iter()
-                                                                .position(|&b| b == 0)
-                                                                .unwrap_or(16)
-                                                                / len as usize)
-                                                                as u32
-                                                        };
-                                                        this_word_lookup_results =
-                                                            this_word_lookup_results
-                                                                .saturating_add(num_elts);
-                                                        found = true;
-                                                        break;
-                                                    }
-                                                }
-                                                if !found {
-                                                    return Err("invalid double blank entry".into());
-                                                }
-                                            }
-                                        }
-                                        expected_max_word_lookup_results =
-                                            expected_max_word_lookup_results.max(
-                                                (len as u32)
-                                                    .saturating_mul(this_word_lookup_results),
-                                            );
-                                        expected_max_blank_pair_results =
-                                            expected_max_blank_pair_results
-                                                .max(num_elts.saturating_mul(2));
-                                        ret.push('\n');
+                                    }
+                                    if !found {
+                                        return Err("invalid double blank entry".into());
                                     }
                                 }
                             }
-                        } else {
-                            for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
-                                let mut p =
-                                    wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
-                                let bucket_start_idx = read_le_u32(wmp_bytes, p);
-                                p += 4;
-                                let bucket_end_idx = read_le_u32(wmp_bytes, p);
-                                if bucket_start_idx != bucket_end_idx {
-                                    writeln!(
-                                        ret,
-                                        "bucket {bucket_idx}/{wmp_bylen_num_double_blank_buckets}:"
-                                    )?;
-                                    for entry_idx in bucket_start_idx..bucket_end_idx {
-                                        p = wmp_bylen_double_blank_entries_ofs
-                                            + entry_idx as usize * wmp_entry_size
-                                            + 8;
-                                        let bits = read_le_u32(wmp_bytes, p);
-                                        p += 8;
-                                        let bit_rack = wmp_read_bit_rack(
-                                            wmp_bytes,
-                                            p,
-                                            wmp_ver,
-                                            wmp_bylen_num_double_blank_buckets,
-                                            bucket_idx,
-                                        );
-                                        if wmp_ver >= 3
-                                            && bucket_idx
-                                                != wmp3_hash(bit_rack)
-                                                    % wmp_bylen_num_double_blank_buckets
-                                        {
-                                            return Err("mishashed entry".into());
-                                        }
-                                        write!(ret, "  {bit_rack:032x} ")?;
-                                        for i in 0..32 {
-                                            for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
-                                                alphabet_label_allow_blank.label(&mut ret, i)?;
+                            expected_max_word_lookup_results = expected_max_word_lookup_results
+                                .max((len as u32).saturating_mul(this_word_lookup_results));
+                            expected_max_blank_pair_results =
+                                expected_max_blank_pair_results.max(num_elts.saturating_mul(2));
+                            ret.push('\n');
+                        }
+                    }
+                }
+            } else {
+                for bucket_idx in 0..wmp_bylen_num_double_blank_buckets {
+                    let mut p = wmp_bylen_double_blank_buckets_ofs + bucket_idx as usize * 4;
+                    let bucket_start_idx = read_le_u32(wmp_bytes, p);
+                    p += 4;
+                    let bucket_end_idx = read_le_u32(wmp_bytes, p);
+                    if bucket_start_idx != bucket_end_idx {
+                        writeln!(
+                            ret,
+                            "bucket {bucket_idx}/{wmp_bylen_num_double_blank_buckets}:"
+                        )?;
+                        for entry_idx in bucket_start_idx..bucket_end_idx {
+                            p = wmp_bylen_double_blank_entries_ofs
+                                + entry_idx as usize * wmp_entry_size
+                                + 8;
+                            let bits = read_le_u32(wmp_bytes, p);
+                            p += 8;
+                            let bit_rack = wmp_read_bit_rack(
+                                wmp_bytes,
+                                p,
+                                wmp_ver,
+                                wmp_bylen_num_double_blank_buckets,
+                                bucket_idx,
+                            );
+                            if wmp_ver >= 3
+                                && bucket_idx
+                                    != wmp3_hash(bit_rack) % wmp_bylen_num_double_blank_buckets
+                            {
+                                return Err("mishashed entry".into());
+                            }
+                            write!(ret, "  {bit_rack:032x} ")?;
+                            for i in 0..32 {
+                                for _ in 0..(bit_rack >> (4 * i)) as usize & 0xf {
+                                    alphabet_label_allow_blank.label(&mut ret, i)?;
+                                }
+                            }
+                            ret.push_str(" =");
+                            let mut this_word_lookup_results = 0u32;
+                            for first_i in 0..32 {
+                                if bits & (1 << first_i) != 0 {
+                                    // a corrupt bit rack wraps
+                                    let b1_bit_rack =
+                                        bit_rack.wrapping_sub(1).wrapping_add(1 << (4 * first_i));
+                                    {
+                                        // shadow all the variables inside here.
+                                        let mut sought_quotient = 0;
+                                        let bucket_idx;
+                                        if wmp_ver < 3 {
+                                            sought_quotient =
+                                                b1_bit_rack / wmp_bylen_num_blank_buckets as u128;
+                                            bucket_idx = (b1_bit_rack
+                                                % wmp_bylen_num_blank_buckets as u128)
+                                                as u32;
+                                            // write something if ZA/ZE/ZO overflow.
+                                            if sought_quotient >> 96 != 0 {
+                                                sought_quotient &= (1u128 << 96) - 1;
+                                                write!(
+                                                    ret,
+                                                    " _OVERFLOW(0x{b1_bit_rack:032x}.divmod({wmp_bylen_num_blank_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
+                                                )?;
                                             }
+                                        } else {
+                                            bucket_idx = wmp3_hash(b1_bit_rack)
+                                                % wmp_bylen_num_blank_buckets;
                                         }
-                                        ret.push_str(" =");
-                                        let mut this_word_lookup_results = 0u32;
-                                        for first_i in 0..32 {
-                                            if bits & (1 << first_i) != 0 {
-                                                // a corrupt bit rack wraps
-                                                let b1_bit_rack = bit_rack
-                                                    .wrapping_sub(1)
-                                                    .wrapping_add(1 << (4 * first_i));
+                                        let mut p =
+                                            wmp_bylen_blank_buckets_ofs + bucket_idx as usize * 4;
+                                        let bucket_start_idx = read_le_u32(wmp_bytes, p);
+                                        p += 4;
+                                        let bucket_end_idx = read_le_u32(wmp_bytes, p);
+                                        let mut found = false;
+                                        for entry_idx in bucket_start_idx..bucket_end_idx {
+                                            p = wmp_bylen_blank_entries_ofs
+                                                + entry_idx as usize * wmp_entry_size
+                                                + 16;
+                                            let key_check = if wmp_ver < 3 {
+                                                let quotient = read_le_u96(wmp_bytes, p);
+                                                quotient == sought_quotient
+                                            } else {
+                                                let this_bit_rack = read_le_u128_full(wmp_bytes, p);
+                                                this_bit_rack == b1_bit_rack
+                                            };
+                                            if key_check {
+                                                p -= 8;
+                                                let b1_bits = read_le_u32(wmp_bytes, p);
                                                 {
-                                                    // shadow all the variables inside here.
-                                                    let mut sought_quotient = 0;
-                                                    let bucket_idx;
-                                                    if wmp_ver < 3 {
-                                                        sought_quotient = b1_bit_rack
-                                                            / wmp_bylen_num_blank_buckets as u128;
-                                                        bucket_idx = (b1_bit_rack
-                                                            % wmp_bylen_num_blank_buckets as u128)
-                                                            as u32;
-                                                        // write something if ZA/ZE/ZO overflow.
-                                                        if sought_quotient >> 96 != 0 {
-                                                            sought_quotient &= (1u128 << 96) - 1;
-                                                            write!(
-                                                                ret,
-                                                                " _OVERFLOW(0x{b1_bit_rack:032x}.divmod({wmp_bylen_num_blank_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
-                                                            )?;
-                                                        }
-                                                    } else {
-                                                        bucket_idx = wmp3_hash(b1_bit_rack)
-                                                            % wmp_bylen_num_blank_buckets;
-                                                    }
-                                                    let mut p = wmp_bylen_blank_buckets_ofs
-                                                        + bucket_idx as usize * 4;
-                                                    let bucket_start_idx =
-                                                        read_le_u32(wmp_bytes, p);
-                                                    p += 4;
-                                                    let bucket_end_idx = read_le_u32(wmp_bytes, p);
-                                                    let mut found = false;
-                                                    for entry_idx in
-                                                        bucket_start_idx..bucket_end_idx
-                                                    {
-                                                        p = wmp_bylen_blank_entries_ofs
-                                                            + entry_idx as usize * wmp_entry_size
-                                                            + 16;
-                                                        let key_check = if wmp_ver < 3 {
-                                                            let quotient =
-                                                                read_le_u96(wmp_bytes, p);
-                                                            quotient == sought_quotient
-                                                        } else {
-                                                            let this_bit_rack =
-                                                                read_le_u128_full(wmp_bytes, p);
-                                                            this_bit_rack == b1_bit_rack
-                                                        };
-                                                        if key_check {
-                                                            p -= 8;
-                                                            let b1_bits = read_le_u32(wmp_bytes, p);
-                                                            {
-                                                                for i in first_i..32 {
-                                                                    if b1_bits & (1 << i) != 0 {
-                                                                        ret.push(' ');
-                                                                        alphabet_label.label(
-                                                                            &mut ret, first_i,
-                                                                        )?;
-                                                                        alphabet_label
-                                                                            .label(&mut ret, i)?;
+                                                    for i in first_i..32 {
+                                                        if b1_bits & (1 << i) != 0 {
+                                                            ret.push(' ');
+                                                            alphabet_label
+                                                                .label(&mut ret, first_i)?;
+                                                            alphabet_label.label(&mut ret, i)?;
 
-                                                                        let unblanked_bit_rack =
-                                                                            (b1_bit_rack & !0xf)
-                                                                                .wrapping_add(
-                                                                                    1 << (4 * i),
-                                                                                );
-                                                                        {
-                                                                            // shadow all the variables inside here.
-                                                                            let mut sought_quotient =
-                                                                                0;
-                                                                            let bucket_idx;
-                                                                            if wmp_ver < 3 {
-                                                                                sought_quotient =
+                                                            let unblanked_bit_rack = (b1_bit_rack
+                                                                & !0xf)
+                                                                .wrapping_add(1 << (4 * i));
+                                                            {
+                                                                // shadow all the variables inside here.
+                                                                let mut sought_quotient = 0;
+                                                                let bucket_idx;
+                                                                if wmp_ver < 3 {
+                                                                    sought_quotient =
                                                                     unblanked_bit_rack
                                                                         / wmp_bylen_num_word_buckets
                                                                             as u128;
-                                                                                bucket_idx = (unblanked_bit_rack
+                                                                    bucket_idx = (unblanked_bit_rack
                                                                         % wmp_bylen_num_word_buckets
                                                                             as u128)
                                                                         as u32;
-                                                                                // write something if ZA/ZE/ZO overflow.
-                                                                                if sought_quotient
-                                                                                    >> 96
-                                                                                    != 0
-                                                                                {
-                                                                                    sought_quotient &=
-                                                                                    (1u128 << 96)
-                                                                                        - 1;
-                                                                                    write!(
-                                                                                        ret,
-                                                                                        " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
-                                                                                    )?;
-                                                                                }
-                                                                            } else {
-                                                                                bucket_idx = wmp3_hash(unblanked_bit_rack) % wmp_bylen_num_word_buckets;
-                                                                            }
-                                                                            let mut p =
-                                                                        wmp_bylen_word_buckets_ofs
-                                                                            + bucket_idx as usize
-                                                                                * 4;
-                                                                            let bucket_start_idx =
-                                                                                read_le_u32(
-                                                                                    wmp_bytes, p,
-                                                                                );
-                                                                            p += 4;
-                                                                            let bucket_end_idx =
-                                                                                read_le_u32(
-                                                                                    wmp_bytes, p,
-                                                                                );
-                                                                            let mut found = false;
-                                                                            for entry_idx in
-                                                                                bucket_start_idx
-                                                                                    ..bucket_end_idx
-                                                                            {
-                                                                                p = wmp_bylen_word_entries_ofs
+                                                                    // write something if ZA/ZE/ZO overflow.
+                                                                    if sought_quotient >> 96 != 0 {
+                                                                        sought_quotient &=
+                                                                            (1u128 << 96) - 1;
+                                                                        write!(
+                                                                            ret,
+                                                                            " _OVERFLOW(0x{unblanked_bit_rack:032x}.divmod({wmp_bylen_num_word_buckets})=[0x{sought_quotient:024x},{bucket_idx}])"
+                                                                        )?;
+                                                                    }
+                                                                } else {
+                                                                    bucket_idx = wmp3_hash(unblanked_bit_rack) % wmp_bylen_num_word_buckets;
+                                                                }
+                                                                let mut p =
+                                                                    wmp_bylen_word_buckets_ofs
+                                                                        + bucket_idx as usize * 4;
+                                                                let bucket_start_idx =
+                                                                    read_le_u32(wmp_bytes, p);
+                                                                p += 4;
+                                                                let bucket_end_idx =
+                                                                    read_le_u32(wmp_bytes, p);
+                                                                let mut found = false;
+                                                                for entry_idx in
+                                                                    bucket_start_idx..bucket_end_idx
+                                                                {
+                                                                    p = wmp_bylen_word_entries_ofs
                                                                         + entry_idx as usize
                                                                             * wmp_entry_size
                                                                         + 16;
-                                                                                let key_check =
-                                                                                    if wmp_ver < 3 {
-                                                                                        let quotient =
-                                                                                            read_le_u96(wmp_bytes, p);
-                                                                                        quotient
-                                                                                            == sought_quotient
-                                                                                    } else {
-                                                                                        let this_bit_rack =
-                                                                                            read_le_u128_full(wmp_bytes, p);
-                                                                                        this_bit_rack
-                                                                                            == unblanked_bit_rack
-                                                                                    };
-                                                                                if key_check {
-                                                                                    p -= 16;
-                                                                                    let num_elts =
-                                                                                        if wmp_bytes
-                                                                                            [p]
-                                                                                            == 0
-                                                                                        {
-                                                                                            p += 12;
-                                                                                            read_le_u32(wmp_bytes, p)
-                                                                                        } else {
-                                                                                            (wmp_bytes[p..p + 16]
-                                                                                .iter()
-                                                                                .position(|&b| {
-                                                                                    b == 0
-                                                                                })
-                                                                                .unwrap_or(16)
-                                                                                / len as usize)
-                                                                                as u32
-                                                                                        };
-                                                                                    this_word_lookup_results =
+                                                                    let key_check = if wmp_ver < 3 {
+                                                                        let quotient = read_le_u96(
+                                                                            wmp_bytes, p,
+                                                                        );
+                                                                        quotient == sought_quotient
+                                                                    } else {
+                                                                        let this_bit_rack =
+                                                                            read_le_u128_full(
+                                                                                wmp_bytes, p,
+                                                                            );
+                                                                        this_bit_rack
+                                                                            == unblanked_bit_rack
+                                                                    };
+                                                                    if key_check {
+                                                                        p -= 16;
+                                                                        let num_elts =
+                                                                            if wmp_bytes[p] == 0 {
+                                                                                p += 12;
+                                                                                read_le_u32(
+                                                                                    wmp_bytes, p,
+                                                                                )
+                                                                            } else {
+                                                                                (wmp_bytes
+                                                                                    [p..p + 16]
+                                                                                    .iter()
+                                                                                    .position(
+                                                                                        |&b| b == 0,
+                                                                                    )
+                                                                                    .unwrap_or(16)
+                                                                                    / len as usize)
+                                                                                    as u32
+                                                                            };
+                                                                        this_word_lookup_results =
                                                                                         this_word_lookup_results
                                                                                             .saturating_add(num_elts);
-                                                                                    found = true;
-                                                                                    break;
-                                                                                }
-                                                                            }
-                                                                            if !found {
-                                                                                return Err("invalid double blank entry".into());
-                                                                            }
-                                                                        }
+                                                                        found = true;
+                                                                        break;
                                                                     }
                                                                 }
+                                                                if !found {
+                                                                    return Err("invalid double blank entry".into());
+                                                                }
                                                             }
-                                                            found = true;
-                                                            break;
                                                         }
                                                     }
-                                                    if !found {
-                                                        return Err(
-                                                            "invalid double blank entry".into()
-                                                        );
-                                                    }
                                                 }
+                                                found = true;
+                                                break;
                                             }
                                         }
-                                        expected_max_word_lookup_results =
-                                            expected_max_word_lookup_results.max(
-                                                (len as u32)
-                                                    .saturating_mul(this_word_lookup_results),
-                                            );
-                                        ret.push('\n');
+                                        if !found {
+                                            return Err("invalid double blank entry".into());
+                                        }
                                     }
                                 }
                             }
+                            expected_max_word_lookup_results = expected_max_word_lookup_results
+                                .max((len as u32).saturating_mul(this_word_lookup_results));
+                            ret.push('\n');
                         }
                     }
                 }
-
-                if !words_only {
-                    ret.push('\n');
-                    if expected_max_blank_pair_results != max_blank_pair_results {
-                        writeln!(
-                            ret,
-                            "max_blank_pair_results != {max_blank_pair_results} (expected {expected_max_blank_pair_results})"
-                        )?;
-                    }
-                    if expected_max_word_lookup_results != max_word_lookup_results {
-                        writeln!(
-                            ret,
-                            "max_word_lookup_results != {max_word_lookup_results} (expected {expected_max_word_lookup_results})"
-                        )?;
-                    }
-                }
-
-                if wmp_bytes.len() != r {
-                    return Err("incorrect file size".into());
-                }
-
-                make_writer(&args[3])?.write_all(ret.as_bytes())?;
-                Ok(true)
             }
-            "make-wmp1" | "make-wmp1-overflow" | "make-wmp2" | "make-wmp2-overflow"
-            | "make-wmp" => {
-                let allow_overflow = task == "make-wmp2-overflow" || task == "make-wmp1-overflow";
-                let is_v1 = task == "make-wmp1" || task == "make-wmp1-overflow";
-                let is_v2 = !is_v1 && (task == "make-wmp2" || task == "make-wmp2-overflow");
-                let is_v3_plus = !is_v1 && !is_v2;
-                let never_inline_b2 = allow_overflow;
-                let alphabet = make_alphabet()?;
-                let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
-                let all_words = read_machine_words_sorted_by_length(
-                    alphabet_reader,
-                    &read_to_string(&mut make_reader(&args[2])?)?,
-                )?;
-                use_writer(&args[3]); // redirect boxed_stdout_or_stderr() if appropriate.
-                let mut ret = Vec::<u8>::new();
-                let write_u32 = |ret: &mut Vec<u8>, x: u32| {
-                    ret.extend(&x.to_le_bytes());
-                };
-                ret.push(if is_v1 {
-                    1
-                } else if is_v2 {
-                    2
-                } else {
-                    3
-                }); // version
-                let min_word_len = 2;
-                let mut max_word_len = all_words.last().map_or(0, |x| x.len() as u8);
-                if allow_overflow {
-                    max_word_len = max_word_len.max(15);
-                }
-                let min_num_buckets = if allow_overflow {
-                    let biggest =
-                        std::iter::repeat_n(
-                            alphabet.len().saturating_sub(1),
-                            alphabet.freq(0) as usize,
-                        )
-                        .chain((1..alphabet.len().min(32)).rev().flat_map(|tile| {
-                            std::iter::repeat_n(tile, alphabet.freq(tile) as usize)
-                        }))
-                        .take(max_word_len as usize)
-                        .fold(0u128, |acc, tile| {
-                            if (acc >> (tile << 2)) & 0xf < 0xf {
-                                acc + (1u128 << (tile << 2))
-                            } else {
-                                acc
-                            }
-                        });
-                    let target = 1u128 << 96;
-                    next_prime(((biggest / target) as u32).saturating_add(1))
-                } else {
-                    0 // not used
-                };
-                ret.push(max_word_len);
-                write_u32(&mut ret, 0); // placeholder for max_word_lookup_results
-                if is_v1 {
-                    write_u32(&mut ret, 0); // placeholder for max_blank_pair_results
-                }
-                let mut max_word_lookup_results = 0u32;
-                let mut max_blank_pair_results = 0u32;
-                // skip over any 1-letter words
-                let mut min_idx = all_words.iter().position(|x| x.len() >= 2).unwrap_or(0);
-                for this_len in min_word_len..=max_word_len {
-                    // not using .chunk_by to allow non-consecutive word lengths.
-                    let max_idx = min_idx + {
-                        let this_len = this_len as usize;
-                        all_words[min_idx..]
-                            .iter()
-                            .position(|x| x.len() != this_len)
-                            .unwrap_or_else(|| all_words[min_idx..].len())
+        }
+    }
+
+    if !words_only {
+        ret.push('\n');
+        if expected_max_blank_pair_results != max_blank_pair_results {
+            writeln!(
+                ret,
+                "max_blank_pair_results != {max_blank_pair_results} (expected {expected_max_blank_pair_results})"
+            )?;
+        }
+        if expected_max_word_lookup_results != max_word_lookup_results {
+            writeln!(
+                ret,
+                "max_word_lookup_results != {max_word_lookup_results} (expected {expected_max_word_lookup_results})"
+            )?;
+        }
+    }
+
+    if wmp_bytes.len() != r {
+        return Err("incorrect file size".into());
+    }
+
+    make_writer(out)?.write_all(ret.as_bytes())?;
+    Ok(())
+}
+
+#[inline]
+fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
+    task: Task,
+    make_alphabet: AlphabetMaker,
+) -> error::Returns<()> {
+    match task {
+        Task::Klv { klv, leaves, out } => {
+            // klv16: same as klv1, but scales by 8.0 instead of 256.0.
+            // for use with olaugh/magpie-retro.
+            let is_klv16 = klv.is_some();
+            let alphabet = make_alphabet()?;
+            let reader = &KwgReader {};
+            let klv_bytes = &read_to_end(&mut make_reader(&leaves)?)?;
+            check_klv(klv_bytes)?;
+            let parts = parse_klv(klv_bytes)?;
+            let kwg_bytes = parts.kwg_bytes;
+            let mut r = parts.r;
+            let is_klv2 = !is_klv16 && parts.is_klv2;
+            if r + parts.lv_len * if is_klv2 { 4 } else { 2 } != klv_bytes.len() {
+                return Err("incorrect number of leave values".into());
+            }
+            let scale = if is_klv16 { 1.0 / 8.0 } else { 1.0 / 256.0 };
+            let mut csv_out = csv::Writer::from_writer(make_writer(&out)?);
+            iter_dawg(
+                DawgSource {
+                    a: &WolgesAlphabetLabel {
+                        alphabet: &alphabet,
+                    },
+                    r: reader,
+                    b: kwg_bytes,
+                    initial_idx: reader.arc_index(kwg_bytes, 0),
+                    blank_str: alphabet.of_rack(0),
+                },
+                &mut |s: &str| {
+                    let v = if is_klv2 && klv_bytes.len() >= r + 4 {
+                        let v = f32::from_bits(read_le_u32(klv_bytes, r));
+                        r += 4;
+                        v
+                    } else if !is_klv2 && klv_bytes.len() >= r + 2 {
+                        r += 2;
+                        (read_le_u16(klv_bytes, r - 2) as i16) as f32 * scale
+                    } else {
+                        return Err("missing leaves".into());
                     };
-                    let words = &all_words[min_idx..max_idx];
-                    min_idx = max_idx;
+                    csv_out.serialize((s, v))?;
+                    Ok(())
+                },
+                &mut default_in,
+                &mut default_out,
+            )?;
+            if r != klv_bytes.len() {
+                return Err("too many leaves".into());
+            }
+            Ok(())
+        }
+        Task::Kwg {
+            graph_file,
+            out,
+            graph,
+            blanks,
+        } => {
+            if blanks && matches!(graph, Graph::Gaddag) {
+                return Err("--blanks reads a dawg: tile 0 is the gaddag's separator".into());
+            }
+            let alphabet = make_alphabet()?;
+            let (initial_node_idx, blank_str) = match (graph, blanks) {
+                (Graph::Dawg, false) => (0, None),
+                (Graph::Dawg, true) => (0, alphabet.of_rack(0)),
+                (Graph::Gaddag, _) => (1, Some("@")),
+            };
+            if graph_file.kbwg {
+                do_wg_dawg(
+                    &graph_file.kwg,
+                    &out,
+                    &alphabet,
+                    &KbwgReader {},
+                    initial_node_idx,
+                    blank_str,
+                )
+            } else {
+                do_wg_dawg(
+                    &graph_file.kwg,
+                    &out,
+                    &alphabet,
+                    &KwgReader {},
+                    initial_node_idx,
+                    blank_str,
+                )
+            }
+        }
+        Task::KwgNodes { graph_file, out } => {
+            let alphabet = make_alphabet()?;
+            if graph_file.kbwg {
+                do_wg_nodes(&graph_file.kwg, &out, &alphabet, &KbwgReader {})
+            } else {
+                do_wg_nodes(&graph_file.kwg, &out, &alphabet, &KwgReader {})
+            }
+        }
+        Task::KwgProb { graph_file, out } => {
+            let alphabet = make_alphabet()?;
+            if graph_file.kbwg {
+                do_wg_prob(&graph_file.kwg, &out, &alphabet, &KbwgReader {})
+            } else {
+                do_wg_prob(&graph_file.kwg, &out, &alphabet, &KwgReader {})
+            }
+        }
+        Task::Prob { words } => {
+            let alphabet = make_alphabet()?;
+            let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
+            let mut word_prob = prob::WordProbability::new(&alphabet);
+            let mut v = Vec::new();
+            for word in &words {
+                v.clear();
+                let sb = &word.as_bytes();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                        v.push(tile);
+                        ix = end_ix;
+                    } else {
+                        return Err("invalid tile".into());
+                    }
+                }
+                writeln!(std::io::stdout(), "{}", word_prob.word_draw_ways(&v))?;
+            }
+            Ok(())
+        }
+        Task::KlvAnagramSub { leaves, out, rack } => do_klv_anagram(
+            &leaves,
+            &out,
+            &rack,
+            &make_alphabet()?,
+            &KwgReader {},
+            AnagramMode::Sub,
+        ),
+        Task::KlvAnagram { leaves, out, rack } => do_klv_anagram(
+            &leaves,
+            &out,
+            &rack,
+            &make_alphabet()?,
+            &KwgReader {},
+            AnagramMode::Exact,
+        ),
+        Task::KlvAnagramSuper { leaves, out, rack } => do_klv_anagram(
+            &leaves,
+            &out,
+            &rack,
+            &make_alphabet()?,
+            &KwgReader {},
+            AnagramMode::Super,
+        ),
+        Task::KwgAnagramSub {
+            graph_file,
+            out,
+            rack,
+        } => wg_anagram(
+            &graph_file,
+            &out,
+            &rack,
+            &make_alphabet()?,
+            AnagramMode::Sub,
+        ),
+        Task::KwgAnagram {
+            graph_file,
+            out,
+            rack,
+        } => wg_anagram(
+            &graph_file,
+            &out,
+            &rack,
+            &make_alphabet()?,
+            AnagramMode::Exact,
+        ),
+        Task::KwgAnagramSuper {
+            graph_file,
+            out,
+            rack,
+        } => wg_anagram(
+            &graph_file,
+            &out,
+            &rack,
+            &make_alphabet()?,
+            AnagramMode::Super,
+        ),
+        Task::KwgCheck { graph_file, words } => {
+            let alphabet = make_alphabet()?;
+            if graph_file.kbwg {
+                do_wg_check(&graph_file.kwg, &words, &alphabet, &KbwgReader {})
+            } else {
+                do_wg_check(&graph_file.kwg, &words, &alphabet, &KwgReader {})
+            }
+        }
+        Task::Q2Ort { ort, out } => {
+            let alphabet = make_alphabet()?;
+            // ort: olaugh rack table.
+            // the format was discussed in woogles discord.
+            // https://discord.com/channels/741321677828522035/1157118170398724176/1164983643836530759
+            let ort_bytes = &read_to_end(&mut make_reader(&ort)?)?;
+            if ort_bytes.len() < 8 {
+                return Err("out of bounds".into());
+            }
+            let mut r = 0;
+            let ort_num_buckets = read_le_u32(ort_bytes, r);
+            r += 4;
+            let ort_num_values = read_le_u32(ort_bytes, r);
+            r += 4;
+            // both counts come from the file: in 64 bits, no pair of them can
+            // wrap the size
+            if (ort_bytes.len() as u64)
+                < r as u64 + (ort_num_buckets as u64 + 1 + ort_num_values as u64) * 4
+            {
+                return Err("out of bounds".into());
+            }
+            let mut ort_buckets = Vec::with_capacity(ort_num_buckets as usize + 1);
+            for _ in 0..=ort_num_buckets {
+                ort_buckets.push(read_le_u32(ort_bytes, r));
+                r += 4;
+            }
+            let mut ort_values = Vec::with_capacity(ort_num_values as usize);
+            for _ in 0..ort_num_values {
+                ort_values.push(read_le_u32(ort_bytes, r));
+                r += 4;
+            }
+            if r != ort_bytes.len() {
+                return Err("too many bytes".into());
+            }
+            if ort_buckets[0] != 0
+                || ort_buckets[ort_num_buckets as usize] != ort_num_values
+                || ort_buckets.windows(2).any(|x| x[0] > x[1])
+            {
+                return Err("invalid buckets".into());
+            }
+            let mut csv_out = csv::Writer::from_writer(make_writer(&out)?);
+            let mut rack_str = String::new();
+            for bucket_num in 0..ort_num_buckets {
+                let mut next_allowed_quotient = 0;
+                for value in &ort_values[ort_buckets[bucket_num as usize] as usize
+                    ..ort_buckets[bucket_num as usize + 1] as usize]
+                {
+                    let quotient = value & 0x3fff; // 14 bits
+                    if quotient < next_allowed_quotient {
+                        return Err("quotients not sorted/unique".into());
+                    }
+                    next_allowed_quotient = quotient + 1;
+                    // bucket_num is remainder, i.e. orig_hash % ort_num_buckets == bucket_num.
+                    let orig_hash = quotient as u64 * ort_num_buckets as u64 + bucket_num as u64;
+                    rack_str.clear();
+                    // recover rack_str from orig_hash, each tile uses 5 bits but can be shorter than 7 elements.
+                    let mut last_seen_tile = 0;
+                    if (orig_hash >> 35) != 0 {
+                        return Err("too many tiles".into());
+                    }
+                    for shift in &[30, 25, 20, 15, 10, 5, 0] {
+                        let tile = ((orig_hash >> shift) & 0x1f) as u8;
+                        if tile < last_seen_tile {
+                            return Err("tiles not sorted".into());
+                        }
+                        last_seen_tile = tile;
+                        if tile != 0 {
+                            rack_str.push_str(
+                                alphabet
+                                    .of_rack(if tile == alphabet.len() { 0 } else { tile })
+                                    .ok_or("invalid tile")?,
+                            );
+                        }
+                    }
+                    // last 6 numbers are f(0)..f(5) where f(b) = max r (0..7) such
+                    // that there exists a word of length b+r with r tiles from
+                    // rack and b additional tiles on board.
+                    csv_out.serialize((
+                        &rack_str,
+                        (value >> 14) & 7,
+                        (value >> 17) & 7,
+                        (value >> 20) & 7,
+                        (value >> 23) & 7,
+                        (value >> 26) & 7,
+                        (value >> 29) & 7,
+                    ))?;
+                }
+            }
+            Ok(())
+        }
+        Task::MakeQ2Ort {
+            csv,
+            out,
+            num_buckets,
+        } => {
+            // assume input is good (e.g. no duplicates)
+            let alphabet = make_alphabet()?;
+            let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
+            let mut csv_reader = csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(make_reader(&csv)?);
+            let mut values = Vec::new();
+            let mut v = Vec::new();
+            for result in csv_reader.records() {
+                let record = result?;
+                if record.len() < 7 {
+                    return Err("a line has fewer than 7 fields".into());
+                }
+                let sb = record[0].as_bytes();
+                v.clear();
+                let mut ix = 0;
+                while ix < sb.len() {
+                    if let Some((tile, end_ix)) = alphabet_reader.next_tile(sb, ix) {
+                        v.push(tile);
+                        ix = end_ix;
+                    } else {
+                        return Err("invalid tile".into());
+                    }
+                }
+                let val = ((u8::from_str(&record[6])? as u32) << 29)
+                    | ((u8::from_str(&record[5])? as u32) << 26)
+                    | ((u8::from_str(&record[4])? as u32) << 23)
+                    | ((u8::from_str(&record[3])? as u32) << 20)
+                    | ((u8::from_str(&record[2])? as u32) << 17)
+                    | ((u8::from_str(&record[1])? as u32) << 14);
+                let mut orig_hash = 0u64;
+                v.sort_unstable();
+                for &i in &v {
+                    if i != 0 {
+                        orig_hash <<= 5;
+                        orig_hash |= i as u64;
+                    }
+                }
+                for &i in &v {
+                    if i == 0 {
+                        orig_hash <<= 5;
+                        orig_hash |= alphabet.len() as u64;
+                    }
+                }
+                let quotient = (orig_hash / (num_buckets as u64)) as u32;
+                if quotient & 0x3fff != quotient {
+                    return Err("quotient does not fit in 14 bits".into());
+                }
+                let bucket_num = (orig_hash % (num_buckets as u64)) as u32;
+                values.push((bucket_num, quotient, val));
+            }
+            values.sort_unstable();
+            let num_values = values.len() as u32;
+            let mut ret = Vec::with_capacity(4 * (3 + num_buckets as usize + num_values as usize));
+            ret.extend(&num_buckets.to_le_bytes());
+            ret.extend(&num_values.to_le_bytes());
+            let mut bucket_start = 0u32;
+            ret.extend(&bucket_start.to_le_bytes());
+            let mut max_bucket_size = 0u32;
+            for bucket_num in 0..num_buckets {
+                let this_bucket_start = bucket_start;
+                while bucket_start < num_values && values[bucket_start as usize].0 <= bucket_num {
+                    bucket_start += 1
+                }
+                ret.extend(&bucket_start.to_le_bytes());
+                max_bucket_size = max_bucket_size.max(bucket_start - this_bucket_start);
+            }
+            if bucket_start != num_values {
+                return Err("something wrong".into());
+            }
+            for (_, quotient, val) in values {
+                ret.extend(&(quotient | val).to_le_bytes());
+            }
+            // binary output
+            make_writer(&out)?.write_all(&ret)?;
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "each bucket has at most {max_bucket_size} values"
+            )?;
+            Ok(())
+        }
+        Task::Wmp { wmp, out } => do_wmp(&wmp, &out, &make_alphabet()?, false),
+        Task::WmpWords { wmp, out } => do_wmp(&wmp, &out, &make_alphabet()?, true),
+        Task::MakeWmp {
+            word_list,
+            out,
+            wmp,
+            overflow: allow_overflow,
+        } => {
+            if allow_overflow && matches!(wmp, WmpVersion::Three) {
+                return Err("--overflow is for --wmp 1 and 2".into());
+            }
+            let is_v1 = matches!(wmp, WmpVersion::One);
+            let is_v2 = matches!(wmp, WmpVersion::Two);
+            let is_v3_plus = !is_v1 && !is_v2;
+            let never_inline_b2 = allow_overflow;
+            let alphabet = make_alphabet()?;
+            let alphabet_reader = &alphabet::AlphabetReader::new_for_words(&alphabet);
+            let all_words = read_machine_words_sorted_by_length(
+                alphabet_reader,
+                &read_to_string(&mut make_reader(&word_list)?)?,
+            )?;
+            use_writer(&out); // redirect boxed_stdout_or_stderr() if appropriate.
+            let mut ret = Vec::<u8>::new();
+            let write_u32 = |ret: &mut Vec<u8>, x: u32| {
+                ret.extend(&x.to_le_bytes());
+            };
+            ret.push(if is_v1 {
+                1
+            } else if is_v2 {
+                2
+            } else {
+                3
+            }); // version
+            let min_word_len = 2;
+            let mut max_word_len = all_words.last().map_or(0, |x| x.len() as u8);
+            if allow_overflow {
+                max_word_len = max_word_len.max(15);
+            }
+            let min_num_buckets = if allow_overflow {
+                let biggest = std::iter::repeat_n(
+                    alphabet.len().saturating_sub(1),
+                    alphabet.freq(0) as usize,
+                )
+                .chain(
+                    (1..alphabet.len().min(32))
+                        .rev()
+                        .flat_map(|tile| std::iter::repeat_n(tile, alphabet.freq(tile) as usize)),
+                )
+                .take(max_word_len as usize)
+                .fold(0u128, |acc, tile| {
+                    if (acc >> (tile << 2)) & 0xf < 0xf {
+                        acc + (1u128 << (tile << 2))
+                    } else {
+                        acc
+                    }
+                });
+                let target = 1u128 << 96;
+                next_prime(((biggest / target) as u32).saturating_add(1))
+            } else {
+                0 // not used
+            };
+            ret.push(max_word_len);
+            write_u32(&mut ret, 0); // placeholder for max_word_lookup_results
+            if is_v1 {
+                write_u32(&mut ret, 0); // placeholder for max_blank_pair_results
+            }
+            let mut max_word_lookup_results = 0u32;
+            let mut max_blank_pair_results = 0u32;
+            // skip over any 1-letter words
+            let mut min_idx = all_words.iter().position(|x| x.len() >= 2).unwrap_or(0);
+            for this_len in min_word_len..=max_word_len {
+                // not using .chunk_by to allow non-consecutive word lengths.
+                let max_idx = min_idx + {
+                    let this_len = this_len as usize;
+                    all_words[min_idx..]
+                        .iter()
+                        .position(|x| x.len() != this_len)
+                        .unwrap_or_else(|| all_words[min_idx..].len())
+                };
+                let words = &all_words[min_idx..max_idx];
+                min_idx = max_idx;
 
-                    let mut bits = [0u8; 16];
+                let mut bits = [0u8; 16];
 
-                    let mut b0_vec = Vec::<([u8; 16], bites::Bites)>::with_capacity(words.len());
-                    for this_word in words {
-                        bits.iter_mut().for_each(|m| *m = 0);
-                        for &t in this_word.iter() {
-                            if t < 32 {
-                                let bit_idx = (t >> 1) as usize;
-                                if t & 1 == 0 {
-                                    if bits[bit_idx] & 0xf == 0xf {
-                                        return Err(format!(
-                                            "word {this_word:?} has too many tile {t}"
-                                        )
-                                        .into());
-                                    }
-                                    bits[bit_idx] += 1;
-                                } else {
-                                    if bits[bit_idx] & 0xf0 == 0xf0 {
-                                        return Err(format!(
-                                            "word {this_word:?} has too many tile {t}"
-                                        )
-                                        .into());
-                                    }
-                                    bits[bit_idx] += 0x10;
+                let mut b0_vec = Vec::<([u8; 16], bites::Bites)>::with_capacity(words.len());
+                for this_word in words {
+                    bits.iter_mut().for_each(|m| *m = 0);
+                    for &t in this_word.iter() {
+                        if t < 32 {
+                            let bit_idx = (t >> 1) as usize;
+                            if t & 1 == 0 {
+                                if bits[bit_idx] & 0xf == 0xf {
+                                    return Err(format!(
+                                        "word {this_word:?} has too many tile {t}"
+                                    )
+                                    .into());
                                 }
+                                bits[bit_idx] += 1;
                             } else {
-                                return Err(format!("word {this_word:?} has tile {t}").into());
+                                if bits[bit_idx] & 0xf0 == 0xf0 {
+                                    return Err(format!(
+                                        "word {this_word:?} has too many tile {t}"
+                                    )
+                                    .into());
+                                }
+                                bits[bit_idx] += 0x10;
+                            }
+                        } else {
+                            return Err(format!("word {this_word:?} has tile {t}").into());
+                        }
+                    }
+                    b0_vec.push((bits, this_word.clone()));
+                }
+                b0_vec.sort_unstable();
+
+                // value: (start, end) of same-alphagram words.
+                let mut b0_bits = fash::MyHashMap::<[u8; 16], (u32, u32)>::default();
+                for (i, (bits, _)) in (1..).zip(b0_vec.iter()) {
+                    b0_bits
+                        .entry(*bits)
+                        .and_modify(|e| e.1 = i)
+                        .or_insert_with(|| (i - 1, i));
+                }
+
+                // value: bits 1-31 = if adding that tile forms b0_bits.
+                // bit 0 should always be 0.
+                let mut b1_bits = fash::MyHashMap::<[u8; 16], u32>::default();
+                for key_bits in b0_bits.keys() {
+                    bits.clone_from(key_bits);
+                    bits[0] += 1;
+                    for t2 in 0..16 {
+                        let b = bits[t2] & if t2 == 0 { 0xf0 } else { 0xff };
+                        if b != 0 {
+                            let mut v = 1 << (t2 * 2);
+                            if b & 0xf != 0 {
+                                bits[t2] -= 1;
+                                b1_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
+                                bits[t2] += 1;
+                            }
+                            if b & 0xf0 != 0 {
+                                v <<= 1;
+                                bits[t2] -= 0x10;
+                                b1_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
+                                bits[t2] += 0x10;
                             }
                         }
-                        b0_vec.push((bits, this_word.clone()));
                     }
-                    b0_vec.sort_unstable();
+                    bits[0] -= 1;
+                }
 
-                    // value: (start, end) of same-alphagram words.
-                    let mut b0_bits = fash::MyHashMap::<[u8; 16], (u32, u32)>::default();
-                    for (i, (bits, _)) in (1..).zip(b0_vec.iter()) {
-                        b0_bits
-                            .entry(*bits)
-                            .and_modify(|e| e.1 = i)
-                            .or_insert_with(|| (i - 1, i));
-                    }
-
-                    // value: bits 1-31 = if adding that tile forms b0_bits.
-                    // bit 0 should always be 0.
-                    let mut b1_bits = fash::MyHashMap::<[u8; 16], u32>::default();
-                    for key_bits in b0_bits.keys() {
-                        bits.clone_from(key_bits);
-                        bits[0] += 1;
-                        for t2 in 0..16 {
-                            let b = bits[t2] & if t2 == 0 { 0xf0 } else { 0xff };
-                            if b != 0 {
-                                let mut v = 1 << (t2 * 2);
-                                if b & 0xf != 0 {
-                                    bits[t2] -= 1;
-                                    b1_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
-                                    bits[t2] += 1;
-                                }
-                                if b & 0xf0 != 0 {
-                                    v <<= 1;
+                // value: bits 1-31 = if adding that tile forms b1_bits.
+                // bit 0 should always be 0.
+                let mut b2_bits = fash::MyHashMap::<[u8; 16], u32>::default();
+                for (key_bits, val_bits) in b1_bits.iter() {
+                    bits.clone_from(key_bits);
+                    bits[0] += 1;
+                    for t2 in 0..16 {
+                        let b = bits[t2] & if t2 == 0 { 0xf0 } else { 0xff };
+                        if b != 0 {
+                            let mut v = 1 << (t2 * 2);
+                            if b & 0xf != 0 && val_bits & !(v - 1) != 0 {
+                                bits[t2] -= 1;
+                                b2_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
+                                bits[t2] += 1;
+                            }
+                            if b & 0xf0 != 0 {
+                                v <<= 1;
+                                if val_bits & !(v - 1) != 0 {
                                     bits[t2] -= 0x10;
-                                    b1_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
+                                    b2_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
                                     bits[t2] += 0x10;
                                 }
                             }
                         }
-                        bits[0] -= 1;
                     }
+                    bits[0] -= 1;
+                }
 
-                    // value: bits 1-31 = if adding that tile forms b1_bits.
-                    // bit 0 should always be 0.
-                    let mut b2_bits = fash::MyHashMap::<[u8; 16], u32>::default();
-                    for (key_bits, val_bits) in b1_bits.iter() {
-                        bits.clone_from(key_bits);
-                        bits[0] += 1;
-                        for t2 in 0..16 {
-                            let b = bits[t2] & if t2 == 0 { 0xf0 } else { 0xff };
-                            if b != 0 {
-                                let mut v = 1 << (t2 * 2);
-                                if b & 0xf != 0 && val_bits & !(v - 1) != 0 {
-                                    bits[t2] -= 1;
-                                    b2_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
-                                    bits[t2] += 1;
-                                }
-                                if b & 0xf0 != 0 {
-                                    v <<= 1;
-                                    if val_bits & !(v - 1) != 0 {
-                                        bits[t2] -= 0x10;
-                                        b2_bits.entry(bits).and_modify(|e| *e |= v).or_insert(v);
-                                        bits[t2] += 0x10;
-                                    }
-                                }
-                            }
-                        }
-                        bits[0] -= 1;
-                    }
-
-                    let (num_word_buckets, num_blank_buckets, num_double_blank_buckets) =
-                        if is_v3_plus {
-                            (
-                                (b0_bits.len() as u32).next_power_of_two(),
-                                (b1_bits.len() as u32).next_power_of_two(),
-                                (b2_bits.len() as u32).next_power_of_two(),
-                            )
-                        } else if allow_overflow {
-                            // numbers of buckets in v1/v2.
-                            // these are still not correct and will cause overflow.
-                            // they are based on top 15 available non-letters
-                            // (??ZYYXWW... with the ?s being valued as Z)
-                            // even if there is a word like PIZZAZZ.
-                            (
-                                next_prime(b0_bits.len() as u32).max(min_num_buckets),
-                                next_prime(b1_bits.len() as u32).max(min_num_buckets),
-                                next_prime(b2_bits.len() as u32).max(min_num_buckets),
-                            )
+                let (num_word_buckets, num_blank_buckets, num_double_blank_buckets) = if is_v3_plus
+                {
+                    (
+                        (b0_bits.len() as u32).next_power_of_two(),
+                        (b1_bits.len() as u32).next_power_of_two(),
+                        (b2_bits.len() as u32).next_power_of_two(),
+                    )
+                } else if allow_overflow {
+                    // numbers of buckets in v1/v2.
+                    // these are still not correct and will cause overflow.
+                    // they are based on top 15 available non-letters
+                    // (??ZYYXWW... with the ?s being valued as Z)
+                    // even if there is a word like PIZZAZZ.
+                    (
+                        next_prime(b0_bits.len() as u32).max(min_num_buckets),
+                        next_prime(b1_bits.len() as u32).max(min_num_buckets),
+                        next_prime(b2_bits.len() as u32).max(min_num_buckets),
+                    )
+                } else {
+                    let adjust_num_word_buckets = |len: u32, biggest: u128| {
+                        let guess = next_prime(len);
+                        let target = 1u128 << 96;
+                        if biggest / (guess as u128) < target {
+                            // intentional floor division.
+                            guess
                         } else {
-                            let adjust_num_word_buckets = |len: u32, biggest: u128| {
-                                let guess = next_prime(len);
-                                let target = 1u128 << 96;
-                                if biggest / (guess as u128) < target {
-                                    // intentional floor division.
-                                    guess
-                                } else {
-                                    // intentional floor division.
-                                    // this can still overflow if given 15 of everything!
-                                    next_prime(((biggest / target) as u32).saturating_add(1))
-                                }
-                            };
-                            (
-                                adjust_num_word_buckets(
-                                    b0_bits.len() as u32,
-                                    b0_bits.keys().fold(0u128, |acc, bits| {
-                                        acc.max(u128::from_le_bytes(*bits))
-                                    }),
-                                ),
-                                adjust_num_word_buckets(
-                                    b1_bits.len() as u32,
-                                    b1_bits.keys().fold(0u128, |acc, bits| {
-                                        acc.max(u128::from_le_bytes(*bits))
-                                    }),
-                                ),
-                                adjust_num_word_buckets(
-                                    b2_bits.len() as u32,
-                                    b2_bits.keys().fold(0u128, |acc, bits| {
-                                        acc.max(u128::from_le_bytes(*bits))
-                                    }),
-                                ),
-                            )
-                        };
+                            // intentional floor division.
+                            // this can still overflow if given 15 of everything!
+                            next_prime(((biggest / target) as u32).saturating_add(1))
+                        }
+                    };
+                    (
+                        adjust_num_word_buckets(
+                            b0_bits.len() as u32,
+                            b0_bits
+                                .keys()
+                                .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
+                        ),
+                        adjust_num_word_buckets(
+                            b1_bits.len() as u32,
+                            b1_bits
+                                .keys()
+                                .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
+                        ),
+                        adjust_num_word_buckets(
+                            b2_bits.len() as u32,
+                            b2_bits
+                                .keys()
+                                .fold(0u128, |acc, bits| acc.max(u128::from_le_bytes(*bits))),
+                        ),
+                    )
+                };
 
-                    // 0-blank section
-                    {
-                        let mut written = Ok(());
-                        let mut linearized_buckets = b0_bits
+                // 0-blank section
+                {
+                    let mut written = Ok(());
+                    let mut linearized_buckets = b0_bits
                             .keys()
                             .map(|bits| {
                                 let bits_u128 = u128::from_le_bytes(*bits);
@@ -2362,65 +2377,65 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                 }
                             })
                             .collect::<Box<_>>();
-                        written?;
-                        linearized_buckets.sort_unstable();
-                        write_u32(&mut ret, num_word_buckets);
-                        write_u32(&mut ret, 0);
-                        let mut bucket_min_idx = 0;
-                        for this_rem in 0..num_word_buckets {
-                            let bucket_max_idx = bucket_min_idx + {
-                                linearized_buckets[bucket_min_idx..]
-                                    .iter()
-                                    .position(|x| x.0 != this_rem)
-                                    .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
-                            };
-                            write_u32(&mut ret, bucket_max_idx as u32);
-                            bucket_min_idx = bucket_max_idx;
-                        }
-                        write_u32(&mut ret, linearized_buckets.len() as u32);
-                        // pretend it was already re-sorted according to remainder order.
-                        let mut cum_start_idx = 0;
-                        let inline_max = 16u32 / this_len as u32;
-                        let mut uninlined_len = 0u32;
-                        for (_remainder, quotient, bits) in linearized_buckets.iter() {
-                            let (start_idx, end_idx) = b0_bits[*bits];
-                            let num_elts = end_idx - start_idx;
-                            if num_elts <= inline_max {
-                                let new_size = ret.len() + 16;
-                                for word_idx in start_idx..end_idx {
-                                    ret.extend(&b0_vec[word_idx as usize].1[..]);
-                                }
-                                ret.resize(new_size, 0);
-                            } else {
-                                uninlined_len += num_elts;
-                                write_u32(&mut ret, 0);
-                                write_u32(&mut ret, 0);
-                                write_u32(&mut ret, cum_start_idx * this_len as u32);
-                                write_u32(&mut ret, num_elts);
-                                cum_start_idx += num_elts;
+                    written?;
+                    linearized_buckets.sort_unstable();
+                    write_u32(&mut ret, num_word_buckets);
+                    write_u32(&mut ret, 0);
+                    let mut bucket_min_idx = 0;
+                    for this_rem in 0..num_word_buckets {
+                        let bucket_max_idx = bucket_min_idx + {
+                            linearized_buckets[bucket_min_idx..]
+                                .iter()
+                                .position(|x| x.0 != this_rem)
+                                .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
+                        };
+                        write_u32(&mut ret, bucket_max_idx as u32);
+                        bucket_min_idx = bucket_max_idx;
+                    }
+                    write_u32(&mut ret, linearized_buckets.len() as u32);
+                    // pretend it was already re-sorted according to remainder order.
+                    let mut cum_start_idx = 0;
+                    let inline_max = 16u32 / this_len as u32;
+                    let mut uninlined_len = 0u32;
+                    for (_remainder, quotient, bits) in linearized_buckets.iter() {
+                        let (start_idx, end_idx) = b0_bits[*bits];
+                        let num_elts = end_idx - start_idx;
+                        if num_elts <= inline_max {
+                            let new_size = ret.len() + 16;
+                            for word_idx in start_idx..end_idx {
+                                ret.extend(&b0_vec[word_idx as usize].1[..]);
                             }
-                            write_u32(&mut ret, *quotient as u32);
-                            write_u32(&mut ret, (quotient >> 32) as u32);
-                            write_u32(&mut ret, (quotient >> 64) as u32);
-                            if is_v3_plus {
-                                write_u32(&mut ret, (quotient >> 96) as u32);
-                            }
+                            ret.resize(new_size, 0);
+                        } else {
+                            uninlined_len += num_elts;
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, cum_start_idx * this_len as u32);
+                            write_u32(&mut ret, num_elts);
+                            cum_start_idx += num_elts;
                         }
-                        write_u32(&mut ret, uninlined_len);
-                        for (_remainder, _quotient, bits) in linearized_buckets.iter() {
-                            let (start_idx, end_idx) = b0_bits[*bits];
-                            if end_idx - start_idx > inline_max {
-                                for word_idx in start_idx..end_idx {
-                                    ret.extend(&b0_vec[word_idx as usize].1[..]);
-                                }
+                        write_u32(&mut ret, *quotient as u32);
+                        write_u32(&mut ret, (quotient >> 32) as u32);
+                        write_u32(&mut ret, (quotient >> 64) as u32);
+                        if is_v3_plus {
+                            write_u32(&mut ret, (quotient >> 96) as u32);
+                        }
+                    }
+                    write_u32(&mut ret, uninlined_len);
+                    for (_remainder, _quotient, bits) in linearized_buckets.iter() {
+                        let (start_idx, end_idx) = b0_bits[*bits];
+                        if end_idx - start_idx > inline_max {
+                            for word_idx in start_idx..end_idx {
+                                ret.extend(&b0_vec[word_idx as usize].1[..]);
                             }
                         }
                     }
+                }
 
-                    // 1-blank section
-                    {
-                        let mut written = Ok(());
-                        let mut linearized_buckets = b1_bits
+                // 1-blank section
+                {
+                    let mut written = Ok(());
+                    let mut linearized_buckets = b1_bits
                             .keys()
                             .map(|bits| {
                                 let bits_u128 = u128::from_le_bytes(*bits);
@@ -2447,45 +2462,45 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                 }
                             })
                             .collect::<Box<_>>();
-                        written?;
-                        linearized_buckets.sort_unstable();
-                        write_u32(&mut ret, num_blank_buckets);
+                    written?;
+                    linearized_buckets.sort_unstable();
+                    write_u32(&mut ret, num_blank_buckets);
+                    write_u32(&mut ret, 0);
+                    let mut bucket_min_idx = 0;
+                    for this_rem in 0..num_blank_buckets {
+                        let bucket_max_idx = bucket_min_idx + {
+                            linearized_buckets[bucket_min_idx..]
+                                .iter()
+                                .position(|x| x.0 != this_rem)
+                                .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
+                        };
+                        write_u32(&mut ret, bucket_max_idx as u32);
+                        bucket_min_idx = bucket_max_idx;
+                    }
+                    write_u32(&mut ret, linearized_buckets.len() as u32);
+                    // pretend it was already re-sorted according to remainder order.
+                    for (_remainder, quotient, bits) in linearized_buckets.iter() {
+                        let blank_bits = b1_bits[*bits];
                         write_u32(&mut ret, 0);
-                        let mut bucket_min_idx = 0;
-                        for this_rem in 0..num_blank_buckets {
-                            let bucket_max_idx = bucket_min_idx + {
-                                linearized_buckets[bucket_min_idx..]
-                                    .iter()
-                                    .position(|x| x.0 != this_rem)
-                                    .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
-                            };
-                            write_u32(&mut ret, bucket_max_idx as u32);
-                            bucket_min_idx = bucket_max_idx;
-                        }
-                        write_u32(&mut ret, linearized_buckets.len() as u32);
-                        // pretend it was already re-sorted according to remainder order.
-                        for (_remainder, quotient, bits) in linearized_buckets.iter() {
-                            let blank_bits = b1_bits[*bits];
-                            write_u32(&mut ret, 0);
-                            write_u32(&mut ret, 0);
-                            write_u32(&mut ret, blank_bits);
-                            write_u32(&mut ret, 0);
-                            write_u32(&mut ret, *quotient as u32);
-                            write_u32(&mut ret, (quotient >> 32) as u32);
-                            write_u32(&mut ret, (quotient >> 64) as u32);
-                            if is_v3_plus {
-                                write_u32(&mut ret, (quotient >> 96) as u32);
-                            }
+                        write_u32(&mut ret, 0);
+                        write_u32(&mut ret, blank_bits);
+                        write_u32(&mut ret, 0);
+                        write_u32(&mut ret, *quotient as u32);
+                        write_u32(&mut ret, (quotient >> 32) as u32);
+                        write_u32(&mut ret, (quotient >> 64) as u32);
+                        if is_v3_plus {
+                            write_u32(&mut ret, (quotient >> 96) as u32);
                         }
                     }
+                }
 
-                    // 2-blank section
-                    {
-                        let mut max_word_lookup_results_before_multiplying_len = 0u32;
-                        if is_v1 {
-                            let mut b2_chars = Vec::<u8>::new(); // even number of elements to be interpreted in pairs.
-                            let mut written = Ok(());
-                            let mut linearized_buckets = b2_bits
+                // 2-blank section
+                {
+                    let mut max_word_lookup_results_before_multiplying_len = 0u32;
+                    if is_v1 {
+                        let mut b2_chars = Vec::<u8>::new(); // even number of elements to be interpreted in pairs.
+                        let mut written = Ok(());
+                        let mut linearized_buckets = b2_bits
                                 .iter()
                                 .map(|(bits_from_b2, b1)| {
                                     bits.clone_from(bits_from_b2);
@@ -2537,59 +2552,55 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     (remainder, quotient, start_idx, end_idx)
                                 })
                                 .collect::<Box<_>>();
-                            written?;
-                            linearized_buckets.sort_unstable();
-                            write_u32(&mut ret, num_double_blank_buckets);
-                            write_u32(&mut ret, 0);
-                            let mut bucket_min_idx = 0;
-                            for this_rem in 0..num_double_blank_buckets {
-                                let bucket_max_idx = bucket_min_idx + {
-                                    linearized_buckets[bucket_min_idx..]
-                                        .iter()
-                                        .position(|x| x.0 != this_rem)
-                                        .unwrap_or_else(|| {
-                                            linearized_buckets[bucket_min_idx..].len()
-                                        })
-                                };
-                                write_u32(&mut ret, bucket_max_idx as u32);
-                                bucket_min_idx = bucket_max_idx;
+                        written?;
+                        linearized_buckets.sort_unstable();
+                        write_u32(&mut ret, num_double_blank_buckets);
+                        write_u32(&mut ret, 0);
+                        let mut bucket_min_idx = 0;
+                        for this_rem in 0..num_double_blank_buckets {
+                            let bucket_max_idx = bucket_min_idx + {
+                                linearized_buckets[bucket_min_idx..]
+                                    .iter()
+                                    .position(|x| x.0 != this_rem)
+                                    .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
+                            };
+                            write_u32(&mut ret, bucket_max_idx as u32);
+                            bucket_min_idx = bucket_max_idx;
+                        }
+                        write_u32(&mut ret, linearized_buckets.len() as u32);
+                        // pretend it was already re-sorted according to remainder order.
+                        let mut cum_start_idx = 0;
+                        let mut uninlined_len = 0u32;
+                        for (_remainder, quotient, start_idx, end_idx) in linearized_buckets.iter()
+                        {
+                            let num_elts = end_idx - start_idx;
+                            if !never_inline_b2 && num_elts <= 16 {
+                                let new_size = ret.len() + 16;
+                                ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
+                                ret.resize(new_size, 0);
+                            } else {
+                                uninlined_len += num_elts;
+                                max_blank_pair_results = max_blank_pair_results.max(num_elts); // already * 2
+                                write_u32(&mut ret, 0);
+                                write_u32(&mut ret, 0);
+                                write_u32(&mut ret, cum_start_idx); // already * 2
+                                write_u32(&mut ret, num_elts >> 1); // here / 2
+                                cum_start_idx += num_elts;
                             }
-                            write_u32(&mut ret, linearized_buckets.len() as u32);
-                            // pretend it was already re-sorted according to remainder order.
-                            let mut cum_start_idx = 0;
-                            let mut uninlined_len = 0u32;
-                            for (_remainder, quotient, start_idx, end_idx) in
-                                linearized_buckets.iter()
-                            {
-                                let num_elts = end_idx - start_idx;
-                                if !never_inline_b2 && num_elts <= 16 {
-                                    let new_size = ret.len() + 16;
-                                    ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
-                                    ret.resize(new_size, 0);
-                                } else {
-                                    uninlined_len += num_elts;
-                                    max_blank_pair_results = max_blank_pair_results.max(num_elts); // already * 2
-                                    write_u32(&mut ret, 0);
-                                    write_u32(&mut ret, 0);
-                                    write_u32(&mut ret, cum_start_idx); // already * 2
-                                    write_u32(&mut ret, num_elts >> 1); // here / 2
-                                    cum_start_idx += num_elts;
-                                }
-                                write_u32(&mut ret, *quotient as u32);
-                                write_u32(&mut ret, (quotient >> 32) as u32);
-                                write_u32(&mut ret, (quotient >> 64) as u32);
+                            write_u32(&mut ret, *quotient as u32);
+                            write_u32(&mut ret, (quotient >> 32) as u32);
+                            write_u32(&mut ret, (quotient >> 64) as u32);
+                        }
+                        write_u32(&mut ret, uninlined_len >> 1); // here / 2
+                        for (_remainder, _quotient, start_idx, end_idx) in linearized_buckets.iter()
+                        {
+                            if never_inline_b2 || end_idx - start_idx > 16 {
+                                ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
                             }
-                            write_u32(&mut ret, uninlined_len >> 1); // here / 2
-                            for (_remainder, _quotient, start_idx, end_idx) in
-                                linearized_buckets.iter()
-                            {
-                                if never_inline_b2 || end_idx - start_idx > 16 {
-                                    ret.extend(&b2_chars[*start_idx as usize..*end_idx as usize]);
-                                }
-                            }
-                        } else {
-                            let mut written = Ok(());
-                            let mut linearized_buckets = b2_bits
+                        }
+                    } else {
+                        let mut written = Ok(());
+                        let mut linearized_buckets = b2_bits
                                 .iter()
                                 .map(|(key_bits, val_bits)| {
                                     // this part is only to compute that max_word_lookup_results value.
@@ -2648,54 +2659,236 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
                                     }
                                 })
                                 .collect::<Box<_>>();
-                            written?;
-                            linearized_buckets.sort_unstable();
-                            write_u32(&mut ret, num_double_blank_buckets);
+                        written?;
+                        linearized_buckets.sort_unstable();
+                        write_u32(&mut ret, num_double_blank_buckets);
+                        write_u32(&mut ret, 0);
+                        let mut bucket_min_idx = 0;
+                        for this_rem in 0..num_double_blank_buckets {
+                            let bucket_max_idx = bucket_min_idx + {
+                                linearized_buckets[bucket_min_idx..]
+                                    .iter()
+                                    .position(|x| x.0 != this_rem)
+                                    .unwrap_or_else(|| linearized_buckets[bucket_min_idx..].len())
+                            };
+                            write_u32(&mut ret, bucket_max_idx as u32);
+                            bucket_min_idx = bucket_max_idx;
+                        }
+                        write_u32(&mut ret, linearized_buckets.len() as u32);
+                        // pretend it was already re-sorted according to remainder order.
+                        for (_remainder, quotient, bits) in linearized_buckets.iter() {
+                            let blank_bits = b2_bits[*bits];
                             write_u32(&mut ret, 0);
-                            let mut bucket_min_idx = 0;
-                            for this_rem in 0..num_double_blank_buckets {
-                                let bucket_max_idx = bucket_min_idx + {
-                                    linearized_buckets[bucket_min_idx..]
-                                        .iter()
-                                        .position(|x| x.0 != this_rem)
-                                        .unwrap_or_else(|| {
-                                            linearized_buckets[bucket_min_idx..].len()
-                                        })
-                                };
-                                write_u32(&mut ret, bucket_max_idx as u32);
-                                bucket_min_idx = bucket_max_idx;
-                            }
-                            write_u32(&mut ret, linearized_buckets.len() as u32);
-                            // pretend it was already re-sorted according to remainder order.
-                            for (_remainder, quotient, bits) in linearized_buckets.iter() {
-                                let blank_bits = b2_bits[*bits];
-                                write_u32(&mut ret, 0);
-                                write_u32(&mut ret, 0);
-                                write_u32(&mut ret, blank_bits);
-                                write_u32(&mut ret, 0);
-                                write_u32(&mut ret, *quotient as u32);
-                                write_u32(&mut ret, (quotient >> 32) as u32);
-                                write_u32(&mut ret, (quotient >> 64) as u32);
-                                if is_v3_plus {
-                                    write_u32(&mut ret, (quotient >> 96) as u32);
-                                }
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, blank_bits);
+                            write_u32(&mut ret, 0);
+                            write_u32(&mut ret, *quotient as u32);
+                            write_u32(&mut ret, (quotient >> 32) as u32);
+                            write_u32(&mut ret, (quotient >> 64) as u32);
+                            if is_v3_plus {
+                                write_u32(&mut ret, (quotient >> 96) as u32);
                             }
                         }
-                        max_word_lookup_results = max_word_lookup_results
-                            .max(max_word_lookup_results_before_multiplying_len * this_len as u32);
+                    }
+                    max_word_lookup_results = max_word_lookup_results
+                        .max(max_word_lookup_results_before_multiplying_len * this_len as u32);
+                }
+            }
+            ret[2..6].copy_from_slice(&max_word_lookup_results.to_le_bytes());
+            if is_v1 {
+                ret[6..10].copy_from_slice(&max_blank_pair_results.to_le_bytes());
+            }
+            // binary output
+            make_writer(&out)?.write_all(&ret)?;
+            Ok(())
+        }
+        Task::KlvKwgExtract { leaves, out } => {
+            let klv_bytes = &read_to_end(&mut make_reader(&leaves)?)?;
+            check_klv(klv_bytes)?;
+            let parts = parse_klv(klv_bytes)?;
+            // binary output
+            make_writer(&out)?.write_all(parts.kwg_bytes)?;
+            Ok(())
+        }
+        Task::KwgHitcheck {
+            graph_file,
+            cls,
+            csa,
+            ncs,
+            out,
+            graph,
+        } => {
+            let kwg_bytes = &read_to_end(&mut make_reader(&graph_file.kwg)?)?;
+            let initial_idx = if matches!(graph, Graph::Gaddag) { 1 } else { 0 };
+            let mut ret = String::new();
+            if graph_file.kbwg {
+                kwg_hitcheck(
+                    &mut ret,
+                    &KbwgReader {},
+                    kwg_bytes,
+                    initial_idx,
+                    cls,
+                    csa,
+                    ncs,
+                )?;
+            } else {
+                kwg_hitcheck(
+                    &mut ret,
+                    &KwgReader {},
+                    kwg_bytes,
+                    initial_idx,
+                    cls,
+                    csa,
+                    ncs,
+                )?;
+            }
+            make_writer(&out)?.write_all(ret.as_bytes())?;
+            Ok(())
+        }
+        Task::QuackleMakeSuperleaves { leaves, out } => {
+            let reader = &KwgReader {};
+            let klv_bytes = &read_to_end(&mut make_reader(&leaves)?)?;
+            check_klv(klv_bytes)?;
+            let parts = parse_klv(klv_bytes)?;
+            let kwg_bytes = parts.kwg_bytes;
+            let mut r = parts.r;
+            let is_klv2 = parts.is_klv2;
+            let mut ret = Vec::new();
+            iter_dawg(
+                DawgSource {
+                    a: &QuackleLeavesAlphabetLabel {},
+                    r: reader,
+                    b: kwg_bytes,
+                    initial_idx: reader.arc_index(kwg_bytes, 0),
+                    blank_str: Some("\x01"),
+                },
+                &mut |s: &str| {
+                    let float_leave = read_leave_value(klv_bytes, &mut r, is_klv2)?;
+                    let rounded_leave = (float_leave * 256.0).round();
+                    let int_leave = (rounded_leave as i16) ^ 0x8000u16 as i16;
+                    let slen = s.len();
+                    ret.reserve(slen + 3);
+                    ret.push(slen as u8);
+                    ret.extend(s.bytes());
+                    ret.extend(int_leave.to_le_bytes());
+                    Ok(())
+                },
+                &mut default_in,
+                &mut default_out,
+            )?;
+            if r != klv_bytes.len() {
+                return Err("too many leaves".into());
+            }
+            // binary output
+            make_writer(&out)?.write_all(&ret)?;
+            Ok(())
+        }
+        Task::QuackleSuperleaves { superleaves, out } => {
+            let bytes = &read_to_end(&mut make_reader(&superleaves)?)?;
+            let mut csv_out = csv::Writer::from_writer(make_writer(&out)?);
+            let mut i = 0;
+            let mut s = String::new();
+            while i < bytes.len() {
+                let l = bytes[i] as usize;
+                if i + l + 3 > bytes.len() {
+                    return Err("out of bounds".into());
+                }
+                s.clear();
+                for j in 1..=l {
+                    let c = bytes[i + j];
+                    if c == 1 {
+                        s.push('?');
+                    } else if (5..=30).contains(&c) {
+                        s.push((c + (b'A' - 5)) as char);
+                    } else {
+                        return Err("invalid tile".into());
                     }
                 }
-                ret[2..6].copy_from_slice(&max_word_lookup_results.to_le_bytes());
-                if is_v1 {
-                    ret[6..10].copy_from_slice(&max_blank_pair_results.to_le_bytes());
-                }
-                // binary output
-                make_writer(&args[3])?.write_all(&ret)?;
-                Ok(true)
+                i += l + 3;
+                csv_out.serialize((
+                    &s,
+                    (read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0,
+                ))?;
             }
-            _ => Ok(false),
-        },
-        None => Ok(false),
+            Ok(())
+        }
+        Task::Quackle { dawg, out, small } => {
+            if small {
+                do_quackle(&dawg, &out, |p| QuackleSmallReader { offset: p })
+            } else {
+                do_quackle(&dawg, &out, |p| QuackleReader { offset: p })
+            }
+        }
+        Task::Zyzzyva { dwg, out } => {
+            let bytes = &read_to_end(&mut make_reader(&dwg)?)?;
+            if 0x8 > bytes.len() {
+                return Err("out of bounds".into());
+            }
+            dump_dawg(
+                &out,
+                &LexpertAlphabetLabel {},
+                &KwgReader {},
+                bytes,
+                1,
+                None,
+            )
+        }
+        Task::Lexpert { lxd, out } => {
+            let bytes = &read_to_end(&mut make_reader(&lxd)?)?;
+            if 0x4c > bytes.len() {
+                return Err("out of bounds".into());
+            }
+            dump_dawg(
+                &out,
+                &LexpertAlphabetLabel {},
+                &LexpertReader {},
+                bytes,
+                2,
+                None,
+            )
+        }
+        Task::StatsZt => {
+            let mut ret = String::new();
+            for ci in [0.8f64, 0.85, 0.9, 0.95, 0.99, 0.995, 0.999] {
+                writeln!(
+                    ret,
+                    "{:4.1}% {}",
+                    ci * 100.0,
+                    stats::NormalDistribution::reverse_ci(ci)
+                )?;
+            }
+            ret.push('\n');
+            let cumulative_normal_density = stats::NormalDistribution::cumulative_normal_density;
+            for y in (35..=50).rev().step_by(5) {
+                let v = y as f32 * -0.1;
+                writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
+            }
+            for y in (0..=34i32).rev() {
+                write!(ret, "{:4.1}", y as f32 * -0.1)?;
+                for x in 0..=9 {
+                    let v = (y * 10 + x) as f32 * -0.01;
+                    //write!(ret, " {:5.2}", v)?;
+                    write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
+                }
+                ret.push('\n');
+            }
+            ret.push('\n');
+            for y in 0..=34i32 {
+                write!(ret, "{:4.1}", y as f32 * 0.1)?;
+                for x in 0..=9 {
+                    let v = (y * 10 + x) as f32 * 0.01;
+                    //write!(ret, " {:5.2}", v)?;
+                    write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
+                }
+                ret.push('\n');
+            }
+            for y in (35..=50).step_by(5) {
+                let v = y as f32 * 0.1;
+                writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
+            }
+            write!(std::io::stdout(), "{ret}")?;
+            Ok(())
+        }
     }
 }
 
@@ -3123,138 +3316,6 @@ example for i7-8700B (192 kB, 6 cores, 8-way set assoc): 64 8 64."
     StatsZt,
 }
 
-impl Task {
-    // the task word and the files and values after it, as the tasks read them.
-    #[inline]
-    fn into_args(self) -> error::Returns<Vec<String>> {
-        // the word graph tasks' word: kwg- or kbwg- before the job.
-        #[inline(always)]
-        fn wg(graph_file: &WordGraph, job: &str) -> String {
-            format!("{}{job}", if graph_file.kbwg { "kbwg" } else { "kwg" })
-        }
-        Ok(match self {
-            Task::Klv { klv, leaves, out } => {
-                let task = if klv.is_some() { "klv16" } else { "klv" };
-                vec![task.into(), leaves, out]
-            }
-            Task::Kwg {
-                graph_file,
-                out,
-                graph,
-                blanks,
-            } => {
-                let job = match (graph, blanks) {
-                    (Graph::Dawg, false) => "",
-                    (Graph::Dawg, true) => "0",
-                    (Graph::Gaddag, false) => "-gaddag",
-                    (Graph::Gaddag, true) => {
-                        return Err(
-                            "--blanks reads a dawg: tile 0 is the gaddag's separator".into()
-                        );
-                    }
-                };
-                vec![wg(&graph_file, job), graph_file.kwg, out]
-            }
-            Task::KwgNodes { graph_file, out } => {
-                vec![wg(&graph_file, "-nodes"), graph_file.kwg, out]
-            }
-            Task::KwgProb { graph_file, out } => {
-                vec![wg(&graph_file, "-prob"), graph_file.kwg, out]
-            }
-            Task::Prob { words } => std::iter::once("prob".into()).chain(words).collect(),
-            Task::KlvAnagramSub { leaves, out, rack } => {
-                vec!["klv-anagram-".into(), leaves, out, rack]
-            }
-            Task::KlvAnagram { leaves, out, rack } => {
-                vec!["klv-anagram".into(), leaves, out, rack]
-            }
-            Task::KlvAnagramSuper { leaves, out, rack } => {
-                vec!["klv-anagram+".into(), leaves, out, rack]
-            }
-            Task::KwgAnagramSub {
-                graph_file,
-                out,
-                rack,
-            } => vec![wg(&graph_file, "-anagram-"), graph_file.kwg, out, rack],
-            Task::KwgAnagram {
-                graph_file,
-                out,
-                rack,
-            } => vec![wg(&graph_file, "-anagram"), graph_file.kwg, out, rack],
-            Task::KwgAnagramSuper {
-                graph_file,
-                out,
-                rack,
-            } => vec![wg(&graph_file, "-anagram+"), graph_file.kwg, out, rack],
-            Task::KwgCheck { graph_file, words } => [wg(&graph_file, "-check"), graph_file.kwg]
-                .into_iter()
-                .chain(words)
-                .collect(),
-            Task::Q2Ort { ort, out } => vec!["q2-ort".into(), ort, out],
-            Task::MakeQ2Ort {
-                csv,
-                out,
-                num_buckets,
-            } => vec!["make-q2-ort".into(), csv, out, num_buckets.to_string()],
-            Task::Wmp { wmp, out } => vec!["wmp".into(), wmp, out],
-            Task::WmpWords { wmp, out } => vec!["wmp-words".into(), wmp, out],
-            Task::MakeWmp {
-                word_list,
-                out,
-                wmp,
-                overflow,
-            } => {
-                let task = match (wmp, overflow) {
-                    (WmpVersion::One, false) => "make-wmp1",
-                    (WmpVersion::One, true) => "make-wmp1-overflow",
-                    (WmpVersion::Two, false) => "make-wmp2",
-                    (WmpVersion::Two, true) => "make-wmp2-overflow",
-                    (WmpVersion::Three, false) => "make-wmp",
-                    (WmpVersion::Three, true) => {
-                        return Err("--overflow is for --wmp 1 and 2".into());
-                    }
-                };
-                vec![task.into(), word_list, out]
-            }
-            Task::KlvKwgExtract { leaves, out } => vec!["klv-kwg-extract".into(), leaves, out],
-            Task::KwgHitcheck {
-                graph_file,
-                cls,
-                csa,
-                ncs,
-                out,
-                graph,
-            } => {
-                let job = match graph {
-                    Graph::Dawg => "-hitcheck",
-                    Graph::Gaddag => "-hitcheck-gaddag",
-                };
-                vec![
-                    wg(&graph_file, job),
-                    graph_file.kwg,
-                    cls.to_string(),
-                    csa.to_string(),
-                    ncs.to_string(),
-                    out,
-                ]
-            }
-            Task::QuackleMakeSuperleaves { leaves, out } => {
-                vec!["quackle-make-superleaves".into(), leaves, out]
-            }
-            Task::QuackleSuperleaves { superleaves, out } => {
-                vec!["quackle-superleaves".into(), superleaves, out]
-            }
-            Task::Quackle { dawg, out, small } => {
-                let task = if small { "quackle-small" } else { "quackle" };
-                vec![task.into(), dawg, out]
-            }
-            Task::Zyzzyva { dwg, out } => vec!["zyzzyva".into(), dwg, out],
-            Task::Lexpert { lxd, out } => vec!["lexpert".into(), lxd, out],
-            Task::StatsZt => vec!["stats-zt".into()],
-        })
-    }
-}
-
 #[derive(clap::Parser)]
 #[command(
     about = "read word graphs, leave tables and other lexicon files",
@@ -3279,185 +3340,9 @@ struct Cli {
 fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
     let t0 = std::time::Instant::now();
-    // the command line as the tasks read it: the task word, then its files and values
-    let mut args = vec![std::env::args().next().unwrap_or_default()];
-    args.extend(cli.task.into_args()?);
-    let done = do_task(&args, || {
+    do_task(cli.task, || {
         alphabet::make_alphabet_from(&cli.tiles, &|path| Ok(std::fs::read_to_string(path)?))
     })?;
-    if done {
-    } else if args[1] == "klv-kwg-extract" {
-        let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-        check_klv(klv_bytes)?;
-        let parts = parse_klv(klv_bytes)?;
-        // binary output
-        make_writer(&args[3])?.write_all(parts.kwg_bytes)?;
-    } else if args[1] == "kwg-hitcheck"
-        || args[1] == "kwg-hitcheck-gaddag"
-        || args[1] == "kbwg-hitcheck"
-        || args[1] == "kbwg-hitcheck-gaddag"
-    {
-        let kwg_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-        let initial_idx = if args[1].ends_with("-gaddag") { 1 } else { 0 };
-        let mut ret = String::new();
-        if args[1].starts_with("kbwg") {
-            kwg_hitcheck(
-                &mut ret,
-                &KbwgReader {},
-                kwg_bytes,
-                initial_idx,
-                u32::from_str(&args[3])?,
-                u32::from_str(&args[4])?,
-                u32::from_str(&args[5])?,
-            )?;
-        } else {
-            kwg_hitcheck(
-                &mut ret,
-                &KwgReader {},
-                kwg_bytes,
-                initial_idx,
-                u32::from_str(&args[3])?,
-                u32::from_str(&args[4])?,
-                u32::from_str(&args[5])?,
-            )?;
-        }
-        make_writer(&args[6])?.write_all(ret.as_bytes())?;
-    } else if args[1] == "quackle-make-superleaves" {
-        let reader = &KwgReader {};
-        let klv_bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-        check_klv(klv_bytes)?;
-        let parts = parse_klv(klv_bytes)?;
-        let kwg_bytes = parts.kwg_bytes;
-        let mut r = parts.r;
-        let is_klv2 = parts.is_klv2;
-        let mut ret = Vec::new();
-        iter_dawg(
-            DawgSource {
-                a: &QuackleLeavesAlphabetLabel {},
-                r: reader,
-                b: kwg_bytes,
-                initial_idx: reader.arc_index(kwg_bytes, 0),
-                blank_str: Some("\x01"),
-            },
-            &mut |s: &str| {
-                let float_leave = read_leave_value(klv_bytes, &mut r, is_klv2)?;
-                let rounded_leave = (float_leave * 256.0).round();
-                let int_leave = (rounded_leave as i16) ^ 0x8000u16 as i16;
-                let slen = s.len();
-                ret.reserve(slen + 3);
-                ret.push(slen as u8);
-                ret.extend(s.bytes());
-                ret.extend(int_leave.to_le_bytes());
-                Ok(())
-            },
-            &mut default_in,
-            &mut default_out,
-        )?;
-        if r != klv_bytes.len() {
-            return Err("too many leaves".into());
-        }
-        // binary output
-        make_writer(&args[3])?.write_all(&ret)?;
-    } else if args[1] == "quackle-superleaves" {
-        let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-        let mut csv_out = csv::Writer::from_writer(make_writer(&args[3])?);
-        let mut i = 0;
-        let mut s = String::new();
-        while i < bytes.len() {
-            let l = bytes[i] as usize;
-            if i + l + 3 > bytes.len() {
-                return Err("out of bounds".into());
-            }
-            s.clear();
-            for j in 1..=l {
-                let c = bytes[i + j];
-                if c == 1 {
-                    s.push('?');
-                } else if (5..=30).contains(&c) {
-                    s.push((c + (b'A' - 5)) as char);
-                } else {
-                    return Err("invalid tile".into());
-                }
-            }
-            i += l + 3;
-            csv_out.serialize((
-                &s,
-                (read_le_u16(bytes, i - 2)) as f32 * (1.0 / 256.0) - 128.0,
-            ))?;
-        }
-    } else if args[1] == "quackle" {
-        do_quackle(&args, |p| QuackleReader { offset: p })?;
-    } else if args[1] == "quackle-small" {
-        do_quackle(&args, |p| QuackleSmallReader { offset: p })?;
-    } else if args[1] == "zyzzyva" {
-        let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-        if 0x8 > bytes.len() {
-            return Err("out of bounds".into());
-        }
-        dump_dawg(
-            &args,
-            &LexpertAlphabetLabel {},
-            &KwgReader {},
-            bytes,
-            1,
-            None,
-        )?;
-    } else if args[1] == "lexpert" {
-        let bytes = &read_to_end(&mut make_reader(&args[2])?)?;
-        if 0x4c > bytes.len() {
-            return Err("out of bounds".into());
-        }
-        dump_dawg(
-            &args,
-            &LexpertAlphabetLabel {},
-            &LexpertReader {},
-            bytes,
-            2,
-            None,
-        )?;
-    } else if args[1] == "stats-zt" {
-        let mut ret = String::new();
-        for ci in [0.8f64, 0.85, 0.9, 0.95, 0.99, 0.995, 0.999] {
-            writeln!(
-                ret,
-                "{:4.1}% {}",
-                ci * 100.0,
-                stats::NormalDistribution::reverse_ci(ci)
-            )?;
-        }
-        ret.push('\n');
-        let cumulative_normal_density = stats::NormalDistribution::cumulative_normal_density;
-        for y in (35..=50).rev().step_by(5) {
-            let v = y as f32 * -0.1;
-            writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
-        }
-        for y in (0..=34i32).rev() {
-            write!(ret, "{:4.1}", y as f32 * -0.1)?;
-            for x in 0..=9 {
-                let v = (y * 10 + x) as f32 * -0.01;
-                //write!(ret, " {:5.2}", v)?;
-                write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
-            }
-            ret.push('\n');
-        }
-        ret.push('\n');
-        for y in 0..=34i32 {
-            write!(ret, "{:4.1}", y as f32 * 0.1)?;
-            for x in 0..=9 {
-                let v = (y * 10 + x) as f32 * 0.01;
-                //write!(ret, " {:5.2}", v)?;
-                write!(ret, " {:6.4}", cumulative_normal_density(v.into()))?;
-            }
-            ret.push('\n');
-        }
-        for y in (35..=50).step_by(5) {
-            let v = y as f32 * 0.1;
-            writeln!(ret, "{:4.1} {}", v, cumulative_normal_density(v.into()))?;
-        }
-        write!(std::io::stdout(), "{ret}")?;
-    } else {
-        return Err("invalid argument".into());
-    }
     writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
     Ok(())
 }
