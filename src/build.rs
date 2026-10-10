@@ -939,6 +939,12 @@ fn do_build<const VARIANT: u8>(
     build_order: BuildOrder,
     machine_words: &[bites::Bites],
 ) -> error::Returns<bites::Bites> {
+    // a word ends on an accepting arc, so an empty word has nowhere to end;
+    // sorted, it can only come first
+    if machine_words.first().is_some_and(|word| word.is_empty()) {
+        return_error!("a word graph cannot hold an empty word".into());
+    }
+
     // The sink state always exists.
     let mut states = vec![State {
         tile: 0,
@@ -1500,5 +1506,23 @@ mod tests {
         expected.sort_unstable();
         expected.dedup();
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    #[inline]
+    fn an_empty_word_is_refused_not_a_panic() {
+        // a leave file's ",1.5" reaches here as an empty leave
+        let machine_words: Vec<bites::Bites> = vec![[0u8; 0][..].into(), [1u8, 2][..].into()];
+        for content in [BuildContent::DawgOnly, BuildContent::Gaddawg] {
+            assert!(
+                build(
+                    content,
+                    BuildLayout::Wolges,
+                    BuildOrder::Sorted,
+                    &machine_words,
+                )
+                .is_err()
+            );
+        }
     }
 }
