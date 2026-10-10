@@ -1,6 +1,6 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-use super::{bites, bites_str, equity, error};
+use super::{bites, bites_str, display, equity, error};
 
 use std::str::FromStr;
 
@@ -265,10 +265,15 @@ impl std::fmt::Display for WriteableRack<'_> {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if f.width().is_some() {
-            // allocates, but no choice.
-            #[expect(clippy::recursive_format_impl)]
-            return f.pad(&format!("{self}"));
+            return display::pad_with(f, |s| self.write_unpadded(s));
         }
+        self.write_unpadded(f)
+    }
+}
+
+impl WriteableRack<'_> {
+    #[inline(always)]
+    fn write_unpadded(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         for &tile in self.rack {
             write!(f, "{}", self.alphabet.of_rack(tile).unwrap())?;
         }
