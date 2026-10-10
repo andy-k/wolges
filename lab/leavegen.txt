@@ -209,43 +209,8 @@ similar, better-sampled racks say; a rack no game ever dealt has no average at
 all, and its value is filled in from those neighbors outright. A rack the games
 covered properly keeps exactly the average they measured, untouched.
 
-There used to be a second variant, english-generate-no-smooth, that skipped all
-of that and used the observed averages as they stood. It is gone, because
-measuring it left nothing for it to be good at. Smoothing either wins outright
-or does nothing whatsoever, and it never costs anything. Sweeping the number of
-self-play games, each table played its unsmoothed twin over a million game
-pairs:
-
-    games        leaves smoothed   smoothed side won
-    50,000            89%               51.61   certain
-    200,000           76%               50.32   certain
-    1,000,000         52%               50.03   not resolved
-    5,000,000         26%               50.00   dead level
-    20,000,000         0%               identical file
-
-Every row landed on the same side of 50 and not one below it. The lead fades
-exactly as the thin leaves do, and the last two rows are the telling ones: at
-five million games a quarter of the table still gets smoothed and it plays
-dead level, so smoothing the thin tail is not merely harmless once it stops
-firing -- it is free even while it fires. At twenty million nothing is thin, so
-nothing is smoothed and the two commands write a byte-for-byte identical file.
-
-So there was never a run on which you wanted the unsmoothed table. On a large
-one it gave you the same file; on a small one it gave you a worse one, and for
-the leaves nothing was ever dealt for it had nothing to report at all --
-something had to be invented regardless, so "no smoothing" was never quite
-truthful. A knob whose every setting is either identical or worse is not a
-choice, it is a way to make a mistake, so the variant and genleaves.sh's
---smooth / --no-smooth flags are retired.
-
-What is left is which leaves count as too thin: leave generate smooths a leave
-backed by fewer than 50 samples. A floor of 0 played level with 50 wherever the
-two were raced, and 50 is the floor that beat no smoothing above.
-
-(An older reading of this section had the two as a tie, at about 49.99 and 57
-percent confidence. That was measured when smoothing still leaned on the
-cube-root rule described below, which smoothed most of the table whether or not
-it needed it; it describes a rule nothing builds with today.)
+Too thin means backed by fewer than 50 samples: that is where leave generate
+starts smoothing. A floor of 0 played level with 50 wherever the two were raced.
 
 A leave is smoothed only when it is genuinely thin. The generator counts the
 sampled racks behind a leave -- its support -- and borrows from the neighbors
