@@ -1,69 +1,5 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
-pub struct WordList {
-    blob: Vec<u8>,
-    ends: Vec<u32>,
-}
-
-impl WordList {
-    #[inline(always)]
-    pub fn build<N: super::kwg::Node>(g: &super::kwg::Kwg<N>) -> super::error::Returns<Self> {
-        // a run entered again before the walk leaves it means the graph loops
-        fn walk<N: super::kwg::Node>(
-            g: &super::kwg::Kwg<N>,
-            mut p: i32,
-            on_path: &mut [bool],
-            w: &mut Vec<u8>,
-            out: &mut WordList,
-        ) -> super::error::Returns<()> {
-            if p <= 0 {
-                return Ok(());
-            }
-            let entered = p as usize;
-            if std::mem::replace(&mut on_path[entered], true) {
-                return Err(format!("the word graph loops back to node {p}").into());
-            }
-            loop {
-                let node = g[p];
-                w.push(node.tile());
-                if node.accepts() {
-                    out.blob.extend_from_slice(w);
-                    out.ends.push(out.blob.len() as u32);
-                }
-                walk(g, node.arc_index(), on_path, w, out)?;
-                w.pop();
-                if node.is_end() {
-                    break;
-                }
-                p += 1;
-            }
-            on_path[entered] = false;
-            Ok(())
-        }
-        let mut out = WordList {
-            blob: Vec::new(),
-            ends: Vec::new(),
-        };
-        walk(
-            g,
-            g[0].arc_index(),
-            &mut vec![false; g.0.len()],
-            &mut Vec::new(),
-            &mut out,
-        )?;
-        Ok(out)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &[u8]> {
-        let mut at = 0usize;
-        self.ends.iter().map(move |&end| {
-            let w = &self.blob[at..end as usize];
-            at = end as usize;
-            w
-        })
-    }
-}
-
 // MurmurHash3's 64-bit finalizer, public domain:
 // https://github.com/aappleby/smhasher/blob/master/src/MurmurHash3.cpp
 #[inline(always)]
@@ -157,6 +93,14 @@ impl KeyLayout {
     pub fn count_in(&self, key: u128, tile: u8) -> u8 {
         let width = u8::BITS - self.max_count[tile as usize].leading_zeros();
         ((key >> self.shift[tile as usize]) & ((1u128 << width) - 1)) as u8
+    }
+
+    // each tile the key holds, once, ascending
+    #[inline(always)]
+    pub fn tiles_in(&self, key: u128) -> impl Iterator<Item = u8> + '_ {
+        (1..self.max_count.len())
+            .map(|tile| tile as u8)
+            .filter(move |&tile| self.count_in(key, tile) > 0)
     }
 
     #[inline(always)]

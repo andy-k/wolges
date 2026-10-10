@@ -13,9 +13,92 @@ fn filter_hash(key: u128, len: u8) -> u64 {
 }
 
 #[inline(always)]
-fn layout_for_config(game_config: &game_config::GameConfig) -> Option<alphagram::KeyLayout> {
+fn filter_blocks(keys: usize) -> usize {
+    (keys * 16).div_ceil(FILTER_BLOCK_BITS).next_power_of_two()
+}
+
+#[inline(always)]
+fn filter_bytes(keys: usize) -> usize {
+    if keys == 0 {
+        return 0;
+    }
+    filter_blocks(keys) * FILTER_BLOCK_WORDS * std::mem::size_of::<u64>()
+}
+
+// the longest word the anagram tables keep, its length a u8
+const MAX_WORD: usize = u8::MAX as usize;
+
+// the bytes std's hash table of this capacity allocates: its slots, a power of
+// two keeping an eighth free (a quarter below eight), padded to where the
+// control bytes start, then a control byte a slot and a group's worth more (16,
+// the widest group)
+#[inline(always)]
+fn table_bytes<T>(capacity: usize) -> usize {
+    if capacity == 0 {
+        return 0;
+    }
+    let slots = if capacity < 4 {
+        4
+    } else if capacity < 8 {
+        8
+    } else {
+        (capacity * 8 / 7).next_power_of_two()
+    };
+    (slots * std::mem::size_of::<T>()).next_multiple_of(std::mem::align_of::<T>().max(16))
+        + slots
+        + 16
+}
+
+// what a build holds at once, refused before the allocation that would take it
+// past max
+struct Ledger {
+    live: usize,
+    max: usize,
+    refused: bool,
+}
+
+impl Ledger {
+    #[inline(always)]
+    fn up_to(max: usize) -> Self {
+        Self {
+            live: 0,
+            max,
+            refused: false,
+        }
+    }
+
+    #[inline(always)]
+    fn take(&mut self, bytes: usize) -> Option<()> {
+        match self.live.checked_add(bytes) {
+            Some(live) if live <= self.max => {
+                self.live = live;
+                Some(())
+            }
+            _ => {
+                self.refused = true;
+                None
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn give(&mut self, bytes: usize) {
+        self.live -= bytes;
+    }
+}
+
+// a key layout holds two bytes a tile, after a third while it is made
+#[inline(always)]
+fn layout_for_config(
+    game_config: &game_config::GameConfig,
+    ledger: &mut Ledger,
+) -> Option<alphagram::KeyLayout> {
+    let tiles = game_config.alphabet().len() as usize;
+    ledger.take(3 * tiles)?;
     let dim = game_config.board_layout().dim();
-    alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8)
+    let layout = alphagram::KeyLayout::of(game_config.alphabet(), dim.rows.max(dim.cols) as u8);
+    ledger.give(tiles);
+    layout
 }
 
 // one arena, sorted by length, then alphagram, then word
@@ -65,7 +148,45 @@ impl std::hash::Hasher for KeyHasher {
     }
 }
 
-type Table = std::collections::HashMap<u128, Span, std::hash::BuildHasherDefault<KeyHasher>>;
+// a key as the tables keep it: a u128's bytes, so no record holding one is
+// padded to 16-byte alignment; equal, ordered and hashed as that u128
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct KeyBytes([u8; 16]);
+
+impl KeyBytes {
+    #[inline(always)]
+    fn of(key: u128) -> Self {
+        Self(key.to_ne_bytes())
+    }
+
+    #[inline(always)]
+    fn key(self) -> u128 {
+        u128::from_ne_bytes(self.0)
+    }
+}
+
+impl Ord for KeyBytes {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+impl PartialOrd for KeyBytes {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for KeyBytes {
+    #[inline(always)]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u128(self.key());
+    }
+}
+
+type Table = std::collections::HashMap<KeyBytes, Span, std::hash::BuildHasherDefault<KeyHasher>>;
 
 impl Anagrams {
     #[inline(always)]
@@ -73,8 +194,17 @@ impl Anagrams {
         g: &kwg::Kwg<N>,
         game_config: &game_config::GameConfig,
     ) -> error::Returns<Option<Self>> {
-        match layout_for_config(game_config) {
-            Some(layout) => Self::build(g, layout),
+        Self::build_for_config_within(g, game_config, &mut Ledger::up_to(usize::MAX))
+    }
+
+    #[inline(always)]
+    fn build_for_config_within<N: kwg::Node>(
+        g: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+        ledger: &mut Ledger,
+    ) -> error::Returns<Option<Self>> {
+        match layout_for_config(game_config, ledger) {
+            Some(layout) => Self::build_within(g, layout, ledger),
             None => Ok(None),
         }
     }
@@ -83,60 +213,101 @@ impl Anagrams {
         g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
     ) -> error::Returns<Option<Self>> {
-        let list = alphagram::WordList::build(g)?;
-        Ok(Self::build_from_words(layout, list.iter()))
+        Self::build_within(g, layout, &mut Ledger::up_to(usize::MAX))
     }
 
-    #[inline(always)]
-    pub fn build_from_words<'a, I: IntoIterator<Item = &'a [u8]>>(
+    fn build_within<N: kwg::Node>(
+        g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
-        words: I,
+        ledger: &mut Ledger,
+    ) -> error::Returns<Option<Self>> {
+        Ok(match dawg_words(g, ledger)? {
+            Some(words) => Self::build_counted(g, layout, words, ledger),
+            None => None,
+        })
+    }
+
+    // g's dawg holds this many words and no loop
+    fn build_counted<N: kwg::Node>(
+        g: &kwg::Kwg<N>,
+        layout: alphagram::KeyLayout,
+        words: usize,
+        ledger: &mut Ledger,
     ) -> Option<Self> {
-        let mut keyed = Vec::<(u8, u128, &[u8])>::new();
-        let mut longest = 0u8;
-        for w in words {
-            let len = u8::try_from(w.len()).ok()?;
-            let Some(key) = layout.key_of(w) else {
-                continue;
-            };
-            longest = longest.max(len);
-            keyed.push((len, key, w));
+        // each word the layout keys, by length, key, then its index in the
+        // graph, which is its place in the word list; a word too long for a u8
+        // length means no tables
+        ledger.take(words * std::mem::size_of::<(u8, KeyBytes, u32)>())?;
+        let mut keyed = Vec::<(u8, KeyBytes, u32)>::with_capacity(words);
+        let mut index = 0u32;
+        ledger.take(MAX_WORD)?;
+        let cut = for_each_word(g, MAX_WORD, &mut |w| {
+            if let Some(key) = layout.key_of(w) {
+                keyed.push((w.len() as u8, KeyBytes::of(key), index));
+            }
+            index += 1;
+        });
+        ledger.give(MAX_WORD);
+        if cut {
+            return None;
         }
         keyed.sort_unstable();
 
-        let lengths = longest as usize + 1;
-        let mut arena = Vec::<u8>::with_capacity(keyed.iter().map(|k| k.2.len()).sum());
-        let mut groups = Vec::<Table>::new();
-        groups.resize_with(lengths, Table::default);
-        let mut pairs = vec![Vec::<(u128, Span, u8)>::new(); lengths];
-        for run in keyed.chunk_by(|a, b| a.0 == b.0) {
-            let len = run[0].0 as usize;
-            for group in run.chunk_by(|a, b| a.1 == b.1) {
-                let key = group[0].1;
-                let span = Span {
-                    at: u32::try_from(arena.len()).ok()?,
-                    n: u32::try_from(group.len()).ok()?,
-                };
-                for &(_, _, w) in group {
-                    arena.extend_from_slice(w);
-                }
-                groups[len].insert(key, span);
-                let mut tiles = group[0].2.to_vec();
-                tiles.sort_unstable();
-                tiles.dedup();
-                for &tile in &tiles {
-                    pairs[len].push((key - layout.place_value(tile), span, tile));
-                }
-            }
+        // every table and buffer below is made at its size: the keys of each
+        // length, and the pairs a blank makes of them, one per tile of a key
+        let lengths = keyed.last().map_or(0, |k| k.0 as usize) + 1;
+        ledger.take(2 * lengths * std::mem::size_of::<usize>())?;
+        let mut keys_of = vec![0usize; lengths];
+        let mut pairs_of = vec![0usize; lengths];
+        for group in keyed.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+            keys_of[group[0].0 as usize] += 1;
+            pairs_of[group[0].0 as usize] += layout.tiles_in(group[0].1.key()).count();
         }
 
-        let mut blanked = Vec::<Table>::new();
-        blanked.resize_with(lengths, Table::default);
-        let mut answers = Vec::<BlankAnswer>::new();
-        for (len, run) in pairs.iter_mut().enumerate() {
-            run.sort_unstable_by_key(|&(key, span, tile)| (key, span.at, tile));
-            for group in run.chunk_by(|a, b| a.0 == b.0) {
-                blanked[len].insert(
+        // where each word's letters go in the arena, by index; u32::MAX for a
+        // word left out
+        ledger.take(index as usize * std::mem::size_of::<u32>())?;
+        let mut at = vec![u32::MAX; index as usize];
+        let mut letters = 0usize;
+        ledger.take(2 * lengths * std::mem::size_of::<Table>())?;
+        let mut groups = Vec::<Table>::with_capacity(lengths);
+        let mut blanked = Vec::<Table>::with_capacity(lengths);
+        let all_pairs = pairs_of.iter().sum::<usize>();
+        ledger.take(all_pairs * std::mem::size_of::<BlankAnswer>())?;
+        let mut answers = Vec::<BlankAnswer>::with_capacity(all_pairs);
+        let mut runs = keyed.chunk_by(|a, b| a.0 == b.0).peekable();
+        for len in 0..lengths {
+            ledger.take(table_bytes::<(KeyBytes, Span)>(keys_of[len]))?;
+            let mut table = Table::with_capacity_and_hasher(keys_of[len], Default::default());
+            let pair_bytes = pairs_of[len] * std::mem::size_of::<(KeyBytes, Span, u8)>();
+            ledger.take(pair_bytes)?;
+            let mut pairs = Vec::<(KeyBytes, Span, u8)>::with_capacity(pairs_of[len]);
+            if let Some(run) = runs.next_if(|run| run[0].0 as usize == len) {
+                for group in run.chunk_by(|a, b| a.1 == b.1) {
+                    let key = group[0].1.key();
+                    let span = Span {
+                        at: u32::try_from(letters).ok()?,
+                        n: u32::try_from(group.len()).ok()?,
+                    };
+                    for &(_, _, index) in group {
+                        at[index as usize] = u32::try_from(letters).ok()?;
+                        letters += len;
+                    }
+                    table.insert(group[0].1, span);
+                    for tile in layout.tiles_in(key) {
+                        pairs.push((KeyBytes::of(key - layout.place_value(tile)), span, tile));
+                    }
+                }
+            }
+            groups.push(table);
+
+            // a length's pairs, gone before the next length's are made
+            pairs.sort_unstable_by_key(|&(key, span, tile)| (key, span.at, tile));
+            let blank_keys = pairs.chunk_by(|a, b| a.0 == b.0).count();
+            ledger.take(table_bytes::<(KeyBytes, Span)>(blank_keys))?;
+            let mut table = Table::with_capacity_and_hasher(blank_keys, Default::default());
+            for group in pairs.chunk_by(|a, b| a.0 == b.0) {
+                table.insert(
                     group[0].0,
                     Span {
                         at: u32::try_from(answers.len()).ok()?,
@@ -149,11 +320,32 @@ impl Anagrams {
                         .map(|&(_, span, tile)| BlankAnswer { span, tile }),
                 );
             }
+            blanked.push(table);
+            drop(pairs);
+            ledger.give(pair_bytes);
         }
+        drop(keyed);
+        ledger.give(words * std::mem::size_of::<(u8, KeyBytes, u32)>());
+
+        ledger.take(letters)?;
+        let mut arena = vec![0u8; letters].into_boxed_slice();
+        let mut index = 0usize;
+        ledger.take(MAX_WORD)?;
+        for_each_word(g, MAX_WORD, &mut |w| {
+            if at[index] != u32::MAX {
+                arena[at[index] as usize..][..w.len()].copy_from_slice(w);
+            }
+            index += 1;
+        });
+        ledger.give(MAX_WORD);
+        drop(at);
+        ledger.give(index * std::mem::size_of::<u32>());
 
         let key_count = groups.iter().map(|t| t.len()).sum::<usize>();
+        ledger.take(filter_bytes(key_count))?;
         let (filter, filter_block_mask) = Self::filter_of(&groups, key_count);
         let blank_key_count = blanked.iter().map(|t| t.len()).sum::<usize>();
+        ledger.take(filter_bytes(blank_key_count))?;
         let (blank_filter, blank_filter_block_mask) = Self::filter_of(&blanked, blank_key_count);
         Some(Anagrams {
             layout,
@@ -161,7 +353,7 @@ impl Anagrams {
             filter_block_mask,
             blank_filter,
             blank_filter_block_mask,
-            arena: arena.into_boxed_slice(),
+            arena,
             groups: groups.into_boxed_slice(),
             blanked: blanked.into_boxed_slice(),
             answers: answers.into_boxed_slice(),
@@ -201,12 +393,12 @@ impl Anagrams {
         if keys == 0 {
             return (Box::new([]), 0);
         }
-        let blocks = (keys * 16).div_ceil(FILTER_BLOCK_BITS).next_power_of_two();
+        let blocks = filter_blocks(keys);
         let mut filter = vec![0u64; blocks * FILTER_BLOCK_WORDS].into_boxed_slice();
         let mask = blocks - 1;
         for (len, table) in groups.iter().enumerate() {
             for &key in table.keys() {
-                let h = filter_hash(key, len as u8);
+                let h = filter_hash(key.key(), len as u8);
                 let base = ((h >> 32) as usize & mask) * FILTER_BLOCK_WORDS;
                 let mut probe = h;
                 for _ in 0..FILTER_PROBES {
@@ -227,6 +419,24 @@ impl Anagrams {
             len,
         }
     }
+
+    // the bytes it holds
+    #[inline(always)]
+    fn bytes(&self) -> usize {
+        let tables = |tables: &[Table]| {
+            std::mem::size_of_val(tables)
+                + tables
+                    .iter()
+                    .map(|table| table_bytes::<(KeyBytes, Span)>(table.capacity()))
+                    .sum::<usize>()
+        };
+        self.arena.len()
+            + tables(&self.groups)
+            + tables(&self.blanked)
+            + std::mem::size_of_val(&*self.answers)
+            + std::mem::size_of_val(&*self.filter)
+            + std::mem::size_of_val(&*self.blank_filter)
+    }
 }
 
 impl Anagrams {
@@ -240,7 +450,10 @@ impl Anagrams {
         if !self.filter_may_hold(key.0, len) {
             return None;
         }
-        Some(self.words_of(len, *self.groups.get(len as usize)?.get(&key.0)?))
+        Some(self.words_of(
+            len,
+            *self.groups.get(len as usize)?.get(&KeyBytes::of(key.0))?,
+        ))
     }
 
     #[inline(always)]
@@ -248,7 +461,10 @@ impl Anagrams {
         if !self.filter_may_hold(key.0, len) {
             return None;
         }
-        self.groups.get(len as usize)?.get(&key.0).copied()
+        self.groups
+            .get(len as usize)?
+            .get(&KeyBytes::of(key.0))
+            .copied()
     }
 
     #[inline(always)]
@@ -276,7 +492,7 @@ impl Anagrams {
         let Some(table) = self.blanked.get(len as usize) else {
             return;
         };
-        let Some(&run) = table.get(&key.0) else {
+        let Some(&run) = table.get(&KeyBytes::of(key.0)) else {
             return;
         };
         for &a in &self.answers[run.at as usize..][..run.n as usize] {
@@ -306,32 +522,57 @@ impl RackLengths {
         g: &kwg::Kwg<N>,
         game_config: &game_config::GameConfig,
     ) -> error::Returns<Option<Self>> {
-        match layout_for_config(game_config) {
-            Some(layout) => Ok(Some(Self::build(
-                g,
-                layout,
-                game_config.rack_size() as usize + 1,
-            )?)),
+        Self::build_for_config_within(g, game_config, &mut Ledger::up_to(usize::MAX))
+    }
+
+    #[inline(always)]
+    fn build_for_config_within<N: kwg::Node>(
+        g: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+        ledger: &mut Ledger,
+    ) -> error::Returns<Option<Self>> {
+        match layout_for_config(game_config, ledger) {
+            Some(layout) => {
+                Self::build_within(g, layout, game_config.rack_size() as usize + 1, ledger)
+            }
             None => Ok(None),
         }
     }
 
-    pub fn build<N: kwg::Node>(
+    fn build_within<N: kwg::Node>(
         g: &kwg::Kwg<N>,
         layout: alphagram::KeyLayout,
         max_tiles: usize,
-    ) -> error::Returns<Self> {
-        let list = alphagram::WordList::build(g)?;
+        ledger: &mut Ledger,
+    ) -> error::Returns<Option<Self>> {
+        if refuse_a_loop(g, ledger)?.is_none() || ledger.take(max_tiles).is_none() {
+            return Ok(None);
+        }
         let mut present =
             std::collections::HashSet::<u128, std::hash::BuildHasherDefault<KeyHasher>>::default();
-        for w in list.iter() {
-            if w.len() <= max_tiles
-                && let Some(key) = layout.key_of(w)
-            {
-                present.insert(key);
+        let mut room = true;
+        for_each_word(g, max_tiles, &mut |w| {
+            let Some(key) = layout.key_of(w) else {
+                return;
+            };
+            // an insert into a full set moves it to one twice the size, both
+            // held while it moves
+            let full = room && present.len() == present.capacity();
+            if full {
+                room = ledger
+                    .take(table_bytes::<u128>(present.capacity() + 1))
+                    .is_some();
             }
-        }
-        Ok(Self { layout, present })
+            if room {
+                let old = table_bytes::<u128>(present.capacity());
+                present.insert(key);
+                if full {
+                    ledger.give(old);
+                }
+            }
+        });
+        ledger.give(max_tiles);
+        Ok(room.then_some(Self { layout, present }))
     }
 
     #[inline(always)]
@@ -342,6 +583,12 @@ impl RackLengths {
     #[inline(always)]
     pub fn contains(&self, key: u128) -> bool {
         self.present.contains(&key)
+    }
+
+    // the bytes it holds
+    #[inline(always)]
+    fn bytes(&self) -> usize {
+        table_bytes::<u128>(self.present.capacity())
     }
 }
 
@@ -360,10 +607,36 @@ impl ArmTables {
         game_config: &game_config::GameConfig,
         lean: bool,
     ) -> error::Returns<Self> {
+        Self::build_in(kwg, game_config, lean, &mut Ledger::up_to(usize::MAX))
+    }
+
+    // the tables, or none if building them would hold more than max_bytes at
+    // once; a build is stopped before the allocation that would pass it
+    #[inline]
+    pub fn build_within<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+        lean: bool,
+        max_bytes: usize,
+    ) -> error::Returns<Option<Self>> {
+        let mut ledger = Ledger::up_to(max_bytes);
+        let tables = Self::build_in(kwg, game_config, lean, &mut ledger)?;
+        Ok((!ledger.refused).then_some(tables))
+    }
+
+    #[inline]
+    fn build_in<N: kwg::Node>(
+        kwg: &kwg::Kwg<N>,
+        game_config: &game_config::GameConfig,
+        lean: bool,
+        ledger: &mut Ledger,
+    ) -> error::Returns<Self> {
         Ok(if lean {
-            RackLengths::build_for_config(kwg, game_config)?.map_or(Self::None, Self::RackLengths)
+            RackLengths::build_for_config_within(kwg, game_config, ledger)?
+                .map_or(Self::None, Self::RackLengths)
         } else {
-            Anagrams::build_for_config(kwg, game_config)?.map_or(Self::None, Self::Anagrams)
+            Anagrams::build_for_config_within(kwg, game_config, ledger)?
+                .map_or(Self::None, Self::Anagrams)
         })
     }
 
@@ -382,6 +655,107 @@ impl ArmTables {
             Self::Anagrams(_) | Self::None => None,
         }
     }
+
+    // the bytes the tables hold
+    #[inline(always)]
+    pub fn bytes(&self) -> usize {
+        match self {
+            Self::Anagrams(anagrams) => anagrams.bytes(),
+            Self::RackLengths(rack_lengths) => rack_lengths.bytes(),
+            Self::None => 0,
+        }
+    }
+}
+
+// the words in g's dawg, by a count that refuses a graph that loops; the count
+// holds at most 4 bytes a node (a bit a node, then 4 bytes a dawg node)
+#[inline(always)]
+fn dawg_words<N: kwg::Node>(g: &kwg::Kwg<N>, ledger: &mut Ledger) -> error::Returns<Option<usize>> {
+    let held = 4 * g.0.len();
+    if ledger.take(held).is_none() {
+        return Ok(None);
+    }
+    let counts = g.count_dawg_words_alloc()?;
+    let words = match g[0].arc_index() {
+        root if root > 0 => counts[root as usize] as usize,
+        _ => 0,
+    };
+    drop(counts);
+    ledger.give(held);
+    Ok(Some(words))
+}
+
+// g's dawg refused if it loops, by a walk that marks each node while what
+// follows it is walked: a byte a node, where the lean arm needs no word count
+fn refuse_a_loop<N: kwg::Node>(g: &kwg::Kwg<N>, ledger: &mut Ledger) -> error::Returns<Option<()>> {
+    fn visit<N: kwg::Node>(g: &kwg::Kwg<N>, p: i32, state: &mut [u8]) -> error::Returns<()> {
+        match state[p as usize] {
+            1 => return Err(format!("the word graph loops back to node {p}").into()),
+            2 => return Ok(()),
+            _ => {}
+        }
+        state[p as usize] = 1;
+        let node = g[p];
+        if node.arc_index() > 0 {
+            visit(g, node.arc_index(), state)?;
+        }
+        if !node.is_end() {
+            visit(g, p + 1, state)?;
+        }
+        state[p as usize] = 2;
+        Ok(())
+    }
+    if ledger.take(g.0.len()).is_none() {
+        return Ok(None);
+    }
+    let mut state = vec![0u8; g.0.len()];
+    let root = g[0].arc_index();
+    if root > 0 {
+        visit(g, root, &mut state)?;
+    }
+    drop(state);
+    ledger.give(g.0.len());
+    Ok(Some(()))
+}
+
+// each word of g's dawg of at most max_len tiles, in the graph's order; true if
+// longer words were left out. g was counted first, so it does not loop
+fn for_each_word<N: kwg::Node, F: FnMut(&[u8])>(
+    g: &kwg::Kwg<N>,
+    max_len: usize,
+    f: &mut F,
+) -> bool {
+    fn walk<N: kwg::Node, F: FnMut(&[u8])>(
+        g: &kwg::Kwg<N>,
+        mut p: i32,
+        max_len: usize,
+        w: &mut Vec<u8>,
+        f: &mut F,
+    ) -> bool {
+        let mut cut = false;
+        loop {
+            let node = g[p];
+            w.push(node.tile());
+            if node.accepts() {
+                f(w);
+            }
+            if node.arc_index() > 0 {
+                if w.len() < max_len {
+                    cut |= walk(g, node.arc_index(), max_len, w, f);
+                } else {
+                    cut = true;
+                }
+            }
+            w.pop();
+            if node.is_end() {
+                break;
+            }
+            p += 1;
+        }
+        cut
+    }
+    let root = g[0].arc_index();
+    root > 0 && max_len > 0 && walk(g, root, max_len, &mut Vec::with_capacity(max_len), f)
 }
 
 #[cfg(test)]
@@ -405,12 +779,36 @@ mod tests {
 
     #[inline]
     fn test_layout() -> alphagram::KeyLayout {
-        layout_for_config(&crate::game_config::make_english_game_config()).unwrap()
+        layout_for_config(
+            &crate::game_config::make_english_game_config(),
+            &mut Ledger::up_to(usize::MAX),
+        )
+        .unwrap()
+    }
+
+    #[inline]
+    fn graph_of(words: &[Vec<u8>]) -> kwg::Kwg<kwg::Node22> {
+        let mut words = words.to_vec();
+        words.sort_unstable();
+        let words = words
+            .iter()
+            .map(|w| w[..].into())
+            .collect::<Vec<crate::bites::Bites>>();
+        let bytes = crate::build::build(
+            crate::build::BuildContent::Gaddawg,
+            crate::build::BuildLayout::Wolges,
+            crate::build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap()
     }
 
     #[inline(always)]
     fn built(words: &[Vec<u8>]) -> Anagrams {
-        Anagrams::build_from_words(test_layout(), words.iter().map(|w| &w[..])).unwrap()
+        Anagrams::build(&graph_of(words), test_layout())
+            .unwrap()
+            .unwrap()
     }
 
     #[inline]
@@ -550,8 +948,7 @@ mod tests {
         let layout = test_layout();
         let sixteen = vec![1u8; 16];
         let words = [vec![1u8, 2], sixteen.clone()];
-        let held =
-            Anagrams::build_from_words(layout.clone(), words.iter().map(|w| &w[..])).unwrap();
+        let held = built(&words);
         assert!(layout.key_of(&sixteen).is_none());
         let key = alphagram::Fitted(layout.key_of(&[1, 2]).unwrap());
         assert_eq!(sorted(held.words(key, 2)), vec![vec![1u8, 2]]);
@@ -585,5 +982,31 @@ mod tests {
         for lean in [false, true] {
             assert!(ArmTables::build(&kwg, &gc, lean).is_err());
         }
+    }
+
+    #[test]
+    #[inline]
+    fn the_tables_count_the_bytes_they_hold() {
+        let gc = crate::game_config::make_english_game_config();
+        let words = three_letter_words()
+            .iter()
+            .map(|w| w[..].into())
+            .collect::<Vec<crate::bites::Bites>>();
+        let bytes = crate::build::build(
+            crate::build::BuildContent::Gaddawg,
+            crate::build::BuildLayout::Wolges,
+            crate::build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
+        let anagrams = ArmTables::build(&kwg, &gc, false).unwrap().bytes();
+        let lean = ArmTables::build(&kwg, &gc, true).unwrap().bytes();
+        // the anagrams hold every word's letters beside its keys, the lean arm
+        // the keys alone
+        assert!(anagrams > words.len() * 3, "{anagrams}");
+        assert!(0 < lean && lean < anagrams, "{lean} {anagrams}");
+        let none = ArmTables::None;
+        assert_eq!(none.bytes(), 0);
     }
 }
