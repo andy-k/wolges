@@ -2045,6 +2045,7 @@ fn do_task<AlphabetMaker: FnOnce() -> error::Returns<alphabet::Alphabet>>(
             out,
             num_buckets,
         } => {
+            let num_buckets = num_buckets.get();
             // assume input is good (e.g. no duplicates)
             let alphabet = make_alphabet()?;
             let alphabet_reader = &alphabet::AlphabetReader::new_for_racks(&alphabet);
@@ -3225,7 +3226,7 @@ enum Task {
         #[arg(help = "the ort to write")]
         out: String,
         #[arg(help = "the number of buckets")]
-        num_buckets: u32,
+        num_buckets: std::num::NonZeroU32,
     },
     #[command(about = "read .wmp (format subject to change)")]
     Wmp {
