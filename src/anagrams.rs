@@ -6,9 +6,8 @@ const FILTER_BLOCK_BITS: usize = 512;
 const FILTER_BLOCK_WORDS: usize = FILTER_BLOCK_BITS / 64;
 const FILTER_BLOCK_SHIFT: u32 = FILTER_BLOCK_BITS.trailing_zeros();
 const FILTER_PROBES: usize = 3;
-// a filter spends at least this many bits on each key, then rounds its blocks
-// up to a power of two; the blank filter gets fewer, since only a rack with a
-// blank reads it
+// the bits a filter spends on each key; the blank filter gets fewer, since only
+// a rack with a blank reads it
 const KEY_FILTER_BITS: usize = 32;
 const BLANK_FILTER_BITS: usize = 16;
 
@@ -19,9 +18,13 @@ fn filter_hash(key: u128, len: u8) -> u64 {
 
 #[inline(always)]
 fn filter_blocks(keys: usize, bits: usize) -> usize {
-    (keys * bits)
-        .div_ceil(FILTER_BLOCK_BITS)
-        .next_power_of_two()
+    (keys * bits).div_ceil(FILTER_BLOCK_BITS)
+}
+
+// the block a hash picks, by multiply-shift, so any count of blocks will do
+#[inline(always)]
+fn filter_block(h: u64, blocks: usize) -> usize {
+    (((h >> 32) * blocks as u64) >> 32) as usize
 }
 
 #[inline(always)]
@@ -123,9 +126,9 @@ pub struct Anagrams {
     answer_ats: Box<[u32]>,
     answer_tiles: Box<[u8]>,
     filter: Box<[u64]>,
-    filter_block_mask: usize,
+    filter_block_count: usize,
     blank_filter: Box<[u64]>,
-    blank_filter_block_mask: usize,
+    blank_filter_block_count: usize,
 }
 
 // in the tile of a blank's last answer for a key; no tile has it
@@ -341,18 +344,18 @@ impl Anagrams {
 
         let key_count = groups.iter().map(|t| t.len()).sum::<usize>();
         ledger.take(filter_bytes(key_count, KEY_FILTER_BITS))?;
-        let (filter, filter_block_mask) = Self::filter_of(&groups, key_count, KEY_FILTER_BITS);
+        let (filter, filter_block_count) = Self::filter_of(&groups, key_count, KEY_FILTER_BITS);
         let blank_key_count = blanked.iter().map(|t| t.len()).sum::<usize>();
         ledger.take(filter_bytes(blank_key_count, BLANK_FILTER_BITS))?;
-        let (blank_filter, blank_filter_block_mask) =
+        let (blank_filter, blank_filter_block_count) =
             Self::filter_of(&blanked, blank_key_count, BLANK_FILTER_BITS);
         Some(Anagrams {
             layout,
             max_word_len: longest,
             filter,
-            filter_block_mask,
+            filter_block_count,
             blank_filter,
-            blank_filter_block_mask,
+            blank_filter_block_count,
             arena,
             groups: groups.into_boxed_slice(),
             blanked: blanked.into_boxed_slice(),
@@ -363,21 +366,21 @@ impl Anagrams {
 
     #[inline(always)]
     fn filter_may_hold(&self, key: u128, len: u8) -> bool {
-        Self::filter_may_hold_in(&self.filter, self.filter_block_mask, key, len)
+        Self::filter_may_hold_in(&self.filter, self.filter_block_count, key, len)
     }
 
     #[inline(always)]
     fn blank_filter_may_hold(&self, key: u128, len: u8) -> bool {
-        Self::filter_may_hold_in(&self.blank_filter, self.blank_filter_block_mask, key, len)
+        Self::filter_may_hold_in(&self.blank_filter, self.blank_filter_block_count, key, len)
     }
 
     #[inline(always)]
-    fn filter_may_hold_in(filter: &[u64], block_mask: usize, key: u128, len: u8) -> bool {
+    fn filter_may_hold_in(filter: &[u64], blocks: usize, key: u128, len: u8) -> bool {
         if filter.is_empty() {
             return true;
         }
         let h = filter_hash(key, len);
-        let base = ((h >> 32) as usize & block_mask) * FILTER_BLOCK_WORDS;
+        let base = filter_block(h, blocks) * FILTER_BLOCK_WORDS;
         let mut probe = h;
         for _ in 0..FILTER_PROBES {
             let bit = probe as usize & (FILTER_BLOCK_BITS - 1);
@@ -396,11 +399,10 @@ impl Anagrams {
         }
         let blocks = filter_blocks(keys, bits);
         let mut filter = vec![0u64; blocks * FILTER_BLOCK_WORDS].into_boxed_slice();
-        let mask = blocks - 1;
         for (len, table) in groups.iter().enumerate() {
             for &key in table.keys() {
                 let h = filter_hash(key.key(), len as u8);
-                let base = ((h >> 32) as usize & mask) * FILTER_BLOCK_WORDS;
+                let base = filter_block(h, blocks) * FILTER_BLOCK_WORDS;
                 let mut probe = h;
                 for _ in 0..FILTER_PROBES {
                     let bit = probe as usize & (FILTER_BLOCK_BITS - 1);
@@ -409,7 +411,7 @@ impl Anagrams {
                 }
             }
         }
-        (filter, mask)
+        (filter, blocks)
     }
 
     #[inline(always)]
