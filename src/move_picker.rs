@@ -1,8 +1,8 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{
-    anagrams, error, game_config, game_state, klv, kwg, move_filter, movegen, simmer, stats,
-    win_pct,
+    anagrams, equity, error, game_config, game_state, glance, klv, kwg, move_filter, movegen,
+    simmer, stats, win_pct,
 };
 use rand::SeedableRng;
 
@@ -16,6 +16,10 @@ struct Candidate {
 
 pub const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
 pub const DEFAULT_NUM_SIM_PLIES: usize = 2;
+// one point
+pub const DEFAULT_DEFT_WINDOW: i32 = equity::SCALE;
+// how many moves deft generates to choose among
+const DEFT_FIELD: usize = 8;
 
 #[derive(Clone)]
 pub struct FieldShape {
@@ -434,6 +438,9 @@ pub enum MovePicker<'a, N: kwg::Node, L: kwg::Node> {
     Hasty,
     Dynamic(klv::DynamicLeavesRef<'a>),
     Simmer(Box<Simmer<'a, N, L>>),
+    // of hasty's moves within this much equity of its best, the one leaving the
+    // board the fewest bingo lanes
+    Deft(i32),
 }
 
 impl<
@@ -731,6 +738,36 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 simmer.begin_decision(move_generator, game_state, budget)?;
                 let winner_play_index = top_candidate_play_index_by_mean(&simmer.candidates);
                 move_generator.plays.swap(0, winner_play_index);
+                move_generator.plays.truncate(1);
+            }
+            MovePicker::Deft(window) => {
+                filtered_movegen.gen_moves(
+                    move_generator,
+                    board_snapshot,
+                    rack,
+                    game_state.current_player().num_exchanges,
+                    DEFT_FIELD,
+                    None,
+                );
+                let best = move_generator.plays[0].equity.raw();
+                let mut after = Vec::new();
+                let mut pick = (0, u32::MAX);
+                for (i, m) in move_generator.plays.iter().enumerate() {
+                    if best - m.equity.raw() > *window {
+                        break;
+                    }
+                    glance::board_after(
+                        board_snapshot.game_config,
+                        &game_state.board_tiles,
+                        &m.play,
+                        &mut after,
+                    );
+                    let lanes = glance::glance_at(board_snapshot.game_config, &after).bingo_lanes;
+                    if lanes < pick.1 {
+                        pick = (i, lanes);
+                    }
+                }
+                move_generator.plays.swap(0, pick.0);
                 move_generator.plays.truncate(1);
             }
         }

@@ -333,6 +333,18 @@ struct Compare {
         help = "the rollouts seat p1's simmer makes for each move it picks"
     )]
     p1_iters: u64,
+    #[arg(
+        long,
+        value_name = "POINTS",
+        help = "seat p0, deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
+    )]
+    p0_window: Option<f64>,
+    #[arg(
+        long,
+        value_name = "POINTS",
+        help = "seat p1, deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
+    )]
+    p1_window: Option<f64>,
     #[arg(long, default_value = "1", help = "rollout threads a seat")]
     sim_threads: std::num::NonZeroUsize,
 }
@@ -835,6 +847,26 @@ fn run<N: kwg::Node + Sync + Send>(
             )
         }
         Task::Compare(a) => {
+            // a deft seat's window, in points to milli-points: 1 point unless
+            // given, and given for no other seat
+            let window = |w: Option<f64>, picker: SeatPicker| -> error::Returns<i32> {
+                if w.is_some() && !matches!(picker, SeatPicker::Deft) {
+                    wolges::return_error!(
+                        "--p0-window and --p1-window are for a deft seat".to_string()
+                    );
+                }
+                match w {
+                    None => Ok(move_picker::DEFAULT_DEFT_WINDOW),
+                    Some(w) if w.is_finite() && w >= 0.0 => {
+                        Ok((w * equity::SCALE as f64).round() as i32)
+                    }
+                    Some(_) => wolges::return_error!(
+                        "a deft seat's window is points, 0 or more".to_string()
+                    ),
+                }
+            };
+            let p0_window = window(a.p0_window, a.p0_picker)?;
+            let p1_window = window(a.p1_window, a.p1_picker)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
             let hasty_only = matches!(a.p0_picker, SeatPicker::Hasty)
@@ -852,6 +884,8 @@ fn run<N: kwg::Node + Sync + Send>(
                 p1_plies: a.p1_plies.into(),
                 p0_iters: a.p0_iters,
                 p1_iters: a.p1_iters,
+                p0_window,
+                p1_window,
             };
             match (a.lean, hasty_only) {
                 (false, false) => {
@@ -4771,6 +4805,7 @@ enum SeatPicker {
     Hasty,
     Dynamic,
     Simmer,
+    Deft,
 }
 
 #[inline]
@@ -4779,6 +4814,7 @@ fn picker_name(picker: SeatPicker) -> &'static str {
         SeatPicker::Hasty => "hasty",
         SeatPicker::Dynamic => "dynamic",
         SeatPicker::Simmer => "simmer",
+        SeatPicker::Deft => "deft",
     }
 }
 
@@ -6048,12 +6084,15 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     kwg,
                     arm_tables,
                     klv,
-                    dyn_ref,
-                    move_picker::SimmerParams {
-                        num_sim_iters,
-                        num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
-                        sim_threads: 1,
-                        win_pct_table: None,
+                    SeatParams {
+                        dynamic_leaves: dyn_ref,
+                        simmer_params: move_picker::SimmerParams {
+                            num_sim_iters,
+                            num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
+                            sim_threads: 1,
+                            win_pct_table: None,
+                        },
+                        deft_window: move_picker::DEFAULT_DEFT_WINDOW,
                     },
                 );
                 let mut game_state = game_state::GameState::new(game_config);
@@ -7575,6 +7614,14 @@ struct CompareParams {
     p1_plies: usize,
     p0_iters: u64,
     p1_iters: u64,
+    p0_window: i32,
+    p1_window: i32,
+}
+
+struct SeatParams<'a> {
+    dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
+    simmer_params: move_picker::SimmerParams<'a>,
+    deft_window: i32,
 }
 
 #[inline]
@@ -7584,11 +7631,15 @@ fn seat_picker<'a, N: kwg::Node, L: kwg::Node>(
     kwg: &'a kwg::Kwg<N>,
     arm_tables: &'a anagrams::ArmTables,
     klv: &'a klv::Klv<L>,
-    dynamic_leaves: Option<klv::DynamicLeavesRef<'a>>,
-    simmer_params: move_picker::SimmerParams<'a>,
+    SeatParams {
+        dynamic_leaves,
+        simmer_params,
+        deft_window,
+    }: SeatParams<'a>,
 ) -> move_picker::MovePicker<'a, N, L> {
     match picker {
         SeatPicker::Hasty => move_picker::MovePicker::Hasty,
+        SeatPicker::Deft => move_picker::MovePicker::Deft(deft_window),
         SeatPicker::Dynamic => move_picker::MovePicker::Dynamic(dynamic_leaves.unwrap()),
         // reseeded before each of its turns, so its first generator is fixed
         // rather than drawn from the system
@@ -7629,6 +7680,8 @@ fn compare_seats<
         p1_plies,
         p0_iters,
         p1_iters,
+        p0_window,
+        p1_window,
     }: CompareParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
@@ -7660,7 +7713,7 @@ fn compare_seats<
             let lat = census::MultisetLattice::new(num_letters, rack_size)?;
             let full_v_of = |picker: SeatPicker, klv: &klv::Klv<L>| match picker {
                 SeatPicker::Dynamic => full_rack_values(&lat, klv),
-                SeatPicker::Hasty | SeatPicker::Simmer => Vec::new(),
+                SeatPicker::Hasty | SeatPicker::Simmer | SeatPicker::Deft => Vec::new(),
             };
             let full_v = [
                 full_v_of(p0_picker, &arc_klv0),
@@ -7679,21 +7732,41 @@ fn compare_seats<
             min_keep: 0,
         })
     });
-    let seat_line =
-        |picker: SeatPicker, plies: usize, iters: u64, win_pct: Option<&str>| match picker {
-            SeatPicker::Simmer => format!(
-                "{} ({iters} rollouts a move, {plies} plies each, win%={})",
-                picker_name(picker),
-                win_pct.unwrap_or("sigmoid"),
-            ),
-            SeatPicker::Hasty | SeatPicker::Dynamic => picker_name(picker).to_string(),
-        };
+    let seat_line = |picker: SeatPicker,
+                     plies: usize,
+                     iters: u64,
+                     win_pct: Option<&str>,
+                     window: i32| match picker {
+        SeatPicker::Simmer => format!(
+            "{} ({iters} rollouts a move, {plies} plies each, win%={})",
+            picker_name(picker),
+            win_pct.unwrap_or("sigmoid"),
+        ),
+        SeatPicker::Deft => format!(
+            "{} (of its moves within {} of its best equity, the one leaving the fewest bingo lanes)",
+            picker_name(picker),
+            equity::Equity::new(window),
+        ),
+        SeatPicker::Hasty | SeatPicker::Dynamic => picker_name(picker).to_string(),
+    };
     writeln!(
         boxed_stdout_or_stderr(),
         "compare: the {} arm; p0 {}; p1 {}",
         if LEAN { "lean" } else { "unadorned" },
-        seat_line(p0_picker, p0_plies, p0_iters, p0_win_pct.as_deref()),
-        seat_line(p1_picker, p1_plies, p1_iters, p1_win_pct.as_deref()),
+        seat_line(
+            p0_picker,
+            p0_plies,
+            p0_iters,
+            p0_win_pct.as_deref(),
+            p0_window
+        ),
+        seat_line(
+            p1_picker,
+            p1_plies,
+            p1_iters,
+            p1_win_pct.as_deref(),
+            p1_window
+        ),
     )?;
 
     std::thread::scope(|s| -> error::Returns<()> {
@@ -7716,12 +7789,15 @@ fn compare_seats<
                     &kwg,
                     arm_tables,
                     &arc_klv0,
-                    dyn_refs.map(|refs| refs[0]),
-                    move_picker::SimmerParams {
-                        num_sim_iters: p0_iters,
-                        num_sim_plies: p0_plies,
-                        sim_threads,
-                        win_pct_table: winpct_p0,
+                    SeatParams {
+                        dynamic_leaves: dyn_refs.map(|refs| refs[0]),
+                        simmer_params: move_picker::SimmerParams {
+                            num_sim_iters: p0_iters,
+                            num_sim_plies: p0_plies,
+                            sim_threads,
+                            win_pct_table: winpct_p0,
+                        },
+                        deft_window: p0_window,
                     },
                 );
                 let mut driver_p1 = seat_picker(
@@ -7730,12 +7806,15 @@ fn compare_seats<
                     &kwg,
                     arm_tables,
                     &arc_klv1,
-                    dyn_refs.map(|refs| refs[1]),
-                    move_picker::SimmerParams {
-                        num_sim_iters: p1_iters,
-                        num_sim_plies: p1_plies,
-                        sim_threads,
-                        win_pct_table: winpct_p1,
+                    SeatParams {
+                        dynamic_leaves: dyn_refs.map(|refs| refs[1]),
+                        simmer_params: move_picker::SimmerParams {
+                            num_sim_iters: p1_iters,
+                            num_sim_plies: p1_plies,
+                            sim_threads,
+                            win_pct_table: winpct_p1,
+                        },
+                        deft_window: p1_window,
                     },
                 );
                 let mut game_state = game_state::GameState::new(&game_config);

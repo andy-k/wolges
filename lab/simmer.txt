@@ -62,7 +62,9 @@ measures which one plays better.
 A seat does not have to sim at all. --p0-picker / --p1-picker take "hasty", the
 single greedy look and the default; "dynamic", the same look with every kept
 leave valued against the tiles still unseen, which needs a full-length leave
-table (census --full); or "simmer". So the question the simmer exists to answer
+table (census --full); "deft", the same look taking, among its moves within
+--p0-window points of its best (1 unless given), the one that leaves the board
+the fewest bingo lanes; or "simmer". So the question the simmer exists to answer
 -- is it worth anything over just taking the best-looking move? -- is one run
 of one subcommand, on the same deals, with the same leave table on both sides
 and nothing else differing. Twenty pairs at 200 rollouts a move: the simming
