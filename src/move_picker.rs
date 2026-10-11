@@ -15,6 +15,7 @@ struct Candidate {
 }
 
 pub const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
+pub const DEFAULT_NUM_SIM_PLIES: usize = 2;
 
 #[derive(Clone)]
 pub struct FieldShape {
@@ -200,6 +201,7 @@ pub struct Simmer<
     candidates: Vec<Candidate>,
     simmer: simmer::Simmer<R>,
     num_sim_iters: u64,
+    num_sim_plies: usize,
     retired: Vec<Candidate>,
     iters_done: u64,
     next_stream_id: u64,
@@ -213,6 +215,7 @@ pub struct Simmer<
 
 pub struct SimmerParams<'a> {
     pub num_sim_iters: u64,
+    pub num_sim_plies: usize,
     pub sim_threads: usize,
     pub win_pct_table: Option<&'a win_pct::WinPctTable>,
 }
@@ -261,6 +264,7 @@ impl<
             candidates: Vec::new(),
             simmer: simmer::Simmer::with_rng(game_config, rng),
             num_sim_iters: params.num_sim_iters,
+            num_sim_plies: params.num_sim_plies,
             retired: Vec::new(),
             iters_done: 0,
             next_stream_id: 0,
@@ -654,7 +658,7 @@ impl<
         iters: u64,
     ) -> error::Returns<()> {
         self.simmer
-            .prepare(self.game_config, game_state, 2, OBSERVE);
+            .prepare(self.game_config, game_state, self.num_sim_plies, OBSERVE);
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
         self.candidates = self.take_candidates(move_generator.plays.len());
