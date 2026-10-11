@@ -19,6 +19,7 @@ pub mod fash;
 pub mod game_config;
 pub mod game_state;
 pub mod game_timers;
+pub mod glance;
 pub mod kibitzer;
 pub mod klv;
 pub mod kwg;
