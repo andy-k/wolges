@@ -451,6 +451,40 @@ struct BoardStats {
 }
 
 #[derive(clap::Args)]
+struct Openness {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves (- for none)")]
+    klv: String,
+    #[arg(help = "the fen file, one board a line")]
+    boards: String,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
+}
+
+#[derive(clap::Args)]
+struct OpennessMoves {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves both players use (- for none)")]
+    klv: String,
+    #[arg(default_value_t = 50)]
+    games: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+    #[arg(
+        long,
+        default_value_t = 1.0,
+        help = "how many points of equity below the best a candidate may be"
+    )]
+    window: f64,
+    #[arg(long, default_value_t = 5, help = "how many candidates a move at most")]
+    candidates: usize,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
+}
+
+#[derive(clap::Args)]
 struct Position {
     #[arg(help = "the word graph (- for stdin)")]
     kwg: String,
@@ -612,6 +646,14 @@ enum Task {
         about = "shape of the boards in a fen file: tiles, words, mean word length, perimeter per tile, radius of gyration, holes"
     )]
     BoardStats(BoardStats),
+    #[command(
+        about = "how open each board in a fen file is: what a rack dealt from its unseen pool makes on it at best, exactly, beside what the board shows at a glance, and how well each glance predicts it"
+    )]
+    Openness(Openness),
+    #[command(
+        about = "play hasty games and weigh, at every move, the candidates near its best by how open each leaves the board for the opponent, exactly, and how well each glance at the board orders them"
+    )]
+    OpennessMoves(OpennessMoves),
     #[command(
         about = "one board given as fen: the board, the tiles not on it, its words and its shape; with a rack, the rack's moves and dynamic leaves"
     )]
@@ -941,6 +983,34 @@ fn run<N: kwg::Node + Sync + Send>(
             inspect_dynamic_leaves(game_config, klv, &a.rack, &a.board, threads)
         }
         Task::BoardStats(a) => board_stats(game_config, &mut make_reader(&a.boards)?),
+        Task::Openness(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = read_klv(&game_config, &a.klv)?;
+            board_openness(game_config, kwg, klv, &a.boards, threads, a.quiet)
+        }
+        Task::OpennessMoves(a) => {
+            if a.window.is_nan() || a.window < 0.0 || a.candidates < 2 {
+                wolges::return_error!(
+                    "the window is a number of points not below 0, and candidates 2 or more"
+                        .to_string()
+                );
+            }
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = read_klv(&game_config, &a.klv)?;
+            openness_moves(
+                game_config,
+                kwg,
+                klv,
+                OpennessMovesParams {
+                    num_games: a.games,
+                    seed: a.seed,
+                    threads,
+                    window: (a.window * equity::SCALE as f64).round() as i32,
+                    num_candidates: a.candidates,
+                    quiet: a.quiet,
+                },
+            )
+        }
         Task::Position(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
@@ -6262,6 +6332,695 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     Ok(())
 }
 
+// what a board shows at a glance. An anchor is an empty square a tile touches
+// (the star, on an empty board). A stretch is a run of a lane's squares a word
+// could fill exactly: nothing just past either end, at least one empty square
+// and at most rack_size, two squares or more, and an anchor or a tile inside --
+// every (dir, idx, left, right) a placement sees, each counted.
+#[derive(Clone, Copy)]
+struct Glance {
+    anchors: u32,
+    premium_anchors: u32,
+    word_premium_anchors: u32,
+    bingo_lanes: u32,
+    stretches: u32,
+    bingo_stretches: u32,
+    word_premium_stretches: u32,
+}
+
+#[inline]
+fn glance_at(game_config: &game_config::GameConfig, board_tiles: &[u8]) -> Glance {
+    let board_layout = game_config.board_layout();
+    let dim = board_layout.dim();
+    let premiums = board_layout.premiums();
+    let rack_size = game_config.rack_size() as u32;
+    let empty_board = board_tiles.iter().all(|&t| t == 0);
+    let star = dim.at_row_col(board_layout.star_row(), board_layout.star_col());
+    let is_anchor = |row: i8, col: i8| {
+        let at = dim.at_row_col(row, col);
+        if board_tiles[at] != 0 {
+            return false;
+        }
+        if empty_board {
+            return at == star;
+        }
+        [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().any(|&(dr, dc)| {
+            let (r, c) = (row + dr, col + dc);
+            (0..dim.rows).contains(&r)
+                && (0..dim.cols).contains(&c)
+                && board_tiles[dim.at_row_col(r, c)] != 0
+        })
+    };
+    let mut glance = Glance {
+        anchors: 0,
+        premium_anchors: 0,
+        word_premium_anchors: 0,
+        bingo_lanes: 0,
+        stretches: 0,
+        bingo_stretches: 0,
+        word_premium_stretches: 0,
+    };
+    for row in 0..dim.rows {
+        for col in 0..dim.cols {
+            if is_anchor(row, col) {
+                let premium = &premiums[dim.at_row_col(row, col)];
+                glance.anchors += 1;
+                glance.premium_anchors +=
+                    (premium.word_multiplier != 1 || premium.tile_multiplier != 1) as u32;
+                glance.word_premium_anchors += (premium.word_multiplier != 1) as u32;
+            }
+        }
+    }
+    for down in [false, true] {
+        for lane in 0..(if down { dim.cols } else { dim.rows }) {
+            let strider = dim.lane(down, lane);
+            let len = strider.len();
+            let square = |i: i8| strider.at(i);
+            let anchor_at = |i: i8| {
+                if down {
+                    is_anchor(i, lane)
+                } else {
+                    is_anchor(lane, i)
+                }
+            };
+            let mut lane_has_bingo = false;
+            for start in 0..len {
+                if start > 0 && board_tiles[square(start - 1)] != 0 {
+                    continue;
+                }
+                let (mut empty, mut touching, mut word_premium) = (0u32, false, false);
+                for end in start..len {
+                    let at = square(end);
+                    if board_tiles[at] == 0 {
+                        empty += 1;
+                        touching |= anchor_at(end);
+                        word_premium |= premiums[at].word_multiplier != 1;
+                    } else {
+                        touching = true;
+                    }
+                    if empty > rack_size {
+                        break;
+                    }
+                    if end == start
+                        || empty == 0
+                        || !touching
+                        || (end + 1 < len && board_tiles[square(end + 1)] != 0)
+                    {
+                        continue;
+                    }
+                    glance.stretches += 1;
+                    glance.bingo_stretches += (empty == rack_size) as u32;
+                    glance.word_premium_stretches += word_premium as u32;
+                    lane_has_bingo |= empty == rack_size;
+                }
+            }
+            glance.bingo_lanes += lane_has_bingo as u32;
+        }
+    }
+    glance
+}
+
+// one board's exact openness, over every full rack its unseen pool can deal,
+// each by its chance to be dealt: the best score it can make, the best equity,
+// and the chance it holds a play of all its tiles
+#[derive(Clone, Copy)]
+struct BoardOpenness {
+    pool: u32,
+    best_score: f64,
+    best_equity: f64,
+    bingo: f64,
+}
+
+// the board's exact openness for a rack dealt from pool (more tiles than a
+// rack), leaves being (the leave table, all zeros); scratch is (movegen rack,
+// blank deltas, sheet)
+#[inline]
+fn exact_openness<N: kwg::Node, L: kwg::Node>(
+    move_generator: &mut movegen::KurniaMoveGenerator,
+    board_tiles: &[u8],
+    tables: SpellTables<'_, N, L>,
+    leaves: (&[i32], &[i32]),
+    pool: &[u8],
+    ln_binom: &LnBinom,
+    scratch: (&mut Vec<u8>, &mut Vec<(u8, i32)>, &mut Vec<i32>),
+) -> BoardOpenness {
+    let game_config = tables.game_config;
+    let lat = tables.lat;
+    let num_letters = lat.num_letters();
+    let rack_size = lat.rack_size();
+    let pool_size: usize = pool.iter().map(|&c| c as usize).sum();
+    let can_exchange =
+        bag_size(board_tiles, game_config) >= game_config.exchange_tile_limit() as i64;
+    let sheet = scratch.2;
+    infer_sheet_for(
+        move_generator,
+        board_tiles,
+        tables,
+        pool,
+        can_exchange,
+        (scratch.0, scratch.1),
+        sheet,
+    );
+    // a play of every tile is a full rack's own entry, above the sheet's floor
+    // only if some word takes them all
+    let floor = if can_exchange { 0 } else { i32::MIN / 4 };
+    let ln_deals = ln_binom.ln_binom(pool_size, rack_size);
+    let mut cap = vec![0usize; num_letters + 1];
+    for t in (0..num_letters).rev() {
+        cap[t] = cap[t + 1] + pool[t] as usize;
+    }
+    let mut cur = vec![0u8; num_letters];
+    let mut openness = BoardOpenness {
+        pool: pool_size as u32,
+        best_score: 0.0,
+        best_equity: 0.0,
+        bingo: 0.0,
+    };
+    each_tally_of_size(pool, &cap, 0, rack_size, &mut cur, &mut |rack| {
+        let chance = (rack
+            .iter()
+            .zip(pool)
+            .map(|(&r, &u)| ln_binom.ln_binom(u as usize, r as usize))
+            .sum::<f64>()
+            - ln_deals)
+            .exp();
+        let rank = lat.rank(rack) as usize;
+        // with no play and no exchange a rack must pass: it scores nothing and
+        // keeps every tile (the sheet has no entry for playing nothing)
+        let or_pass = |best: i32, pass: i32| if best < i32::MIN / 8 { pass } else { best };
+        openness.best_score +=
+            chance * or_pass(census::best_equity_of(lat, sheet, leaves.1, rack), 0) as f64;
+        openness.best_equity += chance
+            * or_pass(
+                census::best_equity_of(lat, sheet, leaves.0, rack),
+                leaves.0[rank],
+            ) as f64;
+        openness.bingo += chance * (sheet[rank] > floor) as u8 as f64;
+    });
+    openness
+}
+
+#[inline]
+fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    boards_path: &str,
+    threads: usize,
+    quiet: bool,
+) -> error::Returns<()> {
+    let alphabet = game_config.alphabet();
+    let num_letters = alphabet.len() as usize;
+    let rack_size = game_config.rack_size() as usize;
+    let mut fen_parser = display::BoardFenParser::new(alphabet, game_config.board_layout());
+    let mut boards = Vec::new();
+    for line in std::fs::read_to_string(boards_path)?.lines() {
+        if !line.is_empty() {
+            boards.push(fen_parser.parse(line)?.to_vec());
+        }
+    }
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
+    let mut leave = vec![0i32; lat.len()];
+    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    let no_leave = vec![0i32; lat.len()];
+    let ln_binom = LnBinom::new(alphabet.num_tiles() as usize);
+    let t0 = std::time::Instant::now();
+    let claimed = std::sync::atomic::AtomicUsize::new(0);
+    let tick = std::sync::atomic::AtomicU64::new(0);
+    let mut found =
+        std::thread::scope(|s| -> error::Returns<Vec<(usize, BoardOpenness, Glance)>> {
+            let mut thread_handles = Vec::new();
+            for _ in 0..threads {
+                let (game_config, kwg, klv, boards) = (&game_config, &kwg, &klv, &boards);
+                let (lat, leave, no_leave, ln_binom, claimed) =
+                    (&lat, &leave, &no_leave, &ln_binom, &claimed);
+                let tick = &tick;
+                thread_handles.push(s.spawn(
+                    move || -> error::Returns<Vec<(usize, BoardOpenness, Glance)>> {
+                        let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+                        let (mut movegen_rack, mut blank_deltas) = (Vec::new(), Vec::new());
+                        let mut sheet = Vec::new();
+                        let mut out = Vec::new();
+                        loop {
+                            let i = claimed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= boards.len() {
+                                break;
+                            }
+                            let secs = t0.elapsed().as_secs();
+                            // a line a second, from the first thread to begin a board in it
+                            if !quiet
+                                && tick.fetch_max(secs, std::sync::atomic::Ordering::Relaxed) < secs
+                            {
+                                writeln!(
+                                    boxed_stdout_or_stderr(),
+                                    "After {secs} seconds, have begun {i} of {} boards",
+                                    boards.len()
+                                )
+                                .ok();
+                            }
+                            let board_tiles = &boards[i];
+                            let pool = game_config.tiles_off_board(board_tiles)?;
+                            if pool.iter().map(|&c| c as usize).sum::<usize>() <= rack_size {
+                                continue;
+                            }
+                            let openness = exact_openness(
+                                &mut move_generator,
+                                board_tiles,
+                                SpellTables {
+                                    game_config,
+                                    kwg,
+                                    klv,
+                                    lat,
+                                },
+                                (leave, no_leave),
+                                &pool,
+                                ln_binom,
+                                (&mut movegen_rack, &mut blank_deltas, &mut sheet),
+                            );
+                            out.push((i, openness, glance_at(game_config, board_tiles)));
+                        }
+                        Ok(out)
+                    },
+                ));
+            }
+            let mut found = Vec::new();
+            for handle in thread_handles {
+                found.extend(handle.join().map_err(|_| "an openness thread panicked")??);
+            }
+            Ok(found)
+        })?;
+    found.sort_unstable_by_key(|&(i, ..)| i);
+    let n = found.len();
+    if n == 0 {
+        wolges::return_error!("no board with more unseen tiles than a rack".to_string());
+    }
+    let points = equity::SCALE as f64;
+    writeln!(
+        std::io::stdout(),
+        "{n} boards of {} read in {:?}; per board: line, unseen, best score, best equity, bingo%, anchors, premium anchors, word-premium anchors, bingo lanes, stretches, bingo stretches, word-premium stretches",
+        boards.len(),
+        t0.elapsed(),
+    )?;
+    for &(i, o, g) in &found {
+        writeln!(
+            std::io::stdout(),
+            "{}\t{}\t{:.3}\t{:.3}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            i + 1,
+            o.pool,
+            o.best_score / points,
+            o.best_equity / points,
+            100.0 * o.bingo,
+            g.anchors,
+            g.premium_anchors,
+            g.word_premium_anchors,
+            g.bingo_lanes,
+            g.stretches,
+            g.bingo_stretches,
+            g.word_premium_stretches,
+        )?;
+    }
+    // each count's correlation with each exact label, over the boards
+    let pearson = |xs: &[f64], ys: &[f64]| {
+        let nf = xs.len() as f64;
+        let (mx, my) = (xs.iter().sum::<f64>() / nf, ys.iter().sum::<f64>() / nf);
+        let sxy: f64 = xs.iter().zip(ys).map(|(x, y)| (x - mx) * (y - my)).sum();
+        let sxx: f64 = xs.iter().map(|x| (x - mx) * (x - mx)).sum();
+        let syy: f64 = ys.iter().map(|y| (y - my) * (y - my)).sum();
+        sxy / (sxx * syy).sqrt()
+    };
+    let labels: [(&str, Vec<f64>); 3] = [
+        (
+            "best score",
+            found.iter().map(|(_, o, _)| o.best_score).collect(),
+        ),
+        (
+            "best equity",
+            found.iter().map(|(_, o, _)| o.best_equity).collect(),
+        ),
+        ("bingo", found.iter().map(|(_, o, _)| o.bingo).collect()),
+    ];
+    let counts: [(&str, Vec<f64>); 8] = [
+        (
+            "unseen",
+            found.iter().map(|(_, o, _)| o.pool as f64).collect(),
+        ),
+        (
+            "anchors",
+            found.iter().map(|(_, _, g)| g.anchors as f64).collect(),
+        ),
+        (
+            "premium anchors",
+            found
+                .iter()
+                .map(|(_, _, g)| g.premium_anchors as f64)
+                .collect(),
+        ),
+        (
+            "word-premium anchors",
+            found
+                .iter()
+                .map(|(_, _, g)| g.word_premium_anchors as f64)
+                .collect(),
+        ),
+        (
+            "bingo lanes",
+            found.iter().map(|(_, _, g)| g.bingo_lanes as f64).collect(),
+        ),
+        (
+            "stretches",
+            found.iter().map(|(_, _, g)| g.stretches as f64).collect(),
+        ),
+        (
+            "bingo stretches",
+            found
+                .iter()
+                .map(|(_, _, g)| g.bingo_stretches as f64)
+                .collect(),
+        ),
+        (
+            "word-premium stretches",
+            found
+                .iter()
+                .map(|(_, _, g)| g.word_premium_stretches as f64)
+                .collect(),
+        ),
+    ];
+    writeln!(
+        std::io::stdout(),
+        "correlation      {:>11} {:>11} {:>11}",
+        labels[0].0,
+        labels[1].0,
+        labels[2].0,
+    )?;
+    for (name, xs) in &counts {
+        writeln!(
+            std::io::stdout(),
+            "{name:<22} {:>+.3}      {:>+.3}      {:>+.3}",
+            pearson(xs, &labels[0].1),
+            pearson(xs, &labels[1].1),
+            pearson(xs, &labels[2].1),
+        )?;
+    }
+    Ok(())
+}
+
+// the index of the item f makes least, the first of equals
+#[inline]
+fn least_of<T>(items: &[T], mut f: impl FnMut(&T) -> f64) -> usize {
+    let mut least = (0, f64::INFINITY);
+    for (i, item) in items.iter().enumerate() {
+        let key = f(item);
+        if key < least.1 {
+            least = (i, key);
+        }
+    }
+    least.0
+}
+
+struct OpennessMovesParams {
+    num_games: u64,
+    seed: Option<u64>,
+    threads: usize,
+    window: i32,
+    num_candidates: usize,
+    quiet: bool,
+}
+
+// the board a move leaves: the tiles it places put down
+#[inline]
+fn board_after(
+    game_config: &game_config::GameConfig,
+    board_tiles: &[u8],
+    play: &movegen::Play,
+    out: &mut Vec<u8>,
+) {
+    out.clear();
+    out.extend_from_slice(board_tiles);
+    if let movegen::Play::Place {
+        down,
+        lane,
+        idx,
+        word,
+        ..
+    } = play
+    {
+        let strider = game_config.board_layout().dim().lane(*down, *lane);
+        for (i, &tile) in (*idx..).zip(word.iter()) {
+            if tile != 0 {
+                out[strider.at(i)] = tile;
+            }
+        }
+    }
+}
+
+// hasty plays both seats; at every move with tiles in the bag, its candidates
+// within window of the best (at most num_candidates of them), each with the
+// exact openness of the board it leaves for the opponent -- the pool the
+// opponent draws from being the tiles off that board less the mover's leave --
+// and the glance counts of that board. Then, over the positions, how far the
+// candidates' openness spreads, what the least open one costs and saves, and
+// how often each count, and the equity, order the candidates as the openness
+// does.
+#[inline]
+fn openness_moves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    OpennessMovesParams {
+        num_games,
+        seed,
+        threads,
+        window,
+        num_candidates,
+        quiet,
+    }: OpennessMovesParams,
+) -> error::Returns<()> {
+    let seed = seed_or_random(seed)?;
+    writeln!(std::io::stdout(), "seed: {seed}")?;
+    let num_letters = game_config.alphabet().len() as usize;
+    let rack_size = game_config.rack_size() as usize;
+    let lat = census::MultisetLattice::new(num_letters, rack_size)?;
+    let mut leave = vec![0i32; lat.len()];
+    census::fill_lattice_leaves(&lat, &mut leave, |tally| klv.leave_value_from_tally(tally));
+    let no_leave = vec![0i32; lat.len()];
+    let ln_binom = LnBinom::new(game_config.alphabet().num_tiles() as usize);
+    let t0 = std::time::Instant::now();
+    let claimed_games = std::sync::atomic::AtomicU64::new(0);
+    let tick = std::sync::atomic::AtomicU64::new(0);
+    let weighed = std::sync::atomic::AtomicU64::new(0);
+    type Candidate = (i32, BoardOpenness, Glance);
+    // a position: its game and turn, and its candidates
+    type Position = ((u64, u32), Vec<Candidate>);
+    let mut positions = std::thread::scope(|s| -> error::Returns<Vec<Position>> {
+        let mut thread_handles = Vec::new();
+        for _ in 0..threads {
+            let (game_config, kwg, klv, claimed_games) = (&game_config, &kwg, &klv, &claimed_games);
+            let (lat, leave, no_leave, ln_binom) = (&lat, &leave, &no_leave, &ln_binom);
+            let (tick, weighed) = (&tick, &weighed);
+            thread_handles.push(s.spawn(move || -> error::Returns<Vec<Position>> {
+                let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+                let mut sheet_generator = movegen::KurniaMoveGenerator::new(game_config);
+                let (mut movegen_rack, mut blank_deltas) = (Vec::new(), Vec::new());
+                let mut sheet = Vec::new();
+                let mut game_state = game_state::GameState::new(game_config);
+                let mut final_scores = vec![0i32; game_config.num_players() as usize];
+                let mut after = Vec::new();
+                let mut out = Vec::new();
+                loop {
+                    let game_idx = claimed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if game_idx >= num_games {
+                        break;
+                    }
+                    let mut rng = GameRng::from_stream(seed, game_idx);
+                    game_state.reset_and_draw_tiles(game_config, &mut rng);
+                    let mut num_turns = 0u32;
+                    loop {
+                        let board_snapshot = movegen::BoardSnapshot {
+                            board_tiles: &game_state.board_tiles,
+                            game_config,
+                            kwg,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv,
+                        };
+                        move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &game_state.current_player().rack,
+                            max_gen: num_candidates,
+                            num_exchanges_by_this_player: game_state.current_player().num_exchanges,
+                            pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                            dynamic_leaves: None,
+                        });
+                        let best = move_generator.plays[0].equity.raw();
+                        let within = move_generator
+                            .plays
+                            .iter()
+                            .take_while(|m| best - m.equity.raw() <= window)
+                            .count();
+                        // the opponent's rack was dealt from the tiles the mover
+                        // cannot see, whichever move the mover makes: one pool
+                        let mut pool = game_config.tiles_off_board(&game_state.board_tiles)?;
+                        game_config.take_rack(&mut pool, &game_state.current_player().rack)?;
+                        if !game_state.bag.is_empty()
+                            && within >= 2
+                            && pool.iter().map(|&c| c as usize).sum::<usize>() > rack_size
+                        {
+                            let mut cands = Vec::with_capacity(within);
+                            for m in &move_generator.plays[..within] {
+                                board_after(
+                                    game_config,
+                                    &game_state.board_tiles,
+                                    &m.play,
+                                    &mut after,
+                                );
+                                let openness = exact_openness(
+                                    &mut sheet_generator,
+                                    &after,
+                                    SpellTables {
+                                        game_config,
+                                        kwg,
+                                        klv,
+                                        lat,
+                                    },
+                                    (leave, no_leave),
+                                    &pool,
+                                    ln_binom,
+                                    (&mut movegen_rack, &mut blank_deltas, &mut sheet),
+                                );
+                                cands.push((
+                                    m.equity.raw(),
+                                    openness,
+                                    glance_at(game_config, &after),
+                                ));
+                            }
+                            if cands.len() >= 2 {
+                                out.push(((game_idx, num_turns), cands));
+                                weighed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        let play = move_generator.plays[0].play.clone();
+                        game_state.play(game_config, &mut rng, &play)?;
+                        num_turns += 1;
+                        let secs = t0.elapsed().as_secs();
+                        // a line a second, from the first thread to end a turn in it
+                        if !quiet && tick.fetch_max(secs, std::sync::atomic::Ordering::Relaxed) < secs {
+                            writeln!(
+                                boxed_stdout_or_stderr(),
+                                "After {secs} seconds, have begun {} of {num_games} games, weighed {} positions",
+                                claimed_games.load(std::sync::atomic::Ordering::Relaxed).min(num_games),
+                                weighed.load(std::sync::atomic::Ordering::Relaxed),
+                            )
+                            .ok();
+                        }
+                        match game_state.check_game_ended(game_config, &mut final_scores)? {
+                            game_state::CheckGameEnded::PlayedOut
+                            | game_state::CheckGameEnded::ZeroScores => break,
+                            game_state::CheckGameEnded::NotEnded => {}
+                        }
+                        game_state.next_turn();
+                    }
+                }
+                Ok(out)
+            }));
+        }
+        let mut positions = Vec::new();
+        for handle in thread_handles {
+            positions.extend(handle.join().map_err(|_| "an openness thread panicked")??);
+        }
+        Ok(positions)
+    })?;
+    // in game and turn order, whichever thread played them
+    positions.sort_unstable_by_key(|&(at, _)| at);
+    let n = positions.len();
+    if n == 0 {
+        wolges::return_error!("no move with two candidates in its window".to_string());
+    }
+    let points = equity::SCALE as f64;
+    let num_cands: usize = positions.iter().map(|(_, c)| c.len()).sum();
+    writeln!(
+        std::io::stdout(),
+        "{n} positions with 2 to {num_candidates} candidates within {} points of the best ({:.2} a position), in {:?}",
+        window as f64 / points,
+        num_cands as f64 / n as f64,
+        t0.elapsed(),
+    )?;
+    // what the candidates leave the opponent: its spread, and the least open
+    // candidate's saving against the best's, and the equity it costs
+    for (name, label) in [
+        (
+            "best score",
+            (|o: &BoardOpenness| o.best_score / equity::SCALE as f64) as fn(&BoardOpenness) -> f64,
+        ),
+        ("best equity", |o: &BoardOpenness| {
+            o.best_equity / equity::SCALE as f64
+        }),
+        ("bingo%", |o: &BoardOpenness| 100.0 * o.bingo),
+    ] {
+        let (mut spread, mut saved, mut cost) = (0.0, 0.0, 0.0);
+        for (_, cands) in &positions {
+            let labels: Vec<f64> = cands.iter().map(|(_, o, _)| label(o)).collect();
+            let lo = labels.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = labels.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let least = least_of(&labels, |&x| x);
+            spread += hi - lo;
+            saved += labels[0] - labels[least];
+            cost += (cands[0].0 - cands[least].0) as f64 / points;
+        }
+        writeln!(
+            std::io::stdout(),
+            "  the opponent's {name}: spread {:.3} a position; the least open candidate leaves {:.3} less than the best by equity, for {:.3} points of equity",
+            spread / n as f64,
+            saved / n as f64,
+            cost / n as f64,
+        )?;
+    }
+    // over every pair of candidates in a position, how often a count orders
+    // them as the opponent's best score does (Kendall's rank correlation over
+    // the pairs they tell apart), and how often its least is the least open
+    // candidate
+    type Count = fn(&Candidate) -> f64;
+    let counts: [(&str, Count); 8] = [
+        ("equity", |c| c.0 as f64),
+        ("anchors", |c| c.2.anchors as f64),
+        ("premium anchors", |c| c.2.premium_anchors as f64),
+        ("word-premium anchors", |c| c.2.word_premium_anchors as f64),
+        ("bingo lanes", |c| c.2.bingo_lanes as f64),
+        ("stretches", |c| c.2.stretches as f64),
+        ("bingo stretches", |c| c.2.bingo_stretches as f64),
+        ("word-premium stretches", |c| {
+            c.2.word_premium_stretches as f64
+        }),
+    ];
+    writeln!(
+        std::io::stdout(),
+        "  against the opponent's best score  kendall   picks the least open"
+    )?;
+    for (name, count) in counts {
+        let (mut agree, mut disagree, mut picks) = (0u64, 0u64, 0u64);
+        for (_, cands) in &positions {
+            for a in 0..cands.len() {
+                for b in a + 1..cands.len() {
+                    let dx = count(&cands[a]) - count(&cands[b]);
+                    let dy = cands[a].1.best_score - cands[b].1.best_score;
+                    if dx * dy > 0.0 {
+                        agree += 1;
+                    } else if dx * dy < 0.0 {
+                        disagree += 1;
+                    }
+                }
+            }
+            picks += (least_of(cands, count) == least_of(cands, |c| c.1.best_score)) as u64;
+        }
+        writeln!(
+            std::io::stdout(),
+            "  {name:<34} {:>+.3}    {:.2}%",
+            (agree as f64 - disagree as f64) / (agree + disagree).max(1) as f64,
+            100.0 * picks as f64 / n as f64,
+        )?;
+    }
+    Ok(())
+}
+
 #[inline]
 fn full_rack_values<L: kwg::Node>(lat: &census::MultisetLattice, klv: &klv::Klv<L>) -> Vec<i32> {
     let mut full_v = vec![0i32; lat.len()];
@@ -7694,5 +8453,63 @@ mod tests {
         );
         // at the smallest gap, the true rack's share of the racks there
         assert!((fit_log_likelihood(&[fit_move(0)], 0.0) - 0.5f64.ln()).abs() < 1e-12);
+    }
+
+    #[test]
+    #[inline]
+    fn an_empty_board_shows_its_star_and_the_stretches_through_it() {
+        let game_config = game_config::make_english_game_config();
+        let dim = game_config.board_layout().dim();
+        let board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        let g = glance_at(&game_config, &board_tiles);
+        // the star alone, a double word; its row and its column each hold the
+        // stretches of 2 to 7 squares through it: 2 + 3 + ... + 7 = 27, of
+        // which 7 have seven squares
+        assert_eq!(
+            (g.anchors, g.premium_anchors, g.word_premium_anchors),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            (
+                g.bingo_lanes,
+                g.stretches,
+                g.bingo_stretches,
+                g.word_premium_stretches
+            ),
+            (2, 54, 14, 54)
+        );
+    }
+
+    #[test]
+    #[inline]
+    fn board_after_puts_down_what_a_move_places_and_least_of_keeps_the_first() {
+        let game_config = game_config::make_english_game_config();
+        let dim = game_config.board_layout().dim();
+        let mut board_tiles = vec![0u8; dim.rows as usize * dim.cols as usize];
+        board_tiles[dim.at_row_col(7, 8)] = 9;
+        let mut after = Vec::new();
+        board_after(
+            &game_config,
+            &board_tiles,
+            &movegen::Play::Place {
+                down: false,
+                lane: 7,
+                idx: 7,
+                word: [17u8, 0, 19][..].into(),
+                score: 0,
+            },
+            &mut after,
+        );
+        assert_eq!(
+            (
+                after[dim.at_row_col(7, 7)],
+                after[dim.at_row_col(7, 8)],
+                after[dim.at_row_col(7, 9)]
+            ),
+            (17, 9, 19)
+        );
+        assert_eq!(after.iter().filter(|&&t| t != 0).count(), 3);
+        assert_eq!(least_of(&[3.0, 1.0, 1.0, 2.0], |&x| x), 1);
+        assert_eq!(least_of(&[] as &[f64], |&x| x), 0);
     }
 }
