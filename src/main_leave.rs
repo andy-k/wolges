@@ -7871,7 +7871,7 @@ fn compare_seats<
                                 simmer_driver.reseed(census_mix64(
                                     seed.wrapping_add(census_mix64(
                                         pair_idx
-                                            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                                            .wrapping_mul(0x9e3779b97f4a7c15)
                                             .wrapping_add((game_in_pair as u64).wrapping_shl(40))
                                             .wrapping_add(num_turns as u64),
                                     )),

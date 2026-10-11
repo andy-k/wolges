@@ -1921,10 +1921,10 @@ mod tests {
     // https://prng.di.unimi.it/splitmix64.c
     #[inline]
     fn splitmix64(s: &mut u64) -> u64 {
-        *s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        *s = s.wrapping_add(0x9e3779b97f4a7c15);
         let mut z = *s;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
         z ^ (z >> 31)
     }
 

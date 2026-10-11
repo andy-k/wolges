@@ -119,9 +119,9 @@ pub fn gen_simmer_candidates<N: kwg::Node, L: kwg::Node>(
 // what makes the parallel result independent of the thread count.
 #[inline(always)]
 fn mix(decision_seed: u64, sim_iter: u64) -> u64 {
-    let mut z = decision_seed.wrapping_add(sim_iter.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    let mut z = decision_seed.wrapping_add(sim_iter.wrapping_mul(0x9e3779b97f4a7c15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
     z ^ (z >> 31)
 }
 
