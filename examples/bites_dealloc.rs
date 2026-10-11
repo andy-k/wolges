@@ -1,5 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
+#![cfg(test)]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Mutex;
 use wolges::bites;
