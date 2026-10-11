@@ -427,7 +427,7 @@ struct Infer {
     rack: Option<String>,
     #[arg(
         long,
-        help = "how fuzzily this klv's equity predicts the move: the points of equity a move falls below a rack's best that make that rack e (2.718) times less likely to have made it; 0 keeps only the racks for which the move was best by this klv (infer-fit measures it for a lexicon and a mover)"
+        help = "how many points of equity below its best play make a rack e (2.718) times less likely to have made the move; 0 keeps only the racks closest to their best"
     )]
     fuzz: f64,
     #[arg(long, default_value_t = 20, help = "how many racks to list")]
@@ -5852,7 +5852,9 @@ fn equity_fuzz(fuzz: f64) -> error::Returns<f64> {
 // for a rack that gives up gap, where g0 is the smallest gap of the racks that
 // make the move: the log of the factor on its chance to be dealt, which is
 // -(gap - g0) / fuzz, a gap below 0 counting as 0. At fuzz 0, its limit: 0 at
-// the smallest gap, and minus infinity above it.
+// the smallest gap, and minus infinity above it. The move may be no rack's
+// best, so g0 may be above 0: fuzz 0 then keeps the racks closest to their
+// best, not none; above fuzz 0, g0 cancels when the weights are normalized
 #[inline(always)]
 fn fuzz_ln_weight(gap: i32, g0: i32, fuzz: f64) -> f64 {
     let d = gap.max(0) - g0;
