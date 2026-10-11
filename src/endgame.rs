@@ -3,7 +3,7 @@
 // note: this module is very slow and may need a lot of space
 // and it still has many bugs
 
-use super::{anagrams, display, error, fash, game_config, klv, kwg, move_picker, movegen};
+use super::{anagrams, display, equity, error, fash, game_config, klv, kwg, move_picker, movegen};
 use std::io::Write;
 
 // move one tile at a time from rack
@@ -144,8 +144,15 @@ impl WorkBuffer {
 
 // only for reporting
 pub struct FoundPlay<'a> {
-    pub equity: f32,
+    pub equity: equity::Equity,
     pub play: &'a movegen::Play,
+}
+
+// the solver counts millipoints in f32, which holds whole ones exactly; an
+// average, such as the peg's margin, rounds to the nearest
+#[inline(always)]
+fn to_equity(v: f32) -> equity::Equity {
+    equity::Equity::new(v.round() as i32)
 }
 
 // EndgameSolver is the main two-player endgame solver.
@@ -360,7 +367,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 writeln!(
                     std::io::stdout(),
                     "valuation for depth {max_depth} is {}",
-                    valuation / super::equity::SCALE as f32
+                    to_equity(valuation)
                 )?;
                 self.print_progress()?;
                 self.print_best_line(player_idx)?;
@@ -402,13 +409,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     #[inline(always)]
-    pub fn evaluate(&mut self, player_idx: u8) -> error::Returns<f32> {
-        self.run_id_loop(player_idx, true)
+    pub fn evaluate(&mut self, player_idx: u8) -> error::Returns<equity::Equity> {
+        Ok(to_equity(self.run_id_loop(player_idx, true)?))
     }
 
     #[inline(always)]
-    pub fn solve(&mut self, player_idx: u8) -> error::Returns<f32> {
-        self.run_id_loop(player_idx, false)
+    pub fn solve(&mut self, player_idx: u8) -> error::Returns<equity::Equity> {
+        Ok(to_equity(self.run_id_loop(player_idx, false)?))
     }
 
     // based on https://en.wikipedia.org/wiki/Negamax
@@ -754,7 +761,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             let mut ans1 = &ans.best_move[player_idx as usize];
             let play = &self.work_buffer.plays[ans1.play_idx as usize];
             out(FoundPlay {
-                equity: ans1.equity,
+                equity: to_equity(ans1.equity),
                 play,
             });
             if let movegen::Play::Exchange { .. } = play {
@@ -766,7 +773,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 }
                 let play = &self.work_buffer.plays[ans1.play_idx as usize];
                 out(FoundPlay {
-                    equity: ans1.equity,
+                    equity: to_equity(ans1.equity),
                     play,
                 });
                 if let movegen::Play::Exchange { .. } = play {
@@ -783,7 +790,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     #[inline]
-    pub fn collect_pv(&'a self, player_idx: u8, out: &mut Vec<(f32, movegen::Play)>) {
+    pub fn collect_pv(&'a self, player_idx: u8, out: &mut Vec<(equity::Equity, movegen::Play)>) {
         out.clear();
         self.append_solution(0, player_idx, |found| {
             out.push((found.equity, found.play.clone()));
@@ -797,18 +804,20 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         board_tiles.clone_from(&self.board_tiles);
         let racks = &mut current_ply_buffer.racks;
         racks.clone_from(&self.racks);
-        let mut leftovers = [f32::NAN, f32::NAN];
+        let mut leftovers = [None, None];
         let mut i = 0usize;
         let mut written = Ok(());
         self.append_solution(0, player_idx, |ply| {
             let player_turn_idx = (player_idx as usize + i) & 1;
             let rack = &mut racks[player_turn_idx];
-            leftovers[player_turn_idx ^ 1] = f32::NAN;
-            leftovers[player_turn_idx] = ply.equity
-                - match ply.play {
-                    movegen::Play::Exchange { .. } => 0.0,
-                    movegen::Play::Place { score, .. } => *score as f32,
-                };
+            leftovers[player_turn_idx ^ 1] = None;
+            leftovers[player_turn_idx] = Some(equity::Equity::new(
+                ply.equity.raw()
+                    - match ply.play {
+                        movegen::Play::Exchange { .. } => 0,
+                        movegen::Play::Place { score, .. } => *score,
+                    },
+            ));
             if written.is_ok() {
                 written = writeln!(
                     std::io::stdout(),
@@ -817,7 +826,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     player_turn_idx,
                     self.game_config.alphabet().fmt_rack(rack),
                     "",
-                    ply.equity / super::equity::SCALE as f32,
+                    ply.equity,
                     ply.play.fmt(&movegen::BoardSnapshot {
                         board_tiles,
                         game_config: self.game_config,
@@ -866,12 +875,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 player_turn_idx,
                 self.game_config.alphabet().fmt_rack(rack)
             )?;
-            if !leftover.is_nan() {
+            if let Some(leftover) = leftover {
                 write!(
                     std::io::stdout(),
                     "{:width$} {}",
                     "",
-                    leftover / super::equity::SCALE as f32,
+                    leftover,
                     width = self.game_config.rack_size() as usize - rack.len(),
                 )?;
             }
@@ -904,7 +913,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     #[inline]
-    pub fn solve_one_in_bag(&mut self, player_idx: u8, bag_tile: u8) -> error::Returns<f32> {
+    pub fn solve_one_in_bag(
+        &mut self,
+        player_idx: u8,
+        bag_tile: u8,
+    ) -> error::Returns<equity::Equity> {
         let gc = self.game_config;
         let kwg = self.kwg;
         let arm_tables = self.arm_tables;
@@ -927,11 +940,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             mg: &mut mg,
             memo: fash::MyHashMap::default(),
         };
-        if one_in_bag_exchange_solvable(gc) {
-            Self::one_in_bag_minimax_ex(&mut search, &board, &racks, player_idx, bag_tile, 0, 0)
+        Ok(to_equity(if one_in_bag_exchange_solvable(gc) {
+            Self::one_in_bag_minimax_ex(&mut search, &board, &racks, player_idx, bag_tile, 0, 0)?
         } else {
-            Self::one_in_bag_minimax(&mut search, &board, &racks, player_idx, bag_tile, false)
-        }
+            Self::one_in_bag_minimax(&mut search, &board, &racks, player_idx, bag_tile, false)?
+        }))
     }
 
     fn one_in_bag_minimax(
@@ -989,7 +1002,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 }
 
                 search.sub.init(&nb, [&nr[0], &nr[1]]);
-                let v = search.sub.solve(opp)?;
+                let v = search.sub.solve(opp)?.raw() as f32;
 
                 let val = *score as f32 - v;
                 if val > best {
@@ -1089,7 +1102,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     rack.push(drawn);
                 }
                 search.sub.init(&nb, [&nr[0], &nr[1]]);
-                let v = search.sub.solve(opp)?;
+                let v = search.sub.solve(opp)?.raw() as f32;
                 let val = *score as f32 - v;
                 if val > best {
                     best = val;
@@ -1158,12 +1171,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         board: &[u8],
         mover_rack: &[u8],
         unseen_tally: &[u8],
-        score_diff: f32,
+        score_diff: equity::Equity,
     ) -> error::Returns<Result<PegResult, PegUnsupported>> {
         let gc = self.game_config;
         if one_in_bag_exchange_legal(gc) && !one_in_bag_exchange_solvable(gc) {
             return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
         }
+        let score_diff = score_diff.raw() as f32;
 
         if one_in_bag_exchange_legal(gc) {
             Ok(Ok(self.peg_clairvoyant_aggregate(
@@ -1195,7 +1209,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         unseen_tally: &[u8],
         score_diff: f32,
     ) -> error::Returns<PegResult> {
-        let mut hypotheses: Vec<(u8, u32, f32)> = Vec::new();
+        let mut hypotheses: Vec<(u8, u32, equity::Equity)> = Vec::new();
 
         let mut opp_rack: Vec<u8> = Vec::new();
         for (t, &count) in unseen_tally.iter().enumerate() {
@@ -1213,10 +1227,11 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             racks[mover as usize] = mover_rack;
             racks[(mover ^ 1) as usize] = &opp_rack;
             self.init(board, racks);
-            let v = self.solve_one_in_bag(mover, bag_tile)? + score_diff;
-            hypotheses.push((bag_tile, count as u32, v));
+            let v = self.solve_one_in_bag(mover, bag_tile)?.raw() as f32 + score_diff;
+            hypotheses.push((bag_tile, count as u32, to_equity(v)));
         }
-        let weighted: Vec<(u32, f32)> = hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
+        let weighted: Vec<(u32, equity::Equity)> =
+            hypotheses.iter().map(|&(_, w, v)| (w, v)).collect();
         let (win_pct, expected_margin) = peg_aggregate(&weighted);
         Ok(PegResult {
             win_pct,
@@ -1270,12 +1285,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mut best_win = f32::NEG_INFINITY;
         let mut best_marg = f32::NEG_INFINITY;
         let mut best_move = PegMove::Pass;
-        let mut best_hyps: Vec<(u8, u32, f32)> = Vec::new();
+        let mut best_hyps: Vec<(u8, u32, equity::Equity)> = Vec::new();
 
         for cand in &candidates {
             let mut win = 0.0f32;
             let mut marg = 0.0f32;
-            let mut hyps: Vec<(u8, u32, f32)> = Vec::with_capacity(unseen.len());
+            let mut hyps: Vec<(u8, u32, equity::Equity)> = Vec::with_capacity(unseen.len());
             for &(t, w) in unseen {
                 let drawn = t & !((t as i8) >> 7) as u8;
 
@@ -1311,7 +1326,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         r2[mover as usize] = mr;
                         r2[opp as usize] = opp_rack;
                         sub.init(&nb, [&r2[0], &r2[1]]);
-                        *score as f32 - sub.solve(opp)?
+                        *score as f32 - sub.solve(opp)?.raw() as f32
                     }
                     PegMove::Pass => {
                         // PEG2-7: with two or more in the bag, draw every tile from the SAME end -- pop,
@@ -1352,7 +1367,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     } else {
                         0.0
                     };
-                hyps.push((t, w, vv));
+                hyps.push((t, w, to_equity(vv)));
             }
             win /= total;
             marg /= total;
@@ -1367,7 +1382,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
         Ok(PegResult {
             win_pct: best_win,
-            expected_margin: best_marg,
+            expected_margin: to_equity(best_marg),
             hypotheses: best_hyps,
             best_move: Some(best_move),
             committed: true,
@@ -1383,8 +1398,8 @@ pub enum PegMove {
 
 pub struct PegResult {
     pub win_pct: f32,
-    pub expected_margin: f32,
-    pub hypotheses: Vec<(u8, u32, f32)>,
+    pub expected_margin: equity::Equity,
+    pub hypotheses: Vec<(u8, u32, equity::Equity)>,
     pub best_move: Option<PegMove>,
     pub committed: bool,
 }
@@ -1445,34 +1460,32 @@ fn scoreless_turns_end(gc: &game_config::GameConfig, passes: u8, zeros: u8) -> b
 }
 
 #[inline]
-pub fn peg_aggregate(hypotheses: &[(u32, f32)]) -> (f32, f32) {
+pub fn peg_aggregate(hypotheses: &[(u32, equity::Equity)]) -> (f32, equity::Equity) {
     let mut total = 0.0f32;
     let mut win_sum = 0.0f32;
     let mut margin_sum = 0.0f32;
     for &(weight, value) in hypotheses {
         let w = weight as f32;
-        let win_score = if value > 0.0 {
-            1.0
-        } else if value == 0.0 {
-            0.5
-        } else {
-            0.0
+        let win_score = match value.cmp(&equity::Equity::ZERO) {
+            std::cmp::Ordering::Greater => 1.0,
+            std::cmp::Ordering::Equal => 0.5,
+            std::cmp::Ordering::Less => 0.0,
         };
         total += w;
         win_sum += win_score * w;
-        margin_sum += value * w;
+        margin_sum += value.raw() as f32 * w;
     }
     if total == 0.0 {
-        (0.0, 0.0)
+        (0.0, equity::Equity::ZERO)
     } else {
-        (win_sum / total, margin_sum / total)
+        (win_sum / total, to_equity(margin_sum / total))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{EndgameSolver, PegMove};
-    use crate::{alphabet, anagrams, bites, build, game_config, klv, kwg, movegen};
+    use crate::{alphabet, anagrams, bites, build, equity, game_config, klv, kwg, movegen};
 
     #[inline]
     fn tiny_word_list() -> Vec<bites::Bites> {
@@ -2016,11 +2029,16 @@ mod tests {
                     EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, arm_tables).unwrap();
                 egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                 let solvev = egs.solve(0).unwrap();
-                if refv.to_bits() != solvev.to_bits() {
+                if solvev != super::to_equity(refv) {
                     disagreements += 1;
-                    let ratio = if refv != 0.0 { solvev / refv } else { f32::NAN };
+                    let ratio = if refv != 0.0 {
+                        solvev.raw() as f32 / refv
+                    } else {
+                        f32::NAN
+                    };
                     println!(
-                        "DISAGREE [{name}] lean={lean}: ref={refv} solve={solvev} ratio={ratio}\n   {}",
+                        "DISAGREE [{name}] lean={lean}: ref={refv} solve={} ratio={ratio}\n   {}",
+                        solvev.raw(),
                         describe(&gc, &pos)
                     );
                 }
@@ -2033,15 +2051,16 @@ mod tests {
     #[test]
     #[inline]
     fn peg_aggregate_weights_each_outcome_by_how_many_tiles_give_it() {
-        let (win_pct, expected) = super::peg_aggregate(&[(2, 3000.0), (1, 0.0), (1, -5000.0)]);
+        let e = equity::Equity::new;
+        let (win_pct, expected) = super::peg_aggregate(&[(2, e(3000)), (1, e(0)), (1, e(-5000))]);
         assert_eq!(win_pct, 0.625);
-        assert_eq!(expected, 250.0);
+        assert_eq!(expected, e(250));
 
-        let (win_pct, expected) = super::peg_aggregate(&[(1, 1.0), (1, 0.0), (1, -1.0)]);
+        let (win_pct, expected) = super::peg_aggregate(&[(1, e(1)), (1, e(0)), (1, e(-1))]);
         assert_eq!(win_pct, 0.5);
-        assert_eq!(expected, 0.0);
+        assert_eq!(expected, e(0));
 
-        assert_eq!(super::peg_aggregate(&[]), (0.0, 0.0));
+        assert_eq!(super::peg_aggregate(&[]), (0.0, e(0)));
     }
 
     #[test]
@@ -2085,13 +2104,14 @@ mod tests {
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
-            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, equity::Equity::ZERO)
             .unwrap()
             .expect("english one-in-bag is always solvable");
 
-        assert_eq!(result.hypotheses, vec![(8, 1, -2000.0), (20, 1, 1000.0)]);
+        let e = equity::Equity::new;
+        assert_eq!(result.hypotheses, vec![(8, 1, e(-2000)), (20, 1, e(1000))]);
         assert_eq!(result.win_pct, 0.5);
-        assert_eq!(result.expected_margin, -500.0);
+        assert_eq!(result.expected_margin, e(-500));
     }
 
     #[test]
@@ -2110,14 +2130,15 @@ mod tests {
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let e = equity::Equity::new;
         let result = egs
-            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 3000.0)
+            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, e(3000))
             .unwrap()
             .expect("english one-in-bag is always solvable");
 
-        assert_eq!(result.hypotheses, vec![(8, 1, 1000.0), (20, 1, 4000.0)]);
+        assert_eq!(result.hypotheses, vec![(8, 1, e(1000)), (20, 1, e(4000))]);
         assert_eq!(result.win_pct, 1.0);
-        assert_eq!(result.expected_margin, 2500.0);
+        assert_eq!(result.expected_margin, e(2500));
     }
 
     #[test]
@@ -2129,7 +2150,7 @@ mod tests {
 
         let mut ok = 0usize;
         let mut bad = 0usize;
-        let mut pv: Vec<(f32, movegen::Play)> = Vec::new();
+        let mut pv: Vec<(equity::Equity, movegen::Play)> = Vec::new();
         let positions = all_positions();
         for (lean, arm_tables) in &both_arms(&kwg, &gc) {
             for (name, pos) in &positions {
@@ -2190,12 +2211,13 @@ mod tests {
                         break;
                     }
                 }
-                if realized.to_bits() == v.to_bits() {
+                if super::to_equity(realized) == v {
                     ok += 1;
                 } else {
                     bad += 1;
                     println!(
-                        "PV-REPLAY MISMATCH [{name}] lean={lean}: solve={v} realized={realized} pvlen={}",
+                        "PV-REPLAY MISMATCH [{name}] lean={lean}: solve={} realized={realized} pvlen={}",
+                        v.raw(),
                         pv.len()
                     );
                 }
@@ -2216,7 +2238,7 @@ mod tests {
 
         let mut illegal = 0usize;
         let mut oob = 0usize;
-        let mut pv: Vec<(f32, movegen::Play)> = Vec::new();
+        let mut pv: Vec<(equity::Equity, movegen::Play)> = Vec::new();
         let positions = all_positions();
         for (lean, arm_tables) in &both_arms(&kwg, &gc) {
             for (name, pos) in &positions {
@@ -2230,10 +2252,10 @@ mod tests {
                 let board_pts: i32 = pos.board.iter().map(|&t| a.scaled_score(t)).sum();
                 let rack_pts =
                     a.scaled_rack_score(&pos.racks[0]) + a.scaled_rack_score(&pos.racks[1]);
-                let cap = 4.0 * (board_pts + rack_pts) as f32 + 10000.0;
-                if v.abs() > cap {
+                let cap = 4 * (board_pts + rack_pts) + 10000;
+                if v.raw().abs() > cap {
                     oob += 1;
-                    println!("VALUE OOB [{name}] lean={lean}: v={v} cap={cap}");
+                    println!("VALUE OOB [{name}] lean={lean}: v={} cap={cap}", v.raw());
                 }
 
                 let mut board = pos.board.clone();
@@ -2355,10 +2377,11 @@ mod tests {
                                 .unwrap();
                         egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                         let solvev = egs.solve_one_in_bag(mover, t).unwrap();
-                        if refv.to_bits() != solvev.to_bits() {
+                        if solvev != super::to_equity(refv) {
                             disagreements += 1;
                             println!(
-                                "DISAGREE [{name}] lean={lean} mover={mover} bag={t}: ref={refv} solve={solvev}\n   {}",
+                                "DISAGREE [{name}] lean={lean} mover={mover} bag={t}: ref={refv} solve={}\n   {}",
+                                solvev.raw(),
                                 describe(&gc, &pos)
                             );
                         }
@@ -2389,13 +2412,21 @@ mod tests {
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
 
         let v0 = egs.solve_one_in_bag(0, 2).unwrap();
-        assert_eq!(v0, -1000.0, "p0 forced-pass leftover should be -1000");
+        assert_eq!(
+            v0,
+            equity::Equity::new(-1000),
+            "p0 forced-pass leftover should be -1000"
+        );
 
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
         let v1 = egs.solve_one_in_bag(1, 2).unwrap();
-        assert_eq!(v1, 1000.0, "p1 forced-pass leftover should be +1000");
+        assert_eq!(
+            v1,
+            equity::Equity::new(1000),
+            "p1 forced-pass leftover should be +1000"
+        );
     }
 
     #[test]
@@ -2429,10 +2460,11 @@ mod tests {
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         egs.init(&board, [&racks[0][..], &racks[1][..]]);
         let solvev = egs.solve_one_in_bag(0, bag).unwrap();
-        assert_eq!(solvev.to_bits(), refv.to_bits(), "bag layer vs reference");
+        assert_eq!(solvev, super::to_equity(refv), "bag layer vs reference");
 
         let a = gc.alphabet();
-        let pass_only = (a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0])) as f32;
+        let pass_only =
+            equity::Equity::new(a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0]));
         assert!(
             solvev >= pass_only,
             "playing should not be worse than the pass-only leftover: solve={solvev} pass_only={pass_only}"
@@ -2482,10 +2514,11 @@ mod tests {
                                 .unwrap();
                         egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
                         let solvev = egs.solve_one_in_bag(mover, t).unwrap();
-                        if refv.to_bits() != solvev.to_bits() {
+                        if solvev != super::to_equity(refv) {
                             disagreements += 1;
                             println!(
-                                "DISAGREE [{name}] lean={lean} mover={mover} bag={t}: ref={refv} solve={solvev}\n   {}",
+                                "DISAGREE [{name}] lean={lean} mover={mover} bag={t}: ref={refv} solve={}\n   {}",
+                                solvev.raw(),
                                 describe(&gc, &pos)
                             );
                         }
@@ -2520,8 +2553,13 @@ mod tests {
         let solvev = egs.solve_one_in_bag(0, bag).unwrap();
 
         let a = gc.alphabet();
-        let pass_only = (a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0])) as f32; // -9000
-        assert_eq!(solvev, 0.0, "exchange line value should be exactly 0");
+        let pass_only =
+            equity::Equity::new(a.scaled_rack_score(&racks[1]) - a.scaled_rack_score(&racks[0])); // -9000
+        assert_eq!(
+            solvev,
+            equity::Equity::ZERO,
+            "exchange line value should be exactly 0"
+        );
         assert!(
             solvev > pass_only,
             "exchange should beat passing: solve={solvev} pass_only={pass_only}"
@@ -2544,7 +2582,7 @@ mod tests {
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
-            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, equity::Equity::ZERO)
             .unwrap()
             .expect("the exchange test config forces an end and is solvable");
         assert_eq!(result.hypotheses.len(), 2);
@@ -2555,7 +2593,7 @@ mod tests {
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_en, &kwg, &arm_tables_en).unwrap();
         assert!(
             egs_en
-                .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+                .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, equity::Equity::ZERO)
                 .unwrap()
                 .is_ok()
         );
@@ -2566,7 +2604,7 @@ mod tests {
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_bad, &kwg, &arm_tables_bad).unwrap();
         assert!(matches!(
             egs_bad
-                .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, 0.0)
+                .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, equity::Equity::ZERO)
                 .unwrap(),
             Err(super::PegUnsupported::ExchangeWithoutForcedEnd)
         ));
@@ -2741,7 +2779,13 @@ mod tests {
                             )
                             .unwrap();
                             let got = egs
-                                .solve_peg_one_in_bag(0, board, mrack, &unseen_tally, 0.0)
+                                .solve_peg_one_in_bag(
+                                    0,
+                                    board,
+                                    mrack,
+                                    &unseen_tally,
+                                    equity::Equity::ZERO,
+                                )
                                 .unwrap()
                                 .expect("english one-in-bag is always solvable");
 
@@ -2762,11 +2806,12 @@ mod tests {
                                 got.win_pct,
                                 ref_win,
                             );
+                            // the solver's margin is rounded to a whole millipoint
                             assert!(
-                                (got.expected_margin - ref_marg).abs() < 1e-1,
+                                (got.expected_margin.raw() as f32 - ref_marg).abs() < 0.6,
                                 "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed solver margin {} != reference {}",
                                 a.fmt_rack(mrack),
-                                got.expected_margin,
+                                got.expected_margin.raw(),
                                 ref_marg,
                             );
                             assert!(
