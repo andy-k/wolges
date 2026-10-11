@@ -1940,7 +1940,7 @@ mod tests {
             vec![20, 1, 2],  // TAB
             vec![20, 1, 20], // TAT
         ];
-        let mut seed = 0xD2D2_0007_2026u64;
+        let mut seed = 0u64;
         let mut out = Vec::new();
         let mut made = 0usize;
         while made < n {
