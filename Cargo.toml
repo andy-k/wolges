@@ -77,3 +77,18 @@ path = "src/main_simmer.rs"
 [[bin]]
 name = "movegen-test"
 path = "src/main_movegen_test.rs"
+
+[[example]]
+name = "arm_table_bytes"
+crate-type = ["lib"]
+test = true
+
+[[example]]
+name = "bites_dealloc"
+crate-type = ["lib"]
+test = true
+
+[[example]]
+name = "score_overflow"
+crate-type = ["lib"]
+test = true

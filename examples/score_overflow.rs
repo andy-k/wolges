@@ -1,5 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
+#![cfg(test)]
+
 use rand::SeedableRng;
 use wolges::{game_config, game_state, movegen};
 
