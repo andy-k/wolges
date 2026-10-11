@@ -4904,7 +4904,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &board_snapshot,
             rack,
-            max_gen: 10_000,
+            max_gen: usize::MAX,
             num_exchanges_by_this_player: num_exchanges,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
