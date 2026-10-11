@@ -5,6 +5,7 @@ use super::{
     simmer, stats, win_pct,
 };
 use rand::SeedableRng;
+use std::io::Write;
 
 struct Candidate {
     play_index: usize,
@@ -215,6 +216,9 @@ pub struct Simmer<
     decision_seed: u64,
     candidate_scratch: Vec<movegen::ValuedMove>,
     prepared_pristine: game_state::GameState,
+    quiet: bool,
+    decision_t0: Option<std::time::Instant>, // set only when not quiet
+    ticked: u64,
 }
 
 pub struct SimmerParams<'a> {
@@ -222,6 +226,7 @@ pub struct SimmerParams<'a> {
     pub num_sim_plies: usize,
     pub sim_threads: usize,
     pub win_pct_table: Option<&'a win_pct::WinPctTable>,
+    pub quiet: bool, // no progress lines
 }
 
 impl<'a, N: kwg::Node, L: kwg::Node, const OBSERVE: bool> Simmer<'a, N, L, OBSERVE> {
@@ -278,6 +283,9 @@ impl<
             decision_seed,
             candidate_scratch: Vec::new(),
             prepared_pristine: game_state::GameState::new(game_config),
+            quiet: params.quiet,
+            decision_t0: None,
+            ticked: 0,
         }
     }
 
@@ -411,6 +419,29 @@ impl<
     }
 }
 
+// a line a second while a decision runs, when it began with a clock: its
+// seconds, its iteration of the budget, and the candidates still in it
+#[inline(always)]
+fn tick(
+    decision_t0: Option<std::time::Instant>,
+    ticked: &mut u64,
+    sim_iter: u64,
+    budget: u64,
+    num_candidates: usize,
+) {
+    if let Some(t0) = decision_t0 {
+        let secs = t0.elapsed().as_secs();
+        if secs > *ticked {
+            *ticked = secs;
+            writeln!(
+                std::io::stdout(),
+                "After {secs} seconds, doing iteration {sim_iter} of {budget} with {num_candidates} candidates"
+            )
+            .ok();
+        }
+    }
+}
+
 #[inline(always)]
 fn top_candidate_play_index_by_mean(candidates: &[Candidate]) -> usize {
     candidates
@@ -493,6 +524,13 @@ impl<
                     candidate.win_rate_stats.update(win_prob);
                 }
             }
+            tick(
+                self.decision_t0,
+                &mut self.ticked,
+                sim_iter,
+                budget,
+                candidates.len(),
+            );
             if sim_iter % PRUNE_CADENCE == 0 {
                 let low_bar = candidates
                     .iter()
@@ -633,6 +671,13 @@ impl<
                 }
             }
             self.iters_done = block_end;
+            tick(
+                self.decision_t0,
+                &mut self.ticked,
+                block_end,
+                budget,
+                candidates.len(),
+            );
             if block_end.is_multiple_of(PRUNE_CADENCE) {
                 let low_bar = candidates
                     .iter()
@@ -672,6 +717,8 @@ impl<
         self.next_stream_id = self.candidates.len() as u64;
         self.retired.clear();
         self.iters_done = 0;
+        self.decision_t0 = (!self.quiet).then(std::time::Instant::now);
+        self.ticked = 0;
         let budget = self.num_sim_iters;
         self.run_iterations(move_generator, budget, iters)
     }
@@ -723,6 +770,7 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 );
             }
             MovePicker::Simmer(simmer) => {
+                let t0 = (!simmer.quiet).then(std::time::Instant::now);
                 let mut scratch = std::mem::take(&mut simmer.candidate_scratch);
                 gen_simmer_candidates(
                     filtered_movegen,
@@ -736,6 +784,25 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 simmer.candidate_scratch = scratch;
                 let budget = simmer.num_sim_iters;
                 simmer.begin_decision(move_generator, game_state, budget)?;
+                if let Some(t0) = t0 {
+                    const Z: f64 = 1.96; // 95% confidence interval
+                    let top = simmer
+                        .candidates
+                        .iter()
+                        .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
+                        .unwrap();
+                    writeln!(
+                        std::io::stdout(),
+                        "top candidate mean = {} (sd={} count={} range {}..{}) took {:?}",
+                        top.stats.mean(),
+                        top.stats.standard_deviation(),
+                        top.stats.count(),
+                        top.stats.ci_max(-Z),
+                        top.stats.ci_max(Z),
+                        t0.elapsed(),
+                    )
+                    .ok();
+                }
                 let winner_play_index = top_candidate_play_index_by_mean(&simmer.candidates);
                 move_generator.plays.swap(0, winner_play_index);
                 move_generator.plays.truncate(1);

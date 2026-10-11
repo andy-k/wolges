@@ -253,6 +253,7 @@ fn answer<N: kwg::Node + Sync>(
             num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
             sim_threads: 1,
             win_pct_table: None,
+            quiet: false,
         },
     )?));
     game_state

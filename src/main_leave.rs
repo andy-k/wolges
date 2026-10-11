@@ -361,6 +361,8 @@ struct SimStudyCheck {
     seed: u64,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -533,6 +535,8 @@ struct SimChunkCheck {
     trials: u32,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -547,6 +551,8 @@ struct SimMutateCheck {
     seed: u64,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -936,6 +942,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
                     sim_threads: 1,
                     win_pct_table: None,
+                    quiet: a.quiet,
                 },
             )?;
             driver.reseed(seed);
@@ -1066,7 +1073,7 @@ fn run<N: kwg::Node + Sync + Send>(
         Task::SimChunkCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
-            sim_chunk_check(game_config, kwg, klv, a.iters, a.seed, a.trials, a.lean)
+            sim_chunk_check(game_config, kwg, klv, &a)
         }
         Task::SimMutateCheck(a) => {
             let klv = read_klv(&game_config, &a.klv)?;
@@ -1102,6 +1109,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
                     sim_threads: 1,
                     win_pct_table: None,
+                    quiet: a.quiet,
                 },
             )?;
             driver.reseed(seed);
@@ -5020,10 +5028,15 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     klv: klv::Klv<L>,
-    iters: u64,
-    seed: u64,
-    trials: u32,
-    lean: bool,
+    &SimChunkCheck {
+        kwg: _,
+        klv: _,
+        iters,
+        seed,
+        trials,
+        lean,
+        quiet,
+    }: &SimChunkCheck,
 ) -> error::Returns<()> {
     if iters < 2 {
         return Err("sim-chunk-check needs at least two iterations".into());
@@ -5058,6 +5071,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
             sim_threads: 1,
             win_pct_table: None,
+            quiet,
         },
     )?;
     driver.reseed(seed);
@@ -6102,6 +6116,7 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
                             sim_threads: 1,
                             win_pct_table: None,
+                            quiet: true,
                         },
                         deft_window: move_picker::DEFAULT_DEFT_WINDOW,
                     },
@@ -7807,6 +7822,7 @@ fn compare_seats<
                             num_sim_plies: p0_plies,
                             sim_threads,
                             win_pct_table: winpct_p0,
+                            quiet: true,
                         },
                         deft_window: p0_window,
                     },
@@ -7824,6 +7840,7 @@ fn compare_seats<
                             num_sim_plies: p1_plies,
                             sim_threads,
                             win_pct_table: winpct_p1,
+                            quiet: true,
                         },
                         deft_window: p1_window,
                     },

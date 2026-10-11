@@ -310,6 +310,7 @@ fn simulate<N: kwg::Node>(
             num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
             sim_threads: 1,
             win_pct_table: None,
+            quiet: true,
         },
     )?;
     if let Some(seed) = seed {
@@ -318,10 +319,15 @@ fn simulate<N: kwg::Node>(
 
     let chunk = 50u64;
     let mut done = 0u64;
+    let t0 = std::time::Instant::now();
     driver.begin_decision(&move_generator, &game_state, chunk)?;
     done += chunk;
     loop {
-        writeln!(std::io::stdout(), "\niter {done}")?;
+        writeln!(
+            std::io::stdout(),
+            "\niter {done} of {sim_iters}, after {:?}",
+            t0.elapsed()
+        )?;
         for (i, (play_index, _obj, equity_mean, win_rate)) in (1..).zip(driver.leaderboard(10)) {
             writeln!(
                 std::io::stdout(),
