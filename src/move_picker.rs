@@ -16,7 +16,7 @@ struct Candidate {
 }
 
 pub const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
-pub const DEFAULT_NUM_SIM_PLIES: usize = 2;
+pub const DEFAULT_NUM_SIM_PLIES: usize = 4;
 // one point
 pub const DEFAULT_DEFT_WINDOW: i32 = equity::SCALE;
 // how many moves deft generates to choose among
