@@ -2788,7 +2788,7 @@ fn build_subracks(
     }));
     order.sort_unstable();
     spare.clear();
-    spare.extend(order.iter().map(|&k| subracks[(k & 0xff_ffff) as usize]));
+    spare.extend(order.iter().map(|&k| subracks[(k & 0xffffff) as usize]));
     std::mem::swap(subracks, spare);
     let num_tiles_on_rack = rack_tally
         .iter()
