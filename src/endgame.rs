@@ -81,8 +81,8 @@ struct ChildPlay {
 // (Refer to note at KurniaMoveGenerator.)
 // This is not enforced.
 struct WorkBuffer {
-    t0: std::time::Instant, // the solve's start, for its time limit
-    dur_movegen: std::time::Duration,
+    t0: std::time::Instant,           // the solve's start, for its time limit
+    dur_movegen: std::time::Duration, // for progress, timed only while something listens
     vec_placed_tile: Vec<PlacedTile>,
     current_ply_buffer: PlyBuffer, // only using one
     movegen: movegen::KurniaMoveGenerator,
@@ -733,7 +733,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 child_play_idxs: [self.work_buffer.child_plays.len(), 0, 0],
             };
             for which_player in 0..2 {
-                let t1 = std::time::Instant::now();
+                // timed only while something listens
+                let t1 = self
+                    .work_buffer
+                    .progress
+                    .is_some()
+                    .then(std::time::Instant::now);
                 const DO_HASTY: bool = false;
                 if !DO_HASTY || which_player == 0 {
                     self.work_buffer.movegen.gen_moves_raw_all_unsorted(
@@ -755,7 +760,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                             dynamic_leaves: None,
                         });
                 }
-                self.work_buffer.dur_movegen += t1.elapsed();
+                if let Some(t1) = t1 {
+                    self.work_buffer.dur_movegen += t1.elapsed();
+                }
                 for candidate in &self.work_buffer.movegen.plays {
                     match &candidate.play {
                         movegen::Play::Exchange { .. } => {
@@ -2437,6 +2444,32 @@ mod tests {
         for n in 0..positions.len() as u64 {
             assert!(endgames.contains(&Some(n)), "endgame {n} told nothing");
         }
+    }
+
+    #[test]
+    #[inline]
+    fn a_solve_times_its_movegens_only_while_something_listens() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let positions = all_positions();
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut movegen = std::time::Duration::ZERO;
+        for (_, pos) in &positions {
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs.solve(0).unwrap();
+            movegen += egs.work_buffer.dur_movegen;
+        }
+        assert_eq!(movegen, std::time::Duration::ZERO, "no listener, no clock");
+        egs.report_progress(|_: &super::Progress| Ok(()));
+        for (_, pos) in &positions {
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs.solve(0).unwrap();
+            movegen += egs.work_buffer.dur_movegen;
+        }
+        assert!(movegen > std::time::Duration::ZERO, "a listener, the time");
     }
 
     #[test]
