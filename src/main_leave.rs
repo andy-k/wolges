@@ -392,6 +392,8 @@ struct HarvestBoards {
     stride: u32,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -471,6 +473,8 @@ struct Dynaleaves {
 struct BoardStats {
     #[arg(help = "the fen file (- for stdin)")]
     boards: String,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -609,6 +613,8 @@ struct WinpctEval {
     seed: Option<u64>,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -720,11 +726,11 @@ enum Task {
     #[command(about = "summarize a log")]
     Summarize(SummaryInOut),
     #[command(about = "combine summaries into one and recompute totals")]
-    Resummarize(InOut),
+    Resummarize(SummaryInOut),
     #[command(about = "resummarize, sorted by length first")]
-    ResummarizePlayability(InOut),
+    ResummarizePlayability(SummaryInOut),
     #[command(about = "resummarize, sorted by playability first")]
-    ResummarizePlayabilityAll(InOut),
+    ResummarizePlayabilityAll(SummaryInOut),
     #[command(about = "generate leaves up to rack_size - 1")]
     Generate(Generate),
     #[command(about = "generate leaves up to rack_size")]
@@ -1017,6 +1023,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     seed: a.seed,
                     stride: a.stride,
                     lean: a.lean,
+                    quiet: a.quiet,
                 },
             )
         }
@@ -1052,7 +1059,7 @@ fn run<N: kwg::Node + Sync + Send>(
             let klv = read_klv(&game_config, &a.klv)?;
             inspect_dynamic_leaves(game_config, klv, &a.rack, &a.board, threads)
         }
-        Task::BoardStats(a) => board_stats(game_config, &mut make_reader(&a.boards)?),
+        Task::BoardStats(a) => board_stats(game_config, &mut make_reader(&a.boards)?, a.quiet),
         Task::Openness(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.klv)?;
@@ -1230,7 +1237,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     seed: a.seed,
                     threads,
                     lean: a.lean,
-                    quiet: false,
+                    quiet: a.quiet,
                 },
             )
         }
@@ -1250,6 +1257,7 @@ fn run<N: kwg::Node + Sync + Send>(
                 .has_headers(false)
                 .from_reader(make_reader(&a.input)?),
             csv::Writer::from_writer(make_writer(&a.output)?),
+            a.quiet,
         ),
         Task::ResummarizePlayability(a) => resummarize_summaries::<'p', _, _>(
             game_config,
@@ -1257,6 +1265,7 @@ fn run<N: kwg::Node + Sync + Send>(
                 .has_headers(false)
                 .from_reader(make_reader(&a.input)?),
             csv::Writer::from_writer(make_writer(&a.output)?),
+            a.quiet,
         ),
         Task::ResummarizePlayabilityAll(a) => resummarize_summaries::<'P', _, _>(
             game_config,
@@ -1264,6 +1273,7 @@ fn run<N: kwg::Node + Sync + Send>(
                 .has_headers(false)
                 .from_reader(make_reader(&a.input)?),
             csv::Writer::from_writer(make_writer(&a.output)?),
+            a.quiet,
         ),
         Task::Generate(a) => generate_leaves::<_, _, false>(
             game_config,
@@ -2729,12 +2739,22 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
+    quiet: bool,
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
     let mut rack_bytes = Vec::new();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-    for result in csv_in.records() {
+    let t0 = std::time::Instant::now();
+    let mut tick_periods = move_picker::Periods(0);
+    for (rows_read, result) in (1u64..).zip(csv_in.records()) {
+        let elapsed_time_secs = t0.elapsed().as_secs();
+        if !quiet && tick_periods.update(elapsed_time_secs) {
+            writeln!(
+                stdout_or_stderr,
+                "After {elapsed_time_secs} seconds, have read {rows_read} rows"
+            )?;
+        }
         let record = result?;
         if record.len() < 3 {
             return Err("a summary line has fewer than 3 fields".into());
@@ -3536,9 +3556,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                 }
                                 if !quiet {
                                     writeln!(boxed_stdout_or_stderr(),
-                                        "census: gen {}/{} done ({} of {} leaves valued)",
+                                        "census: gen {}/{} done ({}s), {} of {} leaves valued",
                                         gen_idx + 1,
                                         gens,
+                                        t0.elapsed().as_secs(),
                                         *valued,
                                         lat_len,).ok();
                                 }
@@ -3739,7 +3760,14 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
-    for result in csv_in.records() {
+    for (rows_read, result) in (1u64..).zip(csv_in.records()) {
+        let elapsed_time_secs = t0.elapsed().as_secs();
+        if !quiet && tick_periods.update(elapsed_time_secs) {
+            writeln!(
+                stdout_or_stderr,
+                "After {elapsed_time_secs} seconds, have read {rows_read} rows"
+            )?;
+        }
         let record = result?;
         if record.len() < 3 {
             return Err("a summary line has fewer than 3 fields".into());
@@ -3965,6 +3993,13 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
                             "not enough samples to derive {rack_bytes:?}"
                         );
                     }
+                }
+                let elapsed_time_secs = t0.elapsed().as_secs();
+                if !quiet && tick_periods.update(elapsed_time_secs) && written.is_ok() {
+                    written = writeln!(
+                        stdout_or_stderr,
+                        "After {elapsed_time_secs} seconds, filling in the {len_to_complete}-tile subracks (up to {leave_size}), have filled in {num_filled_in}",
+                    );
                 }
             },
             rack_tally: &mut alphabet_freqs,
@@ -4699,7 +4734,8 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
     )?;
     let kwg = std::sync::Arc::new(kwg);
     let next_game = std::sync::atomic::AtomicU64::new(0);
-    let report_every = 10_000u64;
+    let finished_games = std::sync::atomic::AtomicU64::new(0);
+    let tick = std::sync::atomic::AtomicU64::new(0);
     let shared = std::sync::Mutex::new(win_pct::WinPctAccumulator::new());
 
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
@@ -4743,8 +4779,15 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                             - equity::descale_score(final_scores[1 - mover]);
                         acc.record(bag, my, opp, lead, mover_final);
                     }
-                    if !quiet && (g + 1).is_multiple_of(report_every) {
-                        writeln!(boxed_stdout_or_stderr(), "winpct: {} games", g + 1).ok();
+                    let done =
+                        finished_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let secs = t0.elapsed().as_secs();
+                    if !quiet && tick.fetch_max(secs, std::sync::atomic::Ordering::Relaxed) < secs {
+                        writeln!(
+                            boxed_stdout_or_stderr(),
+                            "After {secs} seconds, have played {done} of {num_games} games"
+                        )
+                        .ok();
                     }
                 }
                 shared.lock().unwrap().merge(&acc);
@@ -4781,7 +4824,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         seed,
         threads,
         lean,
-        quiet: _,
+        quiet,
     }: GamesParams,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
@@ -4795,6 +4838,8 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     )?;
     let kwg = std::sync::Arc::new(kwg);
     let next_game = std::sync::atomic::AtomicU64::new(0);
+    let finished_games = std::sync::atomic::AtomicU64::new(0);
+    let tick = std::sync::atomic::AtomicU64::new(0);
 
     let ln_ratio = (1.0f64 / 0.9 - 1.0).ln();
 
@@ -4849,6 +4894,16 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         bt += (tab - result) * (tab - result);
                         bs += (sig - result) * (sig - result);
                         n += 1;
+                    }
+                    let done =
+                        finished_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let secs = t0.elapsed().as_secs();
+                    if !quiet && tick.fetch_max(secs, std::sync::atomic::Ordering::Relaxed) < secs {
+                        writeln!(
+                            boxed_stdout_or_stderr(),
+                            "After {secs} seconds, have played {done} of {num_games} games"
+                        )
+                        .ok();
                     }
                 }
                 let mut acc = shared.lock().unwrap();
@@ -7472,6 +7527,7 @@ struct HarvestParams {
     seed: u64,
     stride: u32,
     lean: bool,
+    quiet: bool,
 }
 
 #[inline]
@@ -7485,8 +7541,11 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
         seed,
         stride,
         lean,
+        quiet,
     }: HarvestParams,
 ) -> error::Returns<()> {
+    let t0 = std::time::Instant::now();
+    let mut ticked = 0u64;
     let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, lean)?;
     let anagrams = arm_tables.anagrams();
     let rack_lengths = arm_tables.rack_lengths();
@@ -7535,6 +7594,15 @@ fn harvest_boards<N: kwg::Node, L: kwg::Node>(
             "{}",
             display::BoardFenner::new(alphabet, board_layout, &game_state.board_tiles),
         )?;
+        let secs = t0.elapsed().as_secs();
+        if !quiet && secs > ticked {
+            ticked = secs;
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "After {secs} seconds, have played {} of {num_games} games",
+                game + 1
+            )?;
+        }
     }
     Ok(())
 }
@@ -7636,7 +7704,10 @@ fn board_shape(board_layout: &board_layout::BoardLayout, board_tiles: &[u8]) -> 
 fn board_stats(
     game_config: game_config::GameConfig,
     reader: &mut Box<dyn std::io::Read>,
+    quiet: bool,
 ) -> error::Returns<()> {
+    let t0 = std::time::Instant::now();
+    let mut ticked = 0u64;
     let alphabet = game_config.alphabet();
     let board_layout = game_config.board_layout();
     let mut fen_parser = display::BoardFenParser::new(alphabet, board_layout);
@@ -7649,12 +7720,21 @@ fn board_stats(
     let mut holes = stats::Stats::new();
     let mut text = String::new();
     reader.read_to_string(&mut text)?;
+    let num_boards = text.lines().filter(|line| !line.is_empty()).count();
     for line in text.lines() {
         if line.is_empty() {
             continue;
         }
         let shape = board_shape(board_layout, fen_parser.parse(line)?);
         boards += 1;
+        let secs = t0.elapsed().as_secs();
+        if !quiet && secs > ticked {
+            ticked = secs;
+            writeln!(
+                boxed_stdout_or_stderr(),
+                "After {secs} seconds, have measured {boards} of {num_boards} boards"
+            )?;
+        }
         area.update(shape.area as f64);
         words.update(shape.num_words as f64);
         if shape.num_words > 0 {
