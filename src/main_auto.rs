@@ -286,6 +286,7 @@ fn do_it<N: kwg::Node + Sync>(
     }
     let mut final_scores = vec![0i32; game_state.players.len()];
     let mut display_scores = vec![0i32; game_state.players.len()];
+    let t0 = std::time::Instant::now();
     loop {
         game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
         final_scores.iter_mut().for_each(|s| *s = 0);
@@ -628,7 +629,7 @@ fn do_it<N: kwg::Node + Sync>(
 
         writeln!(
             std::io::stdout(),
-            "Stats: {display_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3})",
+            "Stats: {display_scores:?} n={} ({}-{}-{}) p0={:.3} (sd={:.3}) p1={:.3} (sd={:.3}) p0-p1={:.3} (sd={:.3}) p0w={:.3} (sd={:.3}) after {:?}",
             loss_draw_win[0] + loss_draw_win[1] + loss_draw_win[2],
             loss_draw_win[2],
             loss_draw_win[0],
@@ -641,6 +642,7 @@ fn do_it<N: kwg::Node + Sync>(
             spread_stats_0.standard_deviation(),
             win_stats_0.mean(),
             win_stats_0.standard_deviation(),
+            t0.elapsed(),
         )?;
     } // loop
 
