@@ -223,6 +223,8 @@ struct SelfPlay {
     seed: Option<u64>,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -239,6 +241,8 @@ struct Gilles {
     seed: Option<u64>,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -267,6 +271,8 @@ struct Census {
         help = "also write the full-length leaves (what dynamic leaves read)"
     )]
     full: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -347,6 +353,8 @@ struct Compare {
     p1_window: Option<f64>,
     #[arg(long, default_value = "1", help = "rollout threads a seat")]
     sim_threads: std::num::NonZeroUsize,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -583,6 +591,8 @@ struct Winpct {
     seed: Option<u64>,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -608,9 +618,19 @@ struct InOut {
 }
 
 #[derive(clap::Args)]
+struct SummaryInOut {
+    input: String,
+    output: String,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
+}
+
+#[derive(clap::Args)]
 struct Generate {
     summary: String,
     leaves: String,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Args)]
@@ -625,6 +645,8 @@ struct Playability {
     seed: Option<u64>,
     #[arg(long, help = "generate with the lean arm")]
     lean: bool,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
 }
 
 #[derive(clap::Subcommand)]
@@ -696,7 +718,7 @@ enum Task {
     #[command(about = "combine winpct raw tables by summing their histograms")]
     WinpctCombine(InOut),
     #[command(about = "summarize a log")]
-    Summarize(InOut),
+    Summarize(SummaryInOut),
     #[command(about = "combine summaries into one and recompute totals")]
     Resummarize(InOut),
     #[command(about = "resummarize, sorted by length first")]
@@ -781,6 +803,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     seed: a.seed,
                     threads,
                     lean: a.lean,
+                    quiet: a.quiet,
                 },
             )
         }
@@ -798,6 +821,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     seed: a.seed,
                     threads,
                     lean: a.lean,
+                    quiet: a.quiet,
                 },
             )
         }
@@ -815,6 +839,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     seed: a.seed,
                     threads,
                     lean: a.lean,
+                    quiet: a.quiet,
                 },
             )
         }
@@ -831,6 +856,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     seed: a.seed,
                     threads,
                     lean: a.lean,
+                    quiet: a.quiet,
                 },
             )
         }
@@ -849,6 +875,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     threads,
                     resume: a.resume,
                     full: a.full,
+                    quiet: a.quiet,
                 },
             )
         }
@@ -892,6 +919,7 @@ fn run<N: kwg::Node + Sync + Send>(
                 p1_iters: a.p1_iters,
                 p0_window,
                 p1_window,
+                quiet: a.quiet,
             };
             match (a.lean, hasty_only) {
                 (false, false) => {
@@ -1184,6 +1212,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     seed: a.seed,
                     threads,
                     lean: a.lean,
+                    quiet: a.quiet,
                 },
             )
         }
@@ -1201,6 +1230,7 @@ fn run<N: kwg::Node + Sync + Send>(
                     seed: a.seed,
                     threads,
                     lean: a.lean,
+                    quiet: false,
                 },
             )
         }
@@ -1212,6 +1242,7 @@ fn run<N: kwg::Node + Sync + Send>(
             game_config,
             make_reader(&a.input)?,
             csv::Writer::from_writer(make_writer(&a.output)?),
+            a.quiet,
         ),
         Task::Resummarize(a) => resummarize_summaries::<'a', _, _>(
             game_config,
@@ -1240,6 +1271,7 @@ fn run<N: kwg::Node + Sync + Send>(
                 .has_headers(false)
                 .from_reader(make_reader(&a.summary)?),
             csv::Writer::from_writer(make_writer(&a.leaves)?),
+            a.quiet,
         ),
         Task::GenerateFull(a) => generate_leaves::<_, _, true>(
             game_config,
@@ -1247,11 +1279,23 @@ fn run<N: kwg::Node + Sync + Send>(
                 .has_headers(false)
                 .from_reader(make_reader(&a.summary)?),
             csv::Writer::from_writer(make_writer(&a.leaves)?),
+            a.quiet,
         ),
         Task::Playability(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.leave)?;
-            discover_playability(game_config, kwg, klv, a.games, a.seed, threads, a.lean)
+            discover_playability(
+                game_config,
+                kwg,
+                klv,
+                GamesParams {
+                    num_games: a.games,
+                    seed: a.seed,
+                    threads,
+                    lean: a.lean,
+                    quiet: a.quiet,
+                },
+            )
         }
     }
 }
@@ -1282,6 +1326,7 @@ struct SelfPlayParams {
     seed: Option<u64>,
     threads: usize,
     lean: bool,
+    quiet: bool,
 }
 
 struct GamesParams {
@@ -1289,6 +1334,7 @@ struct GamesParams {
     seed: Option<u64>,
     threads: usize,
     lean: bool,
+    quiet: bool,
 }
 
 #[inline]
@@ -1308,6 +1354,7 @@ fn generate_autoplay_logs<
         seed,
         threads,
         lean,
+        quiet,
     }: SelfPlayParams,
 ) -> error::Returns<()> {
     if !SUMMARIZE && min_samples_per_rack != 0 {
@@ -1980,7 +2027,7 @@ fn generate_autoplay_logs<
                                             .csv_game_writer
                                             .write_all(&batched_csv_game_buf)
                                             .map_err(|e| fail(e.into()))?;
-                                        if mutex_guard.tick_periods.update(elapsed_time_secs) {
+                                        if !quiet && mutex_guard.tick_periods.update(elapsed_time_secs) {
                                             write!(boxed_stdout_or_stderr(),
                                                 "After {elapsed_time_secs} seconds, have logged {logged_games} games ({completed_moves} moves)").ok();
                                             if !mutex_guard.undersampling_comment.is_empty() {
@@ -2143,6 +2190,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
         seed,
         threads,
         lean,
+        quiet,
     }: GamesParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
@@ -2363,7 +2411,7 @@ fn generate_gilles_summary<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Sen
 
                     let elapsed = t0.elapsed().as_secs();
                     let mut tick = mutexed_tick.lock().unwrap();
-                    if tick.update(elapsed) {
+                    if !quiet && tick.update(elapsed) {
                         writeln!(
                             boxed_stdout_or_stderr(),
                             "After {elapsed} seconds, {} games, {} samples into {run_identifier}",
@@ -2536,6 +2584,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
     game_config: game_config::GameConfig,
     f: Readable,
     mut csv_out: csv::Writer<W>,
+    quiet: bool,
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
@@ -2561,7 +2610,7 @@ fn generate_summary<Readable: std::io::Read, W: std::io::Write>(
                 row_count += 1;
                 pool_one(&mut full_rack_map, &rack_bytes[..], equity);
                 let elapsed_time_secs = t0.elapsed().as_secs();
-                if tick_periods.update(elapsed_time_secs) {
+                if !quiet && tick_periods.update(elapsed_time_secs) {
                     writeln!(
                         stdout_or_stderr,
                         "After {elapsed_time_secs} seconds, have read {row_count} rows"
@@ -3021,6 +3070,7 @@ struct CensusParams {
     threads: usize,
     resume: Option<String>,
     full: bool,
+    quiet: bool,
 }
 
 #[inline]
@@ -3035,6 +3085,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         threads,
         resume,
         full,
+        quiet,
     }: CensusParams,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
@@ -3326,13 +3377,15 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         }
                     }
                     *completed += 1;
-                    writeln!(boxed_stdout_or_stderr(),
-                        "census: board {}/{} done ({}s), {} of {} leaves valued so far",
-                        *completed,
-                        cur_boards,
-                        t0.elapsed().as_secs(),
-                        *valued,
-                        globally_possible_count,).ok();
+                    if !quiet {
+                        writeln!(boxed_stdout_or_stderr(),
+                            "census: board {}/{} done ({}s), {} of {} leaves valued so far",
+                            *completed,
+                            cur_boards,
+                            t0.elapsed().as_secs(),
+                            *valued,
+                            globally_possible_count,).ok();
+                    }
                 };
 
 
@@ -3432,7 +3485,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         // a slot plays fresh games until one stops in the
                         // window, and says so each second it keeps missing
                         let secs = t_slot.elapsed().as_secs();
-                        if secs > ticked {
+                        if !quiet && secs > ticked {
                             ticked = secs;
                             writeln!(boxed_stdout_or_stderr(),
                                 "census: board slot {b} after {secs}s, {tries} games, none stopped in window [{low_tiles},{high_tiles}]").ok();
@@ -3444,7 +3497,7 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         &game_state,
                         &leave,
                         null_leave,
-                        b == 0,
+                        !quiet && b == 0,
 
                         if sheet_reuse
                             && (reuse_board || (b as usize) < live_after[gen_idx])
@@ -3481,12 +3534,14 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                                             as i32;
                                     }
                                 }
-                                writeln!(boxed_stdout_or_stderr(),
-                                    "census: gen {}/{} done ({} of {} leaves valued)",
-                                    gen_idx + 1,
-                                    gens,
-                                    *valued,
-                                    lat_len,).ok();
+                                if !quiet {
+                                    writeln!(boxed_stdout_or_stderr(),
+                                        "census: gen {}/{} done ({} of {} leaves valued)",
+                                        gen_idx + 1,
+                                        gens,
+                                        *valued,
+                                        lat_len,).ok();
+                                }
                                 if gen_idx + 1 < gens {
 
                                     for idx in 0..lat_len {
@@ -3673,6 +3728,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     game_config: game_config::GameConfig,
     mut csv_in: csv::Reader<Readable>,
     mut csv_out: csv::Writer<W>,
+    quiet: bool,
 ) -> error::Returns<()> {
     let mut stdout_or_stderr = boxed_stdout_or_stderr();
 
@@ -3752,7 +3808,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
                 exchange_buffer: &mut exchange_buffer,
             });
             let elapsed_time_secs = t0.elapsed().as_secs();
-            if tick_periods.update(elapsed_time_secs) {
+            if !quiet && tick_periods.update(elapsed_time_secs) {
                 writeln!(
                     stdout_or_stderr,
                     "After {} seconds, have processed {} racks into {} unique subracks",
@@ -3820,7 +3876,7 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
             }
             ev_map.insert(rack_bytes.into(), new_v);
             let elapsed_time_secs = t0.elapsed().as_secs();
-            if tick_periods.update(elapsed_time_secs) && written.is_ok() {
+            if !quiet && tick_periods.update(elapsed_time_secs) && written.is_ok() {
                 written = writeln!(
                     stdout_or_stderr,
                     "After {} seconds, have processed {} subracks and smoothed {}",
@@ -3954,10 +4010,13 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     klv: klv::Klv<L>,
-    num_games: u64,
-    seed: Option<u64>,
-    threads: usize,
-    lean: bool,
+    GamesParams {
+        num_games,
+        seed,
+        threads,
+        lean,
+        quiet,
+    }: GamesParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
     let kwg = std::sync::Arc::new(kwg);
@@ -4218,7 +4277,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                     let mut mutex_guard = mutexed_stuffs.lock().unwrap();
                                     mutex_guard.tick_periods.update(elapsed_time_secs)
                                 };
-                                if tick_changed {
+                                if !quiet && tick_changed {
                                     writeln!(boxed_stdout_or_stderr(),
                                         "After {elapsed_time_secs} seconds, have played {logged_games} games ({completed_moves} moves) for {run_identifier}").ok();
                                 }
@@ -4627,6 +4686,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
         seed,
         threads,
         lean,
+        quiet,
     }: GamesParams,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
@@ -4683,7 +4743,7 @@ fn generate_winpct_table<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>
                             - equity::descale_score(final_scores[1 - mover]);
                         acc.record(bag, my, opp, lead, mover_final);
                     }
-                    if (g + 1).is_multiple_of(report_every) {
+                    if !quiet && (g + 1).is_multiple_of(report_every) {
                         writeln!(boxed_stdout_or_stderr(), "winpct: {} games", g + 1).ok();
                     }
                 }
@@ -4721,6 +4781,7 @@ fn generate_winpct_eval<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         seed,
         threads,
         lean,
+        quiet: _,
     }: GamesParams,
 ) -> error::Returns<()> {
     let t0 = std::time::Instant::now();
@@ -7642,6 +7703,7 @@ struct CompareParams {
     p1_iters: u64,
     p0_window: i32,
     p1_window: i32,
+    quiet: bool,
 }
 
 struct SeatParams<'a> {
@@ -7708,6 +7770,7 @@ fn compare_seats<
         p1_iters,
         p0_window,
         p1_window,
+        quiet,
     }: CompareParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
@@ -7971,7 +8034,7 @@ fn compare_seats<
                     finished_pairs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let secs = t0.elapsed().as_secs();
                     let prev = reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
-                    if secs > prev {
+                    if !quiet && secs > prev {
                         writeln!(
                             boxed_stdout_or_stderr(),
                             "After {secs}s: {} pairs",
