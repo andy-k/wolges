@@ -3073,8 +3073,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         at
     };
 
+    // from a pool of this many unseen tiles, the superset-sum pass (one sweep
+    // of the lattice a letter, whatever the pool) apportions faster than
+    // pushing each drawable rack into its subracks, which costs more the more
+    // racks the pool can deal. Both give the same values; the crossover was
+    // timed on the english tiles.
     let zeta_pool_min = 36;
 
+    // up to this many multisets, filling every rack's best from the words each
+    // spells beats searching each rack's splits. The cutoff sits between the
+    // lattices of the 27 to 29 letter alphabets, where it was timed faster, and
+    // the 33 letter ones, where it was slower. Both give the same values.
     let scatter = lat.len() <= 12_000_000;
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
