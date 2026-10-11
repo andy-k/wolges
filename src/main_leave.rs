@@ -3361,8 +3361,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         low_tiles + (b as usize % (high_tiles - low_tiles + 1))
                     };
 
-                    let mut tries = 0u32;
-                    let reached = loop {
+                    let mut tries = 0u64;
+                    let t_slot = std::time::Instant::now();
+                    let mut ticked = 0u64;
+                    loop {
                         game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                         let mut got = false;
                         loop {
@@ -3416,17 +3418,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                         }
                         if got {
-                            break true;
+                            break;
                         }
                         tries += 1;
-                        if tries >= 1_000_000 {
-                            break false;
+                        // a slot plays fresh games until one stops in the
+                        // window, and says so each second it keeps missing
+                        let secs = t_slot.elapsed().as_secs();
+                        if secs > ticked {
+                            ticked = secs;
+                            writeln!(boxed_stdout_or_stderr(),
+                                "census: board slot {b} after {secs}s, {tries} games, none stopped in window [{low_tiles},{high_tiles}]").ok();
                         }
-                    };
-                    if !reached {
-                        writeln!(boxed_stdout_or_stderr(),
-                            "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping").ok();
-                        continue;
                     }
                     } // end of the !reuse_board game replay
                     value_board(
