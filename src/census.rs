@@ -62,6 +62,13 @@ impl MultisetLattice {
         self.size_offset[self.rack_size] as usize
     }
 
+    // the multisets of s tiles are the indices from size_start(s) up to
+    // size_start(s + 1), for s up to rack_size
+    #[inline(always)]
+    pub fn size_start(&self, s: usize) -> usize {
+        self.size_offset[s] as usize
+    }
+
     #[inline(always)]
     pub fn rank(&self, tally: &[u8]) -> u32 {
         let l = self.num_letters;
@@ -234,69 +241,89 @@ pub fn naive_best_equity(
     (best, kept_tiles)
 }
 
+// the nonzero letters are added high-to-low, so each letter's suffix size is
+// fixed the moment it is added and its rank contribution is known then.
+struct SplitCtx<'a> {
+    nz: &'a [(usize, u8)],
+    n: usize,
+    lat: &'a MultisetLattice,
+    sheet: &'a [i32],
+    leave: &'a [i32],
+    best: &'a mut i32,
+}
+
+impl SplitCtx<'_> {
+    fn rec(&mut self, i: usize, s_p: usize, within_p: u64, s_k: usize, within_k: u64) {
+        if i == 0 {
+            // disposing the played tiles P is worth max(best word score, 0):
+            // you can always EXCHANGE them for 0 (pre-endgame, bag non-empty).
+            // That floor is baked into the sheet at build time (init 0; a word
+            // only RAISES an entry), so an unreached or negative-scoring P
+            // reads as 0 + leave(K) = the exchange-keep-K value.
+            //
+            // SAFETY: s_p, s_k <= rack_size and within_p, within_k are valid
+            // within-size offsets, so pr, kr are in-range lattice indices (<
+            // sheet.len() == leave.len()).
+            let pr = (self.lat.size_offset[s_p] + within_p) as usize;
+            let kr = (self.lat.size_offset[s_k] + within_k) as usize;
+            let v =
+                unsafe { *self.sheet.get_unchecked(pr) } + unsafe { *self.leave.get_unchecked(kr) };
+            if v > *self.best {
+                *self.best = v;
+            }
+            return;
+        }
+
+        let (t, cnt) = self.nz[i - 1];
+        let parts = self.n - 1 - t;
+        for cp in 0..=cnt {
+            let ck = cnt - cp;
+
+            let (mut dwp, mut dwk) = (0u64, 0u64);
+            if t + 1 < self.n {
+                let mut a = s_p + cp as usize;
+                for _ in 0..cp {
+                    dwp += self.lat.c(a + parts - 1, parts - 1);
+                    a -= 1;
+                }
+                let mut b = s_k + ck as usize;
+                for _ in 0..ck {
+                    dwk += self.lat.c(b + parts - 1, parts - 1);
+                    b -= 1;
+                }
+            }
+            self.rec(
+                i - 1,
+                s_p + cp as usize,
+                within_p + dwp,
+                s_k + ck as usize,
+                within_k + dwk,
+            );
+        }
+    }
+}
+
+// the best split of the rack whose nonzero letters are nz, (letter, count) with
+// the letters ascending and the counts summing to at most rack_size
+#[inline(always)]
+fn best_split_of(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], nz: &[(usize, u8)]) -> i32 {
+    let mut best = UNPLAYABLE;
+    SplitCtx {
+        nz,
+        n: lat.num_letters(),
+        lat,
+        sheet,
+        leave,
+        best: &mut best,
+    }
+    .rec(nz.len(), 0, 0, 0, 0);
+    best
+}
+
 #[inline]
 pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], out: &mut [i32]) {
     let n = lat.num_letters();
     let mut r = [0u8; MAX_LETTERS];
-    // the nonzero letters are added high-to-low, so each letter's suffix size is
-    // fixed the moment it is added and its rank contribution is known then.
-    struct Ctx<'a> {
-        nz: &'a [(usize, u8)],
-        n: usize,
-        lat: &'a MultisetLattice,
-        sheet: &'a [i32],
-        leave: &'a [i32],
-        best: &'a mut i32,
-    }
-    impl Ctx<'_> {
-        fn rec(&mut self, i: usize, s_p: usize, within_p: u64, s_k: usize, within_k: u64) {
-            if i == 0 {
-                // disposing the played tiles P is worth max(best word score, 0): you
-                // can always EXCHANGE them for 0 (pre-endgame, bag non-empty). That
-                // floor is baked into the sheet at build time (init 0; a word only
-                // RAISES an entry), so an unreached or negative-scoring P reads as 0 +
-                // leave(K) = the exchange-keep-K value.
-                // SAFETY: s_p, s_k <= rack_size and within_p, within_k are valid
-                // within-size offsets, so pr, kr are in-range lattice indices
-                // (< sheet.len() == leave.len()).
-                let pr = (self.lat.size_offset[s_p] + within_p) as usize;
-                let kr = (self.lat.size_offset[s_k] + within_k) as usize;
-                let v = unsafe { *self.sheet.get_unchecked(pr) }
-                    + unsafe { *self.leave.get_unchecked(kr) };
-                if v > *self.best {
-                    *self.best = v;
-                }
-                return;
-            }
-
-            let (t, cnt) = self.nz[i - 1];
-            let parts = self.n - 1 - t;
-            for cp in 0..=cnt {
-                let ck = cnt - cp;
-
-                let (mut dwp, mut dwk) = (0u64, 0u64);
-                if t + 1 < self.n {
-                    let mut a = s_p + cp as usize;
-                    for _ in 0..cp {
-                        dwp += self.lat.c(a + parts - 1, parts - 1);
-                        a -= 1;
-                    }
-                    let mut b = s_k + ck as usize;
-                    for _ in 0..ck {
-                        dwk += self.lat.c(b + parts - 1, parts - 1);
-                        b -= 1;
-                    }
-                }
-                self.rec(
-                    i - 1,
-                    s_p + cp as usize,
-                    within_p + dwp,
-                    s_k + ck as usize,
-                    within_k + dwk,
-                );
-            }
-        }
-    }
     let lo = lat.full_rack_start();
     let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
     for (off, slot) in out[lo..].iter_mut().enumerate() {
@@ -309,18 +336,31 @@ pub fn best_equity_table(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], ou
                 m += 1;
             }
         }
-        let mut best = UNPLAYABLE;
-        Ctx {
-            nz: &nz[..m],
-            n,
-            lat,
-            sheet,
-            leave,
-            best: &mut best,
-        }
-        .rec(m, 0, 0, 0, 0);
-        *slot = best;
+        *slot = best_split_of(lat, sheet, leave, &nz[..m]);
     }
+}
+
+// best_equity_table's answer for one rack of any size up to rack_size, given as
+// its tally; UNPLAYABLE for a tally the lattice does not hold, or for a sheet or
+// a leave table not the lattice's size (its reads are unchecked)
+#[inline]
+pub fn best_equity_of(lat: &MultisetLattice, sheet: &[i32], leave: &[i32], tally: &[u8]) -> i32 {
+    if sheet.len() != lat.len()
+        || leave.len() != lat.len()
+        || tally.len() != lat.num_letters()
+        || tally.iter().map(|&c| c as usize).sum::<usize>() > lat.rack_size()
+    {
+        return UNPLAYABLE;
+    }
+    let mut nz: [(usize, u8); MAX_LETTERS] = [(0, 0); MAX_LETTERS];
+    let mut m = 0;
+    for (t, &c) in tally.iter().enumerate() {
+        if c > 0 {
+            nz[m] = (t, c);
+            m += 1;
+        }
+    }
+    best_split_of(lat, sheet, leave, &nz[..m])
 }
 
 #[inline]
@@ -1172,6 +1212,47 @@ mod tests {
             let (naive, _) = naive_best_equity(&lat, &sheet, &leave, &tally);
             assert_eq!(b, naive, "mismatch at idx {idx} tally {tally:?}");
         }
+    }
+
+    #[test]
+    #[inline]
+    fn best_equity_of_matches_naive_at_every_size() {
+        let lat = MultisetLattice::new(4, 4).unwrap();
+
+        let mut sheet = vec![0i32; lat.len()];
+        let mut leave = vec![0i32; lat.len()];
+        for idx in 0..lat.len() {
+            let h = (idx as i32).wrapping_mul(2654435761u32 as i32);
+            if (h & 3) != 0 {
+                sheet[idx] = h.rem_euclid(20_000);
+            }
+            leave[idx] = h.rem_euclid(8_000) - 4_000;
+        }
+        let mut best = vec![UNPLAYABLE; lat.len()];
+        best_equity_table(&lat, &sheet, &leave, &mut best);
+
+        for (idx, &b) in best.iter().enumerate() {
+            let tally = lat.tally(idx);
+            let (naive, _) = naive_best_equity(&lat, &sheet, &leave, &tally);
+            let one = best_equity_of(&lat, &sheet, &leave, &tally);
+            assert_eq!(one, naive, "mismatch at idx {idx} tally {tally:?}");
+            if idx >= lat.full_rack_start() {
+                assert_eq!(one, b, "table differs at idx {idx} tally {tally:?}");
+            }
+        }
+        assert_eq!(
+            best_equity_of(&lat, &sheet, &leave, &[2, 2, 1, 0]),
+            UNPLAYABLE
+        );
+        assert_eq!(best_equity_of(&lat, &sheet, &leave, &[1, 1, 1]), UNPLAYABLE);
+        assert_eq!(
+            best_equity_of(&lat, &sheet[1..], &leave, &[1, 1, 1, 1]),
+            UNPLAYABLE
+        );
+        assert_eq!(
+            best_equity_of(&lat, &sheet, &leave[1..], &[1, 1, 1, 1]),
+            UNPLAYABLE
+        );
     }
 
     #[test]
