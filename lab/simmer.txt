@@ -51,12 +51,13 @@ move by one greedy look at the board with its own table. The same command
 measures the simmer: with --p0-picker simmer and --p1-picker simmer each seat
 picks its move by running the full rollout instead of a single greedy look, and
 the two seats can each be configured differently. Every seat reads its own
-leave table and its own options, --p0-picker and --p0-win-pct or --p1-picker
-and --p1-win-pct (how it picks a move, and a win% table), and both share one
---iters rollout budget per move. Giving both seats identical options and
-expecting the result to land near 50% is a harness sanity check (an unbiased
-comparison should tie); giving them different options measures which one plays
-better.
+leave table and its own four options, named for its seat (--p0-picker,
+--p0-win-pct, --p0-plies, and --p0-iters for p0; the same with p1 for p1): how
+it picks a move, a win% table, the moves its simmer plays out after each
+candidate, and the rollouts it makes for each move it picks. Giving both seats
+identical options and expecting the result to land near 50% is a harness sanity
+check (an unbiased comparison should tie); giving them different options
+measures which one plays better.
 
 A seat does not have to sim at all. --p0-picker / --p1-picker take "hasty", the
 single greedy look and the default; "dynamic", the same look with every kept

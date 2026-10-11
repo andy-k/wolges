@@ -320,8 +320,18 @@ struct Compare {
         help = "the moves seat p1's simmer plays out after each candidate"
     )]
     p1_plies: u8,
-    #[arg(long, default_value_t = move_picker::DEFAULT_NUM_SIM_ITERS, help = "rollouts a move")]
-    iters: u64,
+    #[arg(
+        long,
+        default_value_t = move_picker::DEFAULT_NUM_SIM_ITERS,
+        help = "the rollouts seat p0's simmer makes for each move it picks"
+    )]
+    p0_iters: u64,
+    #[arg(
+        long,
+        default_value_t = move_picker::DEFAULT_NUM_SIM_ITERS,
+        help = "the rollouts seat p1's simmer makes for each move it picks"
+    )]
+    p1_iters: u64,
     #[arg(long, default_value = "1", help = "rollout threads a seat")]
     sim_threads: std::num::NonZeroUsize,
 }
@@ -790,7 +800,6 @@ fn run<N: kwg::Node + Sync + Send>(
                 num_game_pairs: a.pairs,
                 seed: a.seed,
                 threads,
-                num_sim_iters: a.iters,
                 sim_threads: a.sim_threads.get(),
                 p0_picker: a.p0_picker,
                 p1_picker: a.p1_picker,
@@ -798,6 +807,8 @@ fn run<N: kwg::Node + Sync + Send>(
                 p1_win_pct: a.p1_win_pct,
                 p0_plies: a.p0_plies.into(),
                 p1_plies: a.p1_plies.into(),
+                p0_iters: a.p0_iters,
+                p1_iters: a.p1_iters,
             };
             match (a.lean, hasty_only) {
                 (false, false) => {
@@ -6930,7 +6941,6 @@ struct CompareParams {
     num_game_pairs: u64,
     seed: Option<u64>,
     threads: usize,
-    num_sim_iters: u64,
     sim_threads: usize,
     p0_picker: SeatPicker,
     p1_picker: SeatPicker,
@@ -6938,6 +6948,8 @@ struct CompareParams {
     p1_win_pct: Option<String>,
     p0_plies: usize,
     p1_plies: usize,
+    p0_iters: u64,
+    p1_iters: u64,
 }
 
 #[inline]
@@ -6983,7 +6995,6 @@ fn compare_seats<
         num_game_pairs,
         seed,
         threads,
-        num_sim_iters,
         sim_threads,
         p0_picker,
         p1_picker,
@@ -6991,6 +7002,8 @@ fn compare_seats<
         p1_win_pct,
         p0_plies,
         p1_plies,
+        p0_iters,
+        p1_iters,
     }: CompareParams,
 ) -> error::Returns<()> {
     let game_config = std::sync::Arc::new(game_config);
@@ -7041,20 +7054,21 @@ fn compare_seats<
             min_keep: 0,
         })
     });
-    let seat_line = |picker: SeatPicker, plies: usize, win_pct: Option<&str>| match picker {
-        SeatPicker::Simmer => format!(
-            "{} ({num_sim_iters} rollouts a move, {plies} plies each, win%={})",
-            picker_name(picker),
-            win_pct.unwrap_or("sigmoid"),
-        ),
-        SeatPicker::Hasty | SeatPicker::Dynamic => picker_name(picker).to_string(),
-    };
+    let seat_line =
+        |picker: SeatPicker, plies: usize, iters: u64, win_pct: Option<&str>| match picker {
+            SeatPicker::Simmer => format!(
+                "{} ({iters} rollouts a move, {plies} plies each, win%={})",
+                picker_name(picker),
+                win_pct.unwrap_or("sigmoid"),
+            ),
+            SeatPicker::Hasty | SeatPicker::Dynamic => picker_name(picker).to_string(),
+        };
     writeln!(
         boxed_stdout_or_stderr(),
         "compare: the {} arm; p0 {}; p1 {}",
         if LEAN { "lean" } else { "unadorned" },
-        seat_line(p0_picker, p0_plies, p0_win_pct.as_deref()),
-        seat_line(p1_picker, p1_plies, p1_win_pct.as_deref()),
+        seat_line(p0_picker, p0_plies, p0_iters, p0_win_pct.as_deref()),
+        seat_line(p1_picker, p1_plies, p1_iters, p1_win_pct.as_deref()),
     )?;
 
     std::thread::scope(|s| -> error::Returns<()> {
@@ -7079,7 +7093,7 @@ fn compare_seats<
                     &arc_klv0,
                     dyn_refs.map(|refs| refs[0]),
                     move_picker::SimmerParams {
-                        num_sim_iters,
+                        num_sim_iters: p0_iters,
                         num_sim_plies: p0_plies,
                         sim_threads,
                         win_pct_table: winpct_p0,
@@ -7093,7 +7107,7 @@ fn compare_seats<
                     &arc_klv1,
                     dyn_refs.map(|refs| refs[1]),
                     move_picker::SimmerParams {
-                        num_sim_iters,
+                        num_sim_iters: p1_iters,
                         num_sim_plies: p1_plies,
                         sim_threads,
                         win_pct_table: winpct_p1,
