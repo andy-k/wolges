@@ -1,15 +1,24 @@
 name: Release
 'on':
-  push:
-    tags:
-    - 'v*'
   workflow_dispatch:
 env:
   CARGO_TERM_COLOR: always
 permissions:
   contents: read
 jobs:
+  stem:
+    runs-on: ubuntu-latest
+    outputs:
+      stem: "${{ steps.stem.outputs.stem }}"
+    steps:
+    - uses: actions/checkout@v7
+    - id: stem
+      run: >-
+        printf 'stem=wolges-%s-%s\n'
+        "$(TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y%m%dT%H%M%SZ)"
+        "$(git rev-parse --short HEAD)" >>"$GITHUB_OUTPUT"
   build:
+    needs: stem
     strategy:
       matrix:
         include:
@@ -60,18 +69,18 @@ jobs:
       run: |
         exe=
         if [ "$RUNNER_OS" = Windows ]; then exe=.exe; fi
-        name="wolges-$GITHUB_REF_NAME-${{ matrix.target }}"
+        name="${{ needs.stem.outputs.stem }}-${{ matrix.target }}"
         mkdir "$name"
-        for b in buildlex read leave; do cp "target/release/$b$exe" "$name/"; done
-        cp LICENSE.txt README.md "$name/"
-        if [ "$RUNNER_OS" = Windows ]; then 7z a "$name.zip" "$name"; else tar czf "$name.tar.gz" "$name"; fi
+        for b in buildlex read leave; do cp -npv "target/release/$b$exe" "$name/"; done
+        cp -npv LICENSE.txt README.md "$name/"
+        if [ "$RUNNER_OS" = Windows ]; then 7z a -mx=9 "$name.zip" "$name"; else tar -cf - "$name" | gzip -9 >"$name.tar.gz"; fi
         echo "PACKED=$name" >>"$GITHUB_ENV"
     - uses: actions/upload-artifact@v7
       with:
         name: "${{ env.PACKED }}"
         path: "${{ env.PACKED }}.*"
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -81,13 +90,18 @@ jobs:
       with:
         path: dist
         merge-multiple: true
-    - name: Create the release
+    - name: Make this build the latest release
       env:
         GH_TOKEN: "${{ github.token }}"
-      run: >-
-        gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag
-        --title "$GITHUB_REF_NAME"
-        --notes "Built for x86-64-v3 (x86_64 Linux and Windows), apple-m1 (Apple Silicon Macs) and generic arm64 (Linux).
-        On Windows they need Microsoft's Visual C++ Redistributable (VCRUNTIME140.dll).
-        Anywhere else -- an x86-64 CPU without AVX2, which stops these with an illegal instruction, a Linux that says a GLIBC version is not found (its glibc is older than the Ubuntu 24.04 these were built on), or an Intel Mac -- build from source: cargo build --release.
-        To time one, build it for your own CPU the same way."
+        NOTES: >-
+          Built from main at ${{ github.sha }} for x86-64-v3 (x86_64 Linux and Windows), apple-m1 (Apple Silicon Macs), and generic arm64 (Linux).
+          On Windows they need Microsoft's Visual C++ Redistributable (VCRUNTIME140.dll).
+          Anywhere else -- an x86-64 CPU without AVX2, which stops these with an illegal instruction, a Linux that says a GLIBC version is not found (its glibc is older than the Ubuntu 24.04 these were built on), or an Intel Mac -- build from source: cargo build --release.
+          To time one, build it for your own CPU the same way.
+      run: |
+        tag="main-$GITHUB_SHA"
+        if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release upload "$tag" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+        else
+          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "main at $GITHUB_SHA" --notes "$NOTES" --latest
+        fi
