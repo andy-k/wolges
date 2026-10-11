@@ -11,9 +11,29 @@ const FILTER_PROBES: usize = 3;
 const KEY_FILTER_BITS: usize = 32;
 const BLANK_FILTER_BITS: usize = 16;
 
+// the filters' hash is the high half of key * KEY_MUL (mod 2^128): three
+// multiplies side by side, where a mix chains two through six shifts and xors.
+// A key fixes its length, so the length takes no part. KEY_MUL is MurmurHash3's
+// two 64-bit finalizer constants side by side, public domain:
+// https://github.com/aappleby/smhasher/blob/master/src/MurmurHash3.cpp
+const KEY_MUL: u128 = 0xff51_afd7_ed55_8ccd_c4ce_b9fe_1a85_ec53;
+
 #[inline(always)]
-fn filter_hash(key: u128, len: u8) -> u64 {
-    alphagram::mixed(key).rotate_left(len as u32)
+fn key_part(key: u128) -> u128 {
+    key.wrapping_mul(KEY_MUL)
+}
+
+#[inline(always)]
+fn filter_hash(part: u128) -> u64 {
+    (part >> 64) as u64
+}
+
+// a key's hash for a table that picks its slot by the low bits: the filters'
+// hash with its bytes swapped, so the low byte is the product's top byte, which
+// every bit of the key reaches
+#[inline(always)]
+pub fn key_hash(key: u128) -> u64 {
+    filter_hash(key_part(key)).swap_bytes()
 }
 
 #[inline(always)]
@@ -152,7 +172,7 @@ impl std::hash::Hasher for KeyHasher {
 
     #[inline(always)]
     fn write_u128(&mut self, v: u128) {
-        self.0 ^= alphagram::mixed(v);
+        self.0 ^= key_hash(v);
     }
 }
 
@@ -365,21 +385,21 @@ impl Anagrams {
     }
 
     #[inline(always)]
-    fn filter_may_hold(&self, key: u128, len: u8) -> bool {
-        Self::filter_may_hold_in(&self.filter, self.filter_block_count, key, len)
+    fn filter_may_hold(&self, part: u128) -> bool {
+        Self::filter_may_hold_in(&self.filter, self.filter_block_count, part)
     }
 
     #[inline(always)]
-    fn blank_filter_may_hold(&self, key: u128, len: u8) -> bool {
-        Self::filter_may_hold_in(&self.blank_filter, self.blank_filter_block_count, key, len)
+    fn blank_filter_may_hold(&self, part: u128) -> bool {
+        Self::filter_may_hold_in(&self.blank_filter, self.blank_filter_block_count, part)
     }
 
     #[inline(always)]
-    fn filter_may_hold_in(filter: &[u64], blocks: usize, key: u128, len: u8) -> bool {
+    fn filter_may_hold_in(filter: &[u64], blocks: usize, part: u128) -> bool {
         if filter.is_empty() {
             return true;
         }
-        let h = filter_hash(key, len);
+        let h = filter_hash(part);
         let base = filter_block(h, blocks) * FILTER_BLOCK_WORDS;
         let mut probe = h;
         for _ in 0..FILTER_PROBES {
@@ -399,9 +419,9 @@ impl Anagrams {
         }
         let blocks = filter_blocks(keys, bits);
         let mut filter = vec![0u64; blocks * FILTER_BLOCK_WORDS].into_boxed_slice();
-        for (len, table) in groups.iter().enumerate() {
+        for table in groups {
             for &key in table.keys() {
-                let h = filter_hash(key.key(), len as u8);
+                let h = filter_hash(key_part(key.key()));
                 let base = filter_block(h, blocks) * FILTER_BLOCK_WORDS;
                 let mut probe = h;
                 for _ in 0..FILTER_PROBES {
@@ -459,7 +479,7 @@ impl Anagrams {
 
     #[inline(always)]
     pub fn words(&self, key: alphagram::Key, len: u8) -> Option<alphagram::Words<'_>> {
-        if !self.filter_may_hold(key.0, len) {
+        if !self.filter_may_hold(key_part(key.0)) {
             return None;
         }
         Some(self.words_of(
@@ -470,7 +490,7 @@ impl Anagrams {
 
     #[inline(always)]
     pub fn group_at(&self, key: alphagram::Key, len: u8) -> Option<u32> {
-        if !self.filter_may_hold(key.0, len) {
+        if !self.filter_may_hold(key_part(key.0)) {
             return None;
         }
         self.groups
@@ -492,7 +512,7 @@ impl Anagrams {
         ok: u64,
         mut f: F,
     ) {
-        if !self.blank_filter_may_hold(key.0, len) {
+        if !self.blank_filter_may_hold(key_part(key.0)) {
             return;
         }
         let Some(table) = self.blanked.get(len as usize) else {
@@ -836,7 +856,7 @@ mod tests {
         for word in &words {
             let key = layout.key_of(word).unwrap();
             assert!(
-                held.filter_may_hold(key, word.len() as u8),
+                held.filter_may_hold(key_part(key)),
                 "{word:?} is in the tables and was refused",
             );
         }

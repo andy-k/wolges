@@ -2673,7 +2673,7 @@ impl SpanMemo {
     #[inline(always)]
     fn find(&self, key: u128, len: u8) -> Result<(u32, u32), usize> {
         let mask = self.slots.len() - 1;
-        let mut at = alphagram::mixed(key).rotate_left(len as u32) as usize & mask;
+        let mut at = (anagrams::key_hash(key) ^ len as u64) as usize & mask;
         loop {
             let slot = &self.slots[at];
             if slot.turn != self.turn {
