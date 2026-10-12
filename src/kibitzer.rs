@@ -102,9 +102,23 @@ impl From<&JsonPlay> for movegen::Play {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct JsonPlayWithEquity {
+    #[serde(serialize_with = "equity_as_printed")]
     pub equity: f32,
     #[serde(flatten)]
     pub play: JsonPlay,
+}
+
+// an equity in json as the f32 prints itself with {}: "32" where serde would
+// write "32.0", and "71.303" where an f64 made from the f32 would write
+// "71.3030014038086"; one that is not finite stays serde's null
+fn equity_as_printed<S: serde::Serializer>(equity: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+    if !equity.is_finite() {
+        serializer.serialize_f32(*equity)
+    } else if equity.fract() == 0.0 && equity.abs() < i64::MAX as f32 {
+        serializer.serialize_i64(*equity as i64)
+    } else {
+        serializer.serialize_f64(equity.to_string().parse().unwrap_or(*equity as f64))
+    }
 }
 
 impl From<&movegen::ValuedMove> for JsonPlayWithEquity {
@@ -238,5 +252,44 @@ impl Default for Kibitzer {
     #[inline(always)]
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{JsonPlay, JsonPlayWithEquity};
+
+    #[test]
+    #[inline]
+    fn an_equity_goes_into_json_as_the_f32_prints_itself() {
+        for (equity, written) in [
+            (32.0, "32"),
+            (-87.25, "-87.25"),
+            (71.303, "71.303"),
+            (0.001, "0.001"),
+            (0.0, "0"),
+        ] {
+            let play = JsonPlayWithEquity {
+                equity,
+                play: JsonPlay::Exchange {
+                    tiles: [][..].into(),
+                },
+            };
+            let json = serde_json::to_string(&play).unwrap();
+            assert!(
+                json.starts_with(&format!("{{\"equity\":{written},")),
+                "{json}"
+            );
+            assert_eq!(
+                serde_json::to_value(&play).unwrap()["equity"].to_string(),
+                written
+            );
+            assert_eq!(
+                serde_json::from_str::<JsonPlayWithEquity>(&json)
+                    .unwrap()
+                    .equity,
+                equity
+            );
+        }
     }
 }
