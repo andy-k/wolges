@@ -543,6 +543,7 @@ fn run_batch<N: kwg::Node>(
     let mut rack1 = Vec::new();
     let file_contents = std::fs::read_to_string(path)?;
     for (line_index, line) in file_contents.lines().enumerate() {
+        let t0 = std::time::Instant::now();
         let mut fields = line.split('\t');
         let fen_str = fields
             .next()
@@ -614,12 +615,17 @@ fn run_batch<N: kwg::Node>(
             Ok(())
         }));
         let solved = egs.solve_within(player, &solving.limits)?;
+        let elapsed = t0.elapsed();
         if solved.exact {
-            writeln!(std::io::stdout(), "{line_index}\t{}", solved.value)?;
+            writeln!(
+                std::io::stdout(),
+                "{line_index}\t{}\t{elapsed:?}",
+                solved.value
+            )?;
         } else {
             writeln!(
                 std::io::stdout(),
-                "{line_index}\t{}\tcut short after depth {}",
+                "{line_index}\t{}\t{elapsed:?}\tcut short after depth {}",
                 solved.value,
                 solved.depth,
             )?;
@@ -641,8 +647,8 @@ struct Cli {
         requires = "kwg_file",
         conflicts_with_all = ["fen", "rack"],
         help = "solve each line of FILE (board fen, both racks, player to move, tab-separated) \
-                and print its index and value, and the depth it reached when a limit cut it \
-                short; the progress goes to stderr"
+                and print its index, its value, the time it took, and the depth it reached when \
+                a limit cut it short; the progress goes to stderr"
     )]
     batch: Option<String>,
     #[arg(
