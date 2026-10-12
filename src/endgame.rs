@@ -6,7 +6,8 @@
 use super::{anagrams, display, equity, error, fash, game_config, klv, kwg, movegen};
 use std::io::Write;
 
-// how many nodes the search visits between looks at the clock for its time limit
+// how many nodes the search visits between looks at the clock and the memory,
+// for their limits
 const LIMIT_CADENCE: u64 = 1024;
 
 // move one tile at a time from rack
@@ -96,11 +97,13 @@ struct WorkBuffer {
     max_depth: i8,             // this pass's depth, for progress
     time_limit: Option<std::time::Duration>,
     state_limit: Option<usize>,
+    memory_limit: Option<MemoryLimit>,
     check_limits: bool, // from the second pass on, when a limit is set
     nodes: u64,         // this pass's nodes, to space the looks at the clock
     cut_short: bool,    // a limit stopped this pass
     progress: Option<ProgressFn>,
     in_bag: Option<u64>, // inside a search with a tile in the bag, its endgames so far
+    written: [usize; 3], // the most states, plays, and child_plays have held, for the memory limit
 }
 
 impl WorkBuffer {
@@ -123,11 +126,13 @@ impl WorkBuffer {
             max_depth: 0,
             time_limit: None,
             state_limit: None,
+            memory_limit: None,
             check_limits: false,
             nodes: 0,
             cut_short: false,
             progress: None,
             in_bag: None,
+            written: [0; 3],
         }
     }
 
@@ -135,6 +140,12 @@ impl WorkBuffer {
     fn init(&mut self) {
         self.t0 = std::time::Instant::now();
         self.dur_movegen = Default::default();
+        // a cleared list keeps its buffer, and the memory its entries were in
+        self.written = [
+            self.written[0].max(self.states.len()),
+            self.written[1].max(self.plays.len()),
+            self.written[2].max(self.child_plays.len()),
+        ];
         // no need to clear temp spaces here
         // put an unused entry in states, because index 0 is special
         self.states.clear();
@@ -156,6 +167,43 @@ impl WorkBuffer {
         self.play_finder.clear();
         self.child_plays.clear();
     }
+
+    // the bytes the lists have taken but never written: a list doubles as it
+    // grows, and the part it has not reached costs no memory until it does
+    #[inline(always)]
+    fn unwritten(&self) -> usize {
+        #[inline(always)]
+        fn tail<T>(list: &Vec<T>, written: usize) -> usize {
+            list.capacity().saturating_sub(list.len().max(written)) * std::mem::size_of::<T>()
+        }
+        tail(&self.states, self.written[0])
+            + tail(&self.plays, self.written[1])
+            + tail(&self.child_plays, self.written[2])
+    }
+
+    // whether taking growth more bytes would pass the memory limit: a table
+    // fills its new buffer while it still holds the old one, so it is looked at
+    // before it grows
+    #[inline(always)]
+    fn would_pass(&self, growth: usize) -> bool {
+        growth > 0
+            && self.check_limits
+            && self
+                .memory_limit
+                .is_some_and(|limit| limit.passed(self.unwritten(), growth))
+    }
+}
+
+// the bytes a table takes to hold more new keys than it has room for: twice its
+// buckets, where std's map keeps 7 entries to 8 buckets, a bucket an entry and
+// a control byte; none while they fit
+#[inline(always)]
+fn growth<K, V>(table: &fash::MyHashMap<K, V>, more: usize) -> usize {
+    if table.len() + more <= table.capacity() {
+        0
+    } else {
+        2 * table.capacity().div_ceil(7) * 8 * (std::mem::size_of::<(K, V)>() + 1)
+    }
 }
 
 // only for reporting
@@ -171,18 +219,39 @@ fn to_equity(v: f32) -> equity::Equity {
     equity::Equity::new(v.round() as i32)
 }
 
-// past either limit a solve stops, and answers from the deepest search that
+// past any limit a solve stops, and answers from the deepest search that
 // finished
 pub struct Limits {
     pub time: Option<std::time::Duration>,
     pub states: Option<usize>,
+    pub memory: Option<MemoryLimit>,
 }
 
 impl Limits {
     pub const NONE: Self = Self {
         time: None,
         states: None,
+        memory: None,
     };
+}
+
+// the most bytes the program may use, and how to read how many it holds; the
+// solver takes off what its lists hold but have never written, and adds what a
+// table is about to take
+#[derive(Clone, Copy)] // each endgame of a search with a tile in the bag takes a copy
+pub struct MemoryLimit {
+    pub bytes: usize,
+    pub held: fn() -> usize,
+}
+
+impl MemoryLimit {
+    #[inline(always)]
+    fn passed(&self, unwritten: usize, growth: usize) -> bool {
+        (self.held)()
+            .saturating_sub(unwritten)
+            .saturating_add(growth)
+            >= self.bytes
+    }
 }
 
 // a search with a tile in the bag solves many endgames as one solve: its time
@@ -191,6 +260,7 @@ impl Limits {
 struct BagLimits {
     time: Option<std::time::Duration>,
     states: Option<usize>,
+    memory: Option<MemoryLimit>,
     t0: std::time::Instant,
     dur_movegen: std::cell::Cell<std::time::Duration>,
     endgames: std::cell::Cell<u64>,
@@ -204,6 +274,7 @@ impl BagLimits {
         Self {
             time: limits.time,
             states: limits.states,
+            memory: limits.memory,
             t0: std::time::Instant::now(),
             dur_movegen: Default::default(),
             endgames: Default::default(),
@@ -408,7 +479,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     }
                 }
 
-                // get the new state_idx
+                // get the new state_idx; each tile placed may be a new state
+                if self.work_buffer.would_pass(growth(
+                    &self.work_buffer.state_finder,
+                    self.work_buffer.vec_placed_tile.len(),
+                )) {
+                    self.work_buffer.cut_short = true;
+                    return Err("a limit stopped the search".into());
+                }
                 let mut new_state_idx = 0;
                 for placed_tile in self.work_buffer.vec_placed_tile.iter() {
                     let new_state = State {
@@ -468,14 +546,15 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let longest = (2 * (mine + theirs) + (mine == 1) as usize - 3).min(i8::MAX as usize);
         self.work_buffer.time_limit = limits.time;
         self.work_buffer.state_limit = limits.states;
+        self.work_buffer.memory_limit = limits.memory;
         for max_depth in 1..=longest as i8 {
             let old_num_state_eval = self.work_buffer.state_eval.len();
 
             self.work_buffer.depth_limited = false;
             self.work_buffer.max_depth = max_depth;
             // the first pass always finishes, so a solve cut short still has a value
-            self.work_buffer.check_limits =
-                max_depth > 1 && (limits.time.is_some() || limits.states.is_some());
+            self.work_buffer.check_limits = max_depth > 1
+                && (limits.time.is_some() || limits.states.is_some() || limits.memory.is_some());
             self.work_buffer.nodes = 0;
             self.work_buffer.cut_short = false;
             let searched = if max_depth == 1 {
@@ -539,6 +618,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 .work_buffer
                 .state_limit
                 .is_some_and(|limit| self.work_buffer.states.len() >= limit)
+            || self
+                .work_buffer
+                .memory_limit
+                .is_some_and(|limit| limit.passed(self.work_buffer.unwritten(), 0))
     }
 
     #[inline]
@@ -623,7 +706,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.report(None)?;
         }
 
-        // the states are looked at every node, the clock every LIMIT_CADENCE nodes
+        // the states are looked at every node, the clock and the memory every
+        // LIMIT_CADENCE nodes
         if self.work_buffer.check_limits {
             self.work_buffer.nodes += 1;
             if self
@@ -631,10 +715,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 .state_limit
                 .is_some_and(|limit| self.work_buffer.states.len() >= limit)
                 || (self.work_buffer.nodes.is_multiple_of(LIMIT_CADENCE)
-                    && self
+                    && (self
                         .work_buffer
                         .time_limit
-                        .is_some_and(|limit| self.work_buffer.t0.elapsed() >= limit))
+                        .is_some_and(|limit| self.work_buffer.t0.elapsed() >= limit)
+                        || self
+                            .work_buffer
+                            .memory_limit
+                            .is_some_and(|limit| limit.passed(self.work_buffer.unwritten(), 0))))
             {
                 self.work_buffer.cut_short = true;
                 return Err("a limit stopped the search".into());
@@ -700,6 +788,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 current_ply_buffer.racks[0].retain(|&t| t != 0x80);
                 current_ply_buffer.racks[1].retain(|&t| t != 0x80);
             }
+            // read only from here, so a table can be looked at before it grows
+            let current_ply_buffer = &self.work_buffer.current_ply_buffer;
             let alphabet = self.game_config.alphabet();
             let rack_scores = [
                 alphabet.scaled_rack_score(&current_ply_buffer.racks[0]),
@@ -763,6 +853,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 if let Some(t1) = t1 {
                     self.work_buffer.dur_movegen += t1.elapsed();
                 }
+                // each play found may be a new play
+                if self.work_buffer.would_pass(growth(
+                    &self.work_buffer.play_finder,
+                    self.work_buffer.movegen.plays.len(),
+                )) {
+                    self.work_buffer.cut_short = true;
+                    return Err("a limit stopped the search".into());
+                }
                 for candidate in &self.work_buffer.movegen.plays {
                     match &candidate.play {
                         movegen::Play::Exchange { .. } => {
@@ -807,6 +905,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 state_eval.child_play_idxs[which_player + 1] = self.work_buffer.child_plays.len();
             }
 
+            if self
+                .work_buffer
+                .would_pass(growth(&self.work_buffer.state_eval, 1))
+            {
+                self.work_buffer.cut_short = true;
+                return Err("a limit stopped the search".into());
+            }
             self.work_buffer
                 .state_eval
                 .entry(state_idx)
@@ -1153,6 +1258,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             &Limits {
                 time: limits.time,
                 states: limits.states,
+                memory: limits.memory,
             },
         );
         let work_buffer = &mut self.work_buffer;
@@ -2331,6 +2437,7 @@ mod tests {
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
 
         let mut cut = 0usize;
+        let mut grown = 0usize;
         for (name, pos) in all_positions() {
             // every depth an unlimited solve finishes: its value and its states
             let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -2363,6 +2470,7 @@ mod tests {
             let limits = super::Limits {
                 time: Some(std::time::Duration::ZERO),
                 states: None,
+                memory: None,
             };
             let solved = egs.solve_within(0, &limits).unwrap();
             assert!(
@@ -2375,6 +2483,74 @@ mod tests {
                 "[{name}] a zero time limit answers the first depth"
             );
 
+            // the memory past its limit from the start: the same
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let limits = super::Limits {
+                time: None,
+                states: None,
+                memory: Some(super::MemoryLimit {
+                    bytes: 1,
+                    held: || usize::MAX,
+                }),
+            };
+            let solved = egs.solve_within(0, &limits).unwrap();
+            assert!(
+                !solved.exact,
+                "[{name}] a memory limit passed cuts the solve short"
+            );
+            assert_eq!(
+                (solved.depth, solved.value),
+                (finished[0].0, finished[0].1),
+                "[{name}] a memory limit passed answers the first depth"
+            );
+
+            // a memory limit never reached changes nothing
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let limits = super::Limits {
+                time: None,
+                states: None,
+                memory: Some(super::MemoryLimit {
+                    bytes: usize::MAX,
+                    held: || 0,
+                }),
+            };
+            let solved = egs.solve_within(0, &limits).unwrap();
+            assert!(
+                solved.exact && (solved.depth, solved.value) == (full.depth, full.value),
+                "[{name}] a memory limit never reached answers as an unlimited solve"
+            );
+
+            // nothing held, but a byte allowed: a table's growth would pass the
+            // limit, so the search stops before the table grows, and answers a
+            // depth that finished
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let limits = super::Limits {
+                time: None,
+                states: None,
+                memory: Some(super::MemoryLimit {
+                    bytes: 1,
+                    held: || 0,
+                }),
+            };
+            let solved = egs.solve_within(0, &limits).unwrap();
+            if !solved.exact {
+                grown += 1;
+                assert!(
+                    finished
+                        .iter()
+                        .any(|&(d, v, _)| (d, v) == (solved.depth, solved.value)),
+                    "[{name}] a table's growth answers depth {} with {}, which no pass finished",
+                    solved.depth,
+                    solved.value
+                );
+            }
+
             // one state past the first depth's: the search stops within a later
             // pass, or after it, and answers a depth that finished
             let mut egs =
@@ -2383,6 +2559,7 @@ mod tests {
             let limits = super::Limits {
                 time: None,
                 states: Some(finished[0].2 + 1),
+                memory: None,
             };
             let solved = egs.solve_within(0, &limits).unwrap();
             if !solved.exact {
@@ -2404,6 +2581,7 @@ mod tests {
             }
         }
         assert!(cut > 0, "no state limit cut a solve short");
+        assert!(grown > 0, "no table's growth cut a solve short");
     }
 
     #[test]
@@ -2470,6 +2648,38 @@ mod tests {
             movegen += egs.work_buffer.dur_movegen;
         }
         assert!(movegen > std::time::Duration::ZERO, "a listener, the time");
+    }
+
+    #[test]
+    #[inline]
+    fn the_memory_limit_takes_off_only_what_the_lists_never_wrote() {
+        let gc = game_config::make_english_game_config();
+        let mut work_buffer = super::WorkBuffer::new(&gc);
+        work_buffer.init();
+        let at_start = work_buffer.unwritten();
+        let size = std::mem::size_of::<super::ChildPlay>();
+        work_buffer.child_plays.reserve_exact(100);
+        let taken = work_buffer.child_plays.capacity();
+        for _ in 0..60 {
+            work_buffer.child_plays.push(super::ChildPlay {
+                new_state_idx: !0,
+                play_idx: 0,
+                valuation: 0.0,
+            });
+        }
+        assert_eq!(
+            work_buffer.unwritten(),
+            at_start + (taken - 60) * size,
+            "a list's buffer past its entries is taken off"
+        );
+        // cleared, the list keeps its buffer and the memory its entries were in
+        work_buffer.init();
+        assert_eq!(work_buffer.child_plays.capacity(), taken);
+        assert_eq!(
+            work_buffer.unwritten(),
+            at_start + (taken - 60) * size,
+            "a cleared list still counts what it held"
+        );
     }
 
     #[test]
@@ -2587,15 +2797,25 @@ mod tests {
         let no_time = super::Limits {
             time: Some(std::time::Duration::ZERO),
             states: None,
+            memory: None,
         };
         let one_state = super::Limits {
             time: None,
             states: Some(1),
+            memory: None,
+        };
+        let no_memory = super::Limits {
+            time: None,
+            states: None,
+            memory: Some(super::MemoryLimit {
+                bytes: 1,
+                held: || usize::MAX,
+            }),
         };
         let tiles = [1u8, 2, 8, 20]; // A B H T
         let mut board = empty_board();
         put_word(&mut board, 7, 6, &[1, 20]);
-        let mut cut = 0usize;
+        let mut cut = [0usize; 3];
         // the committed model, and the clairvoyant one where exchanges are legal
         for gc in [
             game_config::make_english_game_config(),
@@ -2624,19 +2844,22 @@ mod tests {
                     };
                     let full = solve(&super::Limits::NONE);
                     assert!(full.exact, "an unlimited solve is exact");
-                    for limits in [&no_time, &one_state] {
+                    for (i, limits) in [&no_time, &one_state, &no_memory].into_iter().enumerate() {
                         let limited = solve(limits);
                         assert_eq!(limited.hypotheses.len(), full.hypotheses.len());
                         if limited.exact {
                             assert_eq!(limited.hypotheses, full.hypotheses);
                         } else {
-                            cut += 1;
+                            cut[i] += 1;
                         }
                     }
                 }
             }
         }
-        assert!(cut > 0, "the limits cut no endgame short");
+        assert!(
+            cut.iter().all(|&n| n > 0),
+            "the time, state, and memory limits cut {cut:?} endgames short"
+        );
     }
 
     #[test]

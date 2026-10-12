@@ -8,6 +8,60 @@ use wolges::{
 
 mod game_args;
 
+use std::alloc::GlobalAlloc;
+
+// every byte the program holds, counted as it is taken and given back, for
+// --max-memory
+struct Counting;
+
+static HELD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for Counting {
+    #[inline]
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let p = unsafe { std::alloc::System.alloc(layout) };
+        if !p.is_null() {
+            HELD.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
+        }
+        p
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let p = unsafe { std::alloc::System.alloc_zeroed(layout) };
+        if !p.is_null() {
+            HELD.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
+        }
+        p
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, p: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(p, layout) };
+        HELD.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    // both buffers may be held while one is copied to the other
+    #[inline]
+    unsafe fn realloc(&self, p: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        HELD.fetch_add(new_size, std::sync::atomic::Ordering::Relaxed);
+        let q = unsafe { std::alloc::System.realloc(p, layout, new_size) };
+        HELD.fetch_sub(
+            if q.is_null() { new_size } else { layout.size() },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        q
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
+
+#[inline(always)]
+fn held_bytes() -> usize {
+    HELD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 // this is reusing most of main_json, but main_json is the most current code.
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -603,6 +657,14 @@ struct Cli {
         help = "stop each solve once it holds STATES states, answering the same way"
     )]
     max_states: Option<usize>,
+    #[arg(
+        long,
+        value_name = "GB",
+        default_value_t = 60.0,
+        help = "stop each solve once the program uses GB gigabytes (of 10^9 bytes), its word \
+                graph and tables included (0: never), answering the same way"
+    )]
+    max_memory: f64,
     #[arg(help = "path to a word graph built for the game")]
     kwg_file: Option<String>,
     #[arg(help = "board in FEN notation (quote it -- it contains '/')")]
@@ -637,6 +699,16 @@ fn main() -> error::Returns<()> {
                 .transpose()
                 .map_err(|e| error::new(format!("--time-limit: {e}")))?,
             states: cli.max_states,
+            memory: if cli.max_memory == 0.0 {
+                None
+            } else if cli.max_memory.is_finite() && cli.max_memory > 0.0 {
+                Some(endgame::MemoryLimit {
+                    bytes: (cli.max_memory * 1e9).round() as usize,
+                    held: held_bytes,
+                })
+            } else {
+                wolges::return_error!("--max-memory is gigabytes, 0 or more".to_string());
+            },
         },
     };
     match (cli.batch, cli.kwg_file, cli.fen, cli.rack) {
