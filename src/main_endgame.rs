@@ -491,10 +491,12 @@ impl Question {
     }
 }
 
-// how each solve runs: on which arm, and within which limits
+// how each solve runs: on which arm, within which limits, and whether it prints
+// its progress
 struct Solving {
     lean: bool,
     limits: endgame::Limits,
+    quiet: bool,
 }
 
 // how many nodes a printing listener hears between looks at its clock
@@ -606,14 +608,16 @@ fn run_batch<N: kwg::Node>(
         )?;
         egs.init(&board_tiles, [&rack0, &rack1]);
         // the progress goes to stderr, so stdout keeps one line a position
-        egs.report_progress(ticking(move |progress, elapsed| {
-            writeln!(
-                std::io::stderr(),
-                "{line_index}: {}",
-                progress.after(elapsed)
-            )?;
-            Ok(())
-        }));
+        if !solving.quiet {
+            egs.report_progress(ticking(move |progress, elapsed| {
+                writeln!(
+                    std::io::stderr(),
+                    "{line_index}: {}",
+                    progress.after(elapsed)
+                )?;
+                Ok(())
+            }));
+        }
         let solved = egs.solve_within(player, &solving.limits)?;
         let elapsed = t0.elapsed();
         if solved.exact {
@@ -671,6 +675,8 @@ struct Cli {
                 graph and tables included (0: never), answering the same way"
     )]
     max_memory: f64,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
     #[arg(help = "path to a word graph built for the game")]
     kwg_file: Option<String>,
     #[arg(help = "board in FEN notation (quote it -- it contains '/')")]
@@ -716,6 +722,7 @@ fn main() -> error::Returns<()> {
                 wolges::return_error!("--max-memory is gigabytes, 0 or more".to_string());
             },
         },
+        quiet: cli.quiet,
     };
     match (cli.batch, cli.kwg_file, cli.fen, cli.rack) {
         (Some(batch_path), Some(kwg_path), None, None) => {
@@ -1708,10 +1715,12 @@ fn solve_position<N: kwg::Node>(
         &smaller_kwg,
         &arm_tables,
     )?;
-    egs.report_progress(ticking(|progress, elapsed| {
-        writeln!(std::io::stdout(), "{}", progress.after(elapsed))?;
-        Ok(())
-    }));
+    if !solving.quiet {
+        egs.report_progress(ticking(|progress, elapsed| {
+            writeln!(std::io::stdout(), "{}", progress.after(elapsed))?;
+            Ok(())
+        }));
+    }
     if oppo_rack.len() == rack_size + 1 {
         let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
         let result = egs.solve_peg_one_in_bag(
