@@ -501,7 +501,7 @@ struct OpennessMoves {
     seed: Option<u64>,
     #[arg(
         long,
-        default_value_t = 1.0,
+        default_value_t = move_picker::DEFAULT_DEFT_WINDOW as f64 / equity::SCALE as f64,
         help = "how many points of equity below the best a candidate may be"
     )]
     window: f64,
