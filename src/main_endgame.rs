@@ -1770,7 +1770,8 @@ fn solve_position<N: kwg::Node>(
                 }
                 writeln!(
                     std::io::stdout(),
-                    "peg: model = committed; best move = {coord} {word_str} (scores {score})"
+                    "peg: model = committed; best move = {coord} {word_str} (scores {})",
+                    equity::Equity::new(*score),
                 )?;
             }
             Some(endgame::PegMove::Place(_)) => unreachable!("Place holds a Play::Place"),
