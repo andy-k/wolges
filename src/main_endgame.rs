@@ -1554,7 +1554,7 @@ fn solve_position<N: kwg::Node>(
         &arm_tables,
     )?;
     if oppo_rack.len() == rack_size + 1 {
-        let scaled_score_diff = equity::scale_score(score_diff) as f32;
+        let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
         let result = egs.solve_peg_one_in_bag(
             0,
             &board_tiles,
@@ -1626,12 +1626,10 @@ fn solve_position<N: kwg::Node>(
                 opp.extend(std::iter::repeat_n(u as u8, take));
             }
 
-            let outcome = if value > 0.0 {
-                "win"
-            } else if value == 0.0 {
-                "draw"
-            } else {
-                "loss"
+            let outcome = match value.cmp(&equity::Equity::ZERO) {
+                std::cmp::Ordering::Greater => "win",
+                std::cmp::Ordering::Equal => "draw",
+                std::cmp::Ordering::Less => "loss",
             };
             writeln!(
                 std::io::stdout(),
@@ -1639,7 +1637,7 @@ fn solve_position<N: kwg::Node>(
                 alphabet.of_rack(bag_tile).unwrap_or("?"),
                 weight,
                 alphabet.fmt_rack(&opp),
-                value / equity::SCALE as f32,
+                value,
                 outcome,
             )?;
         }
@@ -1647,17 +1645,17 @@ fn solve_position<N: kwg::Node>(
             std::io::stdout(),
             "peg: win% {:.4}, expected game margin {}",
             result.win_pct * 100.0,
-            result.expected_margin / equity::SCALE as f32,
+            result.expected_margin,
         )?;
     } else {
         egs.init(&board_tiles, [&question.rack, &oppo_rack]);
         let future_margin = egs.evaluate(0)?;
-        let total_margin = equity::scale_score(score_diff) as f32 + future_margin;
+        let total_margin =
+            equity::Equity::new(equity::scale_score(score_diff) + future_margin.raw());
         writeln!(
             std::io::stdout(),
-            "total game margin (current score {score_diff:+} + future {}) = {}",
-            future_margin / equity::SCALE as f32,
-            total_margin / equity::SCALE as f32,
+            "total game margin (current score {score_diff:+} + future {future_margin}) = \
+             {total_margin}",
         )?;
     }
 
