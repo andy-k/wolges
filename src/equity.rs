@@ -47,17 +47,46 @@ impl Equity {
     }
 }
 
+// as the float it stood for prints itself: {} prints a whole number with no
+// decimals and a fraction with the few it needs, a precision that many
 impl std::fmt::Display for Equity {
     #[inline(always)]
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let precision = fmt.precision().unwrap_or(3);
         let v = self.0 as f64 / SCALE as f64;
-        write!(fmt, "{v:.precision$}")
+        match fmt.precision() {
+            Some(precision) => write!(fmt, "{v:.precision$}"),
+            None => write!(fmt, "{v}"),
+        }
     }
 }
 
 impl std::fmt::Debug for Equity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Equity;
+
+    #[test]
+    #[inline]
+    fn an_equity_prints_as_the_float_it_stood_for() {
+        let e = Equity::new;
+        for (millipoints, plain, fixed) in [
+            (32000, "32", "32.000"),
+            (-87250, "-87.25", "-87.250"),
+            (1, "0.001", "0.001"),
+            (0, "0", "0.000"),
+            (-500, "-0.5", "-0.500"),
+        ] {
+            assert_eq!(format!("{}", e(millipoints)), plain);
+            assert_eq!(format!("{:.3}", e(millipoints)), fixed);
+            assert_eq!(
+                format!("{}", e(millipoints)),
+                format!("{}", e(millipoints).as_f64())
+            );
+        }
     }
 }
