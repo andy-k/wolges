@@ -8,6 +8,60 @@ use wolges::{
 
 mod game_args;
 
+use std::alloc::GlobalAlloc;
+
+// every byte the program holds, counted as it is taken and given back, for
+// --max-memory
+struct Counting;
+
+static HELD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for Counting {
+    #[inline]
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let p = unsafe { std::alloc::System.alloc(layout) };
+        if !p.is_null() {
+            HELD.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
+        }
+        p
+    }
+
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let p = unsafe { std::alloc::System.alloc_zeroed(layout) };
+        if !p.is_null() {
+            HELD.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
+        }
+        p
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, p: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(p, layout) };
+        HELD.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    // both buffers may be held while one is copied to the other
+    #[inline]
+    unsafe fn realloc(&self, p: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        HELD.fetch_add(new_size, std::sync::atomic::Ordering::Relaxed);
+        let q = unsafe { std::alloc::System.realloc(p, layout, new_size) };
+        HELD.fetch_sub(
+            if q.is_null() { new_size } else { layout.size() },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        q
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
+
+#[inline(always)]
+fn held_bytes() -> usize {
+    HELD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 // this is reusing most of main_json, but main_json is the most current code.
 
 // tile numbering follows alphabet order (not necessarily unicode order).
@@ -437,12 +491,47 @@ impl Question {
     }
 }
 
+// how each solve runs: on which arm, and within which limits
+struct Solving {
+    lean: bool,
+    limits: endgame::Limits,
+}
+
+// how many nodes a printing listener hears between looks at its clock
+const CLOCK_CADENCE: u64 = 1024;
+
+// a listener that prints a solve's progress with print: each finished depth,
+// and the counts every ten seconds, with the time since it began on the clock
+// it keeps, which it reads once every CLOCK_CADENCE nodes
+#[inline(always)]
+fn ticking(
+    mut print: impl FnMut(&endgame::Progress, std::time::Duration) -> error::Returns<()> + 'static,
+) -> impl FnMut(&endgame::Progress) -> error::Returns<()> + 'static {
+    let t0 = std::time::Instant::now();
+    let mut nodes = 0u64;
+    let mut tick_periods = 0u64;
+    move |progress: &endgame::Progress| {
+        if progress.value.is_none() {
+            nodes += 1;
+            if !nodes.is_multiple_of(CLOCK_CADENCE) {
+                return Ok(());
+            }
+            let periods = t0.elapsed().as_millis() as u64 / 10000;
+            if periods == tick_periods {
+                return Ok(());
+            }
+            tick_periods = periods;
+        }
+        print(progress, t0.elapsed())
+    }
+}
+
 #[inline(always)]
 fn run_batch<N: kwg::Node>(
     game_config: game_config::GameConfig,
     kwg: kwg::Kwg<N>,
     path: &str,
-    lean: bool,
+    solving: &Solving,
 ) -> error::Returns<()> {
     let empty_klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?;
     let alphabet = game_config.alphabet();
@@ -507,7 +596,7 @@ fn run_batch<N: kwg::Node>(
         vec_of_words.sort_unstable();
         let smaller_kwg_bytes = build_pruned_kwg(&game_config, &vec_of_words)?;
         let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
-        let arm_tables = solver_tables(&smaller_kwg, &game_config, lean)?;
+        let arm_tables = solver_tables(&smaller_kwg, &game_config, solving.lean)?;
 
         let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(
             &game_config,
@@ -515,8 +604,26 @@ fn run_batch<N: kwg::Node>(
             &arm_tables,
         )?;
         egs.init(&board_tiles, [&rack0, &rack1]);
-        let v = egs.solve(player)?;
-        writeln!(std::io::stdout(), "{line_index}\t{v}")?;
+        // the progress goes to stderr, so stdout keeps one line a position
+        egs.report_progress(ticking(move |progress, elapsed| {
+            writeln!(
+                std::io::stderr(),
+                "{line_index}: {}",
+                progress.after(elapsed)
+            )?;
+            Ok(())
+        }));
+        let solved = egs.solve_within(player, &solving.limits)?;
+        if solved.exact {
+            writeln!(std::io::stdout(), "{line_index}\t{}", solved.value)?;
+        } else {
+            writeln!(
+                std::io::stdout(),
+                "{line_index}\t{}\tcut short after depth {}",
+                solved.value,
+                solved.depth,
+            )?;
+        }
     }
     Ok(())
 }
@@ -534,9 +641,30 @@ struct Cli {
         requires = "kwg_file",
         conflicts_with_all = ["fen", "rack"],
         help = "solve each line of FILE (board fen, both racks, player to move, tab-separated) \
-                and print its index and value"
+                and print its index and value, and the depth it reached when a limit cut it \
+                short; the progress goes to stderr"
     )]
     batch: Option<String>,
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        help = "stop each solve after SECONDS, answering from the deepest search that finished"
+    )]
+    time_limit: Option<f64>,
+    #[arg(
+        long,
+        value_name = "STATES",
+        help = "stop each solve once it holds STATES states, answering the same way"
+    )]
+    max_states: Option<usize>,
+    #[arg(
+        long,
+        value_name = "GB",
+        default_value_t = 60.0,
+        help = "stop each solve once the program uses GB gigabytes (of 10^9 bytes), its word \
+                graph and tables included (0: never), answering the same way"
+    )]
+    max_memory: f64,
     #[arg(help = "path to a word graph built for the game")]
     kwg_file: Option<String>,
     #[arg(help = "board in FEN notation (quote it -- it contains '/')")]
@@ -562,17 +690,38 @@ fn main() -> error::Returns<()> {
             "the endgame solver plays two seats, so it needs exactly 2 players".to_string()
         );
     }
+    let solving = Solving {
+        lean: cli.lean,
+        limits: endgame::Limits {
+            time: cli
+                .time_limit
+                .map(std::time::Duration::try_from_secs_f64)
+                .transpose()
+                .map_err(|e| error::new(format!("--time-limit: {e}")))?,
+            states: cli.max_states,
+            memory: if cli.max_memory == 0.0 {
+                None
+            } else if cli.max_memory.is_finite() && cli.max_memory > 0.0 {
+                Some(endgame::MemoryLimit {
+                    bytes: (cli.max_memory * 1e9).round() as usize,
+                    held: held_bytes,
+                })
+            } else {
+                wolges::return_error!("--max-memory is gigabytes, 0 or more".to_string());
+            },
+        },
+    };
     match (cli.batch, cli.kwg_file, cli.fen, cli.rack) {
         (Some(batch_path), Some(kwg_path), None, None) => {
             let kwg_bytes = std::fs::read(&kwg_path)?;
             return if cli.kbwg {
                 let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
                 refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
-                run_batch(game_config, kwg, &batch_path, cli.lean)
+                run_batch(game_config, kwg, &batch_path, &solving)
             } else {
                 let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
                 refuse_a_wider_graph(&kwg, &game_config, &kwg_path)?;
-                run_batch(game_config, kwg, &batch_path, cli.lean)
+                run_batch(game_config, kwg, &batch_path, &solving)
             };
         }
         (None, Some(kwg_path), Some(fen), Some(rack)) => {
@@ -583,7 +732,7 @@ fn main() -> error::Returns<()> {
                 &fen,
                 &rack,
                 cli.score_diff,
-                cli.lean,
+                &solving,
             );
         }
         (None, None, None, None) => {}
@@ -1304,7 +1453,7 @@ fn main() -> error::Returns<()> {
         "CGINTU?",
     )?;
 
-    solve_question(&question, 0, cli.lean)
+    solve_question(&question, 0, &solving)
 }
 
 #[inline(always)]
@@ -1315,7 +1464,7 @@ fn run_cli(
     fen: &str,
     rack: &str,
     score_diff: i32,
-    lean: bool,
+    solving: &Solving,
 ) -> error::Returns<()> {
     let question = Question::from_fen(game_config, kwg_path, fen, rack)?;
     let kwg_bytes = std::fs::read(kwg_path)?;
@@ -1323,11 +1472,11 @@ fn run_cli(
     if kbwg {
         let kwg = kwg::Kwg::<kwg::Node24>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
-        solve_position(game_config, &kwg, &question, score_diff, lean)
+        solve_position(game_config, &kwg, &question, score_diff, solving)
     } else {
         let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes)?;
         refuse_a_wider_graph(&kwg, game_config, kwg_path)?;
-        solve_position(game_config, &kwg, &question, score_diff, lean)
+        solve_position(game_config, &kwg, &question, score_diff, solving)
     }
 }
 
@@ -1383,7 +1532,7 @@ fn solver_tables(
 }
 
 #[inline(always)]
-fn solve_question(question: &Question, score_diff: i32, lean: bool) -> error::Returns<()> {
+fn solve_question(question: &Question, score_diff: i32, solving: &Solving) -> error::Returns<()> {
     // of course this should be cached
     let (kwg, game_config) = match question.lexicon.as_str() {
         "CSW24" => (
@@ -1399,7 +1548,7 @@ fn solve_question(question: &Question, score_diff: i32, lean: bool) -> error::Re
         }
     };
 
-    solve_position(&game_config, &kwg, question, score_diff, lean)
+    solve_position(&game_config, &kwg, question, score_diff, solving)
 }
 
 #[inline(always)]
@@ -1408,7 +1557,7 @@ fn solve_position<N: kwg::Node>(
     kwg: &kwg::Kwg<N>,
     question: &Question,
     score_diff: i32,
-    lean: bool,
+    solving: &Solving,
 ) -> error::Returns<()> {
     let alphabet = game_config.alphabet();
     let alphabet_len_without_blank = alphabet.len() - 1;
@@ -1545,7 +1694,7 @@ fn solve_position<N: kwg::Node>(
         smaller_kwg_bytes.len()
     )?;
     let smaller_kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&smaller_kwg_bytes)?;
-    let arm_tables = solver_tables(&smaller_kwg, game_config, lean)?;
+    let arm_tables = solver_tables(&smaller_kwg, game_config, solving.lean)?;
     move_generator.reset_for_another_kwg();
 
     let mut egs = endgame::EndgameSolver::<kwg::Node22, kwg::Node22>::new(
@@ -1553,6 +1702,10 @@ fn solve_position<N: kwg::Node>(
         &smaller_kwg,
         &arm_tables,
     )?;
+    egs.report_progress(ticking(|progress, elapsed| {
+        writeln!(std::io::stdout(), "{}", progress.after(elapsed))?;
+        Ok(())
+    }));
     if oppo_rack.len() == rack_size + 1 {
         let scaled_score_diff = equity::Equity::new(equity::scale_score(score_diff));
         let result = egs.solve_peg_one_in_bag(
@@ -1561,6 +1714,7 @@ fn solve_position<N: kwg::Node>(
             &question.rack,
             &available_tally,
             scaled_score_diff,
+            &solving.limits,
         )?;
 
         let result = match result {
@@ -1647,9 +1801,17 @@ fn solve_position<N: kwg::Node>(
             result.win_pct * 100.0,
             result.expected_margin,
         )?;
+        if !result.exact {
+            writeln!(
+                std::io::stdout(),
+                "a limit cut an endgame inside the solve short: its value is the deepest \
+                 depth that finished"
+            )?;
+        }
     } else {
         egs.init(&board_tiles, [&question.rack, &oppo_rack]);
-        let future_margin = egs.evaluate(0)?;
+        let solved = egs.evaluate(0, &solving.limits)?;
+        let future_margin = solved.value;
         let total_margin =
             equity::Equity::new(equity::scale_score(score_diff) + future_margin.raw());
         writeln!(
@@ -1657,6 +1819,13 @@ fn solve_position<N: kwg::Node>(
             "total game margin (current score {score_diff:+} + future {future_margin}) = \
              {total_margin}",
         )?;
+        if !solved.exact {
+            writeln!(
+                std::io::stdout(),
+                "a limit cut the solve short: the future is depth {}'s value",
+                solved.depth,
+            )?;
+        }
     }
 
     Ok(())

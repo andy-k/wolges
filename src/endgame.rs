@@ -3,8 +3,12 @@
 // note: this module is very slow and may need a lot of space
 // and it still has many bugs
 
-use super::{anagrams, display, equity, error, fash, game_config, klv, kwg, move_picker, movegen};
+use super::{anagrams, display, equity, error, fash, game_config, klv, kwg, movegen};
 use std::io::Write;
+
+// how many nodes the search visits between looks at the clock and the memory,
+// for their limits
+const LIMIT_CADENCE: u64 = 1024;
 
 // move one tile at a time from rack
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -78,9 +82,8 @@ struct ChildPlay {
 // (Refer to note at KurniaMoveGenerator.)
 // This is not enforced.
 struct WorkBuffer {
-    t0: std::time::Instant, // for timing only
-    tick_periods: move_picker::Periods,
-    dur_movegen: std::time::Duration,
+    t0: std::time::Instant,           // the solve's start, for its time limit
+    dur_movegen: std::time::Duration, // for progress, timed only while something listens
     vec_placed_tile: Vec<PlacedTile>,
     current_ply_buffer: PlyBuffer, // only using one
     movegen: movegen::KurniaMoveGenerator,
@@ -91,6 +94,16 @@ struct WorkBuffer {
     play_finder: fash::MyHashMap<movegen::Play, u32>, // maps all plays except pass
     child_plays: Vec<ChildPlay>, // subslices of StateEval, often re-sorted; excludes pass
     depth_limited: bool,       // set when a line was cut short by the ply limit this pass
+    max_depth: i8,             // this pass's depth, for progress
+    time_limit: Option<std::time::Duration>,
+    state_limit: Option<usize>,
+    memory_limit: Option<MemoryLimit>,
+    check_limits: bool, // from the second pass on, when a limit is set
+    nodes: u64,         // this pass's nodes, to space the looks at the clock
+    cut_short: bool,    // a limit stopped this pass
+    progress: Option<ProgressFn>,
+    in_bag: Option<u64>, // inside a search with a tile in the bag, its endgames so far
+    written: [usize; 3], // the most states, plays, and child_plays have held, for the memory limit
 }
 
 impl WorkBuffer {
@@ -99,7 +112,6 @@ impl WorkBuffer {
         let board_area = dim.rows as usize * dim.cols as usize;
         Self {
             t0: std::time::Instant::now(),
-            tick_periods: move_picker::Periods(0),
             dur_movegen: Default::default(),
             vec_placed_tile: Vec::with_capacity(board_area),
             current_ply_buffer: Default::default(),
@@ -111,14 +123,29 @@ impl WorkBuffer {
             play_finder: fash::MyHashMap::default(),
             child_plays: Vec::new(),
             depth_limited: false,
+            max_depth: 0,
+            time_limit: None,
+            state_limit: None,
+            memory_limit: None,
+            check_limits: false,
+            nodes: 0,
+            cut_short: false,
+            progress: None,
+            in_bag: None,
+            written: [0; 3],
         }
     }
 
     #[inline]
     fn init(&mut self) {
         self.t0 = std::time::Instant::now();
-        self.tick_periods = move_picker::Periods(0);
         self.dur_movegen = Default::default();
+        // a cleared list keeps its buffer, and the memory its entries were in
+        self.written = [
+            self.written[0].max(self.states.len()),
+            self.written[1].max(self.plays.len()),
+            self.written[2].max(self.child_plays.len()),
+        ];
         // no need to clear temp spaces here
         // put an unused entry in states, because index 0 is special
         self.states.clear();
@@ -140,6 +167,43 @@ impl WorkBuffer {
         self.play_finder.clear();
         self.child_plays.clear();
     }
+
+    // the bytes the lists have taken but never written: a list doubles as it
+    // grows, and the part it has not reached costs no memory until it does
+    #[inline(always)]
+    fn unwritten(&self) -> usize {
+        #[inline(always)]
+        fn tail<T>(list: &Vec<T>, written: usize) -> usize {
+            list.capacity().saturating_sub(list.len().max(written)) * std::mem::size_of::<T>()
+        }
+        tail(&self.states, self.written[0])
+            + tail(&self.plays, self.written[1])
+            + tail(&self.child_plays, self.written[2])
+    }
+
+    // whether taking growth more bytes would pass the memory limit: a table
+    // fills its new buffer while it still holds the old one, so it is looked at
+    // before it grows
+    #[inline(always)]
+    fn would_pass(&self, growth: usize) -> bool {
+        growth > 0
+            && self.check_limits
+            && self
+                .memory_limit
+                .is_some_and(|limit| limit.passed(self.unwritten(), growth))
+    }
+}
+
+// the bytes a table takes to hold more new keys than it has room for: twice its
+// buckets, where std's map keeps 7 entries to 8 buckets, a bucket an entry and
+// a control byte; none while they fit
+#[inline(always)]
+fn growth<K, V>(table: &fash::MyHashMap<K, V>, more: usize) -> usize {
+    if table.len() + more <= table.capacity() {
+        0
+    } else {
+        2 * table.capacity().div_ceil(7) * 8 * (std::mem::size_of::<(K, V)>() + 1)
+    }
 }
 
 // only for reporting
@@ -154,6 +218,128 @@ pub struct FoundPlay<'a> {
 fn to_equity(v: f32) -> equity::Equity {
     equity::Equity::new(v.round() as i32)
 }
+
+// past any limit a solve stops, and answers from the deepest search that
+// finished
+pub struct Limits {
+    pub time: Option<std::time::Duration>,
+    pub states: Option<usize>,
+    pub memory: Option<MemoryLimit>,
+}
+
+impl Limits {
+    pub const NONE: Self = Self {
+        time: None,
+        states: None,
+        memory: None,
+    };
+}
+
+// the most bytes the program may use, and how to read how many it holds; the
+// solver takes off what its lists hold but have never written, and adds what a
+// table is about to take
+#[derive(Clone, Copy)] // each endgame of a search with a tile in the bag takes a copy
+pub struct MemoryLimit {
+    pub bytes: usize,
+    pub held: fn() -> usize,
+}
+
+impl MemoryLimit {
+    #[inline(always)]
+    fn passed(&self, unwritten: usize, growth: usize) -> bool {
+        (self.held)()
+            .saturating_sub(unwritten)
+            .saturating_add(growth)
+            >= self.bytes
+    }
+}
+
+// a search with a tile in the bag solves many endgames as one solve: its time
+// limit is one deadline for them all, on its clock, and its state limit is each
+// one's; the endgames take turns holding its one listener
+struct BagLimits {
+    time: Option<std::time::Duration>,
+    states: Option<usize>,
+    memory: Option<MemoryLimit>,
+    t0: std::time::Instant,
+    dur_movegen: std::cell::Cell<std::time::Duration>,
+    endgames: std::cell::Cell<u64>,
+    progress: std::cell::Cell<Option<ProgressFn>>,
+}
+
+impl BagLimits {
+    // its clock starts now
+    #[inline(always)]
+    fn new(limits: &Limits, progress: Option<ProgressFn>) -> Self {
+        Self {
+            time: limits.time,
+            states: limits.states,
+            memory: limits.memory,
+            t0: std::time::Instant::now(),
+            dur_movegen: Default::default(),
+            endgames: Default::default(),
+            progress: std::cell::Cell::new(progress),
+        }
+    }
+}
+
+// a solve's answer: exact, or the value of the deepest search that finished
+// before a limit stopped it
+pub struct Solved {
+    pub value: equity::Equity,
+    pub depth: i8,
+    pub exact: bool,
+}
+
+// how far a solve has got, sent to its listener at every node, and at each
+// finished depth with that depth's value; with a tile in the bag, at every node
+// alone. The listener keeps the time, on its own clock
+pub struct Progress {
+    pub endgames: Option<u64>, // with a tile in the bag, the endgames searched so far
+    pub depth: i8,
+    pub value: Option<equity::Equity>, // the depth's value, once it has finished
+    pub movegen: std::time::Duration,
+    pub states: usize,
+    pub evaluated: usize,
+    pub child_plays: usize,
+    pub plays: usize,
+}
+
+impl Progress {
+    // its line, with the time its listener has kept since the solve began
+    #[inline(always)]
+    pub fn after(&self, elapsed: std::time::Duration) -> ProgressLine<'_> {
+        ProgressLine {
+            progress: self,
+            elapsed,
+        }
+    }
+}
+
+pub struct ProgressLine<'a> {
+    progress: &'a Progress,
+    elapsed: std::time::Duration,
+}
+
+impl std::fmt::Display for ProgressLine<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let p = self.progress;
+        if let Some(endgames) = p.endgames {
+            write!(f, "{endgames} endgames searched, now ")?;
+        }
+        match p.value {
+            Some(value) => write!(f, "depth {} is {}", p.depth, value)?,
+            None => write!(f, "depth {}", p.depth)?,
+        }
+        write!(
+            f,
+            ": after {:?} ({:?} on movegen), there are {} states, {} evaluated, {} child_plays, {} plays",
+            self.elapsed, p.movegen, p.states, p.evaluated, p.child_plays, p.plays,
+        )
+    }
+}
+
+type ProgressFn = Box<dyn FnMut(&Progress) -> error::Returns<()>>;
 
 // EndgameSolver is the main two-player endgame solver.
 // EndgameSolver can only be reused for the same game_config and kwg.
@@ -293,7 +479,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     }
                 }
 
-                // get the new state_idx
+                // get the new state_idx; each tile placed may be a new state
+                if self.work_buffer.would_pass(growth(
+                    &self.work_buffer.state_finder,
+                    self.work_buffer.vec_placed_tile.len(),
+                )) {
+                    self.work_buffer.cut_short = true;
+                    return Err("a limit stopped the search".into());
+                }
                 let mut new_state_idx = 0;
                 for placed_tile in self.work_buffer.vec_placed_tile.iter() {
                     let new_state = State {
@@ -335,7 +528,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     #[inline]
-    fn run_id_loop(&mut self, player_idx: u8, verbose: bool) -> error::Returns<f32> {
+    fn run_id_loop(
+        &mut self,
+        player_idx: u8,
+        verbose: bool,
+        limits: &Limits,
+    ) -> error::Returns<Solved> {
         let mut last_valuation = f32::NAN;
         // a move that does not end the line places tiles and leaves the mover some, or passes;
         // a pass answering a pass repeats the position two plies back and ends it, and so does
@@ -346,11 +544,20 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let mine = self.racks[player_idx as usize].len().max(1);
         let theirs = self.racks[player_idx as usize ^ 1].len().max(1);
         let longest = (2 * (mine + theirs) + (mine == 1) as usize - 3).min(i8::MAX as usize);
+        self.work_buffer.time_limit = limits.time;
+        self.work_buffer.state_limit = limits.states;
+        self.work_buffer.memory_limit = limits.memory;
         for max_depth in 1..=longest as i8 {
             let old_num_state_eval = self.work_buffer.state_eval.len();
 
             self.work_buffer.depth_limited = false;
-            let valuation = if max_depth == 1 {
+            self.work_buffer.max_depth = max_depth;
+            // the first pass always finishes, so a solve cut short still has a value
+            self.work_buffer.check_limits = max_depth > 1
+                && (limits.time.is_some() || limits.states.is_some() || limits.memory.is_some());
+            self.work_buffer.nodes = 0;
+            self.work_buffer.cut_short = false;
+            let searched = if max_depth == 1 {
                 self.negamax_eval(
                     0,
                     player_idx,
@@ -358,29 +565,63 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     f32::NEG_INFINITY,
                     f32::INFINITY,
                     false,
-                )?
+                )
             } else {
-                self.aspiration_search(player_idx, max_depth, last_valuation)?
+                self.aspiration_search(player_idx, max_depth, last_valuation)
+            };
+            let valuation = match searched {
+                Ok(valuation) => valuation,
+                Err(_) if self.work_buffer.cut_short => {
+                    return Ok(Solved {
+                        value: to_equity(last_valuation),
+                        depth: max_depth - 1,
+                        exact: false,
+                    });
+                }
+                Err(e) => return Err(e),
             };
             last_valuation = valuation;
+            if self.work_buffer.in_bag.is_none() {
+                self.report(Some(to_equity(valuation)))?;
+            }
             if verbose {
-                writeln!(
-                    std::io::stdout(),
-                    "valuation for depth {max_depth} is {}",
-                    to_equity(valuation)
-                )?;
-                self.print_progress()?;
                 self.print_best_line(player_idx)?;
             }
-            // check for time limit here
 
             if self.work_buffer.state_eval.len() == old_num_state_eval
                 && !self.work_buffer.depth_limited
             {
                 break;
             }
+            // a pass that ended past a limit is the last
+            if (max_depth as usize) < longest && self.past_a_limit() {
+                return Ok(Solved {
+                    value: to_equity(valuation),
+                    depth: max_depth,
+                    exact: false,
+                });
+            }
         }
-        Ok(last_valuation)
+        Ok(Solved {
+            value: to_equity(last_valuation),
+            depth: self.work_buffer.max_depth,
+            exact: true,
+        })
+    }
+
+    #[inline(always)]
+    fn past_a_limit(&self) -> bool {
+        self.work_buffer
+            .time_limit
+            .is_some_and(|limit| self.work_buffer.t0.elapsed() >= limit)
+            || self
+                .work_buffer
+                .state_limit
+                .is_some_and(|limit| self.work_buffer.states.len() >= limit)
+            || self
+                .work_buffer
+                .memory_limit
+                .is_some_and(|limit| limit.passed(self.work_buffer.unwritten(), 0))
     }
 
     #[inline]
@@ -408,14 +649,39 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         }
     }
 
+    // send every later solve's progress to the given listener, at every node
+    // and at each finished depth; until then it goes nowhere
     #[inline(always)]
-    pub fn evaluate(&mut self, player_idx: u8) -> error::Returns<equity::Equity> {
-        Ok(to_equity(self.run_id_loop(player_idx, true)?))
+    pub fn report_progress(
+        &mut self,
+        progress: impl FnMut(&Progress) -> error::Returns<()> + 'static,
+    ) {
+        self.work_buffer.progress = Some(Box::new(progress));
+    }
+
+    // a solve of its own starts its clock
+    #[inline(always)]
+    fn start_clock(&mut self) {
+        self.work_buffer.t0 = std::time::Instant::now();
+        self.work_buffer.dur_movegen = Default::default();
+    }
+
+    // solve within the limits, also printing each finished depth's best line
+    #[inline(always)]
+    pub fn evaluate(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
+        self.start_clock();
+        self.run_id_loop(player_idx, true, limits)
     }
 
     #[inline(always)]
     pub fn solve(&mut self, player_idx: u8) -> error::Returns<equity::Equity> {
-        Ok(to_equity(self.run_id_loop(player_idx, false)?))
+        Ok(self.solve_within(player_idx, &Limits::NONE)?.value)
+    }
+
+    #[inline(always)]
+    pub fn solve_within(&mut self, player_idx: u8, limits: &Limits) -> error::Returns<Solved> {
+        self.start_clock();
+        self.run_id_loop(player_idx, false, limits)
     }
 
     // based on https://en.wikipedia.org/wiki/Negamax
@@ -433,6 +699,34 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.work_buffer.depth_limited = true;
 
             return Ok(self.both_pass_value(state_idx, player_idx));
+        }
+
+        // the listener, if any, hears every node
+        if self.work_buffer.progress.is_some() {
+            self.report(None)?;
+        }
+
+        // the states are looked at every node, the clock and the memory every
+        // LIMIT_CADENCE nodes
+        if self.work_buffer.check_limits {
+            self.work_buffer.nodes += 1;
+            if self
+                .work_buffer
+                .state_limit
+                .is_some_and(|limit| self.work_buffer.states.len() >= limit)
+                || (self.work_buffer.nodes.is_multiple_of(LIMIT_CADENCE)
+                    && (self
+                        .work_buffer
+                        .time_limit
+                        .is_some_and(|limit| self.work_buffer.t0.elapsed() >= limit)
+                        || self
+                            .work_buffer
+                            .memory_limit
+                            .is_some_and(|limit| limit.passed(self.work_buffer.unwritten(), 0))))
+            {
+                self.work_buffer.cut_short = true;
+                return Err("a limit stopped the search".into());
+            }
         }
 
         // return and/or trim range
@@ -494,6 +788,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 current_ply_buffer.racks[0].retain(|&t| t != 0x80);
                 current_ply_buffer.racks[1].retain(|&t| t != 0x80);
             }
+            // read only from here, so a table can be looked at before it grows
+            let current_ply_buffer = &self.work_buffer.current_ply_buffer;
             let alphabet = self.game_config.alphabet();
             let rack_scores = [
                 alphabet.scaled_rack_score(&current_ply_buffer.racks[0]),
@@ -527,7 +823,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 child_play_idxs: [self.work_buffer.child_plays.len(), 0, 0],
             };
             for which_player in 0..2 {
-                let t1 = std::time::Instant::now();
+                // timed only while something listens
+                let t1 = self
+                    .work_buffer
+                    .progress
+                    .is_some()
+                    .then(std::time::Instant::now);
                 const DO_HASTY: bool = false;
                 if !DO_HASTY || which_player == 0 {
                     self.work_buffer.movegen.gen_moves_raw_all_unsorted(
@@ -549,7 +850,17 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                             dynamic_leaves: None,
                         });
                 }
-                self.work_buffer.dur_movegen += t1.elapsed();
+                if let Some(t1) = t1 {
+                    self.work_buffer.dur_movegen += t1.elapsed();
+                }
+                // each play found may be a new play
+                if self.work_buffer.would_pass(growth(
+                    &self.work_buffer.play_finder,
+                    self.work_buffer.movegen.plays.len(),
+                )) {
+                    self.work_buffer.cut_short = true;
+                    return Err("a limit stopped the search".into());
+                }
                 for candidate in &self.work_buffer.movegen.plays {
                     match &candidate.play {
                         movegen::Play::Exchange { .. } => {
@@ -594,6 +905,13 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 state_eval.child_play_idxs[which_player + 1] = self.work_buffer.child_plays.len();
             }
 
+            if self
+                .work_buffer
+                .would_pass(growth(&self.work_buffer.state_eval, 1))
+            {
+                self.work_buffer.cut_short = true;
+                return Err("a limit stopped the search".into());
+            }
             self.work_buffer
                 .state_eval
                 .entry(state_idx)
@@ -733,15 +1051,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         } else {
             state_eval.best_move[player_idx as usize] =
                 state_eval.best_place_move[player_idx as usize].clone();
-        }
-
-        // quell impatience
-        if self
-            .work_buffer
-            .tick_periods
-            .update(self.work_buffer.t0.elapsed().as_millis() as u64 / 10000)
-        {
-            self.print_progress()?;
         }
 
         Ok(best_valuation)
@@ -896,20 +1205,23 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         Ok(())
     }
 
+    // send the progress, if anything is listening
     #[inline]
-    fn print_progress(&self) -> std::io::Result<()> {
-        let dur0 = self.work_buffer.t0.elapsed();
-        let dur1 = self.work_buffer.dur_movegen;
-        writeln!(
-            std::io::stdout(),
-            "after {:?} ({:?} on movegen), there are {} states, {} evaluated, {} child_plays, {} plays",
-            dur0,
-            dur1,
-            self.work_buffer.states.len(),
-            self.work_buffer.state_eval.len(),
-            self.work_buffer.child_plays.len(),
-            self.work_buffer.plays.len(),
-        )
+    fn report(&mut self, value: Option<equity::Equity>) -> error::Returns<()> {
+        let work_buffer = &mut self.work_buffer;
+        match work_buffer.progress.as_mut() {
+            Some(progress_fn) => progress_fn(&Progress {
+                endgames: work_buffer.in_bag,
+                depth: work_buffer.max_depth,
+                value,
+                movegen: work_buffer.dur_movegen,
+                states: work_buffer.states.len(),
+                evaluated: work_buffer.state_eval.len(),
+                child_plays: work_buffer.child_plays.len(),
+                plays: work_buffer.plays.len(),
+            }),
+            None => Ok(()),
+        }
     }
 
     #[inline]
@@ -917,6 +1229,56 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         &mut self,
         player_idx: u8,
         bag_tile: u8,
+    ) -> error::Returns<equity::Equity> {
+        let limits = BagLimits::new(&Limits::NONE, self.work_buffer.progress.take());
+        let mut exact = true;
+        let value = self.one_in_bag(player_idx, bag_tile, &limits, &mut exact);
+        self.work_buffer.progress = limits.progress.take();
+        value
+    }
+
+    // an endgame inside a search with a tile in the bag, on that search's clock
+    // and within its limits, telling its listener; one cut short makes the
+    // search's answer inexact
+    #[inline(always)]
+    fn solve_in_bag(
+        &mut self,
+        player_idx: u8,
+        limits: &BagLimits,
+        exact: &mut bool,
+    ) -> error::Returns<f32> {
+        let work_buffer = &mut self.work_buffer;
+        work_buffer.t0 = limits.t0;
+        work_buffer.dur_movegen = limits.dur_movegen.get();
+        work_buffer.in_bag = Some(limits.endgames.get());
+        work_buffer.progress = limits.progress.take();
+        let solved = self.run_id_loop(
+            player_idx,
+            false,
+            &Limits {
+                time: limits.time,
+                states: limits.states,
+                memory: limits.memory,
+            },
+        );
+        let work_buffer = &mut self.work_buffer;
+        limits.dur_movegen.set(work_buffer.dur_movegen);
+        limits.endgames.set(limits.endgames.get() + 1);
+        limits.progress.set(work_buffer.progress.take());
+        work_buffer.in_bag = None;
+        let solved = solved?;
+        *exact &= solved.exact;
+        Ok(solved.value.raw() as f32)
+    }
+
+    // the one-in-bag value within the limits; an endgame inside it that a limit
+    // cut short clears exact
+    fn one_in_bag(
+        &mut self,
+        player_idx: u8,
+        bag_tile: u8,
+        limits: &BagLimits,
+        exact: &mut bool,
     ) -> error::Returns<equity::Equity> {
         let gc = self.game_config;
         let kwg = self.kwg;
@@ -939,12 +1301,16 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             sub: &mut sub,
             mg: &mut mg,
             memo: fash::MyHashMap::default(),
+            limits,
+            exact: true,
         };
-        Ok(to_equity(if one_in_bag_exchange_solvable(gc) {
+        let value = to_equity(if one_in_bag_exchange_solvable(gc) {
             Self::one_in_bag_minimax_ex(&mut search, &board, &racks, player_idx, bag_tile, 0, 0)?
         } else {
             Self::one_in_bag_minimax(&mut search, &board, &racks, player_idx, bag_tile, false)?
-        }))
+        });
+        *exact &= search.exact;
+        Ok(value)
     }
 
     fn one_in_bag_minimax(
@@ -1002,7 +1368,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 }
 
                 search.sub.init(&nb, [&nr[0], &nr[1]]);
-                let v = search.sub.solve(opp)?.raw() as f32;
+                let v = search
+                    .sub
+                    .solve_in_bag(opp, search.limits, &mut search.exact)?;
 
                 let val = *score as f32 - v;
                 if val > best {
@@ -1102,7 +1470,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                     rack.push(drawn);
                 }
                 search.sub.init(&nb, [&nr[0], &nr[1]]);
-                let v = search.sub.solve(opp)?.raw() as f32;
+                let v = search
+                    .sub
+                    .solve_in_bag(opp, search.limits, &mut search.exact)?;
                 let val = *score as f32 - v;
                 if val > best {
                     best = val;
@@ -1172,21 +1542,24 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         mover_rack: &[u8],
         unseen_tally: &[u8],
         score_diff: equity::Equity,
+        limits: &Limits,
     ) -> error::Returns<Result<PegResult, PegUnsupported>> {
         let gc = self.game_config;
         if one_in_bag_exchange_legal(gc) && !one_in_bag_exchange_solvable(gc) {
             return Ok(Err(PegUnsupported::ExchangeWithoutForcedEnd));
         }
         let score_diff = score_diff.raw() as f32;
+        let limits = BagLimits::new(limits, self.work_buffer.progress.take());
 
-        if one_in_bag_exchange_legal(gc) {
-            Ok(Ok(self.peg_clairvoyant_aggregate(
+        let result = if one_in_bag_exchange_legal(gc) {
+            self.peg_clairvoyant_aggregate(
                 mover,
                 board,
                 mover_rack,
                 unseen_tally,
                 score_diff,
-            )?))
+                &limits,
+            )
         } else {
             let unseen: Vec<(u8, u32)> = unseen_tally
                 .iter()
@@ -1194,10 +1567,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 .filter(|&(_, &c)| c != 0)
                 .map(|(t, &c)| (t as u8, c as u32))
                 .collect();
-            Ok(Ok(self.peg_committed_no_exchange(
-                mover, board, mover_rack, &unseen, score_diff,
-            )?))
-        }
+            self.peg_committed_no_exchange(mover, board, mover_rack, &unseen, score_diff, &limits)
+        };
+        self.work_buffer.progress = limits.progress.take();
+        Ok(Ok(result?))
     }
 
     #[inline]
@@ -1208,8 +1581,10 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         mover_rack: &[u8],
         unseen_tally: &[u8],
         score_diff: f32,
+        limits: &BagLimits,
     ) -> error::Returns<PegResult> {
         let mut hypotheses: Vec<(u8, u32, equity::Equity)> = Vec::new();
+        let mut exact = true;
 
         let mut opp_rack: Vec<u8> = Vec::new();
         for (t, &count) in unseen_tally.iter().enumerate() {
@@ -1227,7 +1602,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             racks[mover as usize] = mover_rack;
             racks[(mover ^ 1) as usize] = &opp_rack;
             self.init(board, racks);
-            let v = self.solve_one_in_bag(mover, bag_tile)?.raw() as f32 + score_diff;
+            let v = self.one_in_bag(mover, bag_tile, limits, &mut exact)?.raw() as f32 + score_diff;
             hypotheses.push((bag_tile, count as u32, to_equity(v)));
         }
         let weighted: Vec<(u32, equity::Equity)> =
@@ -1239,6 +1614,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             hypotheses,
             best_move: None,
             committed: false,
+            exact,
         })
     }
 
@@ -1250,12 +1626,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         mover_rack: &[u8],
         unseen: &[(u8, u32)],
         score_diff: f32,
+        limits: &BagLimits,
     ) -> error::Returns<PegResult> {
         let gc = self.game_config;
         let kwg = self.kwg;
         let arm_tables = self.arm_tables;
         let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?;
         let opp = mover ^ 1;
+        let mut exact = true;
         let total = unseen.iter().map(|&(_, w)| w).sum::<u32>() as f32;
 
         let mut mg = movegen::KurniaMoveGenerator::new(gc);
@@ -1326,7 +1704,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         r2[mover as usize] = mr;
                         r2[opp as usize] = opp_rack;
                         sub.init(&nb, [&r2[0], &r2[1]]);
-                        *score as f32 - sub.solve(opp)?.raw() as f32
+                        *score as f32 - sub.solve_in_bag(opp, limits, &mut exact)?
                     }
                     PegMove::Pass => {
                         // PEG2-7: with two or more in the bag, draw every tile from the SAME end -- pop,
@@ -1336,22 +1714,20 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                         let mut r2: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
                         r2[mover as usize] = mover_rack.to_vec();
                         r2[opp as usize] = opp_rack;
-                        -Self::one_in_bag_minimax(
-                            &mut OneInBag {
-                                gc,
-                                kwg,
-                                arm_tables,
-                                klv: &klv,
-                                sub: &mut sub,
-                                mg: &mut mg,
-                                memo: fash::MyHashMap::default(),
-                            },
-                            board,
-                            &r2,
-                            opp,
-                            t,
-                            true,
-                        )?
+                        let mut search = OneInBag {
+                            gc,
+                            kwg,
+                            arm_tables,
+                            klv: &klv,
+                            sub: &mut sub,
+                            mg: &mut mg,
+                            memo: fash::MyHashMap::default(),
+                            limits,
+                            exact: true,
+                        };
+                        let v = -Self::one_in_bag_minimax(&mut search, board, &r2, opp, t, true)?;
+                        exact &= search.exact;
+                        v
                     }
                     PegMove::Place(_) => {
                         unreachable!("Place candidate always holds a Play::Place")
@@ -1386,6 +1762,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             hypotheses: best_hyps,
             best_move: Some(best_move),
             committed: true,
+            exact,
         })
     }
 }
@@ -1402,6 +1779,7 @@ pub struct PegResult {
     pub hypotheses: Vec<(u8, u32, equity::Equity)>,
     pub best_move: Option<PegMove>,
     pub committed: bool,
+    pub exact: bool, // false when a limit cut an endgame inside it short
 }
 
 #[derive(Clone, Debug)]
@@ -1430,6 +1808,8 @@ struct OneInBag<'s, 'a, N: kwg::Node, L: kwg::Node> {
     sub: &'s mut EndgameSolver<'a, N, L>,
     mg: &'s mut movegen::KurniaMoveGenerator,
     memo: fash::MyHashMap<BagExchangeKey, f32>,
+    limits: &'s BagLimits,
+    exact: bool, // cleared by an endgame a limit cut short
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -2050,6 +2430,260 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_solve_a_limit_stops_answers_from_a_finished_depth() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+
+        let mut cut = 0usize;
+        let mut grown = 0usize;
+        for (name, pos) in all_positions() {
+            // every depth an unlimited solve finishes: its value and its states
+            let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let seen = finished.clone();
+            egs.report_progress(move |p: &super::Progress| {
+                if let Some(value) = p.value {
+                    seen.borrow_mut().push((p.depth, value, p.states));
+                }
+                Ok(())
+            });
+            let full = egs.solve_within(0, &super::Limits::NONE).unwrap();
+            let finished = finished.borrow();
+            assert!(full.exact, "[{name}] an unlimited solve is exact");
+            assert_eq!(
+                finished.last().map(|&(d, v, _)| (d, v)),
+                Some((full.depth, full.value)),
+                "[{name}] the last finished depth is the answer"
+            );
+            if finished.len() < 2 {
+                continue;
+            }
+
+            // no time at all: the first depth always finishes, and is the answer
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let limits = super::Limits {
+                time: Some(std::time::Duration::ZERO),
+                states: None,
+                memory: None,
+            };
+            let solved = egs.solve_within(0, &limits).unwrap();
+            assert!(
+                !solved.exact,
+                "[{name}] a zero time limit cuts the solve short"
+            );
+            assert_eq!(
+                (solved.depth, solved.value),
+                (finished[0].0, finished[0].1),
+                "[{name}] a zero time limit answers the first depth"
+            );
+
+            // the memory past its limit from the start: the same
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let limits = super::Limits {
+                time: None,
+                states: None,
+                memory: Some(super::MemoryLimit {
+                    bytes: 1,
+                    held: || usize::MAX,
+                }),
+            };
+            let solved = egs.solve_within(0, &limits).unwrap();
+            assert!(
+                !solved.exact,
+                "[{name}] a memory limit passed cuts the solve short"
+            );
+            assert_eq!(
+                (solved.depth, solved.value),
+                (finished[0].0, finished[0].1),
+                "[{name}] a memory limit passed answers the first depth"
+            );
+
+            // a memory limit never reached changes nothing
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let limits = super::Limits {
+                time: None,
+                states: None,
+                memory: Some(super::MemoryLimit {
+                    bytes: usize::MAX,
+                    held: || 0,
+                }),
+            };
+            let solved = egs.solve_within(0, &limits).unwrap();
+            assert!(
+                solved.exact && (solved.depth, solved.value) == (full.depth, full.value),
+                "[{name}] a memory limit never reached answers as an unlimited solve"
+            );
+
+            // nothing held, but a byte allowed: a table's growth would pass the
+            // limit, so the search stops before the table grows, and answers a
+            // depth that finished
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let limits = super::Limits {
+                time: None,
+                states: None,
+                memory: Some(super::MemoryLimit {
+                    bytes: 1,
+                    held: || 0,
+                }),
+            };
+            let solved = egs.solve_within(0, &limits).unwrap();
+            if !solved.exact {
+                grown += 1;
+                assert!(
+                    finished
+                        .iter()
+                        .any(|&(d, v, _)| (d, v) == (solved.depth, solved.value)),
+                    "[{name}] a table's growth answers depth {} with {}, which no pass finished",
+                    solved.depth,
+                    solved.value
+                );
+            }
+
+            // one state past the first depth's: the search stops within a later
+            // pass, or after it, and answers a depth that finished
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            let limits = super::Limits {
+                time: None,
+                states: Some(finished[0].2 + 1),
+                memory: None,
+            };
+            let solved = egs.solve_within(0, &limits).unwrap();
+            if !solved.exact {
+                cut += 1;
+                assert!(
+                    finished
+                        .iter()
+                        .any(|&(d, v, _)| (d, v) == (solved.depth, solved.value)),
+                    "[{name}] a state limit answers depth {} with {}, which no pass finished",
+                    solved.depth,
+                    solved.value
+                );
+            } else {
+                assert_eq!(
+                    (solved.depth, solved.value),
+                    (full.depth, full.value),
+                    "[{name}] a solve the state limit never stopped is the unlimited one"
+                );
+            }
+        }
+        assert!(cut > 0, "no state limit cut a solve short");
+        assert!(grown > 0, "no table's growth cut a solve short");
+    }
+
+    #[test]
+    #[inline]
+    fn a_search_with_a_tile_in_the_bag_keeps_one_listener() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+
+        // every endgame of the search tells the one listener it was given, so
+        // its clock is the search's: at every node, with the endgames before
+        // it, and never a finished depth of its own
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = heard.clone();
+        let limits = super::BagLimits::new(
+            &super::Limits::NONE,
+            Some(Box::new(move |p: &super::Progress| {
+                seen.borrow_mut().push((p.endgames, p.value));
+                Ok(())
+            })),
+        );
+        let positions = all_positions();
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut exact = true;
+        for (_, pos) in &positions {
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs.solve_in_bag(0, &limits, &mut exact).unwrap();
+        }
+        assert!(exact, "a search with no limits is exact");
+        assert_eq!(limits.endgames.get(), positions.len() as u64);
+        assert!(limits.progress.take().is_some(), "the listener comes back");
+        let heard = heard.borrow();
+        assert!(heard.iter().all(|&(_, value)| value.is_none()));
+        let endgames = heard.iter().map(|&(n, _)| n).collect::<Vec<_>>();
+        assert!(endgames.windows(2).all(|w| w[0] <= w[1]));
+        for n in 0..positions.len() as u64 {
+            assert!(endgames.contains(&Some(n)), "endgame {n} told nothing");
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn a_solve_times_its_movegens_only_while_something_listens() {
+        let gc = game_config::make_english_game_config();
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let positions = all_positions();
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut movegen = std::time::Duration::ZERO;
+        for (_, pos) in &positions {
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs.solve(0).unwrap();
+            movegen += egs.work_buffer.dur_movegen;
+        }
+        assert_eq!(movegen, std::time::Duration::ZERO, "no listener, no clock");
+        egs.report_progress(|_: &super::Progress| Ok(()));
+        for (_, pos) in &positions {
+            egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+            egs.solve(0).unwrap();
+            movegen += egs.work_buffer.dur_movegen;
+        }
+        assert!(movegen > std::time::Duration::ZERO, "a listener, the time");
+    }
+
+    #[test]
+    #[inline]
+    fn the_memory_limit_takes_off_only_what_the_lists_never_wrote() {
+        let gc = game_config::make_english_game_config();
+        let mut work_buffer = super::WorkBuffer::new(&gc);
+        work_buffer.init();
+        let at_start = work_buffer.unwritten();
+        let size = std::mem::size_of::<super::ChildPlay>();
+        work_buffer.child_plays.reserve_exact(100);
+        let taken = work_buffer.child_plays.capacity();
+        for _ in 0..60 {
+            work_buffer.child_plays.push(super::ChildPlay {
+                new_state_idx: !0,
+                play_idx: 0,
+                valuation: 0.0,
+            });
+        }
+        assert_eq!(
+            work_buffer.unwritten(),
+            at_start + (taken - 60) * size,
+            "a list's buffer past its entries is taken off"
+        );
+        // cleared, the list keeps its buffer and the memory its entries were in
+        work_buffer.init();
+        assert_eq!(work_buffer.child_plays.capacity(), taken);
+        assert_eq!(
+            work_buffer.unwritten(),
+            at_start + (taken - 60) * size,
+            "a cleared list still counts what it held"
+        );
+    }
+
+    #[test]
+    #[inline]
     fn peg_aggregate_weights_each_outcome_by_how_many_tiles_give_it() {
         let e = equity::Equity::new;
         let (win_pct, expected) = super::peg_aggregate(&[(2, e(3000)), (1, e(0)), (1, e(-5000))]);
@@ -2104,7 +2738,14 @@ mod tests {
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
-            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, equity::Equity::ZERO)
+            .solve_peg_one_in_bag(
+                0,
+                &board,
+                &mover_rack,
+                &unseen_tally,
+                equity::Equity::ZERO,
+                &super::Limits::NONE,
+            )
             .unwrap()
             .expect("english one-in-bag is always solvable");
 
@@ -2132,13 +2773,93 @@ mod tests {
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let e = equity::Equity::new;
         let result = egs
-            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, e(3000))
+            .solve_peg_one_in_bag(
+                0,
+                &board,
+                &mover_rack,
+                &unseen_tally,
+                e(3000),
+                &super::Limits::NONE,
+            )
             .unwrap()
             .expect("english one-in-bag is always solvable");
 
         assert_eq!(result.hypotheses, vec![(8, 1, e(1000)), (20, 1, e(4000))]);
         assert_eq!(result.win_pct, 1.0);
         assert_eq!(result.expected_margin, e(2500));
+    }
+
+    #[test]
+    #[inline]
+    fn a_peg_solve_says_when_a_limit_cut_an_endgame_inside_it() {
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let no_time = super::Limits {
+            time: Some(std::time::Duration::ZERO),
+            states: None,
+            memory: None,
+        };
+        let one_state = super::Limits {
+            time: None,
+            states: Some(1),
+            memory: None,
+        };
+        let no_memory = super::Limits {
+            time: None,
+            states: None,
+            memory: Some(super::MemoryLimit {
+                bytes: 1,
+                held: || usize::MAX,
+            }),
+        };
+        let tiles = [1u8, 2, 8, 20]; // A B H T
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        let mut cut = [0usize; 3];
+        // the committed model, and the clairvoyant one where exchanges are legal
+        for gc in [
+            game_config::make_english_game_config(),
+            game_config::make_exchange_test_game_config(),
+        ] {
+            let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            unseen_tally[8] = 1; // H
+            unseen_tally[20] = 1; // T
+            for &x in &tiles {
+                for &y in &tiles {
+                    let mover_rack = [x, y];
+                    let mut solve = |limits: &super::Limits| {
+                        egs.solve_peg_one_in_bag(
+                            0,
+                            &board,
+                            &mover_rack,
+                            &unseen_tally,
+                            equity::Equity::ZERO,
+                            limits,
+                        )
+                        .unwrap()
+                        .expect("both configs solve one in the bag")
+                    };
+                    let full = solve(&super::Limits::NONE);
+                    assert!(full.exact, "an unlimited solve is exact");
+                    for (i, limits) in [&no_time, &one_state, &no_memory].into_iter().enumerate() {
+                        let limited = solve(limits);
+                        assert_eq!(limited.hypotheses.len(), full.hypotheses.len());
+                        if limited.exact {
+                            assert_eq!(limited.hypotheses, full.hypotheses);
+                        } else {
+                            cut[i] += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            cut.iter().all(|&n| n > 0),
+            "the time, state, and memory limits cut {cut:?} endgames short"
+        );
     }
 
     #[test]
@@ -2582,7 +3303,14 @@ mod tests {
         let mut egs =
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
         let result = egs
-            .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, equity::Equity::ZERO)
+            .solve_peg_one_in_bag(
+                0,
+                &board,
+                &mover_rack,
+                &unseen_tally,
+                equity::Equity::ZERO,
+                &super::Limits::NONE,
+            )
             .unwrap()
             .expect("the exchange test config forces an end and is solvable");
         assert_eq!(result.hypotheses.len(), 2);
@@ -2593,7 +3321,14 @@ mod tests {
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_en, &kwg, &arm_tables_en).unwrap();
         assert!(
             egs_en
-                .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, equity::Equity::ZERO)
+                .solve_peg_one_in_bag(
+                    0,
+                    &board,
+                    &mover_rack,
+                    &unseen_tally,
+                    equity::Equity::ZERO,
+                    &super::Limits::NONE
+                )
                 .unwrap()
                 .is_ok()
         );
@@ -2604,7 +3339,14 @@ mod tests {
             EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc_bad, &kwg, &arm_tables_bad).unwrap();
         assert!(matches!(
             egs_bad
-                .solve_peg_one_in_bag(0, &board, &mover_rack, &unseen_tally, equity::Equity::ZERO)
+                .solve_peg_one_in_bag(
+                    0,
+                    &board,
+                    &mover_rack,
+                    &unseen_tally,
+                    equity::Equity::ZERO,
+                    &super::Limits::NONE
+                )
                 .unwrap(),
             Err(super::PegUnsupported::ExchangeWithoutForcedEnd)
         ));
@@ -2785,6 +3527,7 @@ mod tests {
                                     mrack,
                                     &unseen_tally,
                                     equity::Equity::ZERO,
+                                    &super::Limits::NONE,
                                 )
                                 .unwrap()
                                 .expect("english one-in-bag is always solvable");
@@ -2794,11 +3537,19 @@ mod tests {
                             )
                             .unwrap();
                             let clair = egs2
-                                .peg_clairvoyant_aggregate(0, board, mrack, &unseen_tally, 0.0)
+                                .peg_clairvoyant_aggregate(
+                                    0,
+                                    board,
+                                    mrack,
+                                    &unseen_tally,
+                                    0.0,
+                                    &super::BagLimits::new(&super::Limits::NONE, None),
+                                )
                                 .unwrap();
 
                             assert!(got.committed, "english path must be committed");
                             assert!(got.best_move.is_some(), "committed result must name a move");
+                            assert!(got.exact && clair.exact, "an unlimited solve is exact");
                             assert!(
                                 (got.win_pct - ref_win).abs() < 1e-6,
                                 "[{bname}] lean={lean} mover=[{}] unseen={unseen:?}: committed solver win% {} != reference {}",
