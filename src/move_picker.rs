@@ -981,7 +981,7 @@ mod tests {
             &board_tiles,
             &rack,
             FieldShape {
-                max_gen: 1_000,
+                max_gen: usize::MAX,
                 nonplacing_quota: 0,
             },
         );
@@ -993,7 +993,7 @@ mod tests {
             &board_tiles,
             &rack,
             FieldShape {
-                max_gen: 1_000,
+                max_gen: usize::MAX,
                 nonplacing_quota: 3,
             },
         );

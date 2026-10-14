@@ -3073,8 +3073,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
         at
     };
 
+    // from a pool of this many unseen tiles, the superset-sum pass (one sweep
+    // of the lattice a letter, whatever the pool) apportions faster than
+    // pushing each drawable rack into its subracks, which costs more the more
+    // racks the pool can deal. Both give the same values; the crossover was
+    // timed on the english tiles.
     let zeta_pool_min = 36;
 
+    // up to this many multisets, filling every rack's best from the words each
+    // spells beats searching each rack's splits. The cutoff sits between the
+    // lattices of the 27 to 29 letter alphabets, where it was timed faster, and
+    // the 33 letter ones, where it was slower. Both give the same values.
     let scatter = lat.len() <= 12_000_000;
 
     let base_freqs: Vec<u8> = (0..alphabet.len()).map(|t| alphabet.freq(t)).collect();
@@ -3352,8 +3361,10 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                         low_tiles + (b as usize % (high_tiles - low_tiles + 1))
                     };
 
-                    let mut tries = 0u32;
-                    let reached = loop {
+                    let mut tries = 0u64;
+                    let t_slot = std::time::Instant::now();
+                    let mut ticked = 0u64;
+                    loop {
                         game_state.reset_and_draw_tiles_double_ended(&game_config, &mut rng);
                         let mut got = false;
                         loop {
@@ -3407,17 +3418,17 @@ fn generate_census_leaves<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send
                             }
                         }
                         if got {
-                            break true;
+                            break;
                         }
                         tries += 1;
-                        if tries >= 1_000_000 {
-                            break false;
+                        // a slot plays fresh games until one stops in the
+                        // window, and says so each second it keeps missing
+                        let secs = t_slot.elapsed().as_secs();
+                        if secs > ticked {
+                            ticked = secs;
+                            writeln!(boxed_stdout_or_stderr(),
+                                "census: board slot {b} after {secs}s, {tries} games, none stopped in window [{low_tiles},{high_tiles}]").ok();
                         }
-                    };
-                    if !reached {
-                        writeln!(boxed_stdout_or_stderr(),
-                            "census: board slot {b} never reached window [{low_tiles},{high_tiles}]; skipping").ok();
-                        continue;
                     }
                     } // end of the !reuse_board game replay
                     value_board(
@@ -4893,7 +4904,7 @@ fn sim_field_check<N: kwg::Node, L: kwg::Node>(
         move_generator.gen_moves_unfiltered(&movegen::GenMovesParams {
             board_snapshot: &board_snapshot,
             rack,
-            max_gen: 10_000,
+            max_gen: usize::MAX,
             num_exchanges_by_this_player: num_exchanges,
             pass_policy: movegen::PassPolicy::OnlyWhenForced,
             dynamic_leaves: None,
