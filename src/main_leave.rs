@@ -342,15 +342,29 @@ struct Compare {
     #[arg(
         long,
         value_name = "POINTS",
-        help = "seat p0, deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
+        help = "seat p0, when deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
     )]
     p0_window: Option<f64>,
     #[arg(
         long,
         value_name = "POINTS",
-        help = "seat p1, deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
+        help = "seat p1, when deft, takes among its moves within POINTS of its best the one leaving the fewest bingo lanes [default: 1]"
     )]
     p1_window: Option<f64>,
+    #[arg(
+        long,
+        value_enum,
+        value_name = "PICKER",
+        help = "seat p0 picks its moves as this picker would once the bag is empty [default: as its own]"
+    )]
+    p0_endgame: Option<EndPicker>,
+    #[arg(
+        long,
+        value_enum,
+        value_name = "PICKER",
+        help = "seat p1 picks its moves as this picker would once the bag is empty [default: as its own]"
+    )]
+    p1_endgame: Option<EndPicker>,
     #[arg(long, default_value = "1", help = "rollout threads a seat")]
     sim_threads: std::num::NonZeroUsize,
     #[arg(long, help = "print no progress")]
@@ -887,11 +901,12 @@ fn run<N: kwg::Node + Sync + Send>(
         }
         Task::Compare(a) => {
             // a deft seat's window, in points to milli-points: 1 point unless
-            // given, and given for no other seat
-            let window = |w: Option<f64>, picker: SeatPicker| -> error::Returns<i32> {
-                if w.is_some() && !matches!(picker, SeatPicker::Deft) {
+            // given, and given for no seat that is never deft
+            let window = |w: Option<f64>, deft: bool| -> error::Returns<i32> {
+                if w.is_some() && !deft {
                     wolges::return_error!(
-                        "--p0-window and --p1-window are for a deft seat".to_string()
+                        "--p0-window and --p1-window are for a seat that is deft at some point"
+                            .to_string()
                     );
                 }
                 match w {
@@ -904,12 +919,12 @@ fn run<N: kwg::Node + Sync + Send>(
                     ),
                 }
             };
-            let p0_window = window(a.p0_window, a.p0_picker)?;
-            let p1_window = window(a.p1_window, a.p1_picker)?;
+            let p0_window = window(a.p0_window, ever_deft(a.p0_picker, a.p0_endgame))?;
+            let p1_window = window(a.p1_window, ever_deft(a.p1_picker, a.p1_endgame))?;
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let (klv0, klv1) = read_klv_pair(&game_config, &a.klv0, &a.klv1)?;
-            let hasty_only = matches!(a.p0_picker, SeatPicker::Hasty)
-                && matches!(a.p1_picker, SeatPicker::Hasty);
+            let hasty_only = hasty_throughout(a.p0_picker, a.p0_endgame)
+                && hasty_throughout(a.p1_picker, a.p1_endgame);
             let params = CompareParams {
                 num_game_pairs: a.pairs,
                 seed: a.seed,
@@ -925,6 +940,8 @@ fn run<N: kwg::Node + Sync + Send>(
                 p1_iters: a.p1_iters,
                 p0_window,
                 p1_window,
+                p0_endgame: a.p0_endgame,
+                p1_endgame: a.p1_endgame,
                 quiet: a.quiet,
             };
             match (a.lean, hasty_only) {
@@ -4943,6 +4960,51 @@ enum SeatPicker {
     Deft,
 }
 
+// how a seat picks its moves once the bag is empty, when not as its own picker
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum EndPicker {
+    Hasty,
+    Deft,
+}
+
+// the picker a seat hands over to once the bag is empty, deft within window
+#[inline]
+fn end_picker<'a, N: kwg::Node, L: kwg::Node>(
+    endgame: EndPicker,
+    window: i32,
+) -> move_picker::MovePicker<'a, N, L> {
+    match endgame {
+        EndPicker::Hasty => move_picker::MovePicker::Hasty,
+        EndPicker::Deft => move_picker::MovePicker::Deft(window),
+    }
+}
+
+// the picker a seat moves with: the one it hands over to, once the bag is empty
+// and it has one, else its own
+#[inline(always)]
+fn seat_driver<'d, 'a, N: kwg::Node, L: kwg::Node>(
+    own: &'d mut move_picker::MovePicker<'a, N, L>,
+    end: &'d mut Option<move_picker::MovePicker<'a, N, L>>,
+    bag_empty: bool,
+) -> &'d mut move_picker::MovePicker<'a, N, L> {
+    match end {
+        Some(end) if bag_empty => end,
+        _ => own,
+    }
+}
+
+// whether a seat is deft at some point, and so takes a window
+#[inline(always)]
+fn ever_deft(picker: SeatPicker, endgame: Option<EndPicker>) -> bool {
+    matches!(picker, SeatPicker::Deft) || matches!(endgame, Some(EndPicker::Deft))
+}
+
+// whether a seat is hasty throughout
+#[inline(always)]
+fn hasty_throughout(picker: SeatPicker, endgame: Option<EndPicker>) -> bool {
+    matches!(picker, SeatPicker::Hasty) && matches!(endgame, None | Some(EndPicker::Hasty))
+}
+
 #[inline]
 fn picker_name(picker: SeatPicker) -> &'static str {
     match picker {
@@ -7785,6 +7847,8 @@ struct CompareParams {
     p1_iters: u64,
     p0_window: i32,
     p1_window: i32,
+    p0_endgame: Option<EndPicker>,
+    p1_endgame: Option<EndPicker>,
     quiet: bool,
 }
 
@@ -7852,6 +7916,8 @@ fn compare_seats<
         p1_iters,
         p0_window,
         p1_window,
+        p0_endgame,
+        p1_endgame,
         quiet,
     }: CompareParams,
 ) -> error::Returns<()> {
@@ -7907,18 +7973,29 @@ fn compare_seats<
                      plies: usize,
                      iters: u64,
                      win_pct: Option<&str>,
-                     window: i32| match picker {
-        SeatPicker::Simmer => format!(
-            "{} ({iters} rollouts a move, {plies} plies each, win%={})",
-            picker_name(picker),
-            win_pct.unwrap_or("sigmoid"),
-        ),
-        SeatPicker::Deft => format!(
-            "{} (of its moves within {} of its best equity, the one leaving the fewest bingo lanes; with the bag empty, the first that goes out and wins, else out in two; with two to a rack's worth in the bag, one leaving exactly one there)",
-            picker_name(picker),
-            equity::Equity::new(window),
-        ),
-        SeatPicker::Hasty | SeatPicker::Dynamic => picker_name(picker).to_string(),
+                     window: i32,
+                     endgame: Option<EndPicker>| {
+        let line = match picker {
+            SeatPicker::Simmer => format!(
+                "{} ({iters} rollouts a move, {plies} plies each, win%={})",
+                picker_name(picker),
+                win_pct.unwrap_or("sigmoid"),
+            ),
+            SeatPicker::Deft => format!(
+                "{} (of its moves within {} of its best equity, the one leaving the fewest bingo lanes; with the bag empty, the first that goes out and wins, else out in two; with two to a rack's worth in the bag, one leaving exactly one there)",
+                picker_name(picker),
+                equity::Equity::new(window),
+            ),
+            SeatPicker::Hasty | SeatPicker::Dynamic => picker_name(picker).to_string(),
+        };
+        match endgame {
+            None => line,
+            Some(EndPicker::Hasty) => format!("{line}; once the bag is empty, hasty"),
+            Some(EndPicker::Deft) => format!(
+                "{line}; once the bag is empty, deft within {}",
+                equity::Equity::new(window),
+            ),
+        }
     };
     writeln!(
         boxed_stdout_or_stderr(),
@@ -7929,14 +8006,16 @@ fn compare_seats<
             p0_plies,
             p0_iters,
             p0_win_pct.as_deref(),
-            p0_window
+            p0_window,
+            p0_endgame,
         ),
         seat_line(
             p1_picker,
             p1_plies,
             p1_iters,
             p1_win_pct.as_deref(),
-            p1_window
+            p1_window,
+            p1_endgame,
         ),
     )?;
 
@@ -7990,6 +8069,8 @@ fn compare_seats<
                         deft_window: p1_window,
                     },
                 );
+                let mut end_p0 = p0_endgame.map(|endgame| end_picker(endgame, p0_window));
+                let mut end_p1 = p1_endgame.map(|endgame| end_picker(endgame, p1_window));
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut saved_game_state = game_state.clone();
                 let mut final_scores = vec![0i32; game_config.num_players() as usize];
@@ -8032,10 +8113,11 @@ fn compare_seats<
                                 rack_lengths: arm_tables.rack_lengths(),
                                 klv: if is_p0_seat { &arc_klv0 } else { &arc_klv1 },
                             };
+                            let bag_empty = game_state.bag.is_empty();
                             let driver = if is_p0_seat {
-                                &mut driver_p0
+                                seat_driver(&mut driver_p0, &mut end_p0, bag_empty)
                             } else {
-                                &mut driver_p1
+                                seat_driver(&mut driver_p1, &mut end_p1, bag_empty)
                             };
 
                             if let move_picker::MovePicker::Simmer(simmer_driver) = &mut *driver {
@@ -8629,5 +8711,52 @@ mod tests {
         assert_eq!(after.iter().filter(|&&t| t != 0).count(), 3);
         assert_eq!(least_of(&[3.0, 1.0, 1.0, 2.0], |&x| x), 1);
         assert_eq!(least_of(&[] as &[f64], |&x| x), 0);
+    }
+
+    #[test]
+    #[inline]
+    fn a_seat_hands_over_to_its_end_picker_once_the_bag_is_empty() {
+        type Picker<'a> = move_picker::MovePicker<'a, kwg::Node22, kwg::Node22>;
+        let mut own: Picker = move_picker::MovePicker::Hasty;
+        let mut end = Some(end_picker(EndPicker::Deft, 7));
+        assert!(matches!(
+            seat_driver(&mut own, &mut end, false),
+            move_picker::MovePicker::Hasty
+        ));
+        assert!(matches!(
+            seat_driver(&mut own, &mut end, true),
+            move_picker::MovePicker::Deft(7)
+        ));
+        let mut end = Some(end_picker(EndPicker::Hasty, 7));
+        let mut own: Picker = move_picker::MovePicker::Deft(3);
+        assert!(matches!(
+            seat_driver(&mut own, &mut end, true),
+            move_picker::MovePicker::Hasty
+        ));
+        let mut none: Option<Picker> = None;
+        assert!(matches!(
+            seat_driver(&mut own, &mut none, true),
+            move_picker::MovePicker::Deft(3)
+        ));
+    }
+
+    #[test]
+    #[inline]
+    fn a_seat_takes_a_window_when_ever_deft_and_is_hasty_only_when_never_otherwise() {
+        let (hasty, deft) = (Some(EndPicker::Hasty), Some(EndPicker::Deft));
+        for (picker, endgame, ever, throughout) in [
+            (SeatPicker::Hasty, None, false, true),
+            (SeatPicker::Hasty, hasty, false, true),
+            (SeatPicker::Hasty, deft, true, false),
+            (SeatPicker::Deft, None, true, false),
+            (SeatPicker::Deft, hasty, true, false),
+            (SeatPicker::Simmer, None, false, false),
+            (SeatPicker::Simmer, deft, true, false),
+            (SeatPicker::Dynamic, hasty, false, false),
+        ] {
+            let name = picker_name(picker);
+            assert_eq!(ever_deft(picker, endgame), ever, "{name}");
+            assert_eq!(hasty_throughout(picker, endgame), throughout, "{name}");
+        }
     }
 }

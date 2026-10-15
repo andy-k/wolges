@@ -80,6 +80,11 @@ of simmer-against-simmer and still answers "is this configuration any good"
 against a fixed reference, where two simming seats only answer "is it better
 than that other configuration".
 
+Once the bag is empty, a seat can hand over to another picker: --p0-endgame /
+--p1-endgame take "hasty" or "deft", so a simmer or a hasty seat can end its
+games as deft does, or a deft seat as hasty does; without it, a seat keeps its
+own picker to the end.
+
 As with leave tables, each game pair starts from the same deal with the seats
 swapped, so first-move advantage cancels between the two halves of the pair.
 Each seat's simmer is reseeded before every single move from a mix of the run's
