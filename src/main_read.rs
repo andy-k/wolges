@@ -465,7 +465,7 @@ fn read_machine_words_sorted_by_length(
 ) -> error::Returns<Box<[bites::Bites]>> {
     let mut machine_words = Vec::<bites::Bites>::new();
     let mut v = Vec::new();
-    for s in giant_string.lines() {
+    for s in giant_string.split(['\n', '\r']) {
         if s.is_empty() {
             continue;
         }
@@ -3361,4 +3361,25 @@ fn main() -> error::Returns<()> {
     })?;
     writeln!(boxed_stdout_or_stderr(), "time taken: {:?}", t0.elapsed())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[inline]
+    fn a_word_list_reads_the_same_whatever_its_line_endings() {
+        let english = alphabet::make_english_alphabet();
+        let reader = alphabet::AlphabetReader::new_for_racks(&english);
+        let want = read_machine_words_sorted_by_length(&reader, "QI\nZA\nQUA\n").unwrap();
+        assert_eq!(want.len(), 3);
+        for words in ["QI\r\nZA\r\nQUA\r\n", "QI\rZA\rQUA\r"] {
+            assert_eq!(
+                read_machine_words_sorted_by_length(&reader, words).unwrap(),
+                want,
+                "{words:?}"
+            );
+        }
+    }
 }

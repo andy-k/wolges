@@ -6658,6 +6658,13 @@ fn exact_openness<N: kwg::Node, L: kwg::Node>(
     openness
 }
 
+// a board file's lines that hold a board: a line ends at "\n", "\r\n", or a
+// lone "\r", and an empty one holds none
+#[inline]
+fn board_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.split(['\n', '\r']).filter(|line| !line.is_empty())
+}
+
 #[inline]
 fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
@@ -6672,10 +6679,8 @@ fn board_openness<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     let rack_size = game_config.rack_size() as usize;
     let mut fen_parser = display::BoardFenParser::new(alphabet, game_config.board_layout());
     let mut boards = Vec::new();
-    for line in std::fs::read_to_string(boards_path)?.lines() {
-        if !line.is_empty() {
-            boards.push(fen_parser.parse(line)?.to_vec());
-        }
+    for line in board_lines(&std::fs::read_to_string(boards_path)?) {
+        boards.push(fen_parser.parse(line)?.to_vec());
     }
     let lat = census::MultisetLattice::new(num_letters, rack_size)?;
     let mut leave = vec![0i32; lat.len()];
@@ -7784,11 +7789,8 @@ fn board_stats(
     let mut holes = stats::Stats::new();
     let mut text = String::new();
     reader.read_to_string(&mut text)?;
-    let num_boards = text.lines().filter(|line| !line.is_empty()).count();
-    for line in text.lines() {
-        if line.is_empty() {
-            continue;
-        }
+    let num_boards = board_lines(&text).count();
+    for line in board_lines(&text) {
         let shape = board_shape(board_layout, fen_parser.parse(line)?);
         boards += 1;
         let secs = t0.elapsed().as_secs();
@@ -8757,6 +8759,18 @@ mod tests {
             let name = picker_name(picker);
             assert_eq!(ever_deft(picker, endgame), ever, "{name}");
             assert_eq!(hasty_throughout(picker, endgame), throughout, "{name}");
+        }
+    }
+
+    #[test]
+    #[inline]
+    fn a_board_file_holds_a_board_a_line_whatever_its_line_endings() {
+        for text in ["A\nB\nC\n", "A\r\nB\r\nC\r\n", "A\rB\rC\r", "\nA\n\r\nB\rC"] {
+            assert_eq!(
+                board_lines(text).collect::<Vec<_>>(),
+                ["A", "B", "C"],
+                "{text:?}"
+            );
         }
     }
 }
