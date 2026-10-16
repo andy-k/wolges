@@ -225,26 +225,54 @@ struct StatesDefragger<'a> {
 }
 
 impl StatesDefragger<'_> {
-    fn defrag_legacy(&mut self, mut p: u32) {
-        p = self.head_indexes[p as usize];
-        if self.destination[p as usize] != 0 {
-            return;
-        }
-        let num = self.to_end_lens[p as usize];
-        // temp value to break self-cycles.
-        self.destination[p as usize] = !0;
-        let mut write_p = p;
+    // Walks the lists reached from p's list, each from its head: enter on first
+    // reaching a list, leave once every list its arcs reach is left (leave gets
+    // what enter returned), the order of a recursion into each arc. A list that
+    // is another's tail is reached at that one's head, whose other arcs lead
+    // anywhere, so that recursion's depth grows with the word list, past a
+    // Windows main thread's 1 MB: the walk keeps its own stack.
+    #[inline(always)]
+    fn walk_lists(
+        &mut self,
+        mut p: u32,
+        mut enter: impl FnMut(&mut Self, u32) -> u32,
+        mut leave: impl FnMut(&mut Self, u32, u32),
+    ) {
+        // a list's head, its next arc to follow, what enter returned
+        let mut stack = Vec::<(u32, u32, u32)>::new();
         loop {
-            let a = self.states[p as usize].arc_index;
-            if a != 0 {
-                self.defrag_legacy(a);
+            p = self.head_indexes[p as usize];
+            if self.destination[p as usize] == 0 {
+                // temp value to break self-cycles.
+                self.destination[p as usize] = !0;
+                let entered = enter(self, p);
+                stack.push((p, p, entered));
             }
-            p = self.states[p as usize].next_index;
-            if p == 0 {
-                break;
+            loop {
+                let Some(top) = stack.last_mut() else {
+                    return;
+                };
+                let q = top.1;
+                if q == 0 {
+                    let (head, _, entered) = *top;
+                    stack.pop();
+                    leave(self, head, entered);
+                    continue;
+                }
+                top.1 = self.states[q as usize].next_index;
+                p = self.states[q as usize].arc_index;
+                if p != 0 {
+                    break;
+                }
             }
         }
-        let initial_num_written = self.num_written;
+    }
+
+    // the list at write_p goes from initial_num_written on, up to its first
+    // node already placed
+    #[inline(always)]
+    fn place(&mut self, mut write_p: u32, initial_num_written: u32) {
+        let num = self.to_end_lens[write_p as usize];
         self.destination[write_p as usize] = 0;
         for ofs in 0..num {
             // prefer earlier index, so dawg part does not point to gaddag part
@@ -254,8 +282,21 @@ impl StatesDefragger<'_> {
             self.destination[write_p as usize] = initial_num_written + ofs;
             write_p = self.states[write_p as usize].next_index;
         }
-        // Always += num even if some nodes are necessarily duplicated due to sharing by different prev_nodes.
-        self.num_written += num;
+    }
+
+    #[inline]
+    fn defrag_legacy(&mut self, p: u32) {
+        self.walk_lists(
+            p,
+            |_, _| 0,
+            |this, p, _| {
+                let num = this.to_end_lens[p as usize];
+                let initial_num_written = this.num_written;
+                this.place(p, initial_num_written);
+                // Always += num even if some nodes are necessarily duplicated due to sharing by different prev_nodes.
+                this.num_written += num;
+            },
+        );
     }
 
     fn defrag_magpie(&mut self, mut p: u32) {
@@ -278,124 +319,83 @@ impl StatesDefragger<'_> {
         }
     }
 
-    fn defrag_magpie_merged(&mut self, mut p: u32) {
-        p = self.head_indexes[p as usize];
-        if self.destination[p as usize] != 0 {
-            return;
-        }
-        let initial_num_written = self.num_written;
-        // temp value to break self-cycles.
-        self.destination[p as usize] = !0;
-        // non-legacy mode reserves the space first.
-        let num = self.to_end_lens[p as usize];
-        self.num_written += num;
-        let mut write_p = p;
-        loop {
-            let a = self.states[p as usize].arc_index;
-            if a != 0 {
-                self.defrag_magpie_merged(a);
-            }
-            p = self.states[p as usize].next_index;
-            if p == 0 {
-                break;
-            }
-        }
-        self.destination[write_p as usize] = 0;
-        for ofs in 0..num {
-            // prefer earlier index, so dawg part does not point to gaddag part
-            if self.destination[write_p as usize] != 0 {
-                break;
-            }
-            self.destination[write_p as usize] = initial_num_written + ofs;
-            write_p = self.states[write_p as usize].next_index;
-        }
-        // non-legacy mode already reserves the space.
+    #[inline]
+    fn defrag_magpie_merged(&mut self, p: u32) {
+        self.walk_lists(
+            p,
+            |this, p| {
+                let initial_num_written = this.num_written;
+                // non-legacy mode reserves the space first.
+                this.num_written += this.to_end_lens[p as usize];
+                initial_num_written
+            },
+            // non-legacy mode already reserves the space.
+            Self::place,
+        );
     }
 
-    fn defrag_cache_friendly(
-        &mut self,
-        params: &mut StateDefraggerExperimentalParams<'_>,
-        mut p: u32,
-    ) {
-        p = self.head_indexes[p as usize];
-        if self.destination[p as usize] != 0 {
-            return;
-        }
-        // temp value to break self-cycles.
-        self.destination[p as usize] = !0;
-        // non-legacy mode reserves the space first.
-        let num = self.to_end_lens[p as usize];
-        // choose a cache-friendly page to place these.
-        let mut num_blocks = params.block_len.len() as u32;
-        let initial_num_written;
-        if num > 16 {
-            // always even-align for 128 byte cache line machines.
-            if num_blocks & 1 == 1 {
-                params.blocks_with_len[0].push(num_blocks);
-                params.block_len.push(0);
-                num_blocks += 1;
-            }
-            initial_num_written = num_blocks << 4;
-            let mut num = num; // shadow the variable
-            while num > 16 {
-                params.block_len.push(16);
-                num -= 16;
-            }
-            // this can be between 1 to 16.
-            if num < 16 {
-                params.blocks_with_len[num as usize].push(params.block_len.len() as u32);
-            }
-            params.block_len.push(num as u8);
-        } else {
-            // 1 <= num <= 16
-            let mut required_gap = 16 - num; // 0 <= required_gap <= 15
-            loop {
-                // if found, use it
-                if let Some(place) = params.blocks_with_len[required_gap as usize].pop() {
-                    // use | instead of + because it cannot overflow
-                    initial_num_written = (place << 4) | required_gap;
-                    // repurpose this variable.
-                    required_gap += num; // 1 <= required_gap <= 16
-                    if required_gap < 16 {
-                        params.blocks_with_len[required_gap as usize].push(place);
+    #[inline]
+    fn defrag_cache_friendly(&mut self, params: &mut StateDefraggerExperimentalParams<'_>, p: u32) {
+        self.walk_lists(
+            p,
+            |this, p| {
+                // non-legacy mode reserves the space first.
+                let num = this.to_end_lens[p as usize];
+                // choose a cache-friendly page to place these.
+                let mut num_blocks = params.block_len.len() as u32;
+                let initial_num_written;
+                if num > 16 {
+                    // always even-align for 128 byte cache line machines.
+                    if num_blocks & 1 == 1 {
+                        params.blocks_with_len[0].push(num_blocks);
+                        params.block_len.push(0);
+                        num_blocks += 1;
                     }
-                    params.block_len[place as usize] = required_gap as u8;
-                    break;
-                }
-                // if 0, add new row.
-                if required_gap == 0 {
                     initial_num_written = num_blocks << 4;
+                    let mut num = num; // shadow the variable
+                    while num > 16 {
+                        params.block_len.push(16);
+                        num -= 16;
+                    }
+                    // this can be between 1 to 16.
                     if num < 16 {
-                        params.blocks_with_len[num as usize].push(num_blocks);
+                        params.blocks_with_len[num as usize].push(params.block_len.len() as u32);
                     }
                     params.block_len.push(num as u8);
-                    break;
+                } else {
+                    // 1 <= num <= 16
+                    let mut required_gap = 16 - num; // 0 <= required_gap <= 15
+                    loop {
+                        // if found, use it
+                        if let Some(place) = params.blocks_with_len[required_gap as usize].pop() {
+                            // use | instead of + because it cannot overflow
+                            initial_num_written = (place << 4) | required_gap;
+                            // repurpose this variable.
+                            required_gap += num; // 1 <= required_gap <= 16
+                            if required_gap < 16 {
+                                params.blocks_with_len[required_gap as usize].push(place);
+                            }
+                            params.block_len[place as usize] = required_gap as u8;
+                            break;
+                        }
+                        // if 0, add new row.
+                        if required_gap == 0 {
+                            initial_num_written = num_blocks << 4;
+                            if num < 16 {
+                                params.blocks_with_len[num as usize].push(num_blocks);
+                            }
+                            params.block_len.push(num as u8);
+                            break;
+                        }
+                        // if not, -1 then try again
+                        required_gap -= 1;
+                    }
                 }
-                // if not, -1 then try again
-                required_gap -= 1;
-            }
-        }
-        let mut write_p = p;
-        loop {
-            let a = self.states[p as usize].arc_index;
-            if a != 0 {
-                self.defrag_cache_friendly(params, a);
-            }
-            p = self.states[p as usize].next_index;
-            if p == 0 {
-                break;
-            }
-        }
-        self.destination[write_p as usize] = 0;
-        for ofs in 0..num {
-            // prefer earlier index, so dawg part does not point to gaddag part
-            if self.destination[write_p as usize] != 0 {
-                break;
-            }
-            self.destination[write_p as usize] = initial_num_written + ofs;
-            write_p = self.states[write_p as usize].next_index;
-        }
-        // non-legacy mode already reserves the space.
+                initial_num_written
+            },
+            // non-legacy mode already reserves the space.
+            Self::place,
+        );
     }
 
     #[inline]
@@ -1506,6 +1506,44 @@ mod tests {
         expected.sort_unstable();
         expected.dedup();
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    #[inline]
+    fn a_reordered_graph_builds_on_a_small_stack() {
+        use rand::prelude::*;
+        // random words: reordered, their lists share tails in chains that grow
+        // with the word list, which a recursion would follow a frame a list
+        let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0);
+        let mut words = Vec::<bites::Bites>::new();
+        for _ in 0..100_000 {
+            let len = rng.random_range(2..=12);
+            words.push(
+                (0..len)
+                    .map(|_| rng.random_range(1..=26))
+                    .collect::<Vec<u8>>()[..]
+                    .into(),
+            );
+        }
+        words.sort_unstable();
+        words.dedup();
+        let bytes = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(256 << 10)
+                .spawn_scoped(s, || {
+                    build(
+                        BuildContent::Gaddawg,
+                        BuildLayout::Wolges,
+                        BuildOrder::Reordered,
+                        &words,
+                    )
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        assert_eq!(words_in_graph::<kwg::Node22>(&bytes), words);
     }
 
     #[test]
