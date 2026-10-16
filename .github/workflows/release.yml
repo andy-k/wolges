@@ -159,7 +159,7 @@ jobs:
           To time one, build it for your own CPU the same way.
           These are command-line programs: run them from a terminal.
           They are not signed, so Windows SmartScreen or macOS may block the first run until you allow it.
-          SHA256SUMS holds each file's SHA-256.
+          SHA256SUMS holds each file's SHA-256; on Windows, PowerShell's `Get-FileHash <file>` prints one to compare.
       run: |
         (cd dist && sha256sum -- *) >SHA256SUMS
         mv SHA256SUMS dist/
