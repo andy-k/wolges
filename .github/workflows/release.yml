@@ -65,6 +65,21 @@ jobs:
           [ "$n" = 0 ] || bad=1
         done
         exit "$bad"
+    - name: No C runtime DLL that Windows may lack
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        rustup component add llvm-tools
+        sysroot=$(cygpath -u "$(rustc --print sysroot)")
+        host=$(rustc -vV | sed -n 's/^host: //p')
+        bad=0
+        for b in buildlex read leave; do
+          dlls=$("$sysroot/lib/rustlib/$host/bin/llvm-objdump.exe" -p "target/release/$b.exe" | grep 'DLL Name:')
+          printf '%s:\n%s\n' "$b" "$dlls"
+          n=$(grep -c -i -e vcruntime -e msvcp <<<"$dlls" || true)
+          [ "$n" = 0 ] || bad=1
+        done
+        exit "$bad"
     - name: Smoke run, in an empty directory
       shell: bash
       timeout-minutes: 5
