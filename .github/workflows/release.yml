@@ -128,9 +128,15 @@ jobs:
         GH_TOKEN: "${{ github.token }}"
         NOTES: >-
           Built from main at ${{ github.sha }} for x86-64-v3 (x86_64 Linux and Windows), apple-m1 (Apple Silicon Macs), and generic arm64 (Linux).
-          Anywhere else -- an x86-64 CPU without AVX2, which stops these with an illegal instruction, a Linux that says a GLIBC version is not found (its glibc is older than the Ubuntu 24.04 these were built on), or an Intel Mac -- build from source: cargo build --release.
+          Anywhere else -- an x86-64 CPU (or an emulator) without AVX2, which stops these with an illegal instruction, a Linux that says a GLIBC version is not found (its glibc is older than the Ubuntu 24.04 these were built on), or an Intel Mac -- build from source: cargo build --release.
           To time one, build it for your own CPU the same way.
+          These are command-line programs: run them from a terminal.
+          They are not signed, so Windows SmartScreen or macOS may block the first run until you allow it.
+          SHA256SUMS holds each file's SHA-256.
       run: |
+        (cd dist && sha256sum -- *) >SHA256SUMS
+        mv SHA256SUMS dist/
+        cat dist/SHA256SUMS
         tag="main-$GITHUB_SHA"
         if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
           gh release upload "$tag" dist/* --repo "$GITHUB_REPOSITORY" --clobber
