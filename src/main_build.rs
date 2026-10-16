@@ -3,6 +3,8 @@
 use wolges::kwg::Node;
 use wolges::{alphabet, bites, build, equity, error, fash, klv, kwg, lexport, prob};
 
+// the words of a word list, a line each: a line ends at "\n", "\r\n", or a lone
+// "\r", and a word at its first blank; an empty line is no word
 #[inline]
 fn parse_machine_words(
     alphabet_reader: &alphabet::AlphabetReader,
@@ -10,7 +12,7 @@ fn parse_machine_words(
 ) -> error::Returns<Vec<bites::Bites>> {
     let mut machine_words = Vec::<bites::Bites>::new();
     let mut v = Vec::new();
-    for s in giant_string.lines() {
+    for s in giant_string.split(['\n', '\r']) {
         if s.is_empty() {
             continue;
         }
@@ -33,7 +35,8 @@ fn parse_machine_words(
 }
 
 // the lines, as they came, whose word holds from min_len to max_len tiles: a
-// word ends at its first blank, as in a word list; an empty line is no word
+// word ends at its first blank, as in a word list; an empty line is no word. A
+// line ends at "\n", "\r\n", or a lone "\r", and each kept one at "\n"
 #[inline(always)]
 fn trim_words(
     alphabet_reader: &alphabet::AlphabetReader,
@@ -43,7 +46,7 @@ fn trim_words(
 ) -> error::Returns<String> {
     let mut kept = String::new();
     let mut v = Vec::new();
-    for s in giant_string.lines() {
+    for s in giant_string.split(['\n', '\r']) {
         if s.is_empty() {
             continue;
         }
@@ -1337,6 +1340,34 @@ mod tests {
             trim_words(&reader, "[CH]E\nCHE\n1E\n", 2, 2).unwrap(),
             "[CH]E\n1E\n"
         );
+    }
+
+    // classic Mac endings, a lone "\r" (Excel for Mac's "CSV (Macintosh)"
+    // writes them), read as the same lines: once they were one line, whose
+    // first word was kept and the rest dropped
+    #[test]
+    #[inline]
+    fn a_word_list_reads_the_same_whatever_its_line_endings() {
+        let english = alphabet::make_english_alphabet();
+        let reader = alphabet::AlphabetReader::new_for_racks(&english);
+        let want = parse_machine_words(&reader, "QI\nQUA def\nZA\n").unwrap();
+        assert_eq!(want.len(), 3);
+        for words in [
+            "QI\r\nQUA def\r\nZA\r\n",
+            "QI\rQUA def\rZA\r",
+            "QI\rQUA def\r\nZA",
+        ] {
+            assert_eq!(
+                parse_machine_words(&reader, words).unwrap(),
+                want,
+                "{words:?}"
+            );
+            assert_eq!(
+                trim_words(&reader, words, 0, 9).unwrap(),
+                "QI\nQUA def\nZA\n",
+                "{words:?}"
+            );
+        }
     }
 
     #[test]
