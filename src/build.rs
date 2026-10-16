@@ -804,30 +804,57 @@ fn reorder_states(
         rarest_entries: &'a [u32],
         tried: Vec<u32>, // stamped with the list being placed
         stamp: u32,
+        path: Vec<(u32, u32, u32)>, // list, next posting, host waited on
     }
     impl Absorber<'_> {
-        fn absorb(&mut self, tails: &mut [u32], i: u32) -> bool {
-            let head = self.movable[i as usize];
-            let len = self.to_end_lens[head as usize];
-            let rarest_entry = self.rarest_entries[i as usize] as usize;
-            for k in self.postings_starts[rarest_entry] as usize
-                ..self.postings_starts[rarest_entry + 1] as usize
-            {
-                let j = self.postings[k];
-                if j == i || self.tried[j as usize] == self.stamp {
+        // finds list i a host whose tail is free, or one whose tail can move on
+        // to a host of its own the same way, and so on. That path is kept on a
+        // stack here, not the call stack, since it can be as long as there are
+        // lists; it is tried in the order a recursion would try it.
+        fn absorb(&mut self, tails: &mut [u32], i: u32) {
+            let (states, movable, to_end_lens) = (self.states, self.movable, self.to_end_lens);
+            let (postings, postings_starts) = (self.postings, self.postings_starts);
+            let rarest_entries = self.rarest_entries;
+            self.path.clear();
+            self.path
+                .push((i, postings_starts[rarest_entries[i as usize] as usize], !0));
+            while let Some((i, k, host_waited_on)) = self.path.last_mut() {
+                let head = movable[*i as usize];
+                let len = to_end_lens[head as usize];
+                let postings_end = postings_starts[rarest_entries[*i as usize] as usize + 1];
+                *host_waited_on = !0;
+                while *k < postings_end {
+                    let j = postings[*k as usize];
+                    *k += 1;
+                    if j == *i || self.tried[j as usize] == self.stamp {
+                        continue;
+                    }
+                    let host = movable[j as usize];
+                    if to_end_lens[host as usize] <= len || !is_sublist(states, head, host) {
+                        continue;
+                    }
+                    self.tried[j as usize] = self.stamp;
+                    *host_waited_on = j;
+                    break;
+                }
+                let j = *host_waited_on;
+                if j == !0 {
+                    self.path.pop();
                     continue;
                 }
-                let host = self.movable[j as usize];
-                if self.to_end_lens[host as usize] <= len || !is_sublist(self.states, head, host) {
-                    continue;
+                let tail = tails[j as usize];
+                if tail == !0 {
+                    for &(i, _, j) in self.path.iter() {
+                        tails[j as usize] = i;
+                    }
+                    return;
                 }
-                self.tried[j as usize] = self.stamp;
-                if tails[j as usize] == !0 || self.absorb(tails, tails[j as usize]) {
-                    tails[j as usize] = i;
-                    return true;
-                }
+                self.path.push((
+                    tail,
+                    postings_starts[rarest_entries[tail as usize] as usize],
+                    !0,
+                ));
             }
-            false
         }
     }
     let mut tails = vec![!0u32; movable.len()];
@@ -840,6 +867,7 @@ fn reorder_states(
         rarest_entries: &rarest_entries,
         tried: vec![!0u32; movable.len()],
         stamp: 0,
+        path: Vec::new(),
     };
     for &i in by_len.iter() {
         absorber.stamp = i;
