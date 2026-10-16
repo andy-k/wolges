@@ -65,6 +65,27 @@ jobs:
           [ "$n" = 0 ] || bad=1
         done
         exit "$bad"
+    - name: Smoke run, in an empty directory
+      shell: bash
+      timeout-minutes: 5
+      run: |
+        exe=
+        if [ "$RUNNER_OS" = Windows ]; then exe=.exe; fi
+        bin="$PWD/target/release"
+        mkdir smoke
+        out="$PWD/smoke/${{ matrix.target }}.sha256"
+        cd "$(mktemp -d)"
+        printf 'QI\nQUA\nZA\nZAS\n' >words.txt
+        "$bin/buildlex$exe" kwg words.txt words.kwg
+        "$bin/read$exe" kwg words.kwg words.out
+        tr -d '\r' <words.out | cmp words.txt -
+        "$bin/leave$exe" --threads 1 compare words.kwg - - 1 1 --quiet | grep '^2 games'
+        { sha256sum words.kwg 2>/dev/null || shasum -a 256 words.kwg; } | cut -d ' ' -f 1 >"$out"
+        cat "$out"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: "smoke-${{ matrix.target }}"
+        path: smoke/
     - name: Pack
       shell: bash
       run: |
@@ -90,7 +111,18 @@ jobs:
     - uses: actions/download-artifact@v8
       with:
         path: dist
+        pattern: wolges-*
         merge-multiple: true
+    - uses: actions/download-artifact@v8
+      with:
+        path: smoke
+        pattern: smoke-*
+        merge-multiple: true
+    - name: Every build made the same word graph
+      run: |
+        head smoke/*
+        [ "$(ls smoke | wc -l)" = "$(ls dist | wc -l)" ]
+        [ "$(sort -u smoke/* | wc -l)" = 1 ]
     - name: Make this build the latest release
       env:
         GH_TOKEN: "${{ github.token }}"
