@@ -7914,7 +7914,7 @@ fn compare_seats<
             win_pct.unwrap_or("sigmoid"),
         ),
         SeatPicker::Deft => format!(
-            "{} (of its moves within {} of its best equity, the one leaving the fewest bingo lanes)",
+            "{} (of its moves within {} of its best equity, the one leaving the fewest bingo lanes; with the bag empty, the first that goes out and wins, else out in two; with two to a rack's worth in the bag, one leaving exactly one there)",
             picker_name(picker),
             equity::Equity::new(window),
         ),

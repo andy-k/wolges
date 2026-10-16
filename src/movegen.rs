@@ -398,6 +398,8 @@ struct WorkingBuffer {
     prev_board_tiles: Box<[u8]>,                 // r*c (previous board tiles for dirty tracking)
     dirty_rows: u128,
     dirty_cols: u128,
+    lane_rows: u128,
+    lane_cols: u128,
     remaining_word_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
     remaining_word_multipliers_for_down_plays: Box<[i8]>,   // c*r
     remaining_tile_multipliers_for_across_plays: Box<[i8]>, // r*c (1 if tile placed)
@@ -456,6 +458,8 @@ impl Clone for WorkingBuffer {
             prev_board_tiles: self.prev_board_tiles.clone(),
             dirty_rows: self.dirty_rows,
             dirty_cols: self.dirty_cols,
+            lane_rows: self.lane_rows,
+            lane_cols: self.lane_cols,
             remaining_word_multipliers_for_across_plays: self
                 .remaining_word_multipliers_for_across_plays
                 .clone(),
@@ -535,6 +539,8 @@ impl Clone for WorkingBuffer {
         self.prev_board_tiles.clone_from(&source.prev_board_tiles);
         self.dirty_rows = source.dirty_rows;
         self.dirty_cols = source.dirty_cols;
+        self.lane_rows = source.lane_rows;
+        self.lane_cols = source.lane_cols;
         self.remaining_word_multipliers_for_across_plays
             .clone_from(&source.remaining_word_multipliers_for_across_plays);
         self.remaining_word_multipliers_for_down_plays
@@ -650,6 +656,8 @@ impl WorkingBuffer {
             prev_board_tiles: vec![0xffu8; rows_times_cols].into_boxed_slice(),
             dirty_rows: 0,
             dirty_cols: 0,
+            lane_rows: !0,
+            lane_cols: !0,
             remaining_word_multipliers_for_across_plays: vec![0i8; rows_times_cols]
                 .into_boxed_slice(),
             remaining_word_multipliers_for_down_plays: vec![0i8; rows_times_cols]
@@ -4163,6 +4171,31 @@ impl KurniaMoveGenerator {
         self.working_buffer.reset_for_another_kwg();
     }
 
+    // as gen_moves_raw_all_unsorted, the place moves on the rows and columns in
+    // the masks only (bit i, row or column i): the moves a change to the board
+    // can touch, when the rest are known
+    #[inline(always)]
+    pub fn gen_moves_raw_lanes_unsorted<'a, N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        board_snapshot: &'a BoardSnapshot<'a, N, L>,
+        rack: &'a [u8],
+        num_exchanges_by_this_player: i16,
+        pass_policy: PassPolicy,
+        rows: u128,
+        cols: u128,
+    ) {
+        self.working_buffer.lane_rows = rows;
+        self.working_buffer.lane_cols = cols;
+        self.gen_moves_raw_all_unsorted(
+            board_snapshot,
+            rack,
+            num_exchanges_by_this_player,
+            pass_policy,
+        );
+        self.working_buffer.lane_rows = !0;
+        self.working_buffer.lane_cols = !0;
+    }
+
     // skip equity computation and sorting
     #[inline(always)]
     pub fn gen_moves_raw_all_unsorted<'a, N: kwg::Node, L: kwg::Node>(
@@ -4910,6 +4943,9 @@ fn kurnia_gen_place_moves_iter_lean<
     let bounds_stride = dim.rows.max(dim.cols) as usize + 1;
     working_buffer.anchor_left_bounds.clear();
     for row in 0..dim.rows {
+        if working_buffer.lane_rows & (1 << row) == 0 {
+            continue;
+        }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         gen_place_placements(
@@ -4961,6 +4997,9 @@ fn kurnia_gen_place_moves_iter_lean<
         );
     }
     for col in 0..dim.cols {
+        if working_buffer.lane_cols & (1 << col) == 0 {
+            continue;
+        }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
         gen_place_placements(
@@ -5227,6 +5266,9 @@ fn kurnia_gen_place_moves_iter<
     let bounds_stride = dim.rows.max(dim.cols) as usize + 1;
     working_buffer.anchor_left_bounds.clear();
     for row in 0..dim.rows {
+        if working_buffer.lane_rows & (1 << row) == 0 {
+            continue;
+        }
         let strip_range_start = (row as isize * dim.cols as isize) as usize;
         let strip_range_end = strip_range_start + dim.cols as usize;
         gen_place_placements(
@@ -5278,6 +5320,9 @@ fn kurnia_gen_place_moves_iter<
         );
     }
     for col in 0..dim.cols {
+        if working_buffer.lane_cols & (1 << col) == 0 {
+            continue;
+        }
         let strip_range_start = (col as isize * dim.rows as isize) as usize;
         let strip_range_end = strip_range_start + dim.rows as usize;
         gen_place_placements(
@@ -6037,6 +6082,114 @@ mod tests {
         let one = "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15";
         let two = "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6E8/15/15/15/15";
         both_arms_agree(&gc, &[empty, one, two], LONG_RACKS);
+    }
+
+    // a generation of some lanes alone finds exactly the plays a whole one
+    // finds on them, raw or not, in either arm, and the next is whole again
+    #[inline]
+    #[test]
+    fn a_generation_of_some_lanes_finds_exactly_their_plays() {
+        let gc = game_config::make_english_game_config();
+        let kwg = sweep_kwg_covering(&gc);
+        let held = anagrams::Anagrams::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let rack_lengths = anagrams::RackLengths::build_for_config(&kwg, &gc)
+            .unwrap()
+            .unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let mut fen_parser = display::BoardFenParser::new(gc.alphabet(), gc.board_layout());
+        let one = "15/15/15/15/15/15/15/6CARE5/15/15/15/15/15/15/15";
+        let three = "15/15/15/15/15/15/15/6CARE5/6A8/6N8/6EATS5/15/15/15/15";
+        let masks = [
+            (1u128 << 7, 0u128),
+            (0, 1 << 6),
+            ((1 << 7) | (1 << 10), (1 << 6) | (1 << 9)),
+            (0, 0),
+        ];
+        for fen in [one, three] {
+            let board_tiles = fen_parser.parse(fen).unwrap().to_vec();
+            for rack in ["AEINRST", "CAT", "?ANTS"] {
+                let rack = parse_test_rack(gc.alphabet(), rack);
+                for anagrams in [None, Some(&held)] {
+                    let board_snapshot = BoardSnapshot {
+                        board_tiles: &board_tiles,
+                        game_config: &gc,
+                        kwg: &kwg,
+                        anagrams,
+                        rack_lengths: anagrams.is_none().then_some(&rack_lengths),
+                        klv: &klv,
+                    };
+                    // the place moves on the masks' lanes, as text, sorted
+                    let on = |plays: &[ValuedMove], rows: u128, cols: u128| {
+                        let mut lines = plays
+                            .iter()
+                            .filter(|p| match &p.play {
+                                Play::Place { down, lane, .. } => {
+                                    ((if *down { cols } else { rows }) >> lane) & 1 != 0
+                                }
+                                Play::Exchange { .. } => false,
+                            })
+                            .map(|p| p.play.fmt(&board_snapshot).to_string())
+                            .collect::<Vec<_>>();
+                        lines.sort_unstable();
+                        lines
+                    };
+                    let mut move_generator = KurniaMoveGenerator::new(&gc);
+                    let gen_raw = |move_generator: &mut KurniaMoveGenerator| {
+                        move_generator.gen_moves_raw_all_unsorted(
+                            &board_snapshot,
+                            &rack,
+                            i16::MAX,
+                            PassPolicy::OnlyWhenForced,
+                        )
+                    };
+                    let gen_unfiltered = |move_generator: &mut KurniaMoveGenerator| {
+                        move_generator.gen_moves_unfiltered(&GenMovesParams {
+                            board_snapshot: &board_snapshot,
+                            rack: &rack,
+                            max_gen: 100_000,
+                            num_exchanges_by_this_player: 0,
+                            pass_policy: PassPolicy::OnlyWhenForced,
+                            dynamic_leaves: None,
+                        })
+                    };
+                    gen_raw(&mut move_generator);
+                    let raw = move_generator.plays.clone();
+                    assert!(!on(&raw, !0, !0).is_empty(), "{fen} generated nothing");
+                    gen_unfiltered(&mut move_generator);
+                    let unfiltered = move_generator.plays.clone();
+                    for (rows, cols) in masks {
+                        move_generator.gen_moves_raw_lanes_unsorted(
+                            &board_snapshot,
+                            &rack,
+                            i16::MAX,
+                            PassPolicy::OnlyWhenForced,
+                            rows,
+                            cols,
+                        );
+                        assert_eq!(
+                            on(&move_generator.plays, !0, !0),
+                            on(&raw, rows, cols),
+                            "{fen} raw, rows {rows:#x}, columns {cols:#x}",
+                        );
+                        gen_raw(&mut move_generator);
+                        assert_eq!(on(&move_generator.plays, !0, !0), on(&raw, !0, !0));
+                        // the generation that is not raw honors the masks too
+                        move_generator.working_buffer.lane_rows = rows;
+                        move_generator.working_buffer.lane_cols = cols;
+                        gen_unfiltered(&mut move_generator);
+                        move_generator.working_buffer.lane_rows = !0;
+                        move_generator.working_buffer.lane_cols = !0;
+                        assert_eq!(
+                            on(&move_generator.plays, !0, !0),
+                            on(&unfiltered, rows, cols),
+                            "{fen}, rows {rows:#x}, columns {cols:#x}",
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[inline]
