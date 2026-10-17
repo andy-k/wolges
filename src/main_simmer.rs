@@ -66,7 +66,10 @@ impl Question {
 }
 
 #[derive(clap::Parser)]
-#[command(about = "simulate the built-in position, printing the leaderboard every 50 iterations")]
+#[command(
+    about = "simulate the built-in position, printing the leaderboard every 50 iterations",
+    version = wolges::VERSION
+)]
 struct Cli {
     #[arg(long, help = "the word graph is a kbwg")]
     kbwg: bool,

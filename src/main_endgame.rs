@@ -639,7 +639,10 @@ fn run_batch<N: kwg::Node>(
 }
 
 #[derive(clap::Parser)]
-#[command(about = "solve an endgame position; with no arguments, solve the built-in examples")]
+#[command(
+    about = "solve an endgame position; with no arguments, solve the built-in examples",
+    version = wolges::VERSION
+)]
 struct Cli {
     #[arg(long, help = "the word graph is a kbwg")]
     kbwg: bool,

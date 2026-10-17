@@ -34,3 +34,6 @@ pub mod prob;
 pub mod simmer;
 pub mod stats;
 pub mod win_pct;
+
+// the commit this was built from and the target, as build.rs stamps them
+pub const VERSION: &str = env!("WOLGES_VERSION");

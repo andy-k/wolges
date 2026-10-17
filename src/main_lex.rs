@@ -329,7 +329,7 @@ fn test_find_embedded_words<'a, N: kwg::Node>(
 }
 
 #[derive(clap::Parser)]
-#[command(about = "find the words embedded in the built-in boards")]
+#[command(about = "find the words embedded in the built-in boards", version = wolges::VERSION)]
 struct Cli {
     #[arg(
         long,

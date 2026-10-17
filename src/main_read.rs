@@ -3335,6 +3335,7 @@ example for i7-8700B (192 kB, 6 cores, 8-way set assoc): 64 8 64."
 #[derive(clap::Parser)]
 #[command(
     about = "read word graphs, leave tables and other lexicon files",
+    version = wolges::VERSION,
     arg_required_else_help = true,
     after_help = "the tiles are english unless --tiles gives other bundled tiles, such as
 french, super-english or hex, or a file in the form of src/alphabets/*.txt,
