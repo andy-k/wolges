@@ -31,7 +31,8 @@ const DEFAULT_ENDGAME_SECONDS: f64 = 10.0;
 // (the turn then a pass, with the board and the rack as before it); the points
 // its challenges that stood gave its mover, if any; the player who lost the
 // game on a challenge of it; whether the game was declared over after it (end);
-// and the racks set after it, by seat (none for a player with no tiles)
+// the racks set after it, by seat (none for a player with no tiles); and, for
+// the move that ended the game, the points each player lost for time
 #[derive(Clone, PartialEq)]
 struct Turn {
     rack: Option<Vec<u8>>,
@@ -43,6 +44,7 @@ struct Turn {
     loser: Option<usize>,
     ended: bool,
     shown: Vec<(usize, Vec<u8>)>,
+    time: [i32; 2],
 }
 
 // what a challenge of a move costs: under double, the challenger's turn if the
@@ -211,6 +213,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "take back the last move as a phony challenged off",
     ),
     ("bonus N", "give the last move's player N more points"),
+    (
+        "time N POINTS",
+        "once the game is over, player N loses POINTS for time",
+    ),
     (
         "lost N",
         "player N lost the game on a challenge of the last move",
@@ -631,11 +637,13 @@ impl Session {
                         if !matches!(turn.play, movegen::Play::Place { .. }) {
                             return Err("only a move that placed tiles is taken back".into());
                         }
-                        // taken back, the move ended nothing, and the racks set
+                        // taken back, the move ended nothing (the game goes on,
+                        // and its time penalties go with it), and the racks set
                         // after it belong to a board that is gone
                         turn.withdrawn = true;
                         turn.ended = false;
                         turn.shown.clear();
+                        turn.time = [0; 2];
                     }
                     // a bonus given by hand adds to the move's bonus: a file
                     // may give one move more than one
@@ -659,6 +667,7 @@ impl Session {
                             loser: None,
                             ended: false,
                             shown: Vec::new(),
+                            time: [0; 2],
                         });
                         game.at += 1;
                     } else if loser.is_none() {
@@ -691,6 +700,34 @@ impl Session {
                         return Err("the game was lost on a challenge".into());
                     }
                     turn.loser = Some(n - 1);
+                    Ok(())
+                })?;
+                self.show()?;
+                line.to_string()
+            }
+            "time" => {
+                const USAGE: &str = "time N POINTS";
+                let [n, points] = args else {
+                    return Err(USAGE.into());
+                };
+                let n = n.parse::<usize>().map_err(|_| USAGE)?;
+                if !(1..=self.seats.len()).contains(&n) {
+                    return Err(format!("player 1 to {}", self.seats.len()).into());
+                }
+                let points = points.parse::<i32>().map_err(|_| USAGE)?;
+                if points <= 0 {
+                    return Err("time N POINTS: POINTS above 0".into());
+                }
+                if self.final_scores.is_none() {
+                    return Err("a time penalty comes only once the game is over".into());
+                }
+                // kept with the move that ended the game, the last one shown
+                self.change(|game| {
+                    let game = game.as_mut().ok_or("no game: new first")?;
+                    let last = game.at.checked_sub(1).ok_or("no move before")?;
+                    game.cut();
+                    let lost = &mut game.turns[last].time[n - 1];
+                    *lost = lost.checked_add(points).ok_or("too many points")?;
                     Ok(())
                 })?;
                 self.show()?;
@@ -1052,6 +1089,7 @@ impl Session {
                 loser: None,
                 ended: false,
                 shown: Vec::new(),
+                time: [0; 2],
             });
             game.at += 1;
             Ok(())
@@ -1399,9 +1437,14 @@ impl Session {
             }
         }
         if let Some(final_scores) = &self.final_scores {
+            // what time cost each player, shown in the scores
+            let time = game
+                .at
+                .checked_sub(1)
+                .map_or([0; 2], |at| game.turns[at].time);
             writeln!(
                 out,
-                "game over, {}{}",
+                "game over, {}{}{}",
                 final_scores
                     .iter()
                     .map(|&s| equity::descale_score(s).to_string())
@@ -1410,7 +1453,12 @@ impl Session {
                 match self.loser {
                     Some(seat) => format!(", and player {} lost on a challenge", seat + 1),
                     None => String::new(),
-                }
+                },
+                time.iter()
+                    .enumerate()
+                    .filter(|&(_, &lost)| lost != 0)
+                    .map(|(seat, lost)| format!(", player {} -{lost} for time", seat + 1))
+                    .collect::<String>()
             )?;
         }
         Ok(())
@@ -1853,16 +1901,16 @@ impl Session {
         self.run_one(line, &words)
     }
 
-    // make a new game of a GCG file's moves: new with a fresh seed; each seat
-    // given whose rack shows an _ on any line, or that has no line (a seat
-    // dealt shows its racks; the others are not given); then each move's rack
-    // (its known tiles) and play (as phony: a word not in the lexicon stands
-    // until challenged), each phony taken back (withdraw), and each challenge's
-    // bonus (bonus, and rack for the rack its line gives), run and logged as
-    // those commands, each checked against the score and total the file gives;
-    // then its end (end, and the racks it counted, checked the same way) or its
-    // racks as they stand (#incomplete for the side to move). It stops at the
-    // first that fails, keeping the game made so far.
+    // make a new game of a GCG file's moves, from a fresh seed: each seat given
+    // whose rack shows an _ on any line, or that has no line; then each move's
+    // rack (its known tiles) and play (as phony: a word not in the lexicon
+    // stands until challenged), each phony taken back (withdraw), and each
+    // challenge's bonus (bonus, with rack for the rack its line gives), run and
+    // logged as those commands and checked against the score and total the file
+    // gives; then its end (end, and the racks it counted, checked the same way)
+    // and what time cost (time, whose total is the final score), or its racks
+    // as they stand (#incomplete for the side to move). It stops at the first
+    // that fails, keeping the game made so far.
     fn load_moves(&mut self, moves: &[GcgMove]) -> error::Returns<()> {
         let seed = GameRng::try_from_rng(&mut rand::rngs::SysRng)?.next_u64();
         self.printing = false;
@@ -1891,10 +1939,14 @@ impl Session {
                         | GcgKind::Out
                         | GcgKind::Shown
                         | GcgKind::Rack
+                        | GcgKind::Time(_)
                 ) {
                     lines[seat] = true;
                 }
-                if matches!(gcg_move.kind, GcgKind::Play(_) | GcgKind::Rack) {
+                if matches!(
+                    gcg_move.kind,
+                    GcgKind::Play(_) | GcgKind::Rack | GcgKind::Time(_)
+                ) {
                     unseen[seat] |= gcg_move.rack.contains('_');
                 }
             }
@@ -1921,6 +1973,15 @@ impl Session {
                     GcgKind::Rack | GcgKind::Incomplete => {
                         standing.push(gcg_move);
                         continue;
+                    }
+                    // a time penalty belongs to its own player, the game over
+                    // by then (end it, if the shell did not see it so: an end
+                    // that counted no rack has no line)
+                    GcgKind::Time(lost) => {
+                        if self.final_scores.is_none() {
+                            self.run_line("end").map_err(|e| on_line(line_number, &e))?;
+                        }
+                        (gcg_move.seat, format!("time {} {lost}", gcg_move.seat + 1))
                     }
                     end => {
                         self.load_end(gcg_move, end)
@@ -1963,7 +2024,12 @@ impl Session {
                     }
                     _ => gcg_move.score,
                 };
-                let total = equity::descale_score(self.state.players[seat].score);
+                // a time penalty's total is its player's final score
+                let total = match (&gcg_move.kind, &self.final_scores) {
+                    (GcgKind::Time(_), Some(final_scores)) => final_scores[seat],
+                    _ => self.state.players[seat].score,
+                };
+                let total = equity::descale_score(total);
                 if (score, total) != (gcg_move.score, gcg_move.total) {
                     return Err(on_line(
                         line_number,
@@ -2039,11 +2105,12 @@ impl Session {
     // - and its tiles, or - and how many for tiles no one saw, and a pass as
     // -), each followed by its taking back as a phony (the rack, --, and minus
     // the score, the total as before) and a challenge's bonus (the rack after
-    // the move, then (challenge) and the points); if the game is over, except
-    // by a loss on a challenge, the racks it counted (the other's to the player
-    // with none, or each rack left against its player), else each rack as it is
-    // (#rack1, #rack2). GCG cannot say that a seat showing no _ is given, that
-    // an end counted no rack, or that a challenge lost the game.
+    // the move, then (challenge) and the points); if the game is over, the
+    // racks it counted (none after a loss on a challenge; else the other's to
+    // the player with none, or each rack left against its player) and what time
+    // cost, else each rack as it is (#rack1, #rack2). GCG cannot say that a
+    // seat showing no _ is given, that an end counted no rack, or that a
+    // challenge lost the game.
     fn gcg_text(&self) -> error::Returns<String> {
         let game = self.game.as_ref().ok_or("no game: new first")?;
         let alphabet = self.game_config.alphabet();
@@ -2156,6 +2223,9 @@ impl Session {
                 let none = (0..board.players.len()).find(|&seat| {
                     board.players[seat].rack.is_empty() && (!replay.given[seat] || set_none(seat))
                 });
+                // the totals before what time cost, which the time lines give
+                let total =
+                    |seat: usize| equity::descale_score(final_scores[seat]) + last.time[seat];
                 for (seat, player) in board.players.iter().enumerate() {
                     let other = &board.players[1 - seat].rack;
                     if none == Some(seat) {
@@ -2164,7 +2234,7 @@ impl Session {
                             seat + 1,
                             alphabet.fmt_rack(other),
                             2 * alphabet.rack_score(other),
-                            equity::descale_score(final_scores[seat])
+                            total(seat)
                         ));
                     } else if none.is_none() && !player.rack.is_empty() {
                         // the rack, then the tiles that cost the points
@@ -2174,9 +2244,24 @@ impl Session {
                             alphabet.fmt_rack(&player.rack),
                             alphabet.fmt_rack(&player.rack),
                             alphabet.rack_score(&player.rack),
-                            equity::descale_score(final_scores[seat])
+                            total(seat)
                         ));
                     }
+                }
+            }
+        }
+        // then what time cost each player: their last rack, (time), the points,
+        // and their final score
+        if let (Some(at), Some(final_scores)) = (game.at.checked_sub(1), &self.final_scores) {
+            for (seat, &lost) in game.turns[at].time.iter().enumerate() {
+                if lost != 0 {
+                    text.push_str(&format!(
+                        ">p{}: {} (time) -{} {}\n",
+                        seat + 1,
+                        alphabet.fmt_rack(&board.players[seat].rack),
+                        lost,
+                        equity::descale_score(final_scores[seat])
+                    ));
                 }
             }
         }
@@ -2283,8 +2368,9 @@ fn solve_endgame(
 // what a line of a GCG file does: a move, as play takes it; the move before
 // taken back as a phony; points to its player after a challenge; that its
 // player had no tiles at the end, so the other's rack counts to them; the rack
-// its player showed at the end; or a player's rack in a game not over (#rack1,
-// #rack2), or the side to move's (#incomplete)
+// its player showed at the end; a player's rack in a game not over (#rack1,
+// #rack2), or the side to move's (#incomplete); or, once the game is over, the
+// points its player lost for time
 enum GcgKind {
     Play(String),
     Withdraw,
@@ -2293,6 +2379,7 @@ enum GcgKind {
     Shown,
     Rack,
     Incomplete,
+    Time(i32),
 }
 
 // a line of a GCG file: its number, its player (by the order the players first
@@ -2328,10 +2415,10 @@ fn gcg_decode(bytes: &[u8]) -> error::Returns<String> {
 }
 
 // read a GCG file's moves (a rack left empty is one no one saw), phonies taken
-// back, challenge bonuses, the racks its end counts, and the racks of a game
-// not over (#rack1 and #rack2, for the players #player1 and #player2 give, and
-// #incomplete, for the side to move), skipping every other # line. A time
-// penalty is refused, with an error saying so
+// back, challenge bonuses, the racks its end counts, time penalties, and the
+// racks of a game not over (#rack1 and #rack2, for the players #player1 and
+// #player2 give, and #incomplete, for the side to move), skipping every other #
+// line
 fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
     let mut moves = Vec::new();
     let mut players = Vec::<String>::new();
@@ -2403,10 +2490,17 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
         {
             tokens.insert(0, "_");
         }
-        if tokens.contains(&"(time)") {
-            return Err(fail("a time penalty is not taken").into());
-        }
         let (rack, kind, score, total) = match tokens.as_slice() {
+            // a time penalty: the player's last rack, (time), the points
+            [rack, "(time)", score, total] => {
+                let lost = score
+                    .parse::<i32>()
+                    .ok()
+                    .and_then(i32::checked_neg)
+                    .filter(|&lost| lost > 0)
+                    .ok_or_else(|| fail("a time penalty takes points"))?;
+                (*rack, GcgKind::Time(lost), *score, *total)
+            }
             // a challenge's bonus, after the rack the move left (none, for a
             // move that went out)
             [rack @ .., "(challenge)", score, total] if rack.len() < 2 => {
@@ -2525,7 +2619,7 @@ impl Replay {
     // left them none, or after the variant's scoreless turns; then the tiles
     // left count: a player with none (dealt, or set to none) gets twice the
     // other's, and the other loses nothing; otherwise each player loses their
-    // own.
+    // own. Either way, what time cost each player then comes off.
     fn end_of_turn(
         &mut self,
         game_config: &game_config::GameConfig,
@@ -2548,36 +2642,41 @@ impl Replay {
         }
         self.type_racks(&turn.shown)?;
         let state = &self.state;
-        if turn.loser.is_some() {
-            return Ok(Some(state.players.iter().map(|p| p.score).collect()));
+        let mut final_scores = state.players.iter().map(|p| p.score).collect::<Vec<_>>();
+        if turn.loser.is_none() {
+            if !turn.ended && !out && !state.scoreless_turns_ended(game_config) {
+                return Ok(None);
+            }
+            let set_none = |seat| turn.shown.iter().any(|(s, t)| *s == seat && t.is_empty());
+            let none = (0..state.players.len()).find(|&seat| {
+                state.players[seat].rack.is_empty() && (!self.given[seat] || set_none(seat))
+            });
+            let alphabet = game_config.alphabet();
+            for (seat, (score, player)) in final_scores
+                .iter_mut()
+                .zip(state.players.iter())
+                .enumerate()
+            {
+                *score = match none {
+                    // two players: the one with no tiles gets twice the other's
+                    Some(none) if none == seat => alphabet
+                        .scaled_rack_score(&state.players[1 - seat].rack)
+                        .checked_mul(2)
+                        .and_then(|bonus| player.score.checked_add(bonus))
+                        .ok_or("score overflow")?,
+                    Some(_) => player.score,
+                    None => player
+                        .score
+                        .checked_sub(alphabet.scaled_rack_score(&player.rack))
+                        .ok_or("score overflow")?,
+                };
+            }
         }
-        if !turn.ended && !out && !state.scoreless_turns_ended(game_config) {
-            return Ok(None);
-        }
-        let set_none = |seat| turn.shown.iter().any(|(s, t)| *s == seat && t.is_empty());
-        let none = (0..state.players.len()).find(|&seat| {
-            state.players[seat].rack.is_empty() && (!self.given[seat] || set_none(seat))
-        });
-        let alphabet = game_config.alphabet();
-        let mut final_scores = vec![0; state.players.len()];
-        for (seat, (score, player)) in final_scores
-            .iter_mut()
-            .zip(state.players.iter())
-            .enumerate()
-        {
-            *score = match none {
-                // two players: the one with no tiles gets twice the other's
-                Some(none) if none == seat => alphabet
-                    .scaled_rack_score(&state.players[1 - seat].rack)
-                    .checked_mul(2)
-                    .and_then(|bonus| player.score.checked_add(bonus))
-                    .ok_or("score overflow")?,
-                Some(_) => player.score,
-                None => player
-                    .score
-                    .checked_sub(alphabet.scaled_rack_score(&player.rack))
-                    .ok_or("score overflow")?,
-            };
+        // then what time cost each player
+        for (score, &lost) in final_scores.iter_mut().zip(turn.time.iter()) {
+            *score = score
+                .checked_sub(equity::scale_score(lost))
+                .ok_or("score overflow")?;
         }
         Ok(Some(final_scores))
     }
@@ -3534,7 +3633,7 @@ mod tests {
         fourth.load_moves(&gcg_moves(&through).unwrap()).unwrap();
         assert_eq!(fourth.state.board_tiles, first.state.board_tiles);
         assert_eq!(scores(&fourth), scores(&first));
-        assert!(gcg_moves(">p1: ABC (time) -10 5").is_err());
+        assert!(gcg_moves(">p1: ABC (time) +10 5").is_err());
         assert!(gcg_moves(">p1: ABC 8G").is_err());
     }
 
@@ -3597,6 +3696,62 @@ mod tests {
         }
         // an encoding declared after the mark still counts
         assert!(gcg_decode(b"\xef\xbb\xbf#character-encoding UTF-8\nJos\xe9\n").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn time_comes_off_a_final_score_and_goes_out_as_gcg_and_back() {
+        let mut first = session();
+        run(&mut first, "new 7").unwrap();
+        assert!(run(&mut first, "time 1 10").is_err());
+        for _ in 0..6 {
+            run(&mut first, "play pass").unwrap();
+        }
+        let before = first.final_scores.clone().unwrap();
+        run(&mut first, "time 2 10").unwrap();
+        for bad in ["time 3 10", "time 1 0", "time 1"] {
+            assert!(run(&mut first, bad).is_err(), "{bad}");
+        }
+        let after = first.final_scores.clone().unwrap();
+        assert_eq!(after, [before[0], before[1] - equity::scale_score(10)]);
+        // kept with the move that ended the game, through back and forward
+        run(&mut first, "back").unwrap();
+        assert!(first.final_scores.is_none());
+        run(&mut first, "forward").unwrap();
+        assert_eq!(first.final_scores.as_ref(), Some(&after));
+        // its player's last rack, (time), the points, and the final score
+        let text = first.gcg_text().unwrap();
+        let alphabet = first.game_config.alphabet();
+        let rack = alphabet.fmt_rack(&first.state.players[1].rack).to_string();
+        let total = equity::descale_score(after[1]);
+        assert!(
+            text.ends_with(&format!(">p2: {rack} (time) -10 {total}\n")),
+            "{text}"
+        );
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(second.final_scores, Some(after));
+        assert_eq!(second.gcg_text().unwrap(), text);
+        // an end that counted no rack has no line, so the time line ends the
+        // game
+        let mut third = session();
+        for line in [
+            "player 1 given",
+            "player 2 given",
+            "new 7",
+            "play 8G AT",
+            "play 9H EA",
+            "end",
+            "time 1 10",
+        ] {
+            run(&mut third, line).unwrap();
+        }
+        let text = third.gcg_text().unwrap();
+        assert!(text.contains(" (time) -10 "), "{text}");
+        let mut fourth = session();
+        fourth.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(fourth.final_scores, third.final_scores);
+        assert_eq!(fourth.gcg_text().unwrap(), text);
     }
 
     #[test]
