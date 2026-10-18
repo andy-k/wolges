@@ -323,7 +323,7 @@ fn simulate<N: kwg::Node>(
     let chunk = 50u64;
     let mut done = 0u64;
     let t0 = std::time::Instant::now();
-    driver.begin_decision(&move_generator, &game_state, chunk)?;
+    driver.begin_decision(&move_generator, &game_state, chunk, &[])?;
     done += chunk;
     loop {
         writeln!(

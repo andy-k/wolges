@@ -1003,11 +1003,11 @@ fn run<N: kwg::Node + Sync + Send>(
                 },
             )?;
             driver.reseed(seed);
-            driver.begin_decision(&move_generator, &game_state, iters)?;
+            driver.begin_decision(&move_generator, &game_state, iters, &[])?;
             let one_shot = driver.leader_summary();
             driver.reseed(seed);
             let half = iters / 2;
-            driver.begin_decision(&move_generator, &game_state, half)?;
+            driver.begin_decision(&move_generator, &game_state, half, &[])?;
             driver.resume(&move_generator, iters - half)?;
             let split = driver.leader_summary();
             writeln!(
@@ -1172,7 +1172,7 @@ fn run<N: kwg::Node + Sync + Send>(
             )?;
             driver.reseed(seed);
             let opening = (iters / 4).max(1);
-            driver.begin_decision(&move_generator, &game_state, opening)?;
+            driver.begin_decision(&move_generator, &game_state, opening, &[])?;
             {
                 let by_hand = driver
                     .active_stream_ids()
@@ -5113,7 +5113,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
         },
     )?;
     driver.reseed(seed);
-    driver.begin_decision(&move_generator, &game_state, iters)?;
+    driver.begin_decision(&move_generator, &game_state, iters, &[])?;
     let whole = driver.leaderboard(usize::MAX);
     writeln!(
         std::io::stdout(),
@@ -5131,7 +5131,7 @@ fn sim_chunk_check<N: kwg::Node + Sync, L: kwg::Node + Sync>(
             left -= take;
         }
         driver.reseed(seed);
-        driver.begin_decision(&move_generator, &game_state, chunks[0])?;
+        driver.begin_decision(&move_generator, &game_state, chunks[0], &[])?;
         for &chunk in &chunks[1..] {
             driver.resume(&move_generator, chunk)?;
         }

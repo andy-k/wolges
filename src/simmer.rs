@@ -1,7 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use super::{anagrams, equity, error, game_config, game_state, klv, kwg, movegen, win_pct};
-use rand::SeedableRng;
+use rand::prelude::*;
 
 // scores and leave values are millipoints; the sigmoid and its weightage are in
 // whole points, so a spread passes through here before either reads it.
@@ -88,6 +88,9 @@ pub struct Simmer<R = DefaultRng> {
     move_generator: movegen::KurniaMoveGenerator,
     rack_tally: Box<[u8]>,
 
+    kept_leaves: Vec<Vec<u8>>,
+    kept_weight_sums: Vec<f64>, // cumulative, so a weighted draw is a binary search
+
     rng: R,
 }
 
@@ -119,6 +122,9 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             rack_tally: vec![0u8; game_config.alphabet().len() as usize].into_boxed_slice(),
 
+            kept_leaves: Vec::new(),
+            kept_weight_sums: Vec::new(),
+
             rng,
         }
     }
@@ -137,7 +143,10 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
             &self.initial_game_state,
             self.num_sim_plies,
             self.wants_win_prob,
+            &[],
         );
+        clone.kept_leaves.clone_from(&self.kept_leaves);
+        clone.kept_weight_sums.clone_from(&self.kept_weight_sums);
         clone
     }
 
@@ -148,7 +157,18 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         game_state: &game_state::GameState,
         num_sim_plies: usize,
         report_win_prob: bool,
+        kept_leaves: &[(Vec<u8>, f64)], // the leaves the opponent may have kept, with weights
     ) {
+        self.kept_leaves.clear();
+        self.kept_weight_sums.clear();
+        let mut total = 0.0;
+        for (leave, weight) in kept_leaves {
+            if *weight > 0.0 {
+                total += weight;
+                self.kept_leaves.push(leave.clone());
+                self.kept_weight_sums.push(total);
+            }
+        }
         self.initial_game_state.clone_from(game_state);
         self.game_state.clone_from(game_state);
         self.initial_score_spread = game_state.current_player().score
@@ -201,6 +221,26 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                 self.final_scores[i] = player.rack.len() as i32;
                 self.initial_game_state.bag.return_tiles(&player.rack);
                 player.rack.clear();
+            }
+        }
+        // put the opponent's kept leave back on their rack first, taking it out
+        // of the bag before the shuffle: taking particular copies out of a
+        // shuffled bag would change the odds of what the rest deals
+        if let Some(&total) = self.kept_weight_sums.last()
+            && self.initial_game_state.players.len() == 2
+        {
+            let opponent = 1 - initial_turn;
+            let at = self.rng.random_range(0.0..total);
+            let pick = self
+                .kept_weight_sums
+                .partition_point(|&weight| weight <= at)
+                .min(self.kept_weight_sums.len() - 1);
+            let rack_len = self.final_scores[opponent] as usize;
+            let game_state = &mut self.initial_game_state;
+            for &tile in self.kept_leaves[pick].iter().take(rack_len) {
+                if game_state.bag.remove_tile(tile).is_some() {
+                    game_state.players[opponent].rack.push(tile);
+                }
             }
         }
         // a player at an odd seat draws from the bag's front, at an even seat
@@ -403,7 +443,7 @@ mod tests {
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(99);
-        simmer.prepare(&game_config, &game_state, 0, false);
+        simmer.prepare(&game_config, &game_state, 0, false, &[]);
         simmer.prepare_iteration();
 
         let exchanged =
@@ -472,7 +512,7 @@ mod tests {
 
         let opponent_draw = |seed: u64| -> Vec<u8> {
             let mut simmer = Simmer::new(&game_config).unwrap();
-            simmer.prepare(&game_config, &game_state, 2, false);
+            simmer.prepare(&game_config, &game_state, 2, false, &[]);
             simmer.reseed(seed);
             simmer.prepare_iteration();
 
@@ -491,7 +531,7 @@ mod tests {
         let mut deal_rng = DefaultRng::seed_from_u64(1);
         game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
         let mut simmer = Simmer::new(&game_config).unwrap();
-        simmer.prepare(&game_config, &game_state, 2, false);
+        simmer.prepare(&game_config, &game_state, 2, false, &[]);
         let bag = simmer.game_state.bag.len();
         let turn = simmer.initial_game_state.turn as usize;
         let my = simmer.game_state.players[turn].rack.len();
@@ -582,7 +622,7 @@ mod tests {
         let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
         let mut simmer = Simmer::new(&game_config).unwrap();
         simmer.reseed(5);
-        simmer.prepare(&game_config, &game_state, 2, false);
+        simmer.prepare(&game_config, &game_state, 2, false, &[]);
         simmer.prepare_iteration();
         let pass = movegen::Play::Exchange {
             tiles: [][..].into(),
@@ -643,7 +683,7 @@ mod tests {
             }
 
             let mut simmer = Simmer::new(&game_config).unwrap();
-            simmer.prepare(&game_config, &game_state, 4, false);
+            simmer.prepare(&game_config, &game_state, 4, false, &[]);
             let pristine = simmer.prepared_state().clone();
             let draws = 1000;
             let mut shared = 0;
@@ -665,6 +705,87 @@ mod tests {
                 "seat {decider} decides: the opponent's draws share {mean} of the rack it held, {expected} expected"
             );
         }
+    }
+
+    #[test]
+    #[inline]
+    fn the_opponent_keeps_a_leave_drawn_by_weight() {
+        let game_config = game_config::make_english_game_config();
+        let alphabet = game_config.alphabet();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = DefaultRng::seed_from_u64(11);
+        game_state.reset_and_draw_tiles_double_ended(&game_config, &mut deal_rng);
+        let opponent = 1 - game_state.turn as usize;
+
+        // two leaves of six unseen tiles each, one of vowels and one of
+        // consonants, so one tile more cannot make either look like the other
+        let mut unseen = vec![0u8; alphabet.len() as usize];
+        for &tile in game_state
+            .bag
+            .as_slice()
+            .iter()
+            .chain(game_state.players[opponent].rack.iter())
+        {
+            unseen[tile as usize] += 1;
+        }
+        let six_of = |vowels: bool| {
+            let mut leave = Vec::new();
+            for tile in 1..alphabet.len() {
+                if alphabet.is_vowel(tile) == vowels {
+                    for _ in 0..unseen[tile as usize] {
+                        if leave.len() < 6 {
+                            leave.push(tile);
+                        }
+                    }
+                }
+            }
+            assert_eq!(leave.len(), 6);
+            leave
+        };
+        let (vowels, consonants) = (six_of(true), six_of(false));
+        let holds = |rack: &[u8], leave: &[u8]| {
+            let mut left = rack.to_vec();
+            leave.iter().all(|tile| {
+                left.iter()
+                    .position(|t| t == tile)
+                    .map(|pos| left.swap_remove(pos))
+                    .is_some()
+            })
+        };
+
+        let mut simmer = Simmer::new(&game_config).unwrap();
+        simmer.prepare(
+            &game_config,
+            &game_state,
+            4,
+            false,
+            &[(vowels.clone(), 3.0), (consonants.clone(), 1.0)],
+        );
+        let pristine = simmer.prepared_state().clone();
+        let (mut drew_vowels, mut drew_consonants) = (0, 0);
+        for seed in 0..1000 {
+            simmer.restore_prepared(&pristine);
+            simmer.reseed(seed);
+            simmer.prepare_iteration();
+            let rack = &simmer.initial_game_state.players[opponent].rack;
+            assert_eq!(rack.len(), 7);
+            if holds(rack, &vowels) {
+                drew_vowels += 1;
+            } else if holds(rack, &consonants) {
+                drew_consonants += 1;
+            }
+        }
+        assert_eq!(drew_vowels + drew_consonants, 1000);
+        // weighted three to one: 750 expected, with a standard deviation of
+        // about 14
+        assert!(
+            (700..=800).contains(&drew_vowels),
+            "the leave weighing 3 of 4 was drawn {drew_vowels} times in 1000"
+        );
+
+        // a new prepare forgets them
+        simmer.prepare(&game_config, &game_state, 4, false, &[]);
+        assert!(simmer.kept_weight_sums.is_empty());
     }
 
     #[test]
