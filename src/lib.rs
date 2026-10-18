@@ -29,6 +29,7 @@ pub mod matrix;
 pub mod move_filter;
 pub mod move_picker;
 pub mod movegen;
+pub mod notation;
 pub mod parallelism;
 pub mod play_scorer;
 pub mod prob;
