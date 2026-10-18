@@ -378,7 +378,8 @@ impl MemoryLimit {
 
 // a search with a tile in the bag solves many endgames as one solve: its time
 // limit is one deadline for them all, on its clock, and its state limit applies
-// to the table they share; the endgames take turns holding its one listener
+// to the table they share (the solver's own, lent with what its earlier solves
+// found); the endgames take turns holding its one listener
 struct BagLimits {
     time: Option<std::time::Duration>,
     states: Option<usize>,
@@ -1249,6 +1250,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         let board = self.board_tiles.clone();
         let racks = [self.racks[0].clone(), self.racks[1].clone()];
 
+        // the endgames keep what they learn in this solver's table, lent to the
+        // one solving them, so each knows what the others found
+        std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
         let mut search = OneInBag {
             gc,
             kwg,
@@ -1260,13 +1264,14 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             limits,
             exact: true,
         };
-        let value = to_equity(if one_in_bag_exchange_solvable(gc) {
-            Self::one_in_bag_minimax_ex(&mut search, &board, &racks, player_idx, bag_tile, 0, 0)?
+        let value = if one_in_bag_exchange_solvable(gc) {
+            Self::one_in_bag_minimax_ex(&mut search, &board, &racks, player_idx, bag_tile, 0, 0)
         } else {
-            Self::one_in_bag_minimax(&mut search, &board, &racks, player_idx, bag_tile, false)?
-        });
+            Self::one_in_bag_minimax(&mut search, &board, &racks, player_idx, bag_tile, false)
+        };
         *exact &= search.exact;
-        Ok(value)
+        std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
+        Ok(to_equity(value?))
     }
 
     fn one_in_bag_minimax(
@@ -1576,7 +1581,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
     #[inline]
     fn peg_committed_no_exchange(
-        &self,
+        &mut self,
         mover: u8,
         board: &[u8],
         mover_rack: &[u8],
@@ -1584,9 +1589,31 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         score_diff: f32,
         limits: &BagLimits,
     ) -> error::Returns<PegResult> {
-        let gc = self.game_config;
-        let kwg = self.kwg;
-        let arm_tables = self.arm_tables;
+        let mut sub = EndgameSolver::<N, L>::new(self.game_config, self.kwg, self.arm_tables)?;
+        // the endgames keep what they learn in this solver's table, lent to the
+        // one solving them, so each knows what the others found
+        std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
+        let result = Self::peg_committed_by(
+            &mut sub, mover, board, mover_rack, unseen, score_diff, limits,
+        );
+        std::mem::swap(&mut sub.work_buffer.table, &mut self.work_buffer.table);
+        result
+    }
+
+    // the committed model's search, its endgames solved by sub
+    #[inline]
+    fn peg_committed_by(
+        sub: &mut Self,
+        mover: u8,
+        board: &[u8],
+        mover_rack: &[u8],
+        unseen: &[(u8, u32)],
+        score_diff: f32,
+        limits: &BagLimits,
+    ) -> error::Returns<PegResult> {
+        let gc = sub.game_config;
+        let kwg = sub.kwg;
+        let arm_tables = sub.arm_tables;
         let klv = klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?;
         let opp = mover ^ 1;
         let mut exact = true;
@@ -1613,8 +1640,6 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 candidates.push(PegMove::Place(vm.play.clone()));
             }
         }
-
-        let mut sub = EndgameSolver::<N, L>::new(gc, kwg, arm_tables)?;
 
         let mut best_win = f32::NEG_INFINITY;
         let mut best_marg = f32::NEG_INFINITY;
@@ -1675,7 +1700,7 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                             kwg,
                             arm_tables,
                             klv: &klv,
-                            sub: &mut sub,
+                            sub: &mut *sub,
                             mg: &mut mg,
                             memo: fash::MyHashMap::default(),
                             limits,
@@ -2872,6 +2897,63 @@ mod tests {
             cut.iter().all(|&n| n > 0),
             "the time, state, and memory limits cut {cut:?} endgames short"
         );
+    }
+
+    #[test]
+    #[inline]
+    fn the_endgames_of_a_search_with_a_tile_in_the_bag_share_the_solvers_table() {
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let mut board = empty_board();
+        put_word(&mut board, 7, 6, &[1, 20]);
+        // the committed model, and the clairvoyant one where exchanges are
+        // legal
+        for gc in [
+            game_config::make_english_game_config(),
+            game_config::make_exchange_test_game_config(),
+        ] {
+            let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+            let mut egs =
+                EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+            let nodes = std::rc::Rc::new(std::cell::Cell::new(0u64));
+            let heard = nodes.clone();
+            egs.report_progress(move |p: &super::Progress| {
+                if p.value.is_none() {
+                    heard.set(heard.get() + 1);
+                }
+                Ok(())
+            });
+            let mut unseen_tally = vec![0u8; gc.alphabet().len() as usize];
+            unseen_tally[8] = 1; // H
+            unseen_tally[20] = 1; // T
+            let solve = |egs: &mut EndgameSolver<kwg::Node22, kwg::Node22>| {
+                nodes.set(0);
+                let result = egs
+                    .solve_peg_one_in_bag(
+                        0,
+                        &board,
+                        &[1, 2], // A B
+                        &unseen_tally,
+                        equity::Equity::ZERO,
+                        &super::Limits::NONE,
+                    )
+                    .unwrap()
+                    .expect("both configs solve one in the bag");
+                (result.hypotheses, nodes.get())
+            };
+            let (first, first_nodes) = solve(&mut egs);
+            assert!(
+                egs.work_buffer.table.held > 0,
+                "the solver's table holds what its endgames found"
+            );
+            // the same search again finds its endgames in the table
+            let (second, second_nodes) = solve(&mut egs);
+            assert_eq!(first, second);
+            assert!(
+                second_nodes < first_nodes,
+                "the second search took {second_nodes} nodes, the first {first_nodes}"
+            );
+        }
     }
 
     #[test]
