@@ -203,10 +203,9 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                 player.rack.clear();
             }
         }
-        let num_tiles_that_matter = self.num_tiles_that_matter;
-        self.initial_game_state
-            .bag
-            .shuffle_n(&mut self.rng, num_tiles_that_matter);
+        // a player at an odd seat draws from the bag's front, at an even seat
+        // from its back, so the whole bag is shuffled, not only one end
+        self.initial_game_state.bag.shuffle(&mut self.rng);
         for (i, player) in self.initial_game_state.players.iter_mut().enumerate() {
             if i != initial_turn {
                 self.initial_game_state.bag.replenish(
@@ -597,6 +596,75 @@ mod tests {
         // a game that ends on scoreless turns takes each player's own tiles off
         // their score, so the mover is ahead by 6 points
         assert_eq!(simmer.final_equity_spread().unwrap(), 6 * equity::SCALE);
+    }
+
+    // C(n, k) as a float, 0 when k > n
+    #[inline]
+    fn choose(n: usize, k: usize) -> f64 {
+        if k > n {
+            return 0.0;
+        }
+        (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
+    }
+
+    #[test]
+    #[inline]
+    fn the_opponent_redraws_from_the_whole_bag_whichever_seat_decides() {
+        // a player at an odd seat draws from the bag's front, at an even seat
+        // from its back, so shuffling only one end would give one seat's
+        // opponent back much of the rack it held
+        let game_config = game_config::make_english_game_config();
+        for decider in 0..2u8 {
+            let mut game_state = game_state::GameState::new(&game_config);
+            let mut deal_rng = DefaultRng::seed_from_u64(11);
+            game_state.reset_and_draw_tiles_double_ended(&game_config, &mut deal_rng);
+            game_state.turn = decider;
+            let opponent = 1 - decider as usize;
+            let held = game_state.players[opponent].rack.clone();
+            let rack_size = held.len();
+
+            // the expected overlap of a random rack from the unseen tiles with
+            // the held rack: for each letter it holds k of, the mean of
+            // min(drawn, k) over the chances of drawing each count of that
+            // letter
+            let mut unseen = vec![0usize; game_config.alphabet().len() as usize];
+            for &tile in game_state.bag.as_slice().iter().chain(held.iter()) {
+                unseen[tile as usize] += 1;
+            }
+            let total = unseen.iter().sum::<usize>();
+            let mut expected = 0.0;
+            for (tile, &copies) in unseen.iter().enumerate() {
+                let k = held.iter().filter(|&&t| t as usize == tile).count();
+                for x in 1..=rack_size {
+                    expected +=
+                        x.min(k) as f64 * choose(copies, x) * choose(total - copies, rack_size - x)
+                            / choose(total, rack_size);
+                }
+            }
+
+            let mut simmer = Simmer::new(&game_config).unwrap();
+            simmer.prepare(&game_config, &game_state, 4, false);
+            let pristine = simmer.prepared_state().clone();
+            let draws = 1000;
+            let mut shared = 0;
+            for seed in 0..draws {
+                simmer.restore_prepared(&pristine);
+                simmer.reseed(seed);
+                simmer.prepare_iteration();
+                let mut left = held.clone();
+                for &tile in &simmer.initial_game_state.players[opponent].rack {
+                    if let Some(pos) = left.iter().position(|&t| t == tile) {
+                        left.swap_remove(pos);
+                        shared += 1;
+                    }
+                }
+            }
+            let mean = shared as f64 / draws as f64;
+            assert!(
+                (mean - expected).abs() < 0.2,
+                "seat {decider} decides: the opponent's draws share {mean} of the rack it held, {expected} expected"
+            );
+        }
     }
 
     #[test]
