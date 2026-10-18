@@ -13,6 +13,8 @@ struct Candidate {
     stream_id: u64,
     equity_stats: stats::Stats,
     win_rate_stats: stats::Stats,
+    first_iter: u64,
+    objectives: Vec<f64>, // from first_iter on, NaN while retired
 }
 
 pub const DEFAULT_NUM_SIM_ITERS: u64 = 1000;
@@ -163,16 +165,96 @@ fn rollout_objective<N: kwg::Node, L: kwg::Node, R: rand::Rng + SeedableRng + si
     Ok((objective, sim_spread, win_prob))
 }
 
+// the standard normal distribution's quantile at p, for p in (0, 1), by
+// Acklam's rational approximation, whose relative error is under 1.2e-9
+#[inline]
+fn normal_quantile(p: f64) -> f64 {
+    const A: [f64; 6] = [
+        -3.969_683_028_665_376e1,
+        2.209_460_984_245_205e2,
+        -2.759_285_104_469_687e2,
+        1.383_577_518_672_69e2,
+        -3.066_479_806_614_716e1,
+        2.506_628_277_459_239,
+    ];
+    const B: [f64; 5] = [
+        -5.447_609_879_822_406e1,
+        1.615_858_368_580_409e2,
+        -1.556_989_798_598_866e2,
+        6.680_131_188_771_972e1,
+        -1.328_068_155_288_572e1,
+    ];
+    const C: [f64; 6] = [
+        -7.784_894_002_430_293e-3,
+        -3.223_964_580_411_365e-1,
+        -2.400_758_277_161_838,
+        -2.549_732_539_343_734,
+        4.374_664_141_464_968,
+        2.938_163_982_698_783,
+    ];
+    const D: [f64; 4] = [
+        7.784_695_709_041_462e-3,
+        3.224_671_290_700_398e-1,
+        2.445_134_137_142_996,
+        3.754_408_661_907_416,
+    ];
+    const P_LOW: f64 = 0.02425;
+    let tail = |q: f64| {
+        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    };
+    if p < P_LOW {
+        tail((-2.0 * p.ln()).sqrt())
+    } else if p <= 1.0 - P_LOW {
+        let q = p - 0.5;
+        let r = q * q;
+        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+    } else {
+        -tail((-2.0 * (1.0 - p).ln()).sqrt())
+    }
+}
+
+// the one-sided z that keeps the chance of retiring the best candidate in a
+// whole decision to one in twenty, split evenly over its looks (one every
+// PRUNE_CADENCE iterations)
+#[inline]
+fn paired_z(budget: u64) -> f64 {
+    let looks = (budget / PRUNE_CADENCE).max(1) as f64;
+    -normal_quantile(0.05 / looks)
+}
+
+// compare each candidate with the leader (the highest mean) on the iterations
+// both were rolled out: a candidate retires when its objective minus the
+// leader's is below 0 even at the top of its interval. Every candidate shares
+// each iteration's draws, so the difference varies much less than either
+// objective.
 #[inline(always)]
-fn retire_below(
-    candidates: &mut Vec<Candidate>,
-    retired: &mut Vec<Candidate>,
-    z: f64,
-    low_bar: f64,
-) {
+fn retire_paired(candidates: &mut Vec<Candidate>, retired: &mut Vec<Candidate>, z: f64) {
+    let lead = candidates
+        .iter()
+        .max_by(|a, b| a.stats.mean().total_cmp(&b.stats.mean()))
+        .unwrap();
+    let below = candidates
+        .iter()
+        .map(|candidate| {
+            let from = candidate.first_iter.max(lead.first_iter);
+            let to = (candidate.first_iter + candidate.objectives.len() as u64)
+                .min(lead.first_iter + lead.objectives.len() as u64);
+            let mut diff = stats::Stats::new();
+            for iter in from..to {
+                let mine = candidate.objectives[(iter - candidate.first_iter) as usize];
+                let leads = lead.objectives[(iter - lead.first_iter) as usize];
+                if !mine.is_nan() && !leads.is_nan() {
+                    diff.update(mine - leads);
+                }
+            }
+            diff.count() >= 2.0 && diff.ci_max(z) < 0.0
+        })
+        .collect::<Vec<_>>();
     let mut write = 0;
-    for read in 0..candidates.len() {
-        if candidates[read].stats.ci_max(z) >= low_bar {
+    for (read, &is_below) in below.iter().enumerate() {
+        if !is_below {
             candidates.swap(write, read);
             write += 1;
         }
@@ -318,6 +400,8 @@ impl<
                 stream_id: idx as u64,
                 equity_stats: stats::Stats::new(),
                 win_rate_stats: stats::Stats::new(),
+                first_iter: 1,
+                objectives: Vec::new(),
             });
         }
         candidates
@@ -360,6 +444,8 @@ impl<
             stream_id,
             equity_stats: stats::Stats::new(),
             win_rate_stats: stats::Stats::new(),
+            first_iter: self.iters_done + 1,
+            objectives: Vec::new(),
         });
         stream_id
     }
@@ -385,7 +471,12 @@ impl<
     #[inline]
     pub fn readmit_with_history(&mut self, stream_id: u64) -> bool {
         if let Some(pos) = self.retired.iter().position(|c| c.stream_id == stream_id) {
-            let candidate = self.retired.swap_remove(pos);
+            let mut candidate = self.retired.swap_remove(pos);
+            // the iterations it sat out
+            let next = candidate.first_iter + candidate.objectives.len() as u64;
+            for _ in next..=self.iters_done {
+                candidate.objectives.push(f64::NAN);
+            }
             self.candidates.push(candidate);
             true
         } else {
@@ -1408,6 +1499,7 @@ impl<
         let mut candidates = std::mem::take(&mut self.candidates);
         let mut retired = std::mem::take(&mut self.retired);
         const Z: f64 = 1.96; // 95% confidence interval
+        let paired_z = paired_z(budget);
         let start = self.iters_done;
         for sim_iter in (start + 1)..=(start + count) {
             self.iters_done = sim_iter;
@@ -1425,6 +1517,7 @@ impl<
                     self.win_pct_table,
                 )?;
                 candidate.stats.update(value);
+                candidate.objectives.push(value);
                 if OBSERVE {
                     candidate
                         .equity_stats
@@ -1440,12 +1533,7 @@ impl<
                 candidates.len(),
             );
             if sim_iter % PRUNE_CADENCE == 0 {
-                let low_bar = candidates
-                    .iter()
-                    .map(|candidate| candidate.stats.ci_max(-Z))
-                    .max_by(|a, b| a.total_cmp(b))
-                    .unwrap();
-                retire_below(&mut candidates, &mut retired, Z, low_bar);
+                retire_paired(&mut candidates, &mut retired, paired_z);
 
                 let prune_periods_remaining = budget.saturating_sub(sim_iter) / PRUNE_CADENCE;
                 limit_surviving_candidates(
@@ -1478,6 +1566,7 @@ impl<
         let mut candidates = std::mem::take(&mut self.candidates);
         let mut retired = std::mem::take(&mut self.retired);
         const Z: f64 = 1.96; // 95% confidence interval
+        let paired_z = paired_z(budget);
         let num_threads = self.sim_threads;
         let decision_seed = self.decision_seed;
         let game_config = self.game_config;
@@ -1572,6 +1661,7 @@ impl<
                 for iteration in 0..block_len {
                     let k = iteration * num_candidates + candidate_index;
                     candidate.stats.update(block_objective[k]);
+                    candidate.objectives.push(block_objective[k]);
                     if OBSERVE {
                         candidate.equity_stats.update(block_equity[k]);
                         candidate.win_rate_stats.update(block_win_rate[k]);
@@ -1587,12 +1677,7 @@ impl<
                 candidates.len(),
             );
             if block_end.is_multiple_of(PRUNE_CADENCE) {
-                let low_bar = candidates
-                    .iter()
-                    .map(|candidate| candidate.stats.ci_max(-Z))
-                    .max_by(|a, b| a.total_cmp(b))
-                    .unwrap();
-                retire_below(&mut candidates, &mut retired, Z, low_bar);
+                retire_paired(&mut candidates, &mut retired, paired_z);
                 let prune_periods_remaining = budget.saturating_sub(block_end) / PRUNE_CADENCE;
                 limit_surviving_candidates(
                     &mut candidates,
@@ -2004,31 +2089,97 @@ mod tests {
 
     #[inline]
     fn candidate_from(play_index: usize, values: &[f64]) -> Candidate {
+        candidate_from_iter(play_index, 1, values)
+    }
+
+    #[inline]
+    fn candidate_from_iter(play_index: usize, first_iter: u64, values: &[f64]) -> Candidate {
         Candidate {
             play_index,
             stats: stats_from(values),
             stream_id: play_index as u64,
             equity_stats: stats::Stats::new(),
             win_rate_stats: stats::Stats::new(),
+            first_iter,
+            objectives: values.to_vec(),
         }
     }
 
     #[test]
     #[inline]
-    fn retire_below_keeps_survivors_in_order() {
+    fn retire_paired_keeps_survivors_in_order() {
         let mut candidates = vec![
             candidate_from(0, &[20.0, 20.0].repeat(50)),
             candidate_from(1, &[1.0, 1.0].repeat(50)),
             candidate_from(2, &[19.0, 21.0].repeat(50)),
         ];
         let mut retired = Vec::new();
-        retire_below(&mut candidates, &mut retired, 1.96, 10.0);
+        retire_paired(&mut candidates, &mut retired, 1.96);
         assert_eq!(
             candidates.iter().map(|c| c.play_index).collect::<Vec<_>>(),
             vec![0, 2]
         );
         assert_eq!(retired.len(), 1);
         assert_eq!(retired[0].play_index, 1);
+    }
+
+    #[test]
+    #[inline]
+    fn retire_paired_sees_a_steady_gap_that_shared_noise_hides() {
+        // both swing 50 either way on the same draws, and the second is always
+        // half a point behind: apart, their intervals overlap widely; paired,
+        // only the gap is left
+        let swings = [50.0, -50.0].repeat(50);
+        let leader = swings.iter().map(|s| 100.0 + s).collect::<Vec<_>>();
+        let behind = swings.iter().map(|s| 99.5 + s).collect::<Vec<_>>();
+        let mut candidates = vec![candidate_from(0, &leader), candidate_from(1, &behind)];
+        assert!(candidates[1].stats.ci_max(1.96) > candidates[0].stats.ci_max(-1.96));
+        let mut retired = Vec::new();
+        retire_paired(&mut candidates, &mut retired, 3.0);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(retired[0].play_index, 1);
+    }
+
+    #[test]
+    #[inline]
+    fn retire_paired_pairs_by_iteration() {
+        // the second joined at iteration 51 and was a point behind on each
+        // iteration since; paired by position in its list instead, it would be
+        // compared with the first's iterations 1 to 50 and look level
+        let leader = (1..=100)
+            .map(|i| 100.0 + 10.0 * (i % 3) as f64)
+            .collect::<Vec<_>>();
+        let joined = leader[50..].iter().map(|v| v - 1.0).collect::<Vec<_>>();
+        let mut candidates = vec![
+            candidate_from(0, &leader),
+            candidate_from_iter(1, 51, &joined),
+        ];
+        let mut retired = Vec::new();
+        retire_paired(&mut candidates, &mut retired, 3.0);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(retired[0].play_index, 1);
+    }
+
+    #[test]
+    #[inline]
+    fn normal_quantile_matches_known_values() {
+        for (p, z) in [
+            (0.5, 0.0),
+            (0.975, 1.959_963_984_540_054),
+            (0.99, 2.326_347_874_040_841),
+            (0.001, -3.090_232_306_167_813),
+            (0.0001, -3.719_016_485_455_709),
+        ] {
+            assert!(
+                (normal_quantile(p) - z).abs() < 1e-8,
+                "{p}: {}",
+                normal_quantile(p)
+            );
+        }
+        // a decision of 1000 iterations looks 62 times
+        let z = paired_z(1000);
+        assert!((z + normal_quantile(0.05 / 62.0)).abs() < 1e-12);
+        assert!(3.1 < z && z < 3.2, "{z}");
     }
 
     #[inline]
