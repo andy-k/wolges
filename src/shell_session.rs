@@ -941,7 +941,7 @@ impl Session {
                         Ok(())
                     }
                     [load, path] if load == "load" => {
-                        let moves = gcg_moves(&std::fs::read_to_string(path)?)?;
+                        let moves = gcg_moves(&gcg_decode(&std::fs::read(path)?)?)?;
                         self.load_moves(&moves)
                     }
                     _ => Err("gcg save FILE or gcg load FILE".into()),
@@ -1861,115 +1861,135 @@ impl Session {
     // bonus (bonus, and rack for the rack its line gives), run and logged as
     // those commands, each checked against the score and total the file gives;
     // then its end (end, and the racks it counted, checked the same way) or its
-    // racks as they stand. It stops at the first that fails, keeping the game
-    // made so far.
+    // racks as they stand (#incomplete for the side to move). It stops at the
+    // first that fails, keeping the game made so far.
     fn load_moves(&mut self, moves: &[GcgMove]) -> error::Returns<()> {
         let seed = GameRng::try_from_rng(&mut rand::rngs::SysRng)?.next_u64();
         self.printing = false;
-        let loaded =
-            (|| -> error::Returns<()> {
-                self.run_line(&format!("new {seed}"))?;
-                let mut lines = vec![false; self.seats.len()];
-                let mut unseen = vec![false; self.seats.len()];
-                for gcg_move in moves {
-                    let seat = gcg_move.seat;
-                    if seat >= self.seats.len() {
-                        return Err(format!(
-                            "line {}: player 1 to {}",
-                            gcg_move.line_number,
-                            self.seats.len()
-                        )
-                        .into());
-                    }
-                    lines[seat] = true;
-                    if matches!(gcg_move.kind, GcgKind::Play(_) | GcgKind::Rack) {
-                        unseen[seat] |= gcg_move.rack.contains('_');
-                    }
-                }
-                for (seat, (&lines, &unseen)) in lines.iter().zip(&unseen).enumerate() {
-                    let given = unseen || !lines;
-                    if given != (self.seats[seat] == Seat::Given) {
-                        let kind = if given { "given" } else { "human" };
-                        self.run_line(&format!("player {} {kind}", seat + 1))?;
-                    }
-                }
-                let mut standing = Vec::new();
-                let seats = self.seats.len();
-                for gcg_move in moves {
-                    let line_number = gcg_move.line_number;
-                    // a move belongs to the side to move; a phony taken back or
-                    // a challenge's bonus belongs to the last mover (counted by
-                    // the moves made, since a game ended by its last move
-                    // leaves that mover to move)
-                    let made = self.game.as_ref().map_or(0, |game| game.at);
-                    let (seat, what) = match &gcg_move.kind {
-                        GcgKind::Play(play) => (made % seats, format!("phony {play}")),
-                        GcgKind::Withdraw => ((made + 1) % seats, "withdraw".to_string()),
-                        GcgKind::Bonus(bonus) => ((made + 1) % seats, format!("bonus {bonus}")),
-                        GcgKind::Rack => {
-                            standing.push(gcg_move);
-                            continue;
-                        }
-                        end => {
-                            self.load_end(gcg_move, end)
-                                .map_err(|e| on_line(line_number, &e))?;
-                            continue;
-                        }
-                    };
-                    if gcg_move.seat != seat {
-                        return Err(on_line(
-                            line_number,
-                            format_args!(
-                                "the file's player {} is in the place of player {}",
-                                gcg_move.seat + 1,
-                                seat + 1
-                            ),
-                        )
-                        .into());
-                    }
-                    // an _ is a tile no one saw
-                    let known = gcg_move.rack.replace('_', "");
-                    if let GcgKind::Play(_) = gcg_move.kind
-                        && !known.is_empty()
-                    {
-                        self.run_line(&format!("rack {known}"))
-                            .map_err(|e| on_line(line_number, &e))?;
-                    }
-                    self.run_line(&what).map_err(|e| on_line(line_number, &e))?;
-                    // a challenge's line gives the rack the move left
-                    if let GcgKind::Bonus(_) = gcg_move.kind
-                        && !known.is_empty()
-                    {
-                        self.run_line(&format!("rack {} {known}", seat + 1))
-                            .map_err(|e| on_line(line_number, &e))?;
-                    }
-                    let game = self.game.as_ref().ok_or("no game")?;
-                    let turn = &game.turns[game.at - 1];
-                    let score = match (&gcg_move.kind, &turn.play) {
-                        (GcgKind::Play(_), movegen::Play::Place { score, .. }) => {
-                            equity::descale_score(*score)
-                        }
-                        _ => gcg_move.score,
-                    };
-                    let total = equity::descale_score(self.state.players[seat].score);
-                    if (score, total) != (gcg_move.score, gcg_move.total) {
-                        return Err(on_line(line_number, format_args!(
-                        "it scores {score} for a total of {total} here, {} for {} in the file",
-                        gcg_move.score, gcg_move.total
-                    ))
+        let loaded = (|| -> error::Returns<()> {
+            self.run_line(&format!("new {seed}"))?;
+            let mut lines = vec![false; self.seats.len()];
+            let mut unseen = vec![false; self.seats.len()];
+            for gcg_move in moves {
+                let seat = gcg_move.seat;
+                if seat >= self.seats.len() {
+                    return Err(format!(
+                        "line {}: player 1 to {}",
+                        gcg_move.line_number,
+                        self.seats.len()
+                    )
                     .into());
-                    }
                 }
-                for gcg_move in standing {
-                    let line_number = gcg_move.line_number;
-                    let known = gcg_move.rack.replace('_', "");
-                    if !known.is_empty() {
-                        self.run_line(&format!("rack {} {known}", gcg_move.seat + 1))
+                // a line that shows its player's rack (not #incomplete, whose
+                // player is the side to move, known only once the moves are
+                // made)
+                if matches!(
+                    gcg_move.kind,
+                    GcgKind::Play(_)
+                        | GcgKind::Withdraw
+                        | GcgKind::Bonus(_)
+                        | GcgKind::Out
+                        | GcgKind::Shown
+                        | GcgKind::Rack
+                ) {
+                    lines[seat] = true;
+                }
+                if matches!(gcg_move.kind, GcgKind::Play(_) | GcgKind::Rack) {
+                    unseen[seat] |= gcg_move.rack.contains('_');
+                }
+            }
+            for (seat, (&lines, &unseen)) in lines.iter().zip(&unseen).enumerate() {
+                let given = unseen || !lines;
+                if given != (self.seats[seat] == Seat::Given) {
+                    let kind = if given { "given" } else { "human" };
+                    self.run_line(&format!("player {} {kind}", seat + 1))?;
+                }
+            }
+            let mut standing = Vec::new();
+            let seats = self.seats.len();
+            for gcg_move in moves {
+                let line_number = gcg_move.line_number;
+                // a move belongs to the side to move; a phony taken back or a
+                // challenge's bonus belongs to the last mover (counted by the
+                // moves made, since a game ended by its last move leaves that
+                // mover to move)
+                let made = self.game.as_ref().map_or(0, |game| game.at);
+                let (seat, what) = match &gcg_move.kind {
+                    GcgKind::Play(play) => (made % seats, format!("phony {play}")),
+                    GcgKind::Withdraw => ((made + 1) % seats, "withdraw".to_string()),
+                    GcgKind::Bonus(bonus) => ((made + 1) % seats, format!("bonus {bonus}")),
+                    GcgKind::Rack | GcgKind::Incomplete => {
+                        standing.push(gcg_move);
+                        continue;
+                    }
+                    end => {
+                        self.load_end(gcg_move, end)
                             .map_err(|e| on_line(line_number, &e))?;
+                        continue;
                     }
+                };
+                if gcg_move.seat != seat {
+                    return Err(on_line(
+                        line_number,
+                        format_args!(
+                            "the file's player {} is in the place of player {}",
+                            gcg_move.seat + 1,
+                            seat + 1
+                        ),
+                    )
+                    .into());
                 }
-                Ok(())
-            })();
+                // an _ is a tile no one saw
+                let known = gcg_move.rack.replace('_', "");
+                if let GcgKind::Play(_) = gcg_move.kind
+                    && !known.is_empty()
+                {
+                    self.run_line(&format!("rack {known}"))
+                        .map_err(|e| on_line(line_number, &e))?;
+                }
+                self.run_line(&what).map_err(|e| on_line(line_number, &e))?;
+                // a challenge's line gives the rack the move left
+                if let GcgKind::Bonus(_) = gcg_move.kind
+                    && !known.is_empty()
+                {
+                    self.run_line(&format!("rack {} {known}", seat + 1))
+                        .map_err(|e| on_line(line_number, &e))?;
+                }
+                let game = self.game.as_ref().ok_or("no game")?;
+                let turn = &game.turns[game.at - 1];
+                let score = match (&gcg_move.kind, &turn.play) {
+                    (GcgKind::Play(_), movegen::Play::Place { score, .. }) => {
+                        equity::descale_score(*score)
+                    }
+                    _ => gcg_move.score,
+                };
+                let total = equity::descale_score(self.state.players[seat].score);
+                if (score, total) != (gcg_move.score, gcg_move.total) {
+                    return Err(on_line(
+                        line_number,
+                        format_args!(
+                            "it scores {score} for a total of {total} here, {} for {} in the file",
+                            gcg_move.score, gcg_move.total
+                        ),
+                    )
+                    .into());
+                }
+            }
+            for gcg_move in standing {
+                let line_number = gcg_move.line_number;
+                let known = gcg_move.rack.replace('_', "");
+                // #incomplete: the side to move's rack, in a game not over
+                let line = match gcg_move.kind {
+                    GcgKind::Incomplete if self.final_scores.is_none() => format!("rack {known}"),
+                    GcgKind::Incomplete => continue,
+                    _ => format!("rack {} {known}", gcg_move.seat + 1),
+                };
+                if !known.is_empty() {
+                    self.run_line(&line).map_err(|e| on_line(line_number, &e))?;
+                }
+            }
+            Ok(())
+        })();
         self.printing = true;
         self.show()?;
         loaded
@@ -2264,7 +2284,7 @@ fn solve_endgame(
 // taken back as a phony; points to its player after a challenge; that its
 // player had no tiles at the end, so the other's rack counts to them; the rack
 // its player showed at the end; or a player's rack in a game not over (#rack1,
-// #rack2)
+// #rack2), or the side to move's (#incomplete)
 enum GcgKind {
     Play(String),
     Withdraw,
@@ -2272,11 +2292,12 @@ enum GcgKind {
     Out,
     Shown,
     Rack,
+    Incomplete,
 }
 
 // a line of a GCG file: its number, its player (by the order the players first
-// move; for #rackN, player N), the rack, what it does, and the score and total
-// it gives
+// move; for #rackN, where #playerN's nickname moves, else player N), the rack,
+// what it does, and the score and total it gives
 struct GcgMove {
     line_number: usize,
     seat: usize,
@@ -2286,16 +2307,56 @@ struct GcgMove {
     total: i32,
 }
 
-// read a GCG file's moves, phonies taken back, challenge bonuses, the racks its
-// end counts, and the racks of a game not over, skipping every other # line. A
-// time penalty is refused, with an error saying so
+// decode a GCG file's text by the encoding it declares, UTF-8 or ISO 8859-1
+// (one character per byte); if it declares none, UTF-8 if it is valid UTF-8,
+// else ISO 8859-1. A UTF-8 byte order mark at the start is dropped first, or
+// the # line it is on would not read as one
+fn gcg_decode(bytes: &[u8]) -> error::Returns<String> {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    let latin1 = bytes.iter().map(|&b| char::from(b)).collect::<String>();
+    let declared = latin1.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        (words.next() == Some("#character-encoding"))
+            .then(|| words.next().unwrap_or("").to_ascii_uppercase())
+    });
+    match declared.as_deref() {
+        Some("ISO-8859-1") => Ok(latin1),
+        Some("UTF-8") => Ok(String::from_utf8(bytes.to_vec())?),
+        Some(other) => Err(format!("the encoding {other:?}: UTF-8 or ISO-8859-1 only").into()),
+        None => Ok(String::from_utf8(bytes.to_vec()).unwrap_or(latin1)),
+    }
+}
+
+// read a GCG file's moves (a rack left empty is one no one saw), phonies taken
+// back, challenge bonuses, the racks its end counts, and the racks of a game
+// not over (#rack1 and #rack2, for the players #player1 and #player2 give, and
+// #incomplete, for the side to move), skipping every other # line. A time
+// penalty is refused, with an error saying so
 fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
     let mut moves = Vec::new();
     let mut players = Vec::<String>::new();
+    let mut nicknames = [None, None];
     for (line_number, line) in (1..).zip(text.lines()) {
         let fail = |what: &str| format!("line {line_number}: {what}: {line:?}");
         if line.starts_with('#') {
             let pragma = line.trim_end();
+            let words = pragma.split_whitespace().collect::<Vec<_>>();
+            match words.as_slice() {
+                ["#player1", nickname, ..] => nicknames[0] = Some(nickname.to_string()),
+                ["#player2", nickname, ..] => nicknames[1] = Some(nickname.to_string()),
+                ["#incomplete", tiles] => {
+                    moves.push(GcgMove {
+                        line_number,
+                        seat: 0,
+                        rack: tiles.to_string(),
+                        kind: GcgKind::Incomplete,
+                        score: 0,
+                        total: 0,
+                    });
+                    continue;
+                }
+                _ => {}
+            }
             let rack = pragma.strip_prefix("#rack").map(str::split_whitespace);
             let (seat, rack, kind) = match rack {
                 Some(mut tokens) => {
@@ -2332,7 +2393,16 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
                 players.len() - 1
             }
         };
-        let tokens = rest.split_whitespace().collect::<Vec<_>>();
+        let mut tokens = rest.split_whitespace().collect::<Vec<_>>();
+        // a rack left empty: the line starts where the rack would end, at a
+        // coordinate, an exchange or a pass, a phony taken back, or a bonus
+        if let Some(first) = tokens.first()
+            && (first.starts_with('-')
+                || first.bytes().any(|b| b.is_ascii_digit())
+                || ["(challenge)", "(time)"].contains(first))
+        {
+            tokens.insert(0, "_");
+        }
         if tokens.contains(&"(time)") {
             return Err(fail("a time penalty is not taken").into());
         }
@@ -2377,6 +2447,20 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
             score: score.parse().map_err(|_| fail("no score"))?,
             total: total.parse().map_err(|_| fail("no total"))?,
         });
+    }
+    // the player of #rackN: the seat where #playerN's nickname first moved,
+    // else the seat the other nickname did not move in, else seat N
+    let moved = |player: usize| {
+        let nickname = nicknames[player].as_ref()?;
+        players.iter().position(|p| p == nickname)
+    };
+    for gcg_move in moves.iter_mut() {
+        let player = gcg_move.seat;
+        if matches!(gcg_move.kind, GcgKind::Rack) && player < 2 {
+            gcg_move.seat = moved(player)
+                .or_else(|| moved(1 - player).and_then(|seat| 1usize.checked_sub(seat)))
+                .unwrap_or(player);
+        }
     }
     Ok(moves)
 }
@@ -3452,6 +3536,67 @@ mod tests {
         assert_eq!(scores(&fourth), scores(&first));
         assert!(gcg_moves(">p1: ABC (time) -10 5").is_err());
         assert!(gcg_moves(">p1: ABC 8G").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_gcg_from_elsewhere_reads_an_empty_rack_and_the_racks_after_its_last_move() {
+        let mut first = session();
+        for line in GAME {
+            run(&mut first, line).unwrap();
+        }
+        let text = first.gcg_text().unwrap();
+        let scores = |s: &Session| s.state.players.iter().map(|p| p.score).collect::<Vec<_>>();
+        // a rack left empty is one no one saw, so the seat is given
+        let empty = text.replace(">p2: TEATEAT 9H", ">p2:  9H");
+        assert_ne!(empty, text);
+        let mut second = session();
+        second.load_moves(&gcg_moves(&empty).unwrap()).unwrap();
+        assert!(second.seats[1] == Seat::Given);
+        assert_eq!(second.state.board_tiles, first.state.board_tiles);
+        assert_eq!(scores(&second), scores(&first));
+        // the side to move's rack, by #incomplete
+        let mut incomplete = text
+            .lines()
+            .filter(|line| !line.starts_with("#rack"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        incomplete.push_str("\n#incomplete AAEETTT\n");
+        let mut third = session();
+        third.load_moves(&gcg_moves(&incomplete).unwrap()).unwrap();
+        assert_eq!(third.log.last().unwrap(), "rack AAEETTT");
+        // #rack1 is #player1's, here the second player to move
+        let swapped = "#player1 bob\n#player2 ann\n>ann: AETAETE 8G AT +4 4\n#rack1 EEE\n";
+        let moves = gcg_moves(swapped).unwrap();
+        let last = moves.last().unwrap();
+        assert!(matches!(last.kind, GcgKind::Rack));
+        assert_eq!(last.seat, 1);
+    }
+
+    #[test]
+    #[inline]
+    fn a_gcg_reads_in_the_encoding_it_declares() {
+        let latin1 = b"#character-encoding ISO-8859-1\n#player1 p1 Jos\xe9\n";
+        assert!(gcg_decode(latin1).unwrap().contains("Jos\u{e9}"));
+        // with none declared and not UTF-8, ISO 8859-1; with UTF-8 declared, it
+        // must be valid UTF-8
+        assert!(gcg_decode(&latin1[31..]).unwrap().contains("Jos\u{e9}"));
+        assert!(gcg_decode(b"#character-encoding UTF-8\nJos\xe9\n").is_err());
+        let utf8 = "#character-encoding UTF-8\nJos\u{e9}\n";
+        assert!(gcg_decode(utf8.as_bytes()).unwrap().contains("Jos\u{e9}"));
+        assert!(gcg_decode(b"#character-encoding KOI8-R\n").is_err());
+        // a UTF-8 byte order mark at the start is dropped, so a file reads the
+        // same with it as without, whatever its first line
+        for text in [
+            "#character-encoding UTF-8\n#player1 jo Jo\n",
+            "#player1 jo Jo\n",
+            ">jo: AETAETE 8G AT +4 4\n",
+        ] {
+            let marked = [b"\xef\xbb\xbf".as_slice(), text.as_bytes()].concat();
+            assert_eq!(gcg_decode(&marked).unwrap(), text);
+        }
+        // an encoding declared after the mark still counts
+        assert!(gcg_decode(b"\xef\xbb\xbf#character-encoding UTF-8\nJos\xe9\n").is_err());
     }
 
     #[test]
