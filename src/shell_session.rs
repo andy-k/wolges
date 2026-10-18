@@ -32,7 +32,7 @@ const DEFAULT_ENDGAME_SECONDS: f64 = 10.0;
 // its challenges that stood gave its mover, if any; whether the game was
 // declared over after it (end); and the racks set after it, by seat (none for a
 // player with no tiles)
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Turn {
     rack: Option<Vec<u8>>,
     given: bool,
@@ -66,8 +66,8 @@ impl Turn {
 }
 
 // a game: the bag dealt from its seed, the racks set before its first move, its
-// moves, how many of them the board shows, and a rack given to the side to move
-// who has not played yet
+// moves, how many of them the board shows, a rack given to the side to move who
+// has not played yet, and the lines what-ifs cut away
 #[derive(Clone)]
 struct Game {
     seed: u64,
@@ -75,6 +75,42 @@ struct Game {
     turns: Vec<Turn>,
     at: usize,
     rack: Option<Vec<u8>>,
+    lines: Vec<Line>, // the games what-ifs cut away, each whole
+}
+
+// a game a what-if cut away: the racks set before its first move, and its moves
+#[derive(Clone)]
+struct Line {
+    start: Vec<(usize, Vec<u8>)>,
+    turns: Vec<Turn>,
+}
+
+impl Game {
+    // drop the moves ahead of those shown, keeping the game as it was as a line
+    // to go back to: whole, since a later cut can take away the moves the line
+    // followed
+    fn cut(&mut self) {
+        if self.at < self.turns.len() {
+            self.lines.push(Line {
+                start: self.start.clone(),
+                turns: self.turns.clone(),
+            });
+            self.turns.truncate(self.at);
+        }
+    }
+
+    // how many first moves the game shares with a line, which is where they
+    // part (none, if they start with different racks set)
+    fn branch(&self, line: &Line) -> usize {
+        if self.start != line.start {
+            return 0;
+        }
+        self.turns
+            .iter()
+            .zip(&line.turns)
+            .take_while(|(ours, theirs)| ours == theirs)
+            .count()
+    }
 }
 
 // who plays a seat: a person whose racks are dealt; a person whose racks are
@@ -196,6 +232,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("back [N]", "take back N moves, 1 if not given"),
     ("forward [N]", "replay N moves taken back, 1 if not given"),
+    (
+        "lines",
+        "list the games that moves played after back cut away, and where each parts from this one",
+    ),
+    (
+        "line K",
+        "switch to line K (this game is kept as a line), shown where they part",
+    ),
     (
         "sim [ITERATIONS]",
         "sim the position shown this many more iterations, 1000 if not given",
@@ -389,6 +433,7 @@ impl Session {
                         turns: Vec::new(),
                         at: 0,
                         rack: None,
+                        lines: Vec::new(),
                     });
                     Ok(())
                 })?;
@@ -430,7 +475,7 @@ impl Session {
                     let before = self.game.clone();
                     self.change(|game| {
                         let game = game.as_mut().ok_or("no game: new first")?;
-                        game.turns.truncate(game.at);
+                        game.cut();
                         game.rack = Some(held);
                         Ok(())
                     })?;
@@ -460,7 +505,7 @@ impl Session {
                 }
                 self.change(|game| {
                     let game = game.as_mut().ok_or("no game: new first")?;
-                    game.turns.truncate(game.at);
+                    game.cut();
                     game.rack = None;
                     let turn = game.turns.last_mut().ok_or("no move yet")?;
                     turn.ended = true;
@@ -542,7 +587,7 @@ impl Session {
                 self.change(|game| {
                     let game = game.as_mut().ok_or("no game: new first")?;
                     let last = game.at.checked_sub(1).ok_or("no move before")?;
-                    game.turns.truncate(game.at);
+                    game.cut();
                     // a rack given to the challenger stays theirs, for the turn
                     // they lose, if they lose it
                     let pending = game.rack.take();
@@ -583,6 +628,68 @@ impl Session {
                     } else {
                         game.rack = pending;
                     }
+                    Ok(())
+                })?;
+                self.show()?;
+                line.to_string()
+            }
+            "lines" => {
+                let game = self.game.as_ref().ok_or("no game: new first")?;
+                let mut out = std::io::stdout();
+                if game.lines.is_empty() {
+                    writeln!(
+                        out,
+                        "no other lines: a move played after back keeps the game it cuts away as a line"
+                    )?;
+                }
+                for (k, other) in game.lines.iter().enumerate() {
+                    let branch = game.branch(other);
+                    let ahead = other.turns.len() - branch;
+                    writeln!(
+                        out,
+                        "{:>3}. after move {}, {} move{}{}",
+                        k + 1,
+                        branch,
+                        ahead,
+                        if ahead == 1 { "" } else { "s" },
+                        if other.start == game.start {
+                            ""
+                        } else {
+                            ", other racks set before the first"
+                        }
+                    )?;
+                }
+                return Ok(());
+            }
+            "line" => {
+                let [k] = args else {
+                    return Err("line K".into());
+                };
+                let k = k.parse::<usize>()?;
+                // put the line in place of the game, which is kept as line K in
+                // turn unless the line holds all of it, and show the board
+                // where they part
+                self.change(|game| {
+                    let game = game.as_mut().ok_or("no game: new first")?;
+                    if game.lines.is_empty() {
+                        return Err("no other lines".into());
+                    }
+                    if k == 0 || k > game.lines.len() {
+                        return Err(format!("line 1 to {}", game.lines.len()).into());
+                    }
+                    let other = game.lines.remove(k - 1);
+                    let branch = game.branch(&other);
+                    if other.start != game.start || !other.turns.starts_with(&game.turns) {
+                        let kept = Line {
+                            start: std::mem::take(&mut game.start),
+                            turns: std::mem::take(&mut game.turns),
+                        };
+                        game.lines.insert(k - 1, kept);
+                    }
+                    game.start = other.start;
+                    game.turns = other.turns;
+                    game.at = branch;
+                    game.rack = None;
                     Ok(())
                 })?;
                 self.show()?;
@@ -837,13 +944,21 @@ impl Session {
     }
 
     // a change to the game, kept only if the game it makes can be rebuilt;
-    // otherwise the game and its state are as they were
+    // otherwise the game and its state stay as they were. A line that the game
+    // now holds all of is dropped.
     fn change(
         &mut self,
         f: impl FnOnce(&mut Option<Game>) -> error::Returns<()>,
     ) -> error::Returns<()> {
         let before = self.game.clone();
-        let result = f(&mut self.game).and_then(|()| self.rebuild());
+        let result = f(&mut self.game).and_then(|()| {
+            if let Some(game) = &mut self.game {
+                let (start, turns) = (&game.start, &game.turns);
+                game.lines
+                    .retain(|line| line.start != *start || !turns.starts_with(&line.turns));
+            }
+            self.rebuild()
+        });
         if result.is_err() {
             self.game = before;
             self.rebuild()?;
@@ -851,13 +966,13 @@ impl Session {
         result
     }
 
-    // play a move after the ones shown, which are dropped; hidden is true for
-    // an exchange of tiles no one saw
+    // play a move after the ones shown; the moves ahead are cut away and kept
+    // as a line; hidden is true for an exchange of tiles no one saw
     fn push_turn(&mut self, play: movegen::Play, hidden: bool) -> error::Returns<()> {
         let given = self.seats[self.state.turn as usize] == Seat::Given;
         self.change(|game| {
             let game = game.as_mut().ok_or("no game: new first")?;
-            game.turns.truncate(game.at);
+            game.cut();
             game.turns.push(Turn {
                 rack: game.rack.take(),
                 given,
@@ -883,7 +998,7 @@ impl Session {
         let going = self.final_scores.is_none();
         self.change(|game| {
             let game = game.as_mut().ok_or("no game: new first")?;
-            game.turns.truncate(game.at);
+            game.cut();
             if seat == to_move && going {
                 game.rack = Some(tiles);
                 return Ok(());
@@ -3435,6 +3550,91 @@ mod tests {
         run(&mut session, "challenge").unwrap();
         assert!(session.final_scores.is_none());
         assert!(!session.game.as_ref().unwrap().turns[0].ended);
+    }
+
+    #[test]
+    #[inline]
+    fn a_what_if_keeps_the_line_it_cut_to_go_back_to() {
+        let mut first = session();
+        for line in GAME {
+            run(&mut first, line).unwrap();
+        }
+        let end = snapshot(&first);
+        run(&mut first, "back 2").unwrap();
+        run(&mut first, "rack EAT").unwrap();
+        run(&mut first, "play 9G EAT").unwrap();
+        let what_if = snapshot(&first);
+        assert_eq!(first.game.as_ref().unwrap().lines.len(), 1);
+        // the line that was cut, back in place, shown where it branched
+        run(&mut first, "line 1").unwrap();
+        assert_eq!(first.game.as_ref().unwrap().at, 1);
+        run(&mut first, "forward 2").unwrap();
+        assert_eq!(snapshot(&first), end);
+        // and the what-if, kept in its place
+        run(&mut first, "line 1").unwrap();
+        run(&mut first, "forward").unwrap();
+        assert_eq!(snapshot(&first), what_if);
+        assert!(run(&mut first, "line 2").is_err());
+        // the log replays to the same game, lines and all
+        let mut second = session();
+        for line in first.log.clone() {
+            replay(&mut second, &line).unwrap();
+        }
+        assert_eq!(snapshot(&second), what_if);
+        assert_eq!(second.game.as_ref().unwrap().lines.len(), 1);
+    }
+
+    #[test]
+    #[inline]
+    fn a_line_comes_back_whole_after_a_what_if_before_it() {
+        let mut first = session();
+        for line in GAME {
+            run(&mut first, line).unwrap();
+        }
+        let end = snapshot(&first);
+        // a what-if for the third move (AT under EA), then one for the second
+        // (EAT, with the A under the T), which takes away the second move the
+        // first line followed
+        for line in [
+            "back",
+            "rack EAT",
+            "play 10H AT",
+            "back 2",
+            "rack EAT",
+            "play 9G EAT",
+        ] {
+            run(&mut first, line).unwrap();
+        }
+        assert_eq!(first.game.as_ref().unwrap().lines.len(), 2);
+        // the game as first played, whole, shown where it parts from this one
+        run(&mut first, "line 1").unwrap();
+        assert_eq!(first.game.as_ref().unwrap().at, 1);
+        run(&mut first, "forward 2").unwrap();
+        assert_eq!(snapshot(&first), end);
+    }
+
+    #[test]
+    #[inline]
+    fn a_line_keeps_the_racks_set_before_its_first_move() {
+        let mut first = session();
+        for line in GAME {
+            run(&mut first, line).unwrap();
+        }
+        let end = snapshot(&first);
+        // back at the start, setting a rack for player 2 makes a what-if from
+        // there
+        run(&mut first, "back 3").unwrap();
+        run(&mut first, "rack 2 EAT").unwrap();
+        let what_if = snapshot(&first);
+        assert_eq!(first.game.as_ref().unwrap().lines.len(), 1);
+        // the game as played, without that rack, and back again
+        run(&mut first, "line 1").unwrap();
+        assert!(first.game.as_ref().unwrap().start.is_empty());
+        run(&mut first, "forward 3").unwrap();
+        assert_eq!(snapshot(&first), end);
+        run(&mut first, "line 1").unwrap();
+        assert_eq!(snapshot(&first), what_if);
+        assert_eq!(first.game.as_ref().unwrap().lines.len(), 1);
     }
 
     #[test]
