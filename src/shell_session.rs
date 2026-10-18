@@ -44,8 +44,8 @@ struct Turn {
 // it); points to its player (a challenge's bonus); the game lost by a player on
 // a challenge of it; the game declared over (end); a player's rack set (none
 // for a player with no tiles); on the move that ended the game, points a player
-// lost for time; and points its player was given beyond the board's score, or
-// short of it (a misscore)
+// lost for time; points its player was given beyond the board's score, or short
+// of it (a misscore); and a note on it
 #[derive(Clone, PartialEq)]
 enum After {
     Withdraw,
@@ -55,6 +55,7 @@ enum After {
     Rack(usize, Vec<u8>),
     Time(usize, i32),
     Adjust(i32),
+    Note(String),
 }
 
 // what a challenge of a move costs: under double, the challenger's turn if the
@@ -308,6 +309,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "take back the last move as a phony challenged off",
     ),
     ("bonus N", "give the last move's player N more points"),
+    ("note TEXT", "add a note to the last move"),
     (
         "adjust POINTS",
         "the last move scored POINTS more than the board makes it (fewer if below 0): a misscore",
@@ -880,6 +882,29 @@ impl Session {
                     }
                     turn.adjust().checked_add(points).ok_or("too many points")?;
                     turn.after.push(After::Adjust(points));
+                    Ok(())
+                })?;
+                self.show()?;
+                line.to_string()
+            }
+            "note" => {
+                if args.is_empty() {
+                    return Err("note TEXT".into());
+                }
+                let text = args.join(" ");
+                // a note that gcg load would read back as the shell's own (a
+                // move's correct score) is refused
+                let read = gcg_moves(&format!("#note {text}"));
+                if !matches!(read.as_deref(), Ok([GcgMove { kind: GcgKind::Note(back), .. }]) if *back == text)
+                {
+                    return Err("that note would not read back from GCG as itself".into());
+                }
+                // on the move shown, after what was done to it so far
+                self.change(|game| {
+                    let game = game.as_mut().ok_or("no game: new first")?;
+                    let last = game.at.checked_sub(1).ok_or("no move to note")?;
+                    game.cut();
+                    game.turns[last].after.push(After::Note(text));
                     Ok(())
                 })?;
                 self.show()?;
@@ -1631,6 +1656,12 @@ impl Session {
                     text,
                     equity::descale_score(replay.state.players[mover].score),
                 )?;
+                // its notes, under it
+                for after in &turn.after {
+                    if let After::Note(note) = after {
+                        writeln!(out, "      note: {note}")?;
+                    }
+                }
                 replay.state.next_turn();
             }
         }
@@ -2199,6 +2230,19 @@ impl Session {
                         }
                         (gcg_move.seat, format!("time {} {lost}", gcg_move.seat + 1))
                     }
+                    // a note goes on the move before it; one before the first
+                    // move has no move to go on, and is printed
+                    GcgKind::Note(note) if note.is_empty() => continue,
+                    GcgKind::Note(note) if made == 0 => {
+                        let said = format!("a note before the first move, not kept: {note}");
+                        writeln!(std::io::stdout(), "{}", on_line(line_number, &said))?;
+                        continue;
+                    }
+                    GcgKind::Note(note) => {
+                        self.run_line(&format!("note {note}"))
+                            .map_err(|e| on_line(line_number, &e))?;
+                        continue;
+                    }
                     end => {
                         self.load_end(gcg_move, end)
                             .map_err(|e| on_line(line_number, &e))?;
@@ -2425,8 +2469,6 @@ impl Session {
             // a misscore: the move as scored, then the board's score in a note
             // after its line (a note is about the line before it)
             let scored = score + turn.adjust();
-            // a phony taken back: its line as played, then its taking back,
-            // with the total as before it
             text.push_str(&format!(
                 ">{}: {} {} +{} {}\n",
                 nicknames[mover],
@@ -2438,24 +2480,46 @@ impl Session {
             if scored != score {
                 text.push_str(&format!("{GCG_CORRECT}{score}\n"));
             }
-            if turn.withdrawn() {
-                text.push_str(&format!(
-                    ">{}: {} -- -{} {}\n",
-                    nicknames[mover], rack, scored, before
-                ));
+            // the tiles the move left on its rack, which a challenge's line
+            // gives before its taking back (what it drew goes back with it)
+            let mut left = held_tiles.clone();
+            if let movegen::Play::Place { word, .. } = &turn.play
+                && turn.withdrawn()
+            {
+                let placed = word.iter().filter(|&&tile| tile != 0);
+                let placed = placed.map(|&tile| if tile & 0x80 != 0 { 0 } else { tile });
+                game_state::use_tiles(&mut left, placed)?;
             }
             replay.play_turn(self.game_config, &mut rng, turn)?;
             final_scores = replay.end_of_turn(self.game_config, turn, held)?;
-            // a challenge's bonus: the rack after the move, then the points
-            if let Some(bonus) = turn.bonus() {
-                let after = &replay.state.players[mover];
-                text.push_str(&format!(
-                    ">{}: {} (challenge) {:+} {}\n",
-                    nicknames[mover],
-                    rack_text(self.game_config, turn.given, &after.rack, &after.rack),
-                    bonus,
-                    equity::descale_score(after.score)
-                ));
+            // what was done to it, a line each in the order done: a phony's
+            // taking back (the total as before it), a challenge's bonus (the
+            // rack after the move, and the total with it), or a note
+            let after_rack = &replay.state.players[mover].rack;
+            let after_rack = rack_text(self.game_config, turn.given, after_rack, after_rack);
+            let left = rack_text(self.game_config, turn.given, &left, &left);
+            let taken_back = turn.after.len() - turn.since_withdrawn().len();
+            let mut total = before + scored;
+            for (k, after) in turn.after.iter().enumerate() {
+                match after {
+                    After::Withdraw => {
+                        total -= scored;
+                        text.push_str(&format!(
+                            ">{}: {} -- -{} {}\n",
+                            nicknames[mover], rack, scored, total
+                        ));
+                    }
+                    After::Bonus(points) => {
+                        total += points;
+                        let rack = if k < taken_back { &left } else { &after_rack };
+                        text.push_str(&format!(
+                            ">{}: {} (challenge) {:+} {}\n",
+                            nicknames[mover], rack, points, total
+                        ));
+                    }
+                    After::Note(note) => text.push_str(&format!("#note {note}\n")),
+                    _ => {}
+                }
             }
             if final_scores.is_some() {
                 break;
@@ -2645,8 +2709,9 @@ fn solve_endgame(
 // player had no tiles at the end, so the other's rack counts to them; the rack
 // its player showed at the end; a player's rack in a game not over (#rack1,
 // #rack2), or the side to move's (#incomplete); once the game is over, the
-// points its player lost for time; the lexicon the game was played with; or a
-// player's nickname and full name (#player1, #player2)
+// points its player lost for time; the lexicon the game was played with; a
+// player's nickname and full name (#player1, #player2); or a note on the line
+// before it
 enum GcgKind {
     Play(String),
     Withdraw,
@@ -2658,6 +2723,7 @@ enum GcgKind {
     Time(i32),
     Lexicon(String),
     Player(String, String),
+    Note(String),
 }
 
 // the start of gcg save's line for a misscore, before the board's score: GCG
@@ -2701,19 +2767,24 @@ fn gcg_decode(bytes: &[u8]) -> error::Returns<String> {
 // back, challenge bonuses, the racks its end counts, time penalties, the racks
 // of a game not over (#rack1 and #rack2, for the players #player1 and #player2
 // give, and #incomplete, for the side to move), the players' nicknames and full
-// names, a move's score as the board makes it (the note after a misscore), and
-// the lexicon, skipping every other # line
+// names, a move's score as the board makes it (the note after a misscore), the
+// lexicon, and every other note (with the lines after it that are neither a
+// pragma nor a move, as more of it), skipping every other # line
 fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
     let mut moves = Vec::new();
     let mut players = Vec::<String>::new();
     let mut nicknames = [None, None];
+    let mut note_open = false;
     for (line_number, line) in (1..).zip(text.lines()) {
         let fail = |what: &str| format!("line {line_number}: {what}: {line:?}");
         if line.starts_with('#') {
+            note_open = false;
             let pragma = line.trim_end();
-            // a misscore note: the board's score for the move before
-            if let Some(correct) = pragma.strip_prefix(GCG_CORRECT) {
-                let correct = correct.parse().map_err(|_| fail("no score"))?;
+            // a misscore note: the board's score for the move before (without a
+            // number, it is an ordinary note)
+            if let Some(correct) = pragma.strip_prefix(GCG_CORRECT)
+                && let Ok(correct) = correct.parse()
+            {
                 let played = moves
                     .iter_mut()
                     .rev()
@@ -2776,8 +2847,15 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
                         _ => return Err(fail("not a rack this reads").into()),
                     }
                 }
-                None => continue,
+                // any other note, its text
+                None => match pragma.strip_prefix("#note") {
+                    Some(text) if text.is_empty() || text.starts_with(char::is_whitespace) => {
+                        (0, "", GcgKind::Note(text.trim_start().to_string()))
+                    }
+                    _ => continue,
+                },
             };
+            note_open = matches!(kind, GcgKind::Note(_));
             moves.push(GcgMove {
                 line_number,
                 seat,
@@ -2790,8 +2868,26 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
             continue;
         }
         let Some(rest) = line.strip_prefix('>') else {
+            // a line that is neither a pragma nor a move, after a note: more of
+            // the note
+            let more = line.trim();
+            if let (
+                true,
+                Some(GcgMove {
+                    kind: GcgKind::Note(note),
+                    ..
+                }),
+            ) = (note_open, moves.last_mut())
+                && !more.is_empty()
+            {
+                if !note.is_empty() {
+                    note.push(' ');
+                }
+                note.push_str(more);
+            }
             continue;
         };
+        note_open = false;
         let (player, rest) = rest.split_once(':').ok_or_else(|| fail("no colon"))?;
         let seat = match players.iter().position(|p| p == player) {
             Some(seat) => seat,
@@ -4082,6 +4178,79 @@ mod tests {
 
     #[test]
     #[inline]
+    fn notes_on_a_move_go_out_as_gcg_in_the_order_done_and_back() {
+        let mut first = session();
+        for line in &GAME[..3] {
+            run(&mut first, line).unwrap();
+        }
+        // after the move, after a bonus, after a misscore
+        for line in [
+            "note a first look",
+            "bonus 5",
+            "note after   the bonus",
+            "adjust 1",
+            "note scored as 5",
+        ] {
+            run(&mut first, line).unwrap();
+        }
+        // a note that gcg load would read back as the shell's own, a move's
+        // correct score, is refused
+        assert!(run(&mut first, "note the correct score is 4").is_err());
+        run(&mut first, "note the correct score is not 4").unwrap();
+        // the correct-score note right after the move's line, then each thing
+        // done, in order
+        let text = first.gcg_text().unwrap();
+        let lines =
+            ">p1: AETAETE 8G AT +5 5\n#note the correct score is 4\n#note a first look\n>p1: ";
+        assert!(text.contains(lines), "{text}");
+        let lines = concat!(
+            " (challenge) +5 10\n#note after the bonus\n#note scored as 5\n",
+            "#note the correct score is not 4\n"
+        );
+        assert!(text.contains(lines), "{text}");
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(second.gcg_text().unwrap(), text);
+        // undo takes the last note back
+        run(&mut first, "undo").unwrap();
+        assert!(!first.gcg_text().unwrap().contains("is not 4"), "{text}");
+        // a bonus, then the move taken back: the challenge's line first, with
+        // the tiles the move left
+        let mut third = session();
+        for line in GAME[..3].iter().chain(&["bonus 5", "withdraw"]) {
+            run(&mut third, line).unwrap();
+        }
+        let text = third.gcg_text().unwrap();
+        let lines = ">p1: AETEE (challenge) +5 9\n>p1: AETAETE -- -4 5\n";
+        assert!(text.contains(lines), "{text}");
+        let mut fourth = session();
+        fourth.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(fourth.gcg_text().unwrap(), text);
+        // from other programs: a note before the first move, printed and not
+        // kept; a note of three lines; an empty note; and a line after a
+        // pragma, which belongs to no note
+        let text = concat!(
+            "#player1 p1 player 1\n",
+            "#player2 p2 player 2\n",
+            "#note before any move\n",
+            ">p1: AETAETE 8G AT +4 4\n",
+            "#note on AT,\n",
+            "said over\n",
+            "\n",
+            "  three lines\n",
+            "#note\n",
+            "#description not a note\n",
+            "nor this\n",
+        );
+        let mut fifth = session();
+        fifth.load_moves(&gcg_moves(text).unwrap()).unwrap();
+        let turns = &fifth.game.as_ref().unwrap().turns;
+        assert_eq!(turns.len(), 1);
+        assert!(turns[0].after == [After::Note("on AT, said over three lines".into())]);
+    }
+
+    #[test]
+    #[inline]
     fn players_nicknamed_go_out_as_gcg_and_come_back() {
         let mut first = session();
         run(&mut first, "nickname 1 ann Ann Example").unwrap();
@@ -4312,26 +4481,16 @@ mod tests {
         assert_eq!(snapshot(&third), snapshot(&session));
         assert_eq!(third.gcg_text().unwrap(), text);
         // a file may give one move more than one challenge line (a server bug
-        // once gave four): they are read as given, the bonuses added up
+        // once gave four): they are read as given, and written back the same
+        // way
         let mut fourth = self::session();
         for line in GAME[..3].iter().chain(&["bonus 5"; 4]) {
             run(&mut fourth, line).unwrap();
         }
         let text = fourth.gcg_text().unwrap();
-        let line = text
-            .lines()
-            .find(|l| l.contains(" (challenge) +20 "))
-            .unwrap();
-        let (head, total) = line.rsplit_once(' ').unwrap();
-        let total = total.parse::<i32>().unwrap();
-        let rack = head.strip_suffix(" (challenge) +20").unwrap();
-        let lines = (0..4)
-            .map(|k: i32| format!("{rack} (challenge) +5 {}", total - 15 + 5 * k))
-            .collect::<Vec<_>>()
-            .join("\n");
+        assert_eq!(text.matches(" (challenge) +5 ").count(), 4, "{text}");
         let mut fifth = self::session();
-        let four = text.replace(line, &lines);
-        fifth.load_moves(&gcg_moves(&four).unwrap()).unwrap();
+        fifth.load_moves(&gcg_moves(&text).unwrap()).unwrap();
         assert_eq!(snapshot(&fifth), snapshot(&fourth));
         assert_eq!(fifth.gcg_text().unwrap(), text);
     }
