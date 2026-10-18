@@ -6,61 +6,8 @@ use wolges::{
     game_state, klv, kwg, movegen, notation, play_scorer,
 };
 
+mod endgame_watch;
 mod game_args;
-
-use std::alloc::GlobalAlloc;
-
-// every byte the program holds, counted as it is taken and given back, for
-// --max-memory
-struct Counting;
-
-static HELD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-unsafe impl GlobalAlloc for Counting {
-    #[inline]
-    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        let p = unsafe { std::alloc::System.alloc(layout) };
-        if !p.is_null() {
-            HELD.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
-        }
-        p
-    }
-
-    #[inline]
-    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
-        let p = unsafe { std::alloc::System.alloc_zeroed(layout) };
-        if !p.is_null() {
-            HELD.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
-        }
-        p
-    }
-
-    #[inline]
-    unsafe fn dealloc(&self, p: *mut u8, layout: std::alloc::Layout) {
-        unsafe { std::alloc::System.dealloc(p, layout) };
-        HELD.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
-    }
-
-    // both buffers may be held while one is copied to the other
-    #[inline]
-    unsafe fn realloc(&self, p: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
-        HELD.fetch_add(new_size, std::sync::atomic::Ordering::Relaxed);
-        let q = unsafe { std::alloc::System.realloc(p, layout, new_size) };
-        HELD.fetch_sub(
-            if q.is_null() { new_size } else { layout.size() },
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        q
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: Counting = Counting;
-
-#[inline(always)]
-fn held_bytes() -> usize {
-    HELD.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 // this is reusing most of main_json, but main_json is the most current code.
 
@@ -387,35 +334,6 @@ struct Solving {
     quiet: bool,
 }
 
-// how many nodes a printing listener hears between looks at its clock
-const CLOCK_CADENCE: u64 = 1024;
-
-// a listener that prints a solve's progress with print: each finished depth,
-// and the counts every ten seconds, with the time since it began on the clock
-// it keeps, which it reads once every CLOCK_CADENCE nodes
-#[inline(always)]
-fn ticking(
-    mut print: impl FnMut(&endgame::Progress, std::time::Duration) -> error::Returns<()> + 'static,
-) -> impl FnMut(&endgame::Progress) -> error::Returns<()> + 'static {
-    let t0 = std::time::Instant::now();
-    let mut nodes = 0u64;
-    let mut tick_periods = 0u64;
-    move |progress: &endgame::Progress| {
-        if progress.value.is_none() {
-            nodes += 1;
-            if !nodes.is_multiple_of(CLOCK_CADENCE) {
-                return Ok(());
-            }
-            let periods = t0.elapsed().as_millis() as u64 / 10000;
-            if periods == tick_periods {
-                return Ok(());
-            }
-            tick_periods = periods;
-        }
-        print(progress, t0.elapsed())
-    }
-}
-
 #[inline(always)]
 fn run_batch<N: kwg::Node>(
     game_config: game_config::GameConfig,
@@ -497,7 +415,7 @@ fn run_batch<N: kwg::Node>(
         egs.init(&board_tiles, [&rack0, &rack1]);
         // the progress goes to stderr, so stdout keeps one line a position
         if !solving.quiet {
-            egs.report_progress(ticking(move |progress, elapsed| {
+            egs.report_progress(endgame_watch::ticking(move |progress, elapsed| {
                 writeln!(
                     std::io::stderr(),
                     "{line_index}: {}",
@@ -561,7 +479,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "GB",
-        default_value_t = 60.0,
+        default_value_t = endgame_watch::DEFAULT_MAX_MEMORY_GB,
         help = "stop each solve once the program uses GB gigabytes (of 10^9 bytes), its word \
                 graph and tables included (0: never), answering the same way"
     )]
@@ -602,16 +520,7 @@ fn main() -> error::Returns<()> {
                 .transpose()
                 .map_err(|e| error::new(format!("--time-limit: {e}")))?,
             states: cli.max_states,
-            memory: if cli.max_memory == 0.0 {
-                None
-            } else if cli.max_memory.is_finite() && cli.max_memory > 0.0 {
-                Some(endgame::MemoryLimit {
-                    bytes: (cli.max_memory * 1e9).round() as usize,
-                    held: held_bytes,
-                })
-            } else {
-                wolges::return_error!("--max-memory is gigabytes, 0 or more".to_string());
-            },
+            memory: endgame_watch::memory_limit(cli.max_memory)?,
         },
         quiet: cli.quiet,
     };
@@ -1607,7 +1516,7 @@ fn solve_position<N: kwg::Node>(
         &arm_tables,
     )?;
     if !solving.quiet {
-        egs.report_progress(ticking(|progress, elapsed| {
+        egs.report_progress(endgame_watch::ticking(|progress, elapsed| {
             writeln!(std::io::stdout(), "{}", progress.after(elapsed))?;
             Ok(())
         }));

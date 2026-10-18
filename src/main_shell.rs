@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2026 Andy Kurnia.
 
 use wolges::error;
+mod endgame_watch;
 mod rlhelper;
 mod shell_session;
 
@@ -16,11 +17,20 @@ use std::io::Write;
 struct Cli {
     #[arg(long, help = "print no progress")]
     quiet: bool,
+    #[arg(
+        long,
+        value_name = "GB",
+        default_value_t = endgame_watch::DEFAULT_MAX_MEMORY_GB,
+        help = "stop an endgame solve once the program uses GB gigabytes (10^9 bytes each; 0: \
+                never)"
+    )]
+    max_memory: f64,
 }
 
 fn main() -> error::Returns<()> {
     let cli: Cli = clap::Parser::parse();
-    let mut session = shell_session::Session::new(cli.quiet)?;
+    let mut session =
+        shell_session::Session::new(cli.quiet, endgame_watch::memory_limit(cli.max_memory)?)?;
     let mut rl = rlhelper::new_rl_editor()?;
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     loop {
