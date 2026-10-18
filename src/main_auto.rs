@@ -15,6 +15,7 @@ type HarvestWriter = Arc<Mutex<BufWriter<File>>>;
 type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
 
 #[derive(clap::Parser)]
+#[command(version = wolges::VERSION)]
 struct Cli {
     #[arg(long, help = "the word graph is a kbwg")]
     kbwg: bool,

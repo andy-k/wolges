@@ -579,6 +579,7 @@ enum Task {
 #[derive(clap::Parser)]
 #[command(
     about = "build word graphs and leave tables",
+    version = wolges::VERSION,
     arg_required_else_help = true,
     after_help = "input/output files can be \"-\" (not advisable for binary files)"
 )]

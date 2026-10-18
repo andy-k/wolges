@@ -768,6 +768,7 @@ impl Task {
 #[derive(clap::Parser)]
 #[command(
     about = "leave = listing extrapolated accumulated values empirically",
+    version = wolges::VERSION,
     after_help = "input/output files can be \"-\" (not advisable for binary files).
 for autoplay only the kwg can come from \"-\".
 when low disk space, note that in bash:

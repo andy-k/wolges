@@ -28,6 +28,7 @@ struct Question {
 #[derive(clap::Parser)]
 #[command(
     about = "generate the built-in question's moves and print them, then as json",
+    version = wolges::VERSION,
     mut_arg("preset", |preset| preset.default_value("super-english"))
 )]
 struct Cli {
