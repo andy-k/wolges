@@ -7,18 +7,20 @@ mod shell_session;
 use std::io::BufRead;
 use std::io::Write;
 
-// the shell takes no arguments: --help says what it takes, --version which
-// commit it was built from
+// --help says what the shell takes, --version which commit it was built from
 #[derive(clap::Parser)]
 #[command(
     about = "an interactive shell that keeps a game its commands build (help lists them)",
     version = wolges::VERSION
 )]
-struct Cli {}
+struct Cli {
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
+}
 
 fn main() -> error::Returns<()> {
-    let _: Cli = clap::Parser::parse();
-    let mut session = shell_session::Session::new()?;
+    let cli: Cli = clap::Parser::parse();
+    let mut session = shell_session::Session::new(cli.quiet)?;
     let mut rl = rlhelper::new_rl_editor()?;
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     loop {
