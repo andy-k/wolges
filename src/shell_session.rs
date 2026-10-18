@@ -1901,17 +1901,27 @@ impl Session {
         self.run_one(line, &words)
     }
 
-    // make a new game of a GCG file's moves, from a fresh seed: each seat given
-    // whose rack shows an _ on any line, or that has no line; then each move's
-    // rack (its known tiles) and play (as phony: a word not in the lexicon
-    // stands until challenged), each phony taken back (withdraw), and each
-    // challenge's bonus (bonus, with rack for the rack its line gives), run and
-    // logged as those commands and checked against the score and total the file
-    // gives; then its end (end, and the racks it counted, checked the same way)
-    // and what time cost (time, whose total is the final score), or its racks
-    // as they stand (#incomplete for the side to move). It stops at the first
-    // that fails, keeping the game made so far.
+    // make a new game of a GCG file's moves, from a fresh seed: its lines are
+    // run and logged as the commands they mean, a play as phony (a word not in
+    // the lexicon stands until challenged), each checked against the score and
+    // total the file gives; a seat is given if its rack shows an _ on any line
+    // or it has no line, and not given otherwise; then the racks it gives as
+    // they stand. It stops at the first line that fails, keeping the game made
+    // so far
     fn load_moves(&mut self, moves: &[GcgMove]) -> error::Returns<()> {
+        // a lexicon other than the session's is noted; its words are read as
+        // phonies
+        for gcg_move in moves {
+            if let GcgKind::Lexicon(lexicon) = &gcg_move.kind
+                && self.lexicon_name() != Some(lexicon.as_str())
+            {
+                writeln!(
+                    std::io::stdout(),
+                    "the file's lexicon is {lexicon}, the session's {}",
+                    self.lexicon_name().unwrap_or("none")
+                )?;
+            }
+        }
         let seed = GameRng::try_from_rng(&mut rand::rngs::SysRng)?.next_u64();
         self.printing = false;
         let loaded = (|| -> error::Returns<()> {
@@ -1974,6 +1984,7 @@ impl Session {
                         standing.push(gcg_move);
                         continue;
                     }
+                    GcgKind::Lexicon(_) => continue,
                     // a time penalty belongs to its own player, the game over
                     // by then (end it, if the shell did not see it so: an end
                     // that counted no rack has no line)
@@ -2100,23 +2111,26 @@ impl Session {
         Ok(())
     }
 
-    // the moves shown as GCG: a header (the players p1 and p2), then a line a
-    // move (a tile played through as '.', a blank in lowercase, an exchange as
-    // - and its tiles, or - and how many for tiles no one saw, and a pass as
-    // -), each followed by its taking back as a phony (the rack, --, and minus
-    // the score, the total as before) and a challenge's bonus (the rack after
-    // the move, then (challenge) and the points); if the game is over, the
-    // racks it counted (none after a loss on a challenge; else the other's to
-    // the player with none, or each rack left against its player) and what time
-    // cost, else each rack as it is (#rack1, #rack2). GCG cannot say that a
-    // seat showing no _ is given, that an end counted no rack, or that a
-    // challenge lost the game.
+    // the moves shown as GCG: a header (the players p1 and p2, and the
+    // lexicon), then a line a move (a tile played through as '.', a blank in
+    // lowercase, an exchange as - and its tiles, or - and how many for tiles no
+    // one saw, and a pass as -), each followed by its taking back as a phony
+    // (the rack, --, and minus the score, the total as before) and a
+    // challenge's bonus (the rack after the move, then (challenge) and the
+    // points); if the game is over, the racks it counted (none after a loss on
+    // a challenge; else the other's to the player with none, or each rack left
+    // against its player) and what time cost, else each rack as it is (#rack1,
+    // #rack2). GCG cannot say that a seat showing no _ is given, that an end
+    // counted no rack, or that a challenge lost the game.
     fn gcg_text(&self) -> error::Returns<String> {
         let game = self.game.as_ref().ok_or("no game: new first")?;
         let alphabet = self.game_config.alphabet();
         let mut text = String::from("#character-encoding UTF-8\n");
         for seat in 1..=self.seats.len() {
             text.push_str(&format!("#player{seat} p{seat} player {seat}\n"));
+        }
+        if let Some(lexicon) = self.lexicon_name() {
+            text.push_str(&format!("#lexicon {lexicon}\n"));
         }
         let (mut replay, mut rng) = self.dealt(game)?;
         let mut final_scores = None;
@@ -2305,6 +2319,12 @@ impl Session {
         Ok(text)
     }
 
+    // the lexicon's name, from its file's name: CSW24 for CSW24.kwg
+    fn lexicon_name(&self) -> Option<&str> {
+        let (path, _) = self.kwg.as_ref()?;
+        std::path::Path::new(path).file_stem()?.to_str()
+    }
+
     // a move written as play takes it: a coordinate and a word (8D across, D8
     // down; a tile played through in parentheses), exch and its tiles, or pass
     fn play_text(&self, play: &movegen::Play) -> error::Returns<String> {
@@ -2369,8 +2389,8 @@ fn solve_endgame(
 // taken back as a phony; points to its player after a challenge; that its
 // player had no tiles at the end, so the other's rack counts to them; the rack
 // its player showed at the end; a player's rack in a game not over (#rack1,
-// #rack2), or the side to move's (#incomplete); or, once the game is over, the
-// points its player lost for time
+// #rack2), or the side to move's (#incomplete); once the game is over, the
+// points its player lost for time; or the lexicon the game was played with
 enum GcgKind {
     Play(String),
     Withdraw,
@@ -2380,6 +2400,7 @@ enum GcgKind {
     Rack,
     Incomplete,
     Time(i32),
+    Lexicon(String),
 }
 
 // a line of a GCG file: its number, its player (by the order the players first
@@ -2415,10 +2436,10 @@ fn gcg_decode(bytes: &[u8]) -> error::Returns<String> {
 }
 
 // read a GCG file's moves (a rack left empty is one no one saw), phonies taken
-// back, challenge bonuses, the racks its end counts, time penalties, and the
-// racks of a game not over (#rack1 and #rack2, for the players #player1 and
-// #player2 give, and #incomplete, for the side to move), skipping every other #
-// line
+// back, challenge bonuses, the racks its end counts, time penalties, the racks
+// of a game not over (#rack1 and #rack2, for the players #player1 and #player2
+// give, and #incomplete, for the side to move), and the lexicon, skipping every
+// other # line
 fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
     let mut moves = Vec::new();
     let mut players = Vec::<String>::new();
@@ -2437,6 +2458,17 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
                         seat: 0,
                         rack: tiles.to_string(),
                         kind: GcgKind::Incomplete,
+                        score: 0,
+                        total: 0,
+                    });
+                    continue;
+                }
+                ["#lexicon", name, ..] => {
+                    moves.push(GcgMove {
+                        line_number,
+                        seat: 0,
+                        rack: String::new(),
+                        kind: GcgKind::Lexicon(name.to_string()),
                         score: 0,
                         total: 0,
                     });
@@ -3604,10 +3636,14 @@ mod tests {
         assert!(text.contains(" H8 ..A +"), "{text}");
         assert!(text.contains(">p2: AAA -AA +0 "), "{text}");
         assert!(text.contains(" - +0 "), "{text}");
-        // the game is not over: each rack as it is
+        // the game is not over: each rack as it is; and the lexicon, by its
+        // file's name
         assert_eq!(text.matches("\n#rack").count(), 2, "{text}");
+        assert!(text.contains("\n#lexicon tiny\n"), "{text}");
         let moves = gcg_moves(&text).unwrap();
-        assert_eq!(moves.len(), 5 + 2);
+        assert_eq!(moves.len(), 5 + 2 + 1);
+        let lexicon = |m: &GcgMove| matches!(&m.kind, GcgKind::Lexicon(name) if name == "tiny");
+        assert!(moves.iter().any(lexicon));
         let mut second = session();
         second.load_moves(&moves).unwrap();
         assert_eq!(snapshot(&second), snapshot(&first));
