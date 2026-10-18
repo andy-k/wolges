@@ -27,24 +27,32 @@ const DEFAULT_ENDGAME_SECONDS: f64 = 10.0;
 // a move of the game, with: the rack its mover was given before it, if any (for
 // a seat given, what it was known to hold plus what the move needed); whether
 // the mover's seat was given, so that they drew nothing anyone saw; whether its
-// exchange was of tiles no one saw (exch N); whether it was a phony taken back
-// (the turn then a pass, with the board and the rack as before it); the points
-// its challenges that stood gave its mover, if any; the player who lost the
-// game on a challenge of it; whether the game was declared over after it (end);
-// the racks set after it, by seat (none for a player with no tiles); and, for
-// the move that ended the game, the points each player lost for time
+// exchange was of tiles no one saw (exch N); and what was done to it afterward,
+// in order
 #[derive(Clone, PartialEq)]
 struct Turn {
     rack: Option<Vec<u8>>,
     given: bool,
     play: movegen::Play,
     hidden: bool,
-    withdrawn: bool,
-    bonus: Option<i32>,
-    loser: Option<usize>,
-    ended: bool,
-    shown: Vec<(usize, Vec<u8>)>,
-    time: [i32; 2],
+    after: Vec<After>,
+}
+
+// what can be done to a move after it is played: taking it back as a phony (the
+// turn then becomes a pass, with the board and the rack as before it, and what
+// was done to it before, an end declared, racks set, and time, is undone with
+// it); points to its player (a challenge's bonus); the game lost by a player on
+// a challenge of it; the game declared over (end); a player's rack set (none
+// for a player with no tiles); and, on the move that ended the game, points a
+// player lost for time
+#[derive(Clone, PartialEq)]
+enum After {
+    Withdraw,
+    Bonus(i32),
+    Lose(usize),
+    End,
+    Rack(usize, Vec<u8>),
+    Time(usize, i32),
 }
 
 // what a challenge of a move costs: under double, the challenger's turn if the
@@ -61,7 +69,7 @@ enum ChallengeRule {
 impl Turn {
     // what the turn did to the game: a phony taken back is a pass
     fn played(&self) -> std::borrow::Cow<'_, movegen::Play> {
-        if self.withdrawn {
+        if self.withdrawn() {
             std::borrow::Cow::Owned(movegen::Play::Exchange {
                 tiles: [][..].into(),
             })
@@ -69,11 +77,85 @@ impl Turn {
             std::borrow::Cow::Borrowed(&self.play)
         }
     }
+
+    fn withdrawn(&self) -> bool {
+        self.after.contains(&After::Withdraw)
+    }
+
+    // the points its challenges that stood gave its player, if any did
+    fn bonus(&self) -> Option<i32> {
+        let bonus = |after: &After| match after {
+            After::Bonus(points) => Some(*points),
+            _ => None,
+        };
+        self.after
+            .iter()
+            .filter_map(bonus)
+            .reduce(|sum, points| sum + points)
+    }
+
+    // the player who lost the game on a challenge of it
+    fn loser(&self) -> Option<usize> {
+        self.after.iter().find_map(|after| match after {
+            After::Lose(seat) => Some(*seat),
+            _ => None,
+        })
+    }
+
+    // what was done to it since it was taken back, if it was: all of it, if not
+    fn since_withdrawn(&self) -> &[After] {
+        let from = self
+            .after
+            .iter()
+            .rposition(|after| *after == After::Withdraw);
+        &self.after[from.map_or(0, |at| at + 1)..]
+    }
+
+    // whether the game was declared over after it
+    fn ended(&self) -> bool {
+        self.since_withdrawn().contains(&After::End)
+    }
+
+    // the racks set after it, each seat's last
+    fn shown(&self) -> Vec<(usize, Vec<u8>)> {
+        let racks = self
+            .since_withdrawn()
+            .iter()
+            .filter_map(|after| match after {
+                After::Rack(seat, tiles) => Some((*seat, tiles.clone())),
+                _ => None,
+            });
+        last_each(racks.collect())
+    }
+
+    // what time cost each player
+    fn time(&self) -> [i32; 2] {
+        let mut time = [0; 2];
+        for after in self.since_withdrawn() {
+            if let After::Time(seat, points) = after {
+                time[*seat] += points;
+            }
+        }
+        time
+    }
 }
 
-// a game: the bag dealt from its seed, the racks set before its first move, its
-// moves, how many of them the board shows, a rack given to the side to move who
-// has not played yet, and the lines what-ifs cut away
+// of racks set, in the order set, each seat's last
+fn last_each(racks: Vec<(usize, Vec<u8>)>) -> Vec<(usize, Vec<u8>)> {
+    let mut last = Vec::<(usize, Vec<u8>)>::new();
+    for (seat, tiles) in racks {
+        match last.iter_mut().find(|(s, _)| *s == seat) {
+            Some((_, held)) => *held = tiles,
+            None => last.push((seat, tiles)),
+        }
+    }
+    last
+}
+
+// a game: the bag dealt from its seed, the racks set before its first move (in
+// the order set, each seat's last one counting), its moves, how many of them
+// the board shows, a rack given to the side to move who has not played yet, and
+// the lines what-ifs cut away
 #[derive(Clone)]
 struct Game {
     seed: u64,
@@ -251,6 +333,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "the side to move plays the best move of a sim of MS ms, or of a solved endgame once the bag is empty (logged as play)",
     ),
     ("back [N]", "take back N moves, 1 if not given"),
+    ("goto N", "show the game after move N (0 for its start)"),
+    (
+        "undo",
+        "undo the last thing done to the move shown (the moves after it are kept as a line)",
+    ),
     ("forward [N]", "replay N moves taken back, 1 if not given"),
     (
         "lines",
@@ -343,10 +430,11 @@ impl Session {
 
     // run one command, its words split from line; after a typed one (not read
     // from a file by source, whose plays are all logged), each bot whose turn
-    // it is moves, if the game is at its last move
+    // it is moves, if the game is at its last move, but not after an undo, or a
+    // bot would play again what was just taken back
     pub fn run(&mut self, line: &str, words: &[String], typed: bool) -> error::Returns<()> {
         self.run_one(line, words)?;
-        if typed {
+        if typed && words[0] != "undo" {
             self.bots_move()?;
         }
         Ok(())
@@ -530,7 +618,7 @@ impl Session {
                     game.cut();
                     game.rack = None;
                     let turn = game.turns.last_mut().ok_or("no move yet")?;
-                    turn.ended = true;
+                    turn.after.push(After::End);
                     Ok(())
                 })?;
                 self.show()?;
@@ -546,13 +634,13 @@ impl Session {
                     // a move can be challenged only once: not one the game was
                     // lost on, nor one taken back, nor one that stood a
                     // challenge
-                    if turn.loser.is_some() {
+                    if turn.loser().is_some() {
                         return Err("the game was lost on a challenge".into());
                     }
-                    if turn.withdrawn {
+                    if turn.withdrawn() {
                         return Err("the last move was taken back already".into());
                     }
-                    if turn.bonus.is_some() {
+                    if turn.bonus().is_some() {
                         return Err("the last move stood a challenge already".into());
                     }
                     if !matches!(turn.play, movegen::Play::Place { .. }) {
@@ -633,11 +721,11 @@ impl Session {
                     // keeps no rack (it counts none)
                     let pending = game.rack.take();
                     let turn = &mut game.turns[last];
-                    if turn.loser.is_some() {
+                    if turn.loser().is_some() {
                         return Err("the game was lost on a challenge".into());
                     }
                     if withdraw {
-                        if turn.withdrawn {
+                        if turn.withdrawn() {
                             return Err("the last move was taken back already".into());
                         }
                         if !matches!(turn.play, movegen::Play::Place { .. }) {
@@ -646,19 +734,17 @@ impl Session {
                         // taken back, the move ended nothing (the game goes on,
                         // and its time penalties go with it), and the racks set
                         // after it belong to a board that is gone
-                        turn.withdrawn = true;
-                        turn.ended = false;
-                        turn.shown.clear();
-                        turn.time = [0; 2];
+                        turn.after.push(After::Withdraw);
                     }
                     // a bonus given by hand adds to the move's bonus: a file
                     // may give one move more than one
                     if let Some(points) = bonus {
-                        let sum = turn.bonus.unwrap_or(0).checked_add(points);
-                        turn.bonus = Some(sum.ok_or("too many points")?);
+                        let sum = turn.bonus().unwrap_or(0).checked_add(points);
+                        sum.ok_or("too many points")?;
+                        turn.after.push(After::Bonus(points));
                     }
-                    if loser.is_some() {
-                        turn.loser = loser;
+                    if let Some(seat) = loser {
+                        turn.after.push(After::Lose(seat));
                     }
                     if lose_turn {
                         game.turns.push(Turn {
@@ -668,12 +754,7 @@ impl Session {
                                 tiles: [][..].into(),
                             },
                             hidden: false,
-                            withdrawn: false,
-                            bonus: None,
-                            loser: None,
-                            ended: false,
-                            shown: Vec::new(),
-                            time: [0; 2],
+                            after: Vec::new(),
                         });
                         game.at += 1;
                     } else if loser.is_none() {
@@ -702,10 +783,10 @@ impl Session {
                     game.cut();
                     game.rack = None;
                     let turn = &mut game.turns[last];
-                    if turn.loser.is_some() {
+                    if turn.loser().is_some() {
                         return Err("the game was lost on a challenge".into());
                     }
-                    turn.loser = Some(n - 1);
+                    turn.after.push(After::Lose(n - 1));
                     Ok(())
                 })?;
                 self.show()?;
@@ -753,8 +834,11 @@ impl Session {
                     let game = game.as_mut().ok_or("no game: new first")?;
                     let last = game.at.checked_sub(1).ok_or("no move before")?;
                     game.cut();
-                    let lost = &mut game.turns[last].time[n - 1];
-                    *lost = lost.checked_add(points).ok_or("too many points")?;
+                    let turn = &mut game.turns[last];
+                    turn.time()[n - 1]
+                        .checked_add(points)
+                        .ok_or("too many points")?;
+                    turn.after.push(After::Time(n - 1, points));
                     Ok(())
                 })?;
                 self.show()?;
@@ -889,6 +973,53 @@ impl Session {
                             .ok_or("not that many moves to replay")?
                     };
                     game.rack = None;
+                    Ok(())
+                })?;
+                self.show()?;
+                line.to_string()
+            }
+            "goto" => {
+                let [n] = args else {
+                    return Err("goto N".into());
+                };
+                let n = n.parse::<usize>()?;
+                // the end of move N, the start of move N + 1
+                self.change(|game| {
+                    let game = game.as_mut().ok_or("no game: new first")?;
+                    if n > game.turns.len() {
+                        return Err(format!("goto 0 to {}", game.turns.len()).into());
+                    }
+                    game.at = n;
+                    game.rack = None;
+                    Ok(())
+                })?;
+                self.show()?;
+                line.to_string()
+            }
+            "undo" => {
+                if !args.is_empty() {
+                    return Err("undo takes nothing more".into());
+                }
+                // undo the last thing done at the move shown: a rack given to
+                // the side to move and not yet played from; else the last thing
+                // done to the move after it was played; else the move itself,
+                // its turn gone and the rack it was given given again; else, at
+                // the start, the last rack set there. The moves after the one
+                // shown are kept as a line
+                self.change(|game| {
+                    let game = game.as_mut().ok_or("no game: new first")?;
+                    game.cut();
+                    if game.rack.take().is_some() {
+                        return Ok(());
+                    }
+                    let Some(last) = game.at.checked_sub(1) else {
+                        return game.start.pop().map(drop).ok_or("nothing to undo".into());
+                    };
+                    if game.turns[last].after.pop().is_none() {
+                        let turn = game.turns.pop().ok_or("nothing to undo")?;
+                        game.at = last;
+                        game.rack = turn.rack;
+                    }
                     Ok(())
                 })?;
                 self.show()?;
@@ -1111,12 +1242,7 @@ impl Session {
                 given,
                 play,
                 hidden,
-                withdrawn: false,
-                bonus: None,
-                loser: None,
-                ended: false,
-                shown: Vec::new(),
-                time: [0; 2],
+                after: Vec::new(),
             });
             game.at += 1;
             Ok(())
@@ -1141,13 +1267,9 @@ impl Session {
                 game.rack = Some(tiles);
                 return Ok(());
             }
-            let set = match game.turns.last_mut() {
-                Some(turn) => &mut turn.shown,
-                None => &mut game.start,
-            };
-            match set.iter_mut().find(|(s, _)| *s == seat) {
-                Some((_, held)) => *held = tiles,
-                None => set.push((seat, tiles)),
+            match game.turns.last_mut() {
+                Some(turn) => turn.after.push(After::Rack(seat, tiles)),
+                None => game.start.push((seat, tiles)),
             }
             Ok(())
         })
@@ -1224,7 +1346,7 @@ impl Session {
             given,
             typed: Default::default(),
         };
-        replay.type_racks(&game.start)?;
+        replay.type_racks(&last_each(game.start.clone()))?;
         Ok((replay, rng))
     }
 
@@ -1249,7 +1371,7 @@ impl Session {
             board_before_last = Some((board_tiles, turn.played().into_owned()));
             replay.play_turn(self.game_config, &mut rng, turn)?;
             final_scores = replay.end_of_turn(self.game_config, turn, held)?;
-            loser = turn.loser;
+            loser = turn.loser();
             if final_scores.is_none() {
                 replay.state.next_turn();
             }
@@ -1443,8 +1565,8 @@ impl Session {
                             klv: self.klv,
                         })
                         .to_string(),
-                } + if turn.withdrawn { ", taken back" } else { "" };
-                let text = match turn.bonus {
+                } + if turn.withdrawn() { ", taken back" } else { "" };
+                let text = match turn.bonus() {
                     Some(bonus) => format!("{text}, {bonus:+} after a challenge"),
                     None => text,
                 };
@@ -1468,7 +1590,7 @@ impl Session {
             let time = game
                 .at
                 .checked_sub(1)
-                .map_or([0; 2], |at| game.turns[at].time);
+                .map_or([0; 2], |at| game.turns[at].time());
             writeln!(
                 out,
                 "game over, {}{}{}",
@@ -2230,7 +2352,7 @@ impl Session {
                 score,
                 before + score
             ));
-            if turn.withdrawn {
+            if turn.withdrawn() {
                 text.push_str(&format!(
                     ">{}: {} -- -{} {}\n",
                     nicknames[mover], rack, score, before
@@ -2239,7 +2361,7 @@ impl Session {
             replay.play_turn(self.game_config, &mut rng, turn)?;
             final_scores = replay.end_of_turn(self.game_config, turn, held)?;
             // a challenge's bonus: the rack after the move, then the points
-            if let Some(bonus) = turn.bonus {
+            if let Some(bonus) = turn.bonus() {
                 let after = &replay.state.players[mover];
                 text.push_str(&format!(
                     ">{}: {} (challenge) {:+} {}\n",
@@ -2255,7 +2377,7 @@ impl Session {
             replay.state.next_turn();
         }
         let board = &replay.state;
-        let lost = game.at > 0 && game.turns[game.at - 1].loser.is_some();
+        let lost = game.at > 0 && game.turns[game.at - 1].loser().is_some();
         match final_scores {
             // a game lost on a challenge counts no rack
             Some(_) if lost => {}
@@ -2271,13 +2393,14 @@ impl Session {
             }
             Some(final_scores) => {
                 let last = &game.turns[game.at - 1];
-                let set_none = |seat| last.shown.iter().any(|(s, t)| *s == seat && t.is_empty());
+                let shown = last.shown();
+                let set_none = |seat| shown.iter().any(|(s, t)| *s == seat && t.is_empty());
                 let none = (0..board.players.len()).find(|&seat| {
                     board.players[seat].rack.is_empty() && (!replay.given[seat] || set_none(seat))
                 });
                 // the totals before what time cost, which the time lines give
-                let total =
-                    |seat: usize| equity::descale_score(final_scores[seat]) + last.time[seat];
+                let time = last.time();
+                let total = |seat: usize| equity::descale_score(final_scores[seat]) + time[seat];
                 for (seat, player) in board.players.iter().enumerate() {
                     let other = &board.players[1 - seat].rack;
                     if none == Some(seat) {
@@ -2305,7 +2428,7 @@ impl Session {
         // then what time cost each player: their last rack, (time), the points,
         // and their final score
         if let (Some(at), Some(final_scores)) = (game.at.checked_sub(1), &self.final_scores) {
-            for (seat, &lost) in game.turns[at].time.iter().enumerate() {
+            for (seat, &lost) in game.turns[at].time().iter().enumerate() {
                 if lost != 0 {
                     text.push_str(&format!(
                         ">{}: {} (time) -{} {}\n",
@@ -2697,7 +2820,7 @@ impl Replay {
         let mover = state.turn as usize;
         state.players[mover].score = state.players[mover]
             .score
-            .checked_add(equity::scale_score(turn.bonus.unwrap_or(0)))
+            .checked_add(equity::scale_score(turn.bonus().unwrap_or(0)))
             .ok_or("score overflow")?;
         Ok(())
     }
@@ -2732,14 +2855,15 @@ impl Replay {
             let drawn = rack.split_off(leave);
             state.bag.return_tiles(&drawn);
         }
-        self.type_racks(&turn.shown)?;
+        let shown = turn.shown();
+        self.type_racks(&shown)?;
         let state = &self.state;
         let mut final_scores = state.players.iter().map(|p| p.score).collect::<Vec<_>>();
-        if turn.loser.is_none() {
-            if !turn.ended && !out && !state.scoreless_turns_ended(game_config) {
+        if turn.loser().is_none() {
+            if !turn.ended() && !out && !state.scoreless_turns_ended(game_config) {
                 return Ok(None);
             }
-            let set_none = |seat| turn.shown.iter().any(|(s, t)| *s == seat && t.is_empty());
+            let set_none = |seat| shown.iter().any(|(s, t)| *s == seat && t.is_empty());
             let none = (0..state.players.len()).find(|&seat| {
                 state.players[seat].rack.is_empty() && (!self.given[seat] || set_none(seat))
             });
@@ -2765,7 +2889,7 @@ impl Replay {
             }
         }
         // then what time cost each player
-        for (score, &lost) in final_scores.iter_mut().zip(turn.time.iter()) {
+        for (score, &lost) in final_scores.iter_mut().zip(turn.time().iter()) {
             *score = score
                 .checked_sub(equity::scale_score(lost))
                 .ok_or("score overflow")?;
@@ -3984,7 +4108,7 @@ mod tests {
             (&before.0, &before.1, &before.2)
         );
         assert_eq!(after.3, 0, "the phony's player has had their turn");
-        assert!(session.game.as_ref().unwrap().turns[1].withdrawn);
+        assert!(session.game.as_ref().unwrap().turns[1].withdrawn());
         assert!(
             run(&mut session, "challenge").is_err(),
             "nothing new to challenge"
@@ -4071,7 +4195,7 @@ mod tests {
         assert!(session.final_scores.is_some());
         run(&mut session, "challenge").unwrap();
         assert!(session.final_scores.is_none());
-        assert!(!session.game.as_ref().unwrap().turns[0].ended);
+        assert!(!session.game.as_ref().unwrap().turns[0].ended());
     }
 
     #[test]
@@ -4124,7 +4248,7 @@ mod tests {
             run(&mut second, line).unwrap();
         }
         assert_eq!(second.loser, Some(1));
-        assert!(second.game.as_ref().unwrap().turns[1].withdrawn);
+        assert!(second.game.as_ref().unwrap().turns[1].withdrawn());
         let text = second.gcg_text().unwrap();
         assert!(text.ends_with(">p2: EEE -- -4 0\n"), "{text}");
         loads_back(&text, &second);
@@ -4148,6 +4272,91 @@ mod tests {
         run(&mut fourth, "lost 2").unwrap();
         assert_eq!(fourth.loser, Some(1));
         assert_eq!(fourth.final_scores, first.final_scores);
+    }
+
+    #[test]
+    #[inline]
+    fn undo_takes_back_the_last_thing_done_to_the_move_shown() {
+        let at = |s: &Session| s.game.as_ref().map(|game| (game.at, game.turns.len()));
+        let rack_given = |s: &Session| s.game.as_ref().is_some_and(|game| game.rack.is_some());
+        let mut first = session();
+        for line in GAME {
+            run(&mut first, line).unwrap();
+        }
+        // goto N shows the game after move N; goto 0 shows its start
+        run(&mut first, "goto 1").unwrap();
+        assert_eq!(at(&first), Some((1, 3)));
+        assert!(run(&mut first, "goto 4").is_err());
+        run(&mut first, "goto 3").unwrap();
+        // at the end, undo takes back, in turn: the end declared, the bonus,
+        // then TEA (given no rack, so its turn goes), then EA (its rack given
+        // again), then that rack
+        let before = first.state.players[0].score;
+        run(&mut first, "bonus 5").unwrap();
+        run(&mut first, "end").unwrap();
+        assert!(first.final_scores.is_some());
+        run(&mut first, "undo").unwrap();
+        assert!(first.final_scores.is_none());
+        run(&mut first, "undo").unwrap();
+        assert_eq!(first.state.players[0].score, before);
+        assert_eq!(at(&first), Some((3, 3)));
+        run(&mut first, "undo").unwrap();
+        assert_eq!(at(&first), Some((2, 2)));
+        assert!(!rack_given(&first));
+        run(&mut first, "undo").unwrap();
+        assert_eq!(at(&first), Some((1, 1)));
+        assert!(rack_given(&first));
+        run(&mut first, "undo").unwrap();
+        assert!(!rack_given(&first));
+        for _ in 0..2 {
+            run(&mut first, "undo").unwrap();
+        }
+        assert_eq!(at(&first), Some((0, 0)));
+        // at the start, undo takes back the racks set there, then has nothing
+        // left
+        run(&mut first, "rack 2 EEE").unwrap();
+        assert_eq!(first.game.as_ref().unwrap().start.len(), 1);
+        run(&mut first, "undo").unwrap();
+        assert!(first.game.as_ref().unwrap().start.is_empty());
+        assert!(run(&mut first, "undo").is_err());
+        // undoing the taking back of a phony makes it stand again, and brings
+        // back what the taking back undid with it, a rack set after it
+        let mut second = session();
+        for line in &GAME[..3] {
+            run(&mut second, line).unwrap();
+        }
+        for line in ["rack EEE", "phony H8 TEEE", "rack 2 EE", "challenge"] {
+            run(&mut second, line).unwrap();
+        }
+        assert!(second.game.as_ref().unwrap().turns[1].withdrawn());
+        assert_eq!(second.state.players[1].rack, [5, 5, 5]);
+        run(&mut second, "undo").unwrap();
+        assert!(!second.game.as_ref().unwrap().turns[1].withdrawn());
+        assert_eq!(second.state.players[1].rack, [5, 5]);
+        // away from the end, the moves after the one shown are kept as a line
+        let mut third = session();
+        for line in GAME {
+            run(&mut third, line).unwrap();
+        }
+        run(&mut third, "goto 2").unwrap();
+        run(&mut third, "undo").unwrap();
+        assert_eq!(at(&third), Some((1, 1)));
+        run(&mut third, "line 1").unwrap();
+        assert_eq!(at(&third), Some((1, 3)));
+        // a bot to move after an undo waits
+        let mut fourth = session();
+        for line in ["player 2 bot", "new 7", "rack AETAETE", "play 8G AT"] {
+            run(&mut fourth, line).unwrap();
+        }
+        assert_eq!(at(&fourth), Some((2, 2)));
+        run(&mut fourth, "undo").unwrap();
+        assert_eq!(at(&fourth), Some((1, 1)));
+        // the log replays to the same game
+        let mut fifth = session();
+        for line in second.log.clone() {
+            replay(&mut fifth, &line).unwrap();
+        }
+        assert_eq!(snapshot(&fifth), snapshot(&second));
     }
 
     #[test]
