@@ -6,7 +6,17 @@ mod rlhelper;
 use std::io::BufRead;
 use std::io::Write;
 
+// the shell takes no arguments: --help says what it takes, --version which
+// commit it was built from
+#[derive(clap::Parser)]
+#[command(
+    about = "an interactive shell that takes help, exit, and source FILE",
+    version = wolges::VERSION
+)]
+struct Cli {}
+
 fn main() -> error::Returns<()> {
+    let _: Cli = clap::Parser::parse();
     let mut rl = rlhelper::new_rl_editor()?;
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     loop {
