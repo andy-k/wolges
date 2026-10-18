@@ -17,6 +17,9 @@ type GameRng = rand_xoshiro::Xoshiro256PlusPlus;
 // short of their best when it weighs the racks that could have made it
 const INFER_FUZZ: f64 = 3.105;
 
+// how many iterations sim runs when given no count
+const DEFAULT_SIM_ITERATIONS: u64 = 1000;
+
 // a move of the game, with the rack its mover was given before it, if any
 #[derive(Clone)]
 struct Turn {
@@ -32,6 +35,17 @@ struct Game {
     turns: Vec<Turn>,
     at: usize,
     rack: Option<Vec<u8>>,
+}
+
+// a sim of the position shown, run a command at a time: its candidates (the
+// move picker's field and any added) and each candidate's stream in the simmer.
+// Its budget is one no run reaches, so no cap prunes it: a candidate leaves
+// only by sim drop or by losing to the leader beyond any doubt, and sim add
+// takes either back.
+struct Sim {
+    move_generator: movegen::KurniaMoveGenerator,
+    simmer: move_picker::Simmer<'static, kwg::Node22, kwg::Node22, true>,
+    stream_of: Vec<u64>,
 }
 
 // the tables a session plays with stay for its whole life (a file is read once,
@@ -52,6 +66,7 @@ pub struct Session {
     move_generator: movegen::KurniaMoveGenerator,
     infer_generator: movegen::KurniaMoveGenerator,
     play_scorer: play_scorer::PlayScorer,
+    sim: Option<Sim>, // of the position shown; any change to the game ends it
     log: Vec<String>,
     quiet: bool, // no progress printed while a sim runs
 }
@@ -87,6 +102,23 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("back [N]", "take back N moves, 1 if not given"),
     ("forward [N]", "replay N moves taken back, 1 if not given"),
+    (
+        "sim [ITERATIONS]",
+        "sim the position shown this many more iterations, 1000 if not given",
+    ),
+    (
+        "sim add MOVE",
+        "add MOVE (as play takes it) to the sim as a candidate",
+    ),
+    ("sim drop MOVE", "take a candidate out of the sim"),
+    (
+        "sim show [N]",
+        "show the sim's N best candidates, 10 if not given",
+    ),
+    (
+        "sim stop",
+        "end the sim; any change to the game ends it too",
+    ),
     (
         "show",
         "show the board, the racks, the scores, and the moves",
@@ -125,6 +157,7 @@ impl Session {
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             infer_generator: movegen::KurniaMoveGenerator::new(game_config),
             play_scorer: play_scorer::PlayScorer::new(),
+            sim: None,
             log: Vec::new(),
             quiet,
         })
@@ -132,7 +165,8 @@ impl Session {
 
     // run one command, its words split from line. A command that changes the
     // session is logged as line (new with the seed it used, bot as the move it
-    // chose); a command that fails changes nothing
+    // chose), but sim commands are not (they are analysis, which any change to
+    // the game ends); a command that fails changes nothing
     pub fn run(&mut self, line: &str, words: &[String]) -> error::Returns<()> {
         let args = &words[1..];
         let logged = match words[0].as_str() {
@@ -303,9 +337,40 @@ impl Session {
                 }
                 return Ok(());
             }
+            "sim" => {
+                const USAGE: &str =
+                    "sim [ITERATIONS], sim add MOVE, sim drop MOVE, sim show [N], or sim stop";
+                match args.first().map(String::as_str) {
+                    None => self.sim_run(DEFAULT_SIM_ITERATIONS)?,
+                    Some("add") => {
+                        let play = self.read_play(&args[1..])?;
+                        self.sim_add(play)?;
+                    }
+                    Some("drop") => {
+                        let play = self.read_play(&args[1..])?;
+                        self.sim_drop(&play)?;
+                    }
+                    Some("show") => {
+                        let n = match &args[1..] {
+                            [] => 10,
+                            [n] => n.parse::<usize>()?,
+                            _ => return Err(USAGE.into()),
+                        };
+                        self.sim_show(n)?;
+                    }
+                    Some("stop") if args.len() == 1 => self.sim = None,
+                    Some(iterations) if args.len() == 1 => {
+                        let iterations = iterations.parse::<u64>().map_err(|_| USAGE)?;
+                        self.sim_run(iterations)?;
+                    }
+                    _ => return Err(USAGE.into()),
+                }
+                return Ok(());
+            }
             _ => return Err("no such command, help for the commands".into()),
         };
         self.log.push(logged);
+        self.sim = None;
         Ok(())
     }
 
@@ -575,6 +640,10 @@ impl Session {
         }
         let kwg = self.kwg()?;
         let arm_tables = self.arm_tables()?;
+        let leaves = match sim_ms {
+            Some(_) => self.kept_leaves()?,
+            None => Vec::new(),
+        };
         let board_snapshot = &movegen::BoardSnapshot {
             board_tiles: &self.state.board_tiles,
             game_config: self.game_config,
@@ -594,30 +663,6 @@ impl Session {
             )?;
             return Ok(self.move_generator.plays[0].play.clone());
         };
-        let mut leaves = Vec::new();
-        if let Some((board_before, last)) = &self.board_before_last {
-            let tables = match &mut self.infer_tables {
-                Some(tables) => tables,
-                tables @ None => {
-                    tables.insert(infer::InferTables::new(self.game_config, self.klv)?)
-                }
-            };
-            leaves = infer::kept_leaves(
-                tables,
-                &mut self.infer_generator,
-                &movegen::BoardSnapshot {
-                    board_tiles: board_before,
-                    game_config: self.game_config,
-                    kwg,
-                    anagrams: None,
-                    rack_lengths: None,
-                    klv: self.klv,
-                },
-                &rack,
-                last,
-                INFER_FUZZ,
-            )?;
-        }
         move_picker::gen_simmer_candidates(
             &mut move_filter::GenMoves::Unfiltered,
             &mut self.move_generator,
@@ -643,14 +688,17 @@ impl Session {
                 quiet: true, // the shell prints its own lines
             },
         )?;
-        // step up to the next look each time, so the threads share whole
-        // blocks; unless quiet, print a line a second
+        simmer.reseed(self.position_seed());
+        // run a few iterations first, short of the first look, to get a rate to
+        // plan by; then step up to the next look each time, so the threads
+        // share whole blocks and every look is planned; unless quiet, print a
+        // line a second
+        const FIRST: u64 = 4;
         let num_candidates = self.move_generator.plays.len();
-        let first = simmer.iters_to_next_look();
-        let mut rollouts = (first as usize * num_candidates) as f64;
-        let mut iterations = first;
+        let mut rollouts = (FIRST as usize * num_candidates) as f64;
+        let mut iterations = FIRST;
         let mut ticked = 0;
-        simmer.begin_decision(&self.move_generator, &self.state, first, &leaves)?;
+        simmer.begin_decision(&self.move_generator, &self.state, FIRST, &leaves)?;
         loop {
             let spent = t0.elapsed().as_secs_f64() * 1000.0;
             let in_play = simmer.active_stream_ids().count();
@@ -678,6 +726,236 @@ impl Session {
             t0.elapsed().as_secs_f64() * 1000.0,
         )?;
         Ok(self.move_generator.plays[simmer.best_so_far()].play.clone())
+    }
+
+    // a sim's seed for the position shown: the game's, plus how many moves the
+    // board shows, so a sim of the same position repeats (the simmer scrambles
+    // its seed for each iteration)
+    fn position_seed(&self) -> u64 {
+        self.game
+            .as_ref()
+            .map_or(0, |game| game.seed.wrapping_add(game.at as u64))
+    }
+
+    // the leaves the opponent's last move says they kept, each with its weight,
+    // for a sim to draw their rack from; none before the first move
+    fn kept_leaves(&mut self) -> error::Returns<Vec<(Vec<u8>, f64)>> {
+        let Some((board_before, last)) = &self.board_before_last else {
+            return Ok(Vec::new());
+        };
+        let kwg = self.kwg()?;
+        let tables = match &mut self.infer_tables {
+            Some(tables) => tables,
+            tables @ None => tables.insert(infer::InferTables::new(self.game_config, self.klv)?),
+        };
+        infer::kept_leaves(
+            tables,
+            &mut self.infer_generator,
+            &movegen::BoardSnapshot {
+                board_tiles: board_before,
+                game_config: self.game_config,
+                kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: self.klv,
+            },
+            &self.state.current_player().rack,
+            last,
+            INFER_FUZZ,
+        )
+    }
+
+    // the sim of the position shown, started if there is none, with the move
+    // picker's field, the opponent's rack drawn as bot sim draws it, every
+    // core, and the position's own seed, so that a sim of it repeats
+    fn sim_mut(&mut self) -> error::Returns<&mut Sim> {
+        if self.sim.is_none() {
+            if self.game.is_none() {
+                return Err("no game: new first".into());
+            }
+            if self.final_scores.is_some() {
+                return Err("the game is over".into());
+            }
+            let kwg = self.kwg()?;
+            let arm_tables = self.arm_tables()?;
+            let leaves = self.kept_leaves()?;
+            let mut move_generator = movegen::KurniaMoveGenerator::new(self.game_config);
+            move_picker::gen_simmer_candidates(
+                &mut move_filter::GenMoves::Unfiltered,
+                &mut move_generator,
+                &movegen::BoardSnapshot {
+                    board_tiles: &self.state.board_tiles,
+                    game_config: self.game_config,
+                    kwg,
+                    anagrams: arm_tables.anagrams(),
+                    rack_lengths: arm_tables.rack_lengths(),
+                    klv: self.klv,
+                },
+                &self.state.current_player().rack,
+                self.state.current_player().num_exchanges,
+                move_picker::SIMMER_FIELD,
+                &mut Vec::new(),
+            );
+            let mut simmer = move_picker::Simmer::<_, _, true>::new(
+                self.game_config,
+                kwg,
+                arm_tables,
+                self.klv,
+                move_picker::SimmerParams {
+                    num_sim_iters: u64::MAX / 2,
+                    num_sim_plies: move_picker::DEFAULT_NUM_SIM_PLIES,
+                    sim_threads: parallelism::available(),
+                    win_pct_table: None,
+                    quiet: true, // the shell prints its own lines
+                },
+            )?;
+            simmer.reseed(self.position_seed());
+            simmer.begin_decision(&move_generator, &self.state, 0, &leaves)?;
+            let stream_of = (0..move_generator.plays.len() as u64).collect();
+            self.sim = Some(Sim {
+                move_generator,
+                simmer,
+                stream_of,
+            });
+        }
+        Ok(self.sim.as_mut().unwrap())
+    }
+
+    // run the sim this many more iterations, or until one candidate is left, a
+    // step up to each look at a time (its rows are the same however the run is
+    // split), printing a line a second unless quiet
+    fn sim_run(&mut self, iterations: u64) -> error::Returns<()> {
+        let t0 = std::time::Instant::now();
+        let quiet = self.quiet;
+        let Sim {
+            move_generator,
+            simmer,
+            ..
+        } = self.sim_mut()?;
+        let mut done = 0;
+        let mut ticked = 0;
+        while done < iterations && simmer.active_stream_ids().nth(1).is_some() {
+            let step = simmer.iters_to_next_look().min(iterations - done);
+            simmer.resume(move_generator, step)?;
+            done += step;
+            let secs = t0.elapsed().as_secs();
+            if !quiet && secs > ticked {
+                ticked = secs;
+                writeln!(
+                    std::io::stderr(),
+                    "sim: {done} of {iterations} more iterations, {} left in, {secs} s",
+                    simmer.active_stream_ids().count()
+                )?;
+            }
+        }
+        writeln!(
+            std::io::stdout(),
+            "sim: {iterations} more iterations, {:.0} ms",
+            t0.elapsed().as_secs_f64() * 1000.0
+        )?;
+        self.sim_show(10)
+    }
+
+    // make a move a candidate: a new one is rolled out from the next iteration,
+    // and one that is out (dropped, or retired by the sim) comes back with what
+    // it had; one already in is refused, ending the sim if it was started for
+    // this
+    fn sim_add(&mut self, play: movegen::Play) -> error::Returns<()> {
+        let kwg = self.kwg()?;
+        let score = match &play {
+            movegen::Play::Place { score, .. } => *score,
+            movegen::Play::Exchange { .. } => 0,
+        };
+        let equity = self.play_scorer.compute_equity(
+            &movegen::BoardSnapshot {
+                board_tiles: &self.state.board_tiles,
+                game_config: self.game_config,
+                kwg,
+                anagrams: None,
+                rack_lengths: None,
+                klv: self.klv,
+            },
+            &self.state,
+            &play,
+            move_filter::LEAVE_SCALE_DENOM,
+            score,
+        );
+        let begun = self.sim.is_none();
+        let sim = self.sim_mut()?;
+        match sim.move_generator.plays.iter().position(|v| v.play == play) {
+            Some(index) => {
+                let stream = sim.stream_of[index];
+                if !sim.simmer.readmit_with_history(stream) {
+                    if begun {
+                        self.sim = None;
+                    }
+                    return Err("already a candidate".into());
+                }
+            }
+            None => {
+                sim.move_generator.plays.push(movegen::ValuedMove {
+                    equity: equity::Equity::new(equity),
+                    play,
+                });
+                let stream = sim.simmer.add_play(sim.move_generator.plays.len() - 1);
+                sim.stream_of.push(stream);
+            }
+        }
+        Ok(())
+    }
+
+    fn sim_drop(&mut self, play: &movegen::Play) -> error::Returns<()> {
+        let sim = self.sim.as_mut().ok_or("no sim: sim first")?;
+        let index = sim
+            .move_generator
+            .plays
+            .iter()
+            .position(|v| v.play == *play)
+            .ok_or("not a candidate")?;
+        if !sim.simmer.retire_stream(sim.stream_of[index]) {
+            return Err("not in the sim, or the last candidate in it".into());
+        }
+        Ok(())
+    }
+
+    // list the sim's candidates, best mean first: the move, its means (win
+    // chance, and the change in spread in points), its rollouts, and whether it
+    // is still in
+    fn sim_show(&self, n: usize) -> error::Returns<()> {
+        let sim = self.sim.as_ref().ok_or("no sim: sim first")?;
+        let board_snapshot = &movegen::BoardSnapshot {
+            board_tiles: &self.state.board_tiles,
+            game_config: self.game_config,
+            kwg: self.kwg()?,
+            anagrams: None,
+            rack_lengths: None,
+            klv: self.klv,
+        };
+        let active = sim.simmer.active_stream_ids().collect::<Vec<_>>();
+        let mut out = std::io::stdout();
+        for (rank, (index, _objective, equity, win_rate)) in
+            sim.simmer.leaderboard(n).into_iter().enumerate()
+        {
+            let stream = sim.stream_of[index];
+            writeln!(
+                out,
+                "{:>3}. {:<24} win {:>6.2}% spread {:>+8.2} rollouts {:>7} {}",
+                rank + 1,
+                sim.move_generator.plays[index]
+                    .play
+                    .fmt(board_snapshot)
+                    .to_string(),
+                100.0 * win_rate,
+                equity,
+                sim.simmer.stream_count(stream).unwrap_or(0.0),
+                if active.contains(&stream) {
+                    "in"
+                } else {
+                    "out"
+                },
+            )?;
+        }
+        Ok(())
     }
 
     // a move written as play takes it: a coordinate and a word (8D across, D8
@@ -888,6 +1166,95 @@ mod tests {
         assert_eq!(snapshot(&first), snapshot(&second));
         assert!(run(&mut first, "bot sim 0").is_err());
         assert!(run(&mut first, "bot think").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_sim_runs_takes_candidates_in_and_out_and_ends_with_a_change() {
+        let mut session = session();
+        for line in &GAME[..2] {
+            run(&mut session, line).unwrap();
+        }
+        let before = snapshot(&session);
+        run(&mut session, "sim 32").unwrap();
+        let sim = session.sim.as_ref().unwrap();
+        let field = sim
+            .move_generator
+            .plays
+            .iter()
+            .map(|v| v.play.clone())
+            .collect::<Vec<_>>();
+        // the candidates still in were rolled out on every iteration; the
+        // leader (whose difference with itself is zero) can never leave
+        let active = sim.simmer.active_stream_ids().collect::<Vec<_>>();
+        assert!(
+            active
+                .iter()
+                .all(|&s| sim.simmer.stream_count(s) == Some(32.0))
+        );
+        let leader = sim.stream_of[sim.simmer.best_so_far()];
+        let other = *active.iter().find(|&&s| s != leader).unwrap();
+        // a candidate dropped sits out while the leader goes on
+        let other_text = session.play_text(&field[other as usize]).unwrap();
+        run(&mut session, &format!("sim drop {other_text}")).unwrap();
+        run(&mut session, "sim 16").unwrap();
+        let sim = session.sim.as_ref().unwrap();
+        assert_eq!(sim.simmer.stream_count(other), Some(32.0));
+        assert_eq!(sim.simmer.stream_count(leader), Some(48.0));
+        assert!(run(&mut session, &format!("sim drop {other_text}")).is_err());
+        // added back with what it had; a move outside the field joins as a new
+        // candidate
+        run(&mut session, &format!("sim add {other_text}")).unwrap();
+        assert!(run(&mut session, &format!("sim add {other_text}")).is_err());
+        let mut all = movegen::KurniaMoveGenerator::new(session.game_config);
+        all.gen_moves_unfiltered(&movegen::GenMovesParams {
+            board_snapshot: &movegen::BoardSnapshot {
+                board_tiles: &session.state.board_tiles,
+                game_config: session.game_config,
+                kwg: session.kwg().unwrap(),
+                anagrams: None,
+                rack_lengths: None,
+                klv: session.klv,
+            },
+            rack: &session.state.current_player().rack,
+            max_gen: usize::MAX,
+            num_exchanges_by_this_player: 0,
+            pass_policy: movegen::PassPolicy::AsACandidate,
+            dynamic_leaves: None,
+        });
+        let outside = all
+            .plays
+            .iter()
+            .map(|v| v.play.clone())
+            .find(|play| !field.contains(play))
+            .expect("a move outside the field");
+        let outside = session.play_text(&outside).unwrap();
+        run(&mut session, &format!("sim add {outside}")).unwrap();
+        run(&mut session, "sim 16").unwrap();
+        let sim = session.sim.as_ref().unwrap();
+        // the candidate added back went on from where it was
+        assert_eq!(sim.simmer.stream_count(other), Some(48.0));
+        assert_eq!(sim.simmer.stream_count(leader), Some(64.0));
+        assert_eq!(
+            sim.simmer.stream_count(*sim.stream_of.last().unwrap()),
+            Some(16.0)
+        );
+        // the game is untouched and nothing is logged; then a move ends the sim
+        assert_eq!(snapshot(&session), before);
+        assert_eq!(session.log.len(), 2);
+        run(&mut session, "play 8G AT").unwrap();
+        assert!(session.sim.is_none());
+        assert!(run(&mut session, "sim drop 8G AT").is_err());
+        // with no sim, adding a move the field already holds is refused, and
+        // leaves no sim
+        run(&mut session, "sim 1").unwrap();
+        let sim = session.sim.as_ref().unwrap();
+        let first = session
+            .play_text(&sim.move_generator.plays[0].play)
+            .unwrap();
+        run(&mut session, "sim stop").unwrap();
+        assert!(run(&mut session, &format!("sim add {first}")).is_err());
+        assert!(session.sim.is_none());
     }
 
     #[test]
