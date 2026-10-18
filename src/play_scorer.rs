@@ -432,7 +432,10 @@ impl PlayScorer {
                         recounted_score += multiplied_word_score;
                     }
                 }
-                let num_played_bonus = game_config.num_played_bonus(num_played);
+                // playing more tiles than a rack holds (from an overdrawn rack)
+                // earns a full rack's bonus
+                let num_played_bonus =
+                    game_config.num_played_bonus(num_played.min(game_config.rack_size()));
                 recounted_score += num_played_bonus as i32 * equity::SCALE;
             }
         };

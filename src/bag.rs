@@ -80,10 +80,12 @@ impl Bag {
         }
     }
 
+    // draws nothing for a rack already holding rack_size tiles or more, as an
+    // overdrawn rack may
     #[inline(always)]
     pub fn replenish_back(&mut self, rack: &mut Vec<u8>, rack_size: usize) {
         let playable = self.tiles.len() - self.fc;
-        for _ in 0..(rack_size - rack.len()).min(playable) {
+        for _ in 0..rack_size.saturating_sub(rack.len()).min(playable) {
             rack.push(self.pop_back().unwrap());
         }
     }
@@ -91,7 +93,7 @@ impl Bag {
     #[inline(always)]
     pub fn replenish_front(&mut self, rack: &mut Vec<u8>, rack_size: usize) {
         let playable = self.tiles.len() - self.fc;
-        for _ in 0..(rack_size - rack.len()).min(playable) {
+        for _ in 0..rack_size.saturating_sub(rack.len()).min(playable) {
             rack.push(self.pop_front().unwrap());
         }
     }

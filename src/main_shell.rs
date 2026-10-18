@@ -2,6 +2,7 @@
 
 use wolges::error;
 mod rlhelper;
+mod shell_session;
 
 use std::io::BufRead;
 use std::io::Write;
@@ -10,13 +11,14 @@ use std::io::Write;
 // commit it was built from
 #[derive(clap::Parser)]
 #[command(
-    about = "an interactive shell that takes help, exit, and source FILE",
+    about = "an interactive shell that keeps a game its commands build (help lists them)",
     version = wolges::VERSION
 )]
 struct Cli {}
 
 fn main() -> error::Returns<()> {
     let _: Cli = clap::Parser::parse();
+    let mut session = shell_session::Session::new()?;
     let mut rl = rlhelper::new_rl_editor()?;
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     loop {
@@ -34,7 +36,14 @@ fn main() -> error::Returns<()> {
                     if !strings.is_empty() {
                         match strings[0].as_str() {
                             "help" => {
-                                writeln!(std::io::stdout(), "no help, try reading the source")?;
+                                let width = shell_session::COMMANDS
+                                    .iter()
+                                    .map(|(command, _)| command.len())
+                                    .max()
+                                    .unwrap_or(0);
+                                for (command, what) in shell_session::COMMANDS {
+                                    writeln!(std::io::stdout(), "{command:<width$}  {what}")?;
+                                }
                             }
                             "exit" => {
                                 break;
@@ -64,7 +73,9 @@ fn main() -> error::Returns<()> {
                                 }
                             }
                             _ => {
-                                writeln!(std::io::stdout(), "invalid input, help for help")?;
+                                if let Err(err) = session.run(&line, &strings) {
+                                    writeln!(std::io::stdout(), "error: {err}")?;
+                                }
                             }
                         }
                     }
