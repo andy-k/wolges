@@ -873,7 +873,7 @@ impl Session {
                 let kwg = self.kwg()?;
                 let arm_tables = self.arm_tables()?;
                 let state = self.endgame_state();
-                let (solver, solved) = solve_endgame(
+                let (mut solver, solved) = solve_endgame(
                     self.game_config,
                     kwg,
                     arm_tables,
@@ -895,7 +895,7 @@ impl Session {
                         format!("as {} moves deep saw it, cut short", solved.depth)
                     }
                 )?;
-                for line in self.endgame_line(&solver, &state)? {
+                for line in self.endgame_line(&mut solver, &state)? {
                     writeln!(std::io::stdout(), "{line}")?;
                 }
                 return Ok(());
@@ -1501,7 +1501,7 @@ impl Session {
         // the unseen tiles, once they fit in it), so solve rather than sim
         let endgame_state = self.endgame_state();
         if endgame_state.bag.is_empty() {
-            let (solver, _) = solve_endgame(
+            let (mut solver, _) = solve_endgame(
                 self.game_config,
                 kwg,
                 arm_tables,
@@ -2168,7 +2168,7 @@ impl Session {
     // rack as show prints it, and the move with its score
     fn endgame_line(
         &self,
-        solver: &endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>,
+        solver: &mut endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>,
         state: &game_state::GameState,
     ) -> error::Returns<Vec<String>> {
         let mut line = Vec::new();
@@ -3483,7 +3483,7 @@ mod tests {
         state.players[1].rack = vec![5];
         session.state = state;
         run(&mut session, "endgame 5").unwrap();
-        let (solver, solved) = solve_endgame(
+        let (mut solver, solved) = solve_endgame(
             session.game_config,
             session.kwg().unwrap(),
             session.arm_tables().unwrap(),
@@ -3503,7 +3503,7 @@ mod tests {
         assert!(matches!(&line[0].1, movegen::Play::Exchange { tiles } if tiles.is_empty()));
         // the line as the moves list shows it, its players numbered as the
         // shell numbers them
-        let text = session.endgame_line(&solver, &session.state).unwrap();
+        let text = session.endgame_line(&mut solver, &session.state).unwrap();
         assert!(text[0].starts_with("  1. player 1 AT "), "{text:?}");
         assert!(text[1].starts_with("  2. player 2 E "), "{text:?}");
         assert!(matches!(

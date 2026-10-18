@@ -473,15 +473,17 @@ struct Cli {
     #[arg(
         long,
         value_name = "STATES",
-        help = "stop each solve once it holds STATES states, answering the same way"
+        help = "stop each solve once its table holds STATES positions, answering the same way"
     )]
     max_states: Option<usize>,
     #[arg(
         long,
         value_name = "GB",
         default_value_t = endgame_watch::DEFAULT_MAX_MEMORY_GB,
-        help = "stop each solve once the program uses GB gigabytes (of 10^9 bytes), its word \
-                graph and tables included (0: never), answering the same way"
+        help = "keep the program within GB gigabytes (of 10^9 bytes), its word graph and tables \
+                included (0: no limit): the solver's table grows only while it fits, then \
+                reuses its room; a solve stops, answering the same way, only if the program \
+                passes it anyway"
     )]
     max_memory: f64,
     #[arg(long, help = "print no progress")]
