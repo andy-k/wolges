@@ -2768,13 +2768,15 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
     // a playability file's losses, if its lines carry them (all lines alike):
-    // each word's own loss, summed, and each rack's, counted once for each file
-    // it appears in (every word of the rack there shows it), each file starting
-    // at its totals line; in millipoints
+    // each word's own loss and move loss, summed, and each rack's, counted once
+    // for each file it appears in (every word of the rack there shows it), each
+    // file starting at its totals line; in millipoints, except move losses, in
+    // points
     let playability = SORT_MODE != 'a';
     let mut fields = None;
     let mut word_loss = fash::MyHashMap::<bites::Bites, i64>::default();
     let mut rack_loss = fash::MyHashMap::<bites::Bites, i64>::default();
+    let mut move_loss = fash::MyHashMap::<bites::Bites, f64>::default();
     let mut racks_in_file = fash::MyHashSet::<bites::Bites>::default();
     let mut key = Vec::new();
     let millipoints = |field: &str| -> error::Returns<i64> {
@@ -2795,9 +2797,9 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
             return Err("a summary line has fewer than 3 fields".into());
         }
         let width = *fields.get_or_insert(record.len());
-        if playability && (record.len() != width || ![3, 5].contains(&width)) {
+        if playability && (record.len() != width || ![3, 6].contains(&width)) {
             return Err(format!(
-                "a playability line has {} fields, the first {width}: 3, or 5 with its losses",
+                "a playability line has {} fields, the first {width}: 3, or 6 with its losses",
                 record.len()
             )
             .into());
@@ -2814,11 +2816,12 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
                 e.count += thing.count;
             })
             .or_insert(thing);
-        if playability && width == 5 {
+        if playability && width == 6 {
             if rack_bytes.is_empty() {
                 racks_in_file.clear();
             } else {
                 *word_loss.entry(rack_bytes[..].into()).or_default() += millipoints(&record[3])?;
+                *move_loss.entry(rack_bytes[..].into()).or_default() += f64::from_str(&record[5])?;
                 key.clear();
                 key.extend_from_slice(&rack_bytes);
                 key.sort_unstable();
@@ -2829,7 +2832,7 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
         }
     }
     drop(csv_in);
-    let losses = playability && fields == Some(5);
+    let losses = playability && fields == Some(6);
     let points = |millipoints: i64| millipoints as f64 / equity::SCALE as f64;
 
     full_rack_map.remove([][..].into());
@@ -2874,6 +2877,7 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
             row_count,
             points(word_loss.values().sum()),
             points(rack_loss.values().sum()),
+            move_loss.values().sum::<f64>(),
         ))?;
     } else {
         csv_out.serialize(("", total_equity, row_count))?;
@@ -2893,6 +2897,7 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
                 fv.count,
                 points(word_loss.get(k).copied().unwrap_or(0)),
                 points(rack_loss.get(&key[..]).copied().unwrap_or(0)),
+                move_loss.get(k).copied().unwrap_or(0.0),
             ))?;
         } else {
             csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
@@ -3989,8 +3994,12 @@ struct Target {
 // tied at the top equity): for each word one of them formed, the top equity
 // minus the best equity of a play that does not form it (no loss when a tied
 // top play does not form it), and the same for each rack (every word of the
-// same tiles), in millipoints. The bests come from one more move generation a
-// turn, whose equity predicate keeps them as each play is shown.
+// same tiles), in millipoints; and for each of the k tied top plays, the same
+// over every word of every rack it forms, a k-th of it going to each word it
+// forms, in points. The word and rack bests come from one more move generation
+// a turn, whose equity predicate tracks them as each play is shown; a move's
+// best comes from a generation that places only plays forming none of its
+// racks' words.
 struct Losses {
     jumbled: bool,
     seeker: movegen::KurniaMoveGenerator,
@@ -4002,6 +4011,9 @@ struct Losses {
     sorted: Vec<u8>,
     word_loss: fash::MyHashMap<bites::Bites, i64>,
     rack_loss: fash::MyHashMap<bites::Bites, i64>,
+    racks: Vec<Vec<bites::Bites>>, // the racks of each tied top play
+    solved: fash::MyHashMap<Vec<bites::Bites>, equity::Equity>, // by the racks avoided
+    move_loss: fash::MyHashMap<bites::Bites, f64>,
 }
 
 impl Losses {
@@ -4017,6 +4029,96 @@ impl Losses {
             sorted: Vec::new(),
             word_loss: Default::default(),
             rack_loss: Default::default(),
+            racks: Vec::new(),
+            solved: Default::default(),
+            move_loss: Default::default(),
+        }
+    }
+
+    // a turn's move losses, given formed, the words each of its k tied top
+    // plays formed (each once, in order; none for an exchange): unless another
+    // tied top play forms no word of any of its racks, a play's loss is the top
+    // equity minus the best equity of a play forming no word of any of them,
+    // and a k-th of it goes to each word it forms. Tied top plays with the same
+    // racks share one move generation.
+    fn add_moves<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &movegen::GenMovesParams<'_, N, L>,
+        top: equity::Equity,
+        formed: &[Vec<bites::Bites>],
+    ) {
+        let Self {
+            seeker,
+            checker,
+            sorted,
+            racks,
+            solved,
+            move_loss,
+            ..
+        } = self;
+        racks.clear();
+        for words in formed {
+            let mut keys = words
+                .iter()
+                .map(|word| {
+                    sorted.clear();
+                    sorted.extend_from_slice(word);
+                    sorted.sort_unstable();
+                    bites::Bites::from(&sorted[..])
+                })
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            keys.dedup();
+            racks.push(keys);
+        }
+        solved.clear();
+        for (words, keys) in formed.iter().zip(racks.iter()) {
+            if words.is_empty() {
+                continue;
+            }
+            let avoided = racks
+                .iter()
+                .any(|other| !other.iter().any(|key| keys.contains(key)));
+            let lost = if avoided {
+                0
+            } else {
+                let best = match solved.get(keys) {
+                    Some(&best) => best,
+                    None => {
+                        let mut shuns = |word: &[u8]| {
+                            sorted.clear();
+                            sorted.extend_from_slice(word);
+                            sorted.sort_unstable();
+                            keys.iter().any(|key| key[..] == sorted[..])
+                        };
+                        seeker.gen_moves_filtered(
+                            params,
+                            movegen::PlacePredicate::Dyn(
+                                &mut |down: bool, lane: i8, idx: i8, word: &[u8], _score: i32| {
+                                    checker.words_placed_are_ok(
+                                        params.board_snapshot,
+                                        down,
+                                        lane,
+                                        idx,
+                                        word,
+                                        |word: &[u8]| !shuns(word),
+                                    )
+                                },
+                            ),
+                            klv::AdjustLeave::Identity,
+                            movegen::EquityPredicate::AcceptAll,
+                        );
+                        let best = seeker.plays[0].equity;
+                        solved.insert(keys.clone(), best);
+                        best
+                    }
+                };
+                top.raw() as i64 - best.raw() as i64
+            };
+            let credit = lost as f64 / equity::SCALE as f64 / formed.len() as f64;
+            for word in words {
+                *move_loss.entry(word.clone()).or_default() += credit;
+            }
         }
     }
 
@@ -4043,6 +4145,7 @@ impl Losses {
             sorted,
             word_loss,
             rack_loss,
+            ..
         } = self;
         let jumbled = *jumbled;
         targets.clear();
@@ -4214,12 +4317,14 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
         tick_periods: move_picker::Periods,
         word_loss: fash::MyHashMap<bites::Bites, i64>,
         rack_loss: fash::MyHashMap<bites::Bites, i64>,
+        move_loss: fash::MyHashMap<bites::Bites, f64>,
     }
     let mutexed_stuffs = std::sync::Arc::new(std::sync::Mutex::new(MutexedStuffs {
         full_word_map,
         tick_periods,
         word_loss: Default::default(),
         rack_loss: Default::default(),
+        move_loss: Default::default(),
     }));
     let batch_size = match game_config.game_rules() {
         game_config::GameRules::Classic => 100,
@@ -4420,8 +4525,14 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                         });
                                 }
 
-                                // what not knowing them costs
+                                // what not knowing them costs; the move losses
+                                // by the words each tied top play formed
                                 losses.add_turn(&params);
+                                let mut formed = vec![Vec::new(); num_plays];
+                                for (word, at) in &vec_played {
+                                    formed[*at].push(word.clone());
+                                }
+                                losses.add_moves(&params, best_equity_so_far, &formed);
                             }
 
                             let plays = &move_generator.plays;
@@ -4491,6 +4602,9 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 for (k, lost) in losses.rack_loss {
                     *mutex_guard.rack_loss.entry(k).or_default() += lost;
                 }
+                for (k, lost) in losses.move_loss {
+                    *mutex_guard.move_loss.entry(k).or_default() += lost;
+                }
                 Ok(())
             }));
         }
@@ -4531,8 +4645,9 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 .then_with(|| b.1.equity.total_cmp(&a.1.equity).then_with(|| a.0.cmp(b.0)))
         });
 
-        // then each word's losses in points: its own and its rack's (the same
-        // for every word of a rack, the totals line counting each rack once)
+        // then each word's losses in points: its own, its rack's (the same for
+        // every word of a rack, the totals line counting each rack once), and
+        // its moves'
         let points = |millipoints: i64| millipoints as f64 / equity::SCALE as f64;
         let word_loss =
             |k: &bites::Bites| points(mutex_guard.word_loss.get(k).copied().unwrap_or(0));
@@ -4553,6 +4668,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             row_count,
             points(mutex_guard.word_loss.values().sum()),
             points(mutex_guard.rack_loss.values().sum()),
+            mutex_guard.move_loss.values().sum::<f64>(),
         ))?;
         for (k, fv) in kv.iter() {
             cur_word_ser.clear();
@@ -4566,6 +4682,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 fv.count,
                 word_loss(k),
                 rack_loss(k),
+                mutex_guard.move_loss.get(*k).copied().unwrap_or(0.0),
             ))?;
         }
     }
@@ -8208,7 +8325,7 @@ mod tests {
 
     #[test]
     #[inline]
-    fn resummarizing_playability_keeps_each_words_loss_and_each_racks_once_a_run() {
+    fn resummarizing_playability_keeps_each_words_losses_and_each_racks_once_a_run() {
         let resummarize = |input: &str| {
             let mut out = Vec::new();
             resummarize_summaries::<'p', _, _>(
@@ -8223,16 +8340,16 @@ mod tests {
         };
         // two runs in which AT and TA share one rack: its loss is counted once
         // a run, and shown on both words
-        let runs = ",3,4,6,7\nAT,2,3,4,7\nTA,1,1,2,7\n,1,1,1,2\nAT,1,1,1,2\n";
+        let runs = ",3,4,6,7,8\nAT,2,3,4,7,5.5\nTA,1,1,2,7,2.5\n,1,1,1,2,1\nAT,1,1,1,2,1\n";
         assert_eq!(
             resummarize(runs).unwrap(),
-            ",4.0,5,7.0,9.0\nAT,3.0,4,5.0,9.0\nTA,1.0,1,2.0,9.0\n"
+            ",4.0,5,7.0,9.0,9.0\nAT,3.0,4,5.0,9.0,6.5\nTA,1.0,1,2.0,9.0,2.5\n"
         );
         // without losses, as before; a run with them and one without are
         // refused together
         assert_eq!(resummarize(",2,3\nAT,2,3\n").unwrap(), ",2.0,3\nAT,2.0,3\n");
-        assert!(resummarize(",2,3\nAT,2,3\n,1,1,1,2\nAT,1,1,1,2\n").is_err());
-        assert!(resummarize(",1,1,1\nAT,1,1,1\n").is_err());
+        assert!(resummarize(",2,3\nAT,2,3\n,1,1,1,2,1\nAT,1,1,1,2,1\n").is_err());
+        assert!(resummarize(",1,1,1,1\nAT,1,1,1,1\n").is_err());
     }
 
     #[test]
