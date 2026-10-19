@@ -674,6 +674,24 @@ struct Playability {
     quiet: bool,
 }
 
+#[derive(clap::Args)]
+struct Study {
+    #[arg(help = "the word graph (- for stdin)")]
+    kwg: String,
+    #[arg(help = "the leaves (- for none)")]
+    leave: String,
+    #[arg(help = "a playability file with its losses, of a run of its own seed")]
+    playability: String,
+    #[arg(help = "the lists' sizes in words, comma-separated")]
+    sizes: String,
+    #[arg(default_value_t = 1_000)]
+    pairs: u64,
+    #[arg(help = "prints the one it picks if omitted")]
+    seed: Option<u64>,
+    #[arg(long, help = "print no progress")]
+    quiet: bool,
+}
+
 #[derive(clap::Subcommand)]
 enum Task {
     #[command(about = "autoplay games, logging to a pair of csv")]
@@ -756,6 +774,8 @@ enum Task {
     GenerateFull(Generate),
     #[command(about = "autoplay and record prorated found best words and their losses")]
     Playability(Playability),
+    #[command(about = "play bots knowing a study list, by count or by loss, against the lexicon")]
+    Study(Study),
 }
 
 impl Task {
@@ -1314,6 +1334,28 @@ fn run<N: kwg::Node + Sync + Send>(
             csv::Writer::from_writer(make_writer(&a.leaves)?),
             a.quiet,
         ),
+        Task::Study(a) => {
+            let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
+            let klv = read_klv(&game_config, &a.leave)?;
+            let sizes = a
+                .sizes
+                .split(',')
+                .map(|size| size.parse::<usize>())
+                .collect::<Result<Vec<_>, _>>()?;
+            study_lists(
+                game_config,
+                kwg,
+                klv,
+                StudyParams {
+                    playability: &a.playability,
+                    sizes: &sizes,
+                    num_pairs: a.pairs,
+                    seed: a.seed,
+                    threads,
+                    quiet: a.quiet,
+                },
+            )
+        }
         Task::Playability(a) => {
             let kwg = read_kwg::<N>(&game_config, &a.kwg)?;
             let klv = read_klv(&game_config, &a.leave)?;
@@ -4278,6 +4320,339 @@ impl Losses {
             *losses.entry(target.tiles.clone()).or_default() += lost;
         }
     }
+}
+
+// a line of a word file: the word, its count, and its losses (its own, its
+// rack's, and its moves')
+struct Studied {
+    word: bites::Bites,
+    count: u64,
+    loss: f64,
+    rack_loss: f64,
+    move_loss: f64,
+}
+
+// what study_lists takes beyond the game: the word file, the lists' sizes, the
+// number of pairs per list and size, the seed, the threads, and whether it is
+// quiet
+struct StudyParams<'a> {
+    playability: &'a str,
+    sizes: &'a [usize],
+    num_pairs: u64,
+    seed: Option<u64>,
+    threads: usize,
+    quiet: bool,
+}
+
+// find every word of the lexicon that uses all of a rack's tiles, given its key
+// (its tiles sorted); tally must be all zeros on entry (a tile's count at its
+// index), and is left so
+fn rack_words<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    key: &[u8],
+    tally: &mut [u8],
+    found: &mut Vec<bites::Bites>,
+) {
+    for &tile in key {
+        tally[tile as usize] += 1;
+    }
+    found.clear();
+    let root = kwg[0].arc_index();
+    words_of_rack(kwg, root, tally, key.len(), &mut Vec::new(), found);
+    for &tile in key {
+        tally[tile as usize] -= 1;
+    }
+}
+
+// find the words that use all the tiles a tally holds: from p, a run of the
+// dawg's arcs, with left tiles still to place and the word so far
+fn words_of_rack<N: kwg::Node>(
+    kwg: &kwg::Kwg<N>,
+    mut p: i32,
+    tally: &mut [u8],
+    left: usize,
+    word: &mut Vec<u8>,
+    found: &mut Vec<bites::Bites>,
+) {
+    if p <= 0 {
+        return;
+    }
+    loop {
+        let node = kwg[p];
+        let tile = node.tile() as usize;
+        if tally.get(tile).is_some_and(|&n| n > 0) {
+            tally[tile] -= 1;
+            word.push(tile as u8);
+            if left == 1 {
+                if node.accepts() {
+                    found.push(word[..].into());
+                }
+            } else {
+                words_of_rack(kwg, node.arc_index(), tally, left - 1, word, found);
+            }
+            word.pop();
+            tally[tile] += 1;
+        }
+        if node.is_end() {
+            return;
+        }
+        p += 1;
+    }
+}
+
+// make four study lists from a playability run's word file, ranked by count, by
+// word loss, by rack loss, and by move loss (highest first, ties by the word):
+// the rack list adds racks, each with every word of its tiles in the lexicon,
+// until it holds a size's words, and the three word lists take that many words.
+// A list's bot plays the best equity among the plays whose words it all knows
+// (exchanges, and the pass when nothing else is legal, as they come) against
+// the bot of the whole lexicon, both keeping one play, for a number of
+// seat-swapped pairs per list and size, each pair dealt the same for every
+// list, from a seed other than the list run's. Prints each list's words, games,
+// and wins, a tie counting half.
+fn study_lists<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
+    game_config: game_config::GameConfig,
+    kwg: kwg::Kwg<N>,
+    klv: klv::Klv<L>,
+    StudyParams {
+        playability,
+        sizes,
+        num_pairs,
+        seed,
+        threads,
+        quiet,
+    }: StudyParams<'_>,
+) -> error::Returns<()> {
+    if !matches!(game_config.game_rules(), game_config::GameRules::Classic) {
+        return Err("study plays classic games".into());
+    }
+    let seed = seed_or_random(seed)?;
+    writeln!(boxed_stdout_or_stderr(), "seed: {seed}")?;
+    let alphabet = game_config.alphabet();
+    let reader = alphabet::AlphabetReader::new_for_words(alphabet);
+    // the word file's words, each with its count and its losses
+    let mut words = Vec::<Studied>::new();
+    let mut word = Vec::new();
+    let mut csv_in = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .from_reader(make_reader(playability)?);
+    for record in csv_in.records() {
+        let record = record?;
+        if record.len() != 6 {
+            return Err("a playability line with its losses has 6 fields".into());
+        }
+        if record[0].is_empty() {
+            continue;
+        }
+        reader.set_word(&record[0], &mut word)?;
+        words.push(Studied {
+            word: word[..].into(),
+            count: u64::from_str(&record[2])?,
+            loss: f64::from_str(&record[3])?,
+            rack_loss: f64::from_str(&record[4])?,
+            move_loss: f64::from_str(&record[5])?,
+        });
+    }
+    let by = |column: fn(&Studied) -> f64| {
+        let mut order = words.iter().collect::<Vec<_>>();
+        order.sort_by(|a, b| {
+            column(b)
+                .total_cmp(&column(a))
+                .then_with(|| a.word.cmp(&b.word))
+        });
+        order
+            .into_iter()
+            .map(|w| w.word.clone())
+            .collect::<Vec<_>>()
+    };
+    let by_count = by(|w| w.count as f64);
+    let by_loss = by(|w| w.loss);
+    let by_move = by(|w| w.move_loss);
+    // the racks by rack loss, each once
+    let mut racks = Vec::<(bites::Bites, f64)>::new();
+    let mut seen = fash::MyHashSet::<bites::Bites>::default();
+    for studied in &words {
+        let mut key = studied.word.to_vec();
+        key.sort_unstable();
+        if seen.insert(key[..].into()) {
+            racks.push((key[..].into(), studied.rack_loss));
+        }
+    }
+    racks.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    // the lists, a size at a time: rack loss, count, word loss, and move loss
+    let mut lists = Vec::<(usize, &str, fash::MyHashSet<bites::Bites>)>::new();
+    let mut tally = vec![0u8; alphabet.len() as usize];
+    for &size in sizes {
+        let mut known = fash::MyHashSet::<bites::Bites>::default();
+        let mut found = Vec::new();
+        for (key, _) in &racks {
+            if known.len() >= size {
+                break;
+            }
+            rack_words(&kwg, key, &mut tally, &mut found);
+            known.extend(found.drain(..));
+        }
+        let held = known.len();
+        lists.push((size, "rack loss", known));
+        for (name, order) in [
+            ("count", &by_count),
+            ("word loss", &by_loss),
+            ("move loss", &by_move),
+        ] {
+            lists.push((size, name, order.iter().take(held).cloned().collect()));
+        }
+    }
+
+    let game_config = std::sync::Arc::new(game_config);
+    let kwg = std::sync::Arc::new(kwg);
+    let klv = std::sync::Arc::new(klv);
+    let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false)?;
+    let num_tasks = lists.len() as u64 * num_pairs;
+    let claimed = std::sync::atomic::AtomicU64::new(0);
+    let finished = std::sync::atomic::AtomicU64::new(0);
+    let reported_secs = std::sync::atomic::AtomicU64::new(0);
+    let t0 = std::time::Instant::now();
+    // by list: its half wins (a win counts two, a tie one) and its games
+    let results =
+        std::thread::scope(|s| -> error::Returns<Vec<(u64, u64)>> {
+            let mut handles = Vec::new();
+            for _ in 0..threads {
+                let (game_config, kwg, klv, lists, arm_tables) =
+                    (&game_config, &kwg, &klv, &lists, &arm_tables);
+                let (claimed, finished, reported_secs) = (&claimed, &finished, &reported_secs);
+                handles.push(s.spawn(move || -> error::Returns<Vec<(u64, u64)>> {
+                    let mut move_generator = movegen::KurniaMoveGenerator::new(game_config);
+                    let mut checker = move_filter::LimitedVocabChecker::new();
+                    let mut game_state = game_state::GameState::new(game_config);
+                    let mut saved = game_state.clone();
+                    let mut final_scores = vec![0i32; game_config.num_players() as usize];
+                    let mut results = vec![(0u64, 0u64); lists.len()];
+                    loop {
+                        let task = claimed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if task >= num_tasks {
+                            break;
+                        }
+                        let (list, pair) = ((task / num_pairs) as usize, task % num_pairs);
+                        let known = &lists[list].2;
+                        let mut rng = GameRng::from_stream(seed, pair);
+                        game_state.reset_and_draw_tiles_double_ended(game_config, &mut rng);
+                        saved.clone_from(&game_state);
+                        let saved_rng = rng.copy_state();
+                        for swapped in [false, true] {
+                            if swapped {
+                                game_state.clone_from(&saved);
+                                rng = saved_rng.copy_state();
+                            }
+                            loop {
+                                let board_snapshot = &movegen::BoardSnapshot {
+                                    board_tiles: &game_state.board_tiles,
+                                    game_config,
+                                    kwg,
+                                    anagrams: arm_tables.anagrams(),
+                                    rack_lengths: arm_tables.rack_lengths(),
+                                    klv,
+                                };
+                                let params = movegen::GenMovesParams {
+                                    board_snapshot,
+                                    rack: &game_state.current_player().rack,
+                                    max_gen: 1,
+                                    num_exchanges_by_this_player: game_state
+                                        .current_player()
+                                        .num_exchanges,
+                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                    dynamic_leaves: None,
+                                };
+                                if (game_state.turn == 0) != swapped {
+                                    move_generator.gen_moves_filtered(
+                                    &params,
+                                    movegen::PlacePredicate::Dyn(
+                                        &mut |down: bool, lane: i8, idx: i8, word: &[u8], _: i32| {
+                                            checker.words_placed_are_ok(
+                                                board_snapshot,
+                                                down,
+                                                lane,
+                                                idx,
+                                                word,
+                                                |word: &[u8]| known.contains(word),
+                                            )
+                                        },
+                                    ),
+                                    klv::AdjustLeave::Identity,
+                                    movegen::EquityPredicate::AcceptAll,
+                                );
+                                } else {
+                                    move_generator.gen_moves_unfiltered(&params);
+                                }
+                                game_state.play(
+                                    game_config,
+                                    &mut rng,
+                                    &move_generator.plays[0].play,
+                                )?;
+                                match game_state.check_game_ended(game_config, &mut final_scores)? {
+                                    game_state::CheckGameEnded::PlayedOut
+                                    | game_state::CheckGameEnded::ZeroScores => break,
+                                    game_state::CheckGameEnded::NotEnded => {}
+                                }
+                                game_state.next_turn();
+                            }
+                            let (theirs, whole) = if swapped {
+                                (final_scores[1], final_scores[0])
+                            } else {
+                                (final_scores[0], final_scores[1])
+                            };
+                            results[list].0 += match theirs.cmp(&whole) {
+                                std::cmp::Ordering::Greater => 2,
+                                std::cmp::Ordering::Equal => 1,
+                                std::cmp::Ordering::Less => 0,
+                            };
+                            results[list].1 += 1;
+                        }
+                        let done = finished.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        let secs = t0.elapsed().as_secs();
+                        let prev =
+                            reported_secs.fetch_max(secs, std::sync::atomic::Ordering::Relaxed);
+                        if !quiet && secs > prev {
+                            writeln!(
+                                boxed_stdout_or_stderr(),
+                                "After {secs}s: {done} of {num_tasks} pairs"
+                            )
+                            .ok();
+                        }
+                    }
+                    Ok(results)
+                }));
+            }
+            let mut all = vec![(0u64, 0u64); lists.len()];
+            for handle in handles {
+                let results = handle.join().map_err(|_| "a study thread panicked")??;
+                for (all, part) in all.iter_mut().zip(results) {
+                    all.0 += part.0;
+                    all.1 += part.1;
+                }
+            }
+            Ok(all)
+        })?;
+
+    let run_identifier = run_stamp();
+    let mut csv_out =
+        csv::Writer::from_path(claim_output_path(&format!("study-{run_identifier}"))?)?;
+    for ((size, name, known), (halves, games)) in lists.iter().zip(&results) {
+        let wins = *halves as f64 / 2.0;
+        writeln!(
+            boxed_stdout_or_stderr(),
+            "size {size}: {name}: {} words, {wins} of {games} games, {:.2}%",
+            known.len(),
+            100.0 * wins / (*games).max(1) as f64
+        )?;
+        csv_out.serialize((size, name, known.len(), games, wins))?;
+    }
+    writeln!(
+        boxed_stdout_or_stderr(),
+        "After {} seconds, played {} pairs for study-{run_identifier}",
+        t0.elapsed().as_secs(),
+        num_tasks
+    )?;
+    Ok(())
 }
 
 #[inline]
@@ -8350,6 +8725,44 @@ mod tests {
         assert_eq!(resummarize(",2,3\nAT,2,3\n").unwrap(), ",2.0,3\nAT,2.0,3\n");
         assert!(resummarize(",2,3\nAT,2,3\n,1,1,1,2,1\nAT,1,1,1,2,1\n").is_err());
         assert!(resummarize(",1,1,1,1\nAT,1,1,1,1\n").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn rack_words_finds_every_word_of_its_tiles() {
+        // A, E, and T are 1, 5, and 20
+        let mut words = [
+            &[1u8, 20][..],
+            &[20, 1],
+            &[1, 20, 5],
+            &[5, 1, 20],
+            &[20, 5, 1],
+        ]
+        .iter()
+        .map(|&word| word.into())
+        .collect::<Vec<bites::Bites>>();
+        words.sort_unstable();
+        let bytes = build::build(
+            build::BuildContent::Gaddawg,
+            build::BuildLayout::Wolges,
+            build::BuildOrder::Sorted,
+            &words,
+        )
+        .unwrap();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&bytes).unwrap();
+        let mut tally = [0u8; 27];
+        let mut found = |key: &[u8]| {
+            let mut found = Vec::new();
+            rack_words(&kwg, key, &mut tally, &mut found);
+            assert!(tally.iter().all(|&n| n == 0));
+            found.iter().map(|word| word.to_vec()).collect::<Vec<_>>()
+        };
+        assert_eq!(found(&[1, 20]), [vec![1, 20], vec![20, 1]]);
+        assert_eq!(
+            found(&[1, 5, 20]),
+            [vec![1, 20, 5], vec![5, 1, 20], vec![20, 5, 1]]
+        );
+        assert!(found(&[5, 5]).is_empty());
     }
 
     #[test]
