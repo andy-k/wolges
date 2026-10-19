@@ -4038,10 +4038,10 @@ struct Target {
 // top play does not form it), and the same for each rack (every word of the
 // same tiles), in millipoints; and for each of the k tied top plays, the same
 // over every word of every rack it forms, a k-th of it going to each word it
-// forms, in points. The word and rack bests come from one more move generation
-// a turn, whose equity predicate tracks them as each play is shown; a move's
-// best comes from a generation that places only plays forming none of its
-// racks' words.
+// forms, in points. The top, its tied top plays, and the word and rack bests
+// come from the game's own move generation, whose equity predicate tracks them
+// as each play is shown; a move's best comes from a generation that places only
+// plays forming none of its racks' words.
 struct Losses {
     jumbled: bool,
     seeker: movegen::KurniaMoveGenerator,
@@ -4053,6 +4053,8 @@ struct Losses {
     sorted: Vec<u8>,
     word_loss: fash::MyHashMap<bites::Bites, i64>,
     rack_loss: fash::MyHashMap<bites::Bites, i64>,
+    top: equity::Equity,
+    tied: Vec<Vec<bites::Bites>>,  // the words each tied top play formed
     racks: Vec<Vec<bites::Bites>>, // the racks of each tied top play
     solved: fash::MyHashMap<Vec<bites::Bites>, equity::Equity>, // by the racks avoided
     move_loss: fash::MyHashMap<bites::Bites, f64>,
@@ -4071,23 +4073,22 @@ impl Losses {
             sorted: Vec::new(),
             word_loss: Default::default(),
             rack_loss: Default::default(),
+            top: equity::Equity::NEG_INFINITY,
+            tied: Vec::new(),
             racks: Vec::new(),
             solved: Default::default(),
             move_loss: Default::default(),
         }
     }
 
-    // a turn's move losses, given formed, the words each of its k tied top
-    // plays formed (each once, in order; none for an exchange): unless another
-    // tied top play forms no word of any of its racks, a play's loss is the top
-    // equity minus the best equity of a play forming no word of any of them,
-    // and a k-th of it goes to each word it forms. Tied top plays with the same
-    // racks share one move generation.
+    // a turn's move losses, by its k tied top plays: unless another tied top
+    // play forms no word of any of its racks, a play's loss is the top equity
+    // minus the best equity of a play forming no word of any of them, and a
+    // k-th of it goes to each word it forms. Tied top plays with the same racks
+    // share one move generation.
     fn add_moves<N: kwg::Node, L: kwg::Node>(
         &mut self,
         params: &movegen::GenMovesParams<'_, N, L>,
-        top: equity::Equity,
-        formed: &[Vec<bites::Bites>],
     ) {
         let Self {
             seeker,
@@ -4096,10 +4097,13 @@ impl Losses {
             racks,
             solved,
             move_loss,
+            top,
+            tied: formed,
             ..
         } = self;
+        let top = *top;
         racks.clear();
-        for words in formed {
+        for words in formed.iter() {
             let mut keys = words
                 .iter()
                 .map(|word| {
@@ -4164,18 +4168,21 @@ impl Losses {
         }
     }
 
-    // a turn's losses, from one move generation keeping one play. The predicate
-    // sees each play in turn and tracks the top equity and the targets (the
-    // words and racks of the tied top plays), each with its best avoiding
-    // equity: a play above the top makes its own words and racks the targets
-    // (an existing target keeps its best; a new one starts at the old top); a
-    // play at the top adds its own at the top, and raises each target it does
-    // not form to the top; a play below raises each target it does not form to
-    // its equity. The pass, shown only when nothing was kept, raises only
-    // targets nothing else avoids. Only plays at or below the floor, the lowest
-    // best (the top, with no targets), are kept, so the cutoff drops only plays
-    // that could raise no best.
-    fn add_turn<N: kwg::Node, L: kwg::Node>(&mut self, params: &movegen::GenMovesParams<'_, N, L>) {
+    // run a turn's move generation, its params keeping one play, returning the
+    // play the game makes, the first shown at the top. The predicate sees each
+    // play in turn and tracks the top equity, the tied top plays, and the
+    // targets (their words and racks), each with its best avoiding equity: a
+    // play above the top makes its own words and racks the targets (an existing
+    // target keeps its best; a new one starts at the old top); a play at the
+    // top adds its own, and raises each target it does not form to the top; a
+    // play below raises each target it does not form to its equity. The pass,
+    // shown only when nothing was kept, raises only targets nothing else
+    // avoids. Only plays at or below the floor, the lowest best, are kept, so
+    // the cutoff drops only plays that could raise no best.
+    fn play_turn<N: kwg::Node, L: kwg::Node>(
+        &mut self,
+        params: &movegen::GenMovesParams<'_, N, L>,
+    ) -> error::Returns<movegen::Play> {
         let Self {
             jumbled,
             seeker,
@@ -4187,14 +4194,19 @@ impl Losses {
             sorted,
             word_loss,
             rack_loss,
+            top,
+            tied,
             ..
         } = self;
         let jumbled = *jumbled;
         targets.clear();
-        let mut top = equity::Equity::NEG_INFINITY;
-        let mut floor = top;
+        tied.clear();
+        *top = equity::Equity::NEG_INFINITY;
+        let mut floor = *top;
+        let mut first = None;
         let mut shown = |equity: equity::Equity, play: &movegen::Play| {
-            if equity <= floor {
+            // a play below the top and at or below the floor changes nothing
+            if equity < *top && equity <= floor {
                 return true;
             }
             // the play's words, each once (under jumbled rules, as sorted
@@ -4248,7 +4260,7 @@ impl Losses {
                     }
                 }
             } else {
-                match equity.cmp(&top) {
+                match equity.cmp(top) {
                     std::cmp::Ordering::Greater => {
                         next.clear();
                         for (by_rack, list) in [(false, &*formed), (true, &*keys)] {
@@ -4256,7 +4268,7 @@ impl Losses {
                                 let best = targets
                                     .iter()
                                     .find(|target| target.by_rack == by_rack && target.tiles == *w)
-                                    .map_or(top, |target| target.best);
+                                    .map_or(*top, |target| target.best);
                                 next.push(Target {
                                     by_rack,
                                     tiles: w.clone(),
@@ -4265,12 +4277,16 @@ impl Losses {
                             }
                         }
                         std::mem::swap(targets, next);
-                        top = equity;
+                        *top = equity;
+                        first = Some(play.clone());
+                        tied.clear();
+                        tied.push(formed.clone());
                     }
                     std::cmp::Ordering::Equal => {
+                        tied.push(formed.clone());
                         for target in targets.iter_mut() {
                             if !forms(target) {
-                                target.best = top;
+                                target.best = *top;
                             }
                         }
                         for (by_rack, list) in [(false, &*formed), (true, &*keys)] {
@@ -4282,7 +4298,7 @@ impl Losses {
                                     targets.push(Target {
                                         by_rack,
                                         tiles: w.clone(),
-                                        best: top,
+                                        best: *top,
                                     });
                                 }
                             }
@@ -4301,7 +4317,7 @@ impl Losses {
                 .iter()
                 .map(|target| target.best)
                 .min()
-                .unwrap_or(top);
+                .unwrap_or(*top);
             equity <= floor
         };
         seeker.gen_moves_filtered(
@@ -4319,6 +4335,8 @@ impl Losses {
             };
             *losses.entry(target.tiles.clone()).or_default() += lost;
         }
+        // something is always shown: a play, an exchange, or the pass
+        Ok(first.ok_or("a turn's call showed its predicate no play")?)
     }
 }
 
@@ -4724,44 +4742,10 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
             let completed_moves = std::sync::Arc::clone(&completed_moves);
             let mutexed_stuffs = std::sync::Arc::clone(&mutexed_stuffs);
             threads.push(s.spawn(move || -> error::Returns<()> {
-                let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
                 let mut game_state = game_state::GameState::new(&game_config);
                 let mut final_scores = vec![0; game_config.num_players() as usize];
                 let mut num_batched_games_here = 0;
                 let mut thread_full_word_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
-                let mut word_iter = move_filter::LimitedVocabChecker::new();
-                let mut unjumble_buf = match game_config.game_rules() {
-                    game_config::GameRules::Classic => Vec::new(),
-                    game_config::GameRules::Jumbled => Vec::with_capacity(
-                        game_config
-                            .board_layout()
-                            .dim()
-                            .rows
-                            .max(game_config.board_layout().dim().cols)
-                            as usize,
-                    ),
-                };
-                let mut tally_word =
-                    |v: &mut Vec<(bites::Bites, usize)>, num_plays: usize, w: &[u8]| {
-                        match game_config.game_rules() {
-                            game_config::GameRules::Classic => {
-                                v.push((w.into(), num_plays));
-                            }
-                            game_config::GameRules::Jumbled => {
-                                if w.windows(2).all(|x| x[0] <= x[1]) {
-                                    v.push((w.into(), num_plays));
-                                } else {
-
-                                    let w_len = w.len();
-                                    unjumble_buf.resize(w_len.max(unjumble_buf.len()), 0);
-                                    unjumble_buf[..w_len].clone_from_slice(w);
-                                    unjumble_buf[..w_len].sort_unstable();
-                                    v.push((unjumble_buf[..w_len].into(), num_plays));
-                                }
-                            }
-                        }
-                    };
-
                 let mut vec_played = Vec::<(bites::Bites, usize)>::new();
                 let mut losses = Losses::new(&game_config);
                 loop {
@@ -4792,77 +4776,6 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                         };
 
                         let moves_made_before_ending: u64 = if old_bag_len > 0 {
-                            let mut best_equity_so_far = equity::Equity::NEG_INFINITY;
-                            let mut num_plays = 0usize;
-                            vec_played.clear();
-                            let mut best_play_seen = |equity: equity::Equity, play: &movegen::Play| {
-                                        match equity.cmp(&best_equity_so_far) {
-                                            std::cmp::Ordering::Greater => {
-                                                best_equity_so_far = equity;
-                                                vec_played.clear();
-                                                num_plays = 0;
-                                                match play {
-                                                    movegen::Play::Exchange { .. } => {}
-                                                    movegen::Play::Place {
-                                                        down,
-                                                        lane,
-                                                        idx,
-                                                        word,
-                                                        ..
-                                                    } => {
-                                                        word_iter.words_placed_are_ok(
-                                                            board_snapshot,
-                                                            *down,
-                                                            *lane,
-                                                            *idx,
-                                                            &word[..],
-                                                            |w: &[u8]| {
-                                                                tally_word(
-                                                                    &mut vec_played,
-                                                                    num_plays,
-                                                                    w,
-                                                                );
-                                                                true
-                                                            },
-                                                        );
-                                                    }
-                                                }
-                                                num_plays += 1;
-                                                true
-                                            }
-                                            std::cmp::Ordering::Equal => {
-                                                match play {
-                                                    movegen::Play::Exchange { .. } => {}
-                                                    movegen::Play::Place {
-                                                        down,
-                                                        lane,
-                                                        idx,
-                                                        word,
-                                                        ..
-                                                    } => {
-                                                        word_iter.words_placed_are_ok(
-                                                            board_snapshot,
-                                                            *down,
-                                                            *lane,
-                                                            *idx,
-                                                            &word[..],
-                                                            |w: &[u8]| {
-                                                                tally_word(
-                                                                    &mut vec_played,
-                                                                    num_plays,
-                                                                    w,
-                                                                );
-                                                                true
-                                                            },
-                                                        );
-                                                    }
-                                                }
-                                                num_plays += 1;
-                                                false // ensure top two have different equities.
-                                            }
-                                            std::cmp::Ordering::Less => false,
-                                        }
-                                };
                             let params = movegen::GenMovesParams {
                                 board_snapshot,
                                 rack: cur_rack,
@@ -4873,47 +4786,41 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 pass_policy: movegen::PassPolicy::OnlyWhenForced,
                                 dynamic_leaves: None,
                             };
-                            move_generator.gen_moves_filtered(
-                                &params,
-                                movegen::PlacePredicate::AcceptAll,
-                                klv::AdjustLeave::Identity,
-                                movegen::EquityPredicate::Dyn(&mut best_play_seen),
-                            );
+                            // one move generation finds the top, its tied top
+                            // plays, the words and racks they formed, what not
+                            // knowing them costs, and the play made
+                            let play = losses.play_turn(&params)?;
 
-                            if num_plays > 0 {
-                                vec_played.sort_unstable();
-                                vec_played.dedup(); // playing the same word as main+hook or hook+hook counts once.
+                            // each word a tied top play formed, with the play
+                            // (playing the same word as main+hook or hook+hook
+                            // counts once)
+                            vec_played.clear();
+                            for (at, words) in losses.tied.iter().enumerate() {
+                                vec_played.extend(words.iter().map(|word| (word.clone(), at)));
+                            }
+                            vec_played.sort_unstable();
 
-                                let multiplier = (num_plays as f64).recip();
-                                for same_words in vec_played.chunk_by(|a, b| a.0 == b.0) {
-                                    let occurrence = same_words.len() as f64 * multiplier;
+                            let multiplier = (losses.tied.len() as f64).recip();
+                            for same_words in vec_played.chunk_by(|a, b| a.0 == b.0) {
+                                let occurrence = same_words.len() as f64 * multiplier;
 
-                                    thread_full_word_map
-                                        .entry(same_words[0].0[..].into())
-                                        .and_modify(|e| {
-                                            e.equity += occurrence;
-                                            e.count += 1;
-                                        })
-                                        .or_insert(Cumulate {
-                                            equity: occurrence,
-                                            count: 1,
-                                        });
-                                }
-
-                                // what not knowing them costs; the move losses
-                                // by the words each tied top play formed
-                                losses.add_turn(&params);
-                                let mut formed = vec![Vec::new(); num_plays];
-                                for (word, at) in &vec_played {
-                                    formed[*at].push(word.clone());
-                                }
-                                losses.add_moves(&params, best_equity_so_far, &formed);
+                                thread_full_word_map
+                                    .entry(same_words[0].0[..].into())
+                                    .and_modify(|e| {
+                                        e.equity += occurrence;
+                                        e.count += 1;
+                                    })
+                                    .or_insert(Cumulate {
+                                        equity: occurrence,
+                                        count: 1,
+                                    });
                             }
 
-                            let plays = &move_generator.plays;
-                            let play = &plays[0];
+                            // the move losses, by the words each tied top play
+                            // formed
+                            losses.add_moves(&params);
 
-                            game_state.play(&game_config, &mut rng, &play.play)?;
+                            game_state.play(&game_config, &mut rng, &play)?;
 
                             match game_state.check_game_ended(&game_config, &mut final_scores)? {
                                 game_state::CheckGameEnded::PlayedOut
