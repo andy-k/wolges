@@ -754,7 +754,7 @@ enum Task {
     Generate(Generate),
     #[command(about = "generate leaves up to rack_size")]
     GenerateFull(Generate),
-    #[command(about = "autoplay and record prorated found best words")]
+    #[command(about = "autoplay and record prorated found best words and their losses")]
     Playability(Playability),
 }
 
@@ -2767,6 +2767,19 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     let mut rack_bytes = Vec::new();
     let rack_reader = alphabet::AlphabetReader::new_for_racks(game_config.alphabet());
     let mut full_rack_map = fash::MyHashMap::<bites::Bites, Cumulate>::default();
+    // a playability file's losses, if its lines carry them (all lines alike):
+    // each word's own loss, summed, and each rack's, counted once for each file
+    // it appears in (every word of the rack there shows it), each file starting
+    // at its totals line; in millipoints
+    let playability = SORT_MODE != 'a';
+    let mut fields = None;
+    let mut word_loss = fash::MyHashMap::<bites::Bites, i64>::default();
+    let mut rack_loss = fash::MyHashMap::<bites::Bites, i64>::default();
+    let mut racks_in_file = fash::MyHashSet::<bites::Bites>::default();
+    let mut key = Vec::new();
+    let millipoints = |field: &str| -> error::Returns<i64> {
+        Ok((f64::from_str(field)? * equity::SCALE as f64).round() as i64)
+    };
     let t0 = std::time::Instant::now();
     let mut tick_periods = move_picker::Periods(0);
     for (rows_read, result) in (1u64..).zip(csv_in.records()) {
@@ -2781,6 +2794,14 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
         if record.len() < 3 {
             return Err("a summary line has fewer than 3 fields".into());
         }
+        let width = *fields.get_or_insert(record.len());
+        if playability && (record.len() != width || ![3, 5].contains(&width)) {
+            return Err(format!(
+                "a playability line has {} fields, the first {width}: 3, or 5 with its losses",
+                record.len()
+            )
+            .into());
+        }
         parse_rack(&rack_reader, &record[0], &mut rack_bytes)?;
         let thing = Cumulate {
             equity: f64::from_str(&record[1])?,
@@ -2793,8 +2814,23 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
                 e.count += thing.count;
             })
             .or_insert(thing);
+        if playability && width == 5 {
+            if rack_bytes.is_empty() {
+                racks_in_file.clear();
+            } else {
+                *word_loss.entry(rack_bytes[..].into()).or_default() += millipoints(&record[3])?;
+                key.clear();
+                key.extend_from_slice(&rack_bytes);
+                key.sort_unstable();
+                if racks_in_file.insert(key[..].into()) {
+                    *rack_loss.entry(key[..].into()).or_default() += millipoints(&record[4])?;
+                }
+            }
+        }
     }
     drop(csv_in);
+    let losses = playability && fields == Some(5);
+    let points = |millipoints: i64| millipoints as f64 / equity::SCALE as f64;
 
     full_rack_map.remove([][..].into());
 
@@ -2831,13 +2867,36 @@ fn resummarize_summaries<const SORT_MODE: char, Readable: std::io::Read, W: std:
     }
 
     let mut cur_rack_ser = String::new();
-    csv_out.serialize(("", total_equity, row_count))?;
+    if losses {
+        csv_out.serialize((
+            "",
+            total_equity,
+            row_count,
+            points(word_loss.values().sum()),
+            points(rack_loss.values().sum()),
+        ))?;
+    } else {
+        csv_out.serialize(("", total_equity, row_count))?;
+    }
     for (k, fv) in kv.iter() {
         cur_rack_ser.clear();
         for &tile in k.iter() {
             cur_rack_ser.push_str(game_config.alphabet().of_rack(tile).unwrap());
         }
-        csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+        if losses {
+            key.clear();
+            key.extend_from_slice(k);
+            key.sort_unstable();
+            csv_out.serialize((
+                &cur_rack_ser,
+                fv.equity,
+                fv.count,
+                points(word_loss.get(k).copied().unwrap_or(0)),
+                points(rack_loss.get(&key[..]).copied().unwrap_or(0)),
+            ))?;
+        } else {
+            csv_out.serialize((&cur_rack_ser, fv.equity, fv.count))?;
+        }
     }
 
     Ok(())
@@ -3917,6 +3976,207 @@ fn generate_leaves<Readable: std::io::Read, W: std::io::Write, const IS_FULL_RAC
     Ok(())
 }
 
+// a word or a rack whose loss a turn measures: a word (by_rack false; its
+// tiles) or a rack (by_rack true; its key, its tiles sorted), with the best
+// equity shown so far of a play that forms none of its words
+struct Target {
+    by_rack: bool,
+    tiles: bites::Bites,
+    best: equity::Equity,
+}
+
+// what not knowing a word costs over a run, from each turn's top plays (those
+// tied at the top equity): for each word one of them formed, the top equity
+// minus the best equity of a play that does not form it (no loss when a tied
+// top play does not form it), and the same for each rack (every word of the
+// same tiles), in millipoints. The bests come from one more move generation a
+// turn, whose equity predicate keeps them as each play is shown.
+struct Losses {
+    jumbled: bool,
+    seeker: movegen::KurniaMoveGenerator,
+    checker: move_filter::LimitedVocabChecker,
+    targets: Vec<Target>,
+    next: Vec<Target>,
+    formed: Vec<bites::Bites>,
+    keys: Vec<bites::Bites>,
+    sorted: Vec<u8>,
+    word_loss: fash::MyHashMap<bites::Bites, i64>,
+    rack_loss: fash::MyHashMap<bites::Bites, i64>,
+}
+
+impl Losses {
+    fn new(game_config: &game_config::GameConfig) -> Self {
+        Self {
+            jumbled: matches!(game_config.game_rules(), game_config::GameRules::Jumbled),
+            seeker: movegen::KurniaMoveGenerator::new(game_config),
+            checker: move_filter::LimitedVocabChecker::new(),
+            targets: Vec::new(),
+            next: Vec::new(),
+            formed: Vec::new(),
+            keys: Vec::new(),
+            sorted: Vec::new(),
+            word_loss: Default::default(),
+            rack_loss: Default::default(),
+        }
+    }
+
+    // a turn's losses, from one move generation keeping one play. The predicate
+    // sees each play in turn and tracks the top equity and the targets (the
+    // words and racks of the tied top plays), each with its best avoiding
+    // equity: a play above the top makes its own words and racks the targets
+    // (an existing target keeps its best; a new one starts at the old top); a
+    // play at the top adds its own at the top, and raises each target it does
+    // not form to the top; a play below raises each target it does not form to
+    // its equity. The pass, shown only when nothing was kept, raises only
+    // targets nothing else avoids. Only plays at or below the floor, the lowest
+    // best (the top, with no targets), are kept, so the cutoff drops only plays
+    // that could raise no best.
+    fn add_turn<N: kwg::Node, L: kwg::Node>(&mut self, params: &movegen::GenMovesParams<'_, N, L>) {
+        let Self {
+            jumbled,
+            seeker,
+            checker,
+            targets,
+            next,
+            formed,
+            keys,
+            sorted,
+            word_loss,
+            rack_loss,
+        } = self;
+        let jumbled = *jumbled;
+        targets.clear();
+        let mut top = equity::Equity::NEG_INFINITY;
+        let mut floor = top;
+        let mut shown = |equity: equity::Equity, play: &movegen::Play| {
+            if equity <= floor {
+                return true;
+            }
+            // the play's words, each once (under jumbled rules, as sorted
+            // tiles), and their racks
+            formed.clear();
+            keys.clear();
+            let pass = match play {
+                movegen::Play::Exchange { tiles } => tiles.is_empty(),
+                movegen::Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    ..
+                } => {
+                    checker.words_placed_are_ok(
+                        params.board_snapshot,
+                        *down,
+                        *lane,
+                        *idx,
+                        word,
+                        |w: &[u8]| {
+                            sorted.clear();
+                            sorted.extend_from_slice(w);
+                            sorted.sort_unstable();
+                            let key = bites::Bites::from(&sorted[..]);
+                            let w = if jumbled { key.clone() } else { w.into() };
+                            if !formed.contains(&w) {
+                                formed.push(w);
+                            }
+                            if !keys.contains(&key) {
+                                keys.push(key);
+                            }
+                            true
+                        },
+                    );
+                    false
+                }
+            };
+            let forms = |target: &Target| {
+                if target.by_rack {
+                    keys.contains(&target.tiles)
+                } else {
+                    formed.contains(&target.tiles)
+                }
+            };
+            if pass && top.is_finite() {
+                for target in targets.iter_mut() {
+                    if !target.best.is_finite() {
+                        target.best = equity;
+                    }
+                }
+            } else {
+                match equity.cmp(&top) {
+                    std::cmp::Ordering::Greater => {
+                        next.clear();
+                        for (by_rack, list) in [(false, &*formed), (true, &*keys)] {
+                            for w in list {
+                                let best = targets
+                                    .iter()
+                                    .find(|target| target.by_rack == by_rack && target.tiles == *w)
+                                    .map_or(top, |target| target.best);
+                                next.push(Target {
+                                    by_rack,
+                                    tiles: w.clone(),
+                                    best,
+                                });
+                            }
+                        }
+                        std::mem::swap(targets, next);
+                        top = equity;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        for target in targets.iter_mut() {
+                            if !forms(target) {
+                                target.best = top;
+                            }
+                        }
+                        for (by_rack, list) in [(false, &*formed), (true, &*keys)] {
+                            for w in list {
+                                if !targets
+                                    .iter()
+                                    .any(|target| target.by_rack == by_rack && target.tiles == *w)
+                                {
+                                    targets.push(Target {
+                                        by_rack,
+                                        tiles: w.clone(),
+                                        best: top,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    std::cmp::Ordering::Less => {
+                        for target in targets.iter_mut() {
+                            if !forms(target) {
+                                target.best = target.best.max(equity);
+                            }
+                        }
+                    }
+                }
+            }
+            floor = targets
+                .iter()
+                .map(|target| target.best)
+                .min()
+                .unwrap_or(top);
+            equity <= floor
+        };
+        seeker.gen_moves_filtered(
+            params,
+            movegen::PlacePredicate::AcceptAll,
+            klv::AdjustLeave::Identity,
+            movegen::EquityPredicate::Dyn(&mut shown),
+        );
+        for target in targets.iter() {
+            let lost = top.raw() as i64 - target.best.raw() as i64;
+            let losses = if target.by_rack {
+                &mut *rack_loss
+            } else {
+                &mut *word_loss
+            };
+            *losses.entry(target.tiles.clone()).or_default() += lost;
+        }
+    }
+}
+
 #[inline]
 fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
@@ -3952,10 +4212,14 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     struct MutexedStuffs {
         full_word_map: fash::MyHashMap<bites::Bites, Cumulate>,
         tick_periods: move_picker::Periods,
+        word_loss: fash::MyHashMap<bites::Bites, i64>,
+        rack_loss: fash::MyHashMap<bites::Bites, i64>,
     }
     let mutexed_stuffs = std::sync::Arc::new(std::sync::Mutex::new(MutexedStuffs {
         full_word_map,
         tick_periods,
+        word_loss: Default::default(),
+        rack_loss: Default::default(),
     }));
     let batch_size = match game_config.game_rules() {
         game_config::GameRules::Classic => 100,
@@ -4019,6 +4283,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                     };
 
                 let mut vec_played = Vec::<(bites::Bites, usize)>::new();
+                let mut losses = Losses::new(&game_config);
                 loop {
                     let num_prior_games =
                         num_processed_games.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4118,17 +4383,18 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                             std::cmp::Ordering::Less => false,
                                         }
                                 };
+                            let params = movegen::GenMovesParams {
+                                board_snapshot,
+                                rack: cur_rack,
+                                max_gen: 1, // plays that tie the top still reach the predicate
+                                num_exchanges_by_this_player: game_state
+                                    .current_player()
+                                    .num_exchanges,
+                                pass_policy: movegen::PassPolicy::OnlyWhenForced,
+                                dynamic_leaves: None,
+                            };
                             move_generator.gen_moves_filtered(
-                                &movegen::GenMovesParams {
-                                    board_snapshot,
-                                    rack: cur_rack,
-                                    max_gen: 1, // plays that tie the top still reach the predicate
-                                    num_exchanges_by_this_player: game_state
-                                        .current_player()
-                                        .num_exchanges,
-                                    pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                                    dynamic_leaves: None,
-                                },
+                                &params,
                                 movegen::PlacePredicate::AcceptAll,
                                 klv::AdjustLeave::Identity,
                                 movegen::EquityPredicate::Dyn(&mut best_play_seen),
@@ -4153,6 +4419,9 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                             count: 1,
                                         });
                                 }
+
+                                // what not knowing them costs
+                                losses.add_turn(&params);
                             }
 
                             let plays = &move_generator.plays;
@@ -4216,6 +4485,12 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             .or_insert(thread_v);
                     }
                 }
+                for (k, lost) in losses.word_loss {
+                    *mutex_guard.word_loss.entry(k).or_default() += lost;
+                }
+                for (k, lost) in losses.rack_loss {
+                    *mutex_guard.rack_loss.entry(k).or_default() += lost;
+                }
                 Ok(())
             }));
         }
@@ -4256,17 +4531,42 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                 .then_with(|| b.1.equity.total_cmp(&a.1.equity).then_with(|| a.0.cmp(b.0)))
         });
 
+        // then each word's losses in points: its own and its rack's (the same
+        // for every word of a rack, the totals line counting each rack once)
+        let points = |millipoints: i64| millipoints as f64 / equity::SCALE as f64;
+        let word_loss =
+            |k: &bites::Bites| points(mutex_guard.word_loss.get(k).copied().unwrap_or(0));
+        let mut key = Vec::new();
+        let mut rack_loss = |k: &bites::Bites| {
+            key.clear();
+            key.extend_from_slice(k);
+            key.sort_unstable();
+            points(mutex_guard.rack_loss.get(&key[..]).copied().unwrap_or(0))
+        };
+
         let mut csv_out =
             csv::Writer::from_path(claim_output_path(&format!("playability-{run_identifier}"))?)?;
         let mut cur_word_ser = String::new();
-        csv_out.serialize(("", total_equity, row_count))?;
+        csv_out.serialize((
+            "",
+            total_equity,
+            row_count,
+            points(mutex_guard.word_loss.values().sum()),
+            points(mutex_guard.rack_loss.values().sum()),
+        ))?;
         for (k, fv) in kv.iter() {
             cur_word_ser.clear();
             for &tile in k.iter() {
                 // using of_board because blanks should not be possible.
                 cur_word_ser.push_str(game_config.alphabet().of_board(tile).unwrap());
             }
-            csv_out.serialize((&cur_word_ser, fv.equity, fv.count))?;
+            csv_out.serialize((
+                &cur_word_ser,
+                fv.equity,
+                fv.count,
+                word_loss(k),
+                rack_loss(k),
+            ))?;
         }
     }
 
@@ -7904,6 +8204,35 @@ mod tests {
         let b = dst.get(&b"\x02"[..]).unwrap();
         assert_eq!(b.count, 1);
         assert!(src.is_empty(), "merge_rack_map must drain the source");
+    }
+
+    #[test]
+    #[inline]
+    fn resummarizing_playability_keeps_each_words_loss_and_each_racks_once_a_run() {
+        let resummarize = |input: &str| {
+            let mut out = Vec::new();
+            resummarize_summaries::<'p', _, _>(
+                game_config::make_english_game_config(),
+                csv::ReaderBuilder::new()
+                    .has_headers(false)
+                    .from_reader(input.as_bytes()),
+                csv::Writer::from_writer(&mut out),
+                true,
+            )
+            .map(|()| String::from_utf8(out).unwrap())
+        };
+        // two runs in which AT and TA share one rack: its loss is counted once
+        // a run, and shown on both words
+        let runs = ",3,4,6,7\nAT,2,3,4,7\nTA,1,1,2,7\n,1,1,1,2\nAT,1,1,1,2\n";
+        assert_eq!(
+            resummarize(runs).unwrap(),
+            ",4.0,5,7.0,9.0\nAT,3.0,4,5.0,9.0\nTA,1.0,1,2.0,9.0\n"
+        );
+        // without losses, as before; a run with them and one without are
+        // refused together
+        assert_eq!(resummarize(",2,3\nAT,2,3\n").unwrap(), ",2.0,3\nAT,2.0,3\n");
+        assert!(resummarize(",2,3\nAT,2,3\n,1,1,1,2\nAT,1,1,1,2\n").is_err());
+        assert!(resummarize(",1,1,1\nAT,1,1,1\n").is_err());
     }
 
     #[test]
