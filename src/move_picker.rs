@@ -546,6 +546,13 @@ impl<
         top_candidate_play_index_by_mean(&self.candidates)
     }
 
+    // how many iterations to run up to the next look, so that running in such
+    // steps gives the threads whole blocks
+    #[inline(always)]
+    pub fn iters_to_next_look(&self) -> u64 {
+        PRUNE_CADENCE - self.iters_done % PRUNE_CADENCE
+    }
+
     // for a decision bounded by time, plan the budget again from the rollouts
     // left: the candidates still in are rolled out to the next look, and after
     // it the survivor cap (one more than twice the looks left) shrinks the
@@ -2362,6 +2369,23 @@ mod tests {
             blocked.leaderboard(usize::MAX)
         );
         assert_eq!(sequential.best_so_far(), blocked.best_so_far());
+
+        // the same decision run in steps up to each look, the first step short
+        let mut stepped = new_simmer(3);
+        stepped
+            .begin_decision(&move_generator, &game_state, 5, &[])
+            .unwrap();
+        assert_eq!(stepped.iters_to_next_look(), 11);
+        let mut done = 5;
+        while done < 64 {
+            let step = stepped.iters_to_next_look().min(64 - done);
+            stepped.resume(&move_generator, step).unwrap();
+            done += step;
+        }
+        assert_eq!(
+            sequential.leaderboard(usize::MAX),
+            stepped.leaderboard(usize::MAX)
+        );
 
         // a block taken in out of its turn is refused
         let (block, rows) = stale.unwrap();
