@@ -1616,9 +1616,15 @@ impl<
         move_generator: &movegen::KurniaMoveGenerator,
         game_state: &game_state::GameState,
         iters: u64,
+        kept_leaves: &[(Vec<u8>, f64)], // the leaves the opponent may have kept, with weights
     ) -> error::Returns<()> {
-        self.simmer
-            .prepare(self.game_config, game_state, self.num_sim_plies, OBSERVE);
+        self.simmer.prepare(
+            self.game_config,
+            game_state,
+            self.num_sim_plies,
+            OBSERVE,
+            kept_leaves,
+        );
         self.prepared_pristine
             .clone_from(self.simmer.prepared_state());
         self.candidates = self.take_candidates(move_generator.plays.len());
@@ -1691,7 +1697,7 @@ impl<N: kwg::Node, L: kwg::Node> MovePicker<'_, N, L> {
                 );
                 simmer.candidate_scratch = scratch;
                 let budget = simmer.num_sim_iters;
-                simmer.begin_decision(move_generator, game_state, budget)?;
+                simmer.begin_decision(move_generator, game_state, budget, &[])?;
                 if let Some(t0) = t0 {
                     const Z: f64 = 1.96; // 95% confidence interval
                     let top = simmer
