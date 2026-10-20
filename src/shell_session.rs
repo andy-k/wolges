@@ -4,10 +4,11 @@
 // themselves, which save writes out and source replays to build the same state
 // again
 
+use crate::endgame_watch;
 use rand::{Rng, SeedableRng};
 use std::io::Write;
 use wolges::{
-    alphabet, anagrams, display, equity, error, game_config, game_state, infer, klv, kwg,
+    alphabet, anagrams, display, endgame, equity, error, game_config, game_state, infer, klv, kwg,
     move_filter, move_picker, movegen, notation, parallelism, play_scorer,
 };
 
@@ -19,6 +20,9 @@ const INFER_FUZZ: f64 = 3.105;
 
 // how many iterations sim runs when given no count
 const DEFAULT_SIM_ITERATIONS: u64 = 1000;
+
+// how long endgame solves for when given no time, in seconds
+const DEFAULT_ENDGAME_SECONDS: f64 = 10.0;
 
 // a move of the game, with: the rack its mover was given before it, if any (for
 // a seat given, what it was known to hold plus what the move needed); whether
@@ -51,7 +55,8 @@ struct Game {
 // who plays a seat: a person whose racks are dealt; a person whose racks are
 // given, never dealt (only what is typed in, or what their moves show); or the
 // computer, its racks dealt and hidden, playing the generator's best move or
-// the best of a sim of so many milliseconds
+// the best of a sim of so many milliseconds (once the bag is empty, by solving
+// the endgame)
 #[derive(Clone, Copy, PartialEq)]
 enum Seat {
     Human,
@@ -93,7 +98,8 @@ pub struct Session {
     racks_given: [bool; 2], // by seat, whether its current rack is given
     printing: bool,         // false while a file's game is read in
     log: Vec<String>,
-    quiet: bool, // no progress printed while a sim runs
+    quiet: bool, // no progress printed while a sim or a solve runs
+    memory: Option<endgame::MemoryLimit>, // the memory an endgame solve stays within
 }
 
 // each command as it is typed, and what it does, for help
@@ -143,7 +149,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "bot sim MS",
-        "the side to move plays the best move of a sim of MS ms (logged as play)",
+        "the side to move plays the best move of a sim of MS ms, or of a solved endgame once the bag is empty (logged as play)",
     ),
     ("back [N]", "take back N moves, 1 if not given"),
     ("forward [N]", "replay N moves taken back, 1 if not given"),
@@ -163,6 +169,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "sim stop",
         "end the sim; any change to the game ends it too",
+    ),
+    (
+        "endgame [SECONDS]",
+        "with the bag empty, solve the endgame for the side to move within SECONDS (10 if not given)",
     ),
     (
         "show",
@@ -192,7 +202,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
 ];
 
 impl Session {
-    pub fn new(quiet: bool) -> error::Returns<Self> {
+    pub fn new(quiet: bool, memory: Option<endgame::MemoryLimit>) -> error::Returns<Self> {
         let game_config: &'static _ = Box::leak(Box::new(game_config::make_english_game_config()));
         Ok(Self {
             game_config,
@@ -217,6 +227,7 @@ impl Session {
             printing: true,
             log: Vec::new(),
             quiet,
+            memory,
         })
     }
 
@@ -494,6 +505,52 @@ impl Session {
                     .map(String::from)
                     .collect::<Vec<_>>();
                 return self.run_one(&line, &words);
+            }
+            "endgame" => {
+                let seconds = match args {
+                    [] => DEFAULT_ENDGAME_SECONDS,
+                    [seconds] => seconds.parse::<f64>()?,
+                    _ => return Err("endgame [SECONDS]".into()),
+                };
+                let usable = seconds.is_finite() && seconds > 0.0;
+                if !usable {
+                    return Err("endgame SECONDS: SECONDS above 0".into());
+                }
+                if self.game.is_none() {
+                    return Err("no game: new first".into());
+                }
+                if self.final_scores.is_some() {
+                    return Err("the game is over".into());
+                }
+                let kwg = self.kwg()?;
+                let arm_tables = self.arm_tables()?;
+                let state = self.endgame_state();
+                let (solver, solved) = solve_endgame(
+                    self.game_config,
+                    kwg,
+                    arm_tables,
+                    &state,
+                    &endgame::Limits {
+                        time: Some(std::time::Duration::from_secs_f64(seconds)),
+                        states: None,
+                        memory: self.memory,
+                    },
+                    self.quiet,
+                )?;
+                writeln!(
+                    std::io::stdout(),
+                    "the side to move gains {} on the spread from here, {}",
+                    solved.value,
+                    if solved.exact {
+                        "exactly".to_string()
+                    } else {
+                        format!("as {} moves deep saw it, cut short", solved.depth)
+                    }
+                )?;
+                for line in self.endgame_line(&solver, &state)? {
+                    writeln!(std::io::stdout(), "{line}")?;
+                }
+                return Ok(());
             }
             "show" => return self.show(),
             "gen" => {
@@ -1027,7 +1084,8 @@ impl Session {
 
     // the move the computer would make for the side to move: the generator's
     // best, or given a time, the sim's best after that many milliseconds
-    // (drawing the opponent's rack from what their last move says they kept)
+    // (drawing the opponent's rack from what their last move says they kept),
+    // or once the bag is empty, the solved endgame's
     fn computer_move(&mut self, sim_ms: Option<f64>) -> error::Returns<movegen::Play> {
         if self.game.is_none() {
             return Err("no game: new first".into());
@@ -1060,6 +1118,26 @@ impl Session {
             )?;
             return Ok(self.move_generator.plays[0].play.clone());
         };
+        // with the bag empty, both racks are known (a given seat's rack is all
+        // the unseen tiles, once they fit in it), so solve rather than sim
+        let endgame_state = self.endgame_state();
+        if endgame_state.bag.is_empty() {
+            let (solver, _) = solve_endgame(
+                self.game_config,
+                kwg,
+                arm_tables,
+                &endgame_state,
+                &endgame::Limits {
+                    time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
+                    states: None,
+                    memory: self.memory,
+                },
+                self.quiet,
+            )?;
+            let mut line = Vec::new();
+            solver.collect_pv(endgame_state.turn, &mut line);
+            return Ok(line.first().ok_or("the solve found no move")?.1.clone());
+        }
         let state = self.filled_state();
         move_picker::gen_simmer_candidates(
             &mut move_filter::GenMoves::Unfiltered,
@@ -1137,6 +1215,22 @@ impl Session {
             if seat != to_move {
                 top_up(self.game_config, &mut state, seat);
             }
+        }
+        state
+    }
+
+    // the position shown, for an endgame: if only one rack is given, it is
+    // topped up from the bag to full (never past full), so that once the bag's
+    // tiles fit it, all the unseen tiles are theirs; with both racks given,
+    // whose the bag's tiles are is not known, and they stay in the bag
+    fn endgame_state(&self) -> game_state::GameState {
+        let mut state = self.state.clone();
+        let given = self.racks_given;
+        if let [seat] = (0..given.len())
+            .filter(|&seat| given[seat])
+            .collect::<Vec<_>>()[..]
+        {
+            top_up(self.game_config, &mut state, seat);
         }
         state
     }
@@ -1641,6 +1735,43 @@ impl Session {
         Ok(text)
     }
 
+    // a solve's best line from the position it solved, one line a move as the
+    // moves list shows them: the move's number from here, its player, their
+    // rack as show prints it, and the move with its score
+    fn endgame_line(
+        &self,
+        solver: &endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>,
+        state: &game_state::GameState,
+    ) -> error::Returns<Vec<String>> {
+        let mut line = Vec::new();
+        solver.collect_pv(state.turn, &mut line);
+        let kwg = self.kwg()?;
+        let mut state = state.clone();
+        // with the bag empty, nothing is drawn
+        let mut rng = GameRng::seed_from_u64(0);
+        let mut text = Vec::new();
+        for (i, (_, play)) in line.iter().enumerate() {
+            let mover = state.turn as usize;
+            text.push(format!(
+                "{:>3}. player {} {:<7} {}",
+                i + 1,
+                mover + 1,
+                self.rack_text(mover, &state.players[mover].rack),
+                play.fmt(&movegen::BoardSnapshot {
+                    board_tiles: &state.board_tiles,
+                    game_config: self.game_config,
+                    kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: self.klv,
+                })
+            ));
+            state.play(self.game_config, &mut rng, play)?;
+            state.next_turn();
+        }
+        Ok(text)
+    }
+
     // a move written as play takes it: a coordinate and a word (8D across, D8
     // down; a tile played through in parentheses), exch and its tiles, or pass
     fn play_text(&self, play: &movegen::Play) -> error::Returns<String> {
@@ -1667,6 +1798,38 @@ impl Session {
             }
         })
     }
+}
+
+// solve the side to move's endgame, once the bag is empty and both racks are
+// known, within the limits, printing its progress unless quiet: returns the
+// solver, whose best line can be read, and what it found
+fn solve_endgame(
+    game_config: &'static game_config::GameConfig,
+    kwg: &'static kwg::Kwg<kwg::Node22>,
+    arm_tables: &'static anagrams::ArmTables,
+    state: &game_state::GameState,
+    limits: &endgame::Limits,
+    quiet: bool,
+) -> error::Returns<(
+    endgame::EndgameSolver<'static, kwg::Node22, kwg::Node22>,
+    endgame::Solved,
+)> {
+    if !state.bag.is_empty() {
+        return Err("the bag is not empty, and an endgame needs it to be".into());
+    }
+    let mut solver = endgame::EndgameSolver::new(game_config, kwg, arm_tables)?;
+    solver.init(
+        &state.board_tiles,
+        [&state.players[0].rack, &state.players[1].rack],
+    );
+    if !quiet {
+        solver.report_progress(endgame_watch::ticking(|progress, elapsed| {
+            writeln!(std::io::stderr(), "endgame: {}", progress.after(elapsed))?;
+            Ok(())
+        }));
+    }
+    let solved = solver.solve_within(state.turn, limits)?;
+    Ok((solver, solved))
 }
 
 // what a line of a GCG file says: a move, as play takes it; that its player had
@@ -2036,7 +2199,7 @@ mod tests {
     }
 
     fn session() -> Session {
-        let mut session = Session::new(true).unwrap();
+        let mut session = Session::new(true, None).unwrap();
         session.use_kwg("tiny", Box::leak(Box::new(tiny_lexicon())));
         session
     }
@@ -2829,6 +2992,84 @@ mod tests {
         assert_eq!(scores(&fourth), scores(&first));
         assert!(gcg_moves(">p1: ABC (challenge) +5 5").is_err());
         assert!(gcg_moves(">p1: ABC -- -4 0").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn an_endgame_is_solved_once_the_bag_is_empty() {
+        let mut session = session();
+        run(&mut session, "new 7").unwrap();
+        let error = run(&mut session, "endgame").unwrap_err().to_string();
+        assert!(error.contains("bag is not empty"), "{error}");
+        // the bag is empty: every tile but AT (the side to move's) and E is on
+        // the board, in rows from the top, so that neither rack can make a word
+        // on it
+        let game_config = session.game_config;
+        let alphabet = game_config.alphabet();
+        let mut tiles = Vec::new();
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                tiles.push(if tile == 0 { 0x81 } else { tile });
+            }
+        }
+        for held in [1, 20, 5] {
+            let at = tiles.iter().position(|&t| t == held).unwrap();
+            tiles.remove(at);
+        }
+        let mut state = game_state::GameState::new(game_config);
+        state.board_tiles[..tiles.len()].copy_from_slice(&tiles);
+        state.bag.set_from_iter(std::iter::empty());
+        state.players[0].rack = vec![1, 20];
+        state.players[1].rack = vec![5];
+        session.state = state;
+        run(&mut session, "endgame 5").unwrap();
+        let (solver, solved) = solve_endgame(
+            session.game_config,
+            session.kwg().unwrap(),
+            session.arm_tables().unwrap(),
+            &session.state,
+            &endgame::Limits {
+                time: Some(std::time::Duration::from_secs(5)),
+                states: None,
+                memory: None,
+            },
+            false,
+        )
+        .unwrap();
+        assert!(solved.exact);
+        // nothing can be played, so the side to move passes
+        let mut line = Vec::new();
+        solver.collect_pv(0, &mut line);
+        assert!(matches!(&line[0].1, movegen::Play::Exchange { tiles } if tiles.is_empty()));
+        // the line as the moves list shows it, its players numbered as the
+        // shell numbers them
+        let text = session.endgame_line(&solver, &session.state).unwrap();
+        assert!(text[0].starts_with("  1. player 1 AT "), "{text:?}");
+        assert!(text[1].starts_with("  2. player 2 E "), "{text:?}");
+        assert!(matches!(
+            session.computer_move(Some(100.0)).unwrap(),
+            movegen::Play::Exchange { tiles } if tiles.is_empty()
+        ));
+        // with player 2's seat given and nothing known, the bag's one tile, all
+        // that is left, is theirs, also as the side to move (the position is
+        // set here, not rebuilt, so whose racks are given is set with it)
+        session.seats[1] = Seat::Given;
+        session.racks_given[1] = true;
+        let e = std::mem::take(&mut session.state.players[1].rack);
+        session.state.bag.return_tiles(&e);
+        let state = session.endgame_state();
+        assert!(state.bag.is_empty());
+        assert_eq!(state.players[1].rack, [5]);
+        run(&mut session, "endgame 5").unwrap();
+        session.state.turn = 1;
+        assert_eq!(session.endgame_state().players[1].rack, [5]);
+        run(&mut session, "endgame 5").unwrap();
+        // both seats given: whose the tile is is not known, so there is no
+        // endgame
+        session.seats[0] = Seat::Given;
+        session.racks_given[0] = true;
+        let error = run(&mut session, "endgame 5").unwrap_err().to_string();
+        assert!(error.contains("bag is not empty"), "{error}");
     }
 
     #[test]
