@@ -20,21 +20,43 @@ const INFER_FUZZ: f64 = 3.105;
 // how many iterations sim runs when given no count
 const DEFAULT_SIM_ITERATIONS: u64 = 1000;
 
-// a move of the game, with the rack its mover was given before it, if any
+// a move of the game, with: the rack its mover was given before it, if any (for
+// a seat given, what it was known to hold plus what the move needed); whether
+// the mover's seat was given, so that they drew nothing anyone saw; whether its
+// exchange was of tiles no one saw (exch N); whether the game was declared over
+// after it (end); and the racks set after it, by seat (none for a player with
+// no tiles)
 #[derive(Clone)]
 struct Turn {
     rack: Option<Vec<u8>>,
+    given: bool,
     play: movegen::Play,
+    hidden: bool,
+    ended: bool,
+    shown: Vec<(usize, Vec<u8>)>,
 }
 
-// a game: the bag dealt from its seed, its moves, how many of them the board
-// shows, and a rack given to the side to move that has not played yet
+// a game: the bag dealt from its seed, the racks set before its first move, its
+// moves, how many of them the board shows, and a rack given to the side to move
+// who has not played yet
 #[derive(Clone)]
 struct Game {
     seed: u64,
+    start: Vec<(usize, Vec<u8>)>,
     turns: Vec<Turn>,
     at: usize,
     rack: Option<Vec<u8>>,
+}
+
+// who plays a seat: a person whose racks are dealt; a person whose racks are
+// given, never dealt (only what is typed in, or what their moves show); or the
+// computer, its racks dealt and hidden, playing the generator's best move or
+// the best of a sim of so many milliseconds
+#[derive(Clone, Copy, PartialEq)]
+enum Seat {
+    Human,
+    Given,
+    Bot(Option<f64>),
 }
 
 // a sim of the position shown, run a command at a time: its candidates (the
@@ -67,6 +89,8 @@ pub struct Session {
     infer_generator: movegen::KurniaMoveGenerator,
     play_scorer: play_scorer::PlayScorer,
     sim: Option<Sim>, // of the position shown; any change to the game ends it
+    seats: [Seat; 2],
+    racks_given: [bool; 2], // by seat, whether its current rack is given
     log: Vec<String>,
     quiet: bool, // no progress printed while a sim runs
 }
@@ -87,11 +111,31 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "give the side to move these tiles, ? for a blank",
     ),
     (
+        "rack N TILES",
+        "set player N's rack as it is now (- for an empty rack)",
+    ),
+    (
         "play 8D WORD",
         "the side to move plays WORD across from 8D (D8 for down)",
     ),
     ("play exch TILES", "the side to move exchanges these tiles"),
     ("play pass", "the side to move passes"),
+    (
+        "end",
+        "end the game here; the racks left count as at any end",
+    ),
+    (
+        "player N human",
+        "a person plays seat N, its racks dealt by the shell and shown (both seats, at first)",
+    ),
+    (
+        "player N given",
+        "a person plays seat N, its racks never dealt: only typed in, or shown by its moves",
+    ),
+    (
+        "player N bot [sim MS]",
+        "the computer plays seat N, its rack hidden, moving when its turn comes (with sim MS, by a sim of MS ms)",
+    ),
     (
         "bot",
         "the side to move plays the best move by equity (logged as play)",
@@ -133,6 +177,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "write those commands to FILE, a new file, for source to run",
     ),
     ("source FILE", "run the commands in FILE"),
+    ("r, p, k, b", "short for rack, play, gen (kibitz), and show"),
     ("help", "this list"),
     ("exit", "leave the shell"),
 ];
@@ -158,16 +203,68 @@ impl Session {
             infer_generator: movegen::KurniaMoveGenerator::new(game_config),
             play_scorer: play_scorer::PlayScorer::new(),
             sim: None,
+            seats: [Seat::Human; 2],
+            racks_given: [false; 2],
             log: Vec::new(),
             quiet,
         })
     }
 
-    // run one command, its words split from line. A command that changes the
-    // session is logged as line (new with the seed it used, bot as the move it
-    // chose), but sim commands are not (they are analysis, which any change to
-    // the game ends); a command that fails changes nothing
-    pub fn run(&mut self, line: &str, words: &[String]) -> error::Returns<()> {
+    // run one command, its words split from line; after a typed one (not read
+    // from a file by source, whose plays are all logged), each bot whose turn
+    // it is moves, if the game is at its last move
+    pub fn run(&mut self, line: &str, words: &[String], typed: bool) -> error::Returns<()> {
+        self.run_one(line, words)?;
+        if typed {
+            self.bots_move()?;
+        }
+        Ok(())
+    }
+
+    // while the side to move is the computer's, the game is not over, and its
+    // last move is shown, the computer moves, logged as its play
+    fn bots_move(&mut self) -> error::Returns<()> {
+        loop {
+            let Some(game) = &self.game else {
+                return Ok(());
+            };
+            let mover = self.state.turn as usize;
+            let Seat::Bot(sim_ms) = self.seats[mover] else {
+                return Ok(());
+            };
+            if self.final_scores.is_some() || game.at != game.turns.len() {
+                return Ok(());
+            }
+            let play = self.computer_move(sim_ms)?;
+            let line = format!("play {}", self.play_text(&play)?);
+            writeln!(std::io::stdout(), "player {}: {line}", mover + 1)?;
+            let words = line
+                .split_whitespace()
+                .map(String::from)
+                .collect::<Vec<_>>();
+            self.run_one(&line, &words)?;
+        }
+    }
+
+    // run one command. A command that changes the session is logged as line
+    // (new with the seed it used, a short command as its long form, bot as the
+    // move it chose), but sim commands are not (they are analysis, which any
+    // change to the game ends); a command that fails changes nothing
+    fn run_one(&mut self, line: &str, words: &[String]) -> error::Returns<()> {
+        // short commands run and are logged as their long forms
+        let longer = match words[0].as_str() {
+            "r" => Some("rack"),
+            "p" => Some("play"),
+            "k" => Some("gen"),
+            "b" => Some("show"),
+            _ => None,
+        };
+        if let Some(longer) = longer {
+            let words = std::iter::once(longer.to_string())
+                .chain(words[1..].iter().cloned())
+                .collect::<Vec<_>>();
+            return self.run_one(&words.join(" "), &words);
+        }
         let args = &words[1..];
         let logged = match words[0].as_str() {
             "lexicon" => {
@@ -221,6 +318,7 @@ impl Session {
                 self.change(|game| {
                     *game = Some(Game {
                         seed,
+                        start: Vec::new(),
                         turns: Vec::new(),
                         at: 0,
                         rack: None,
@@ -231,33 +329,110 @@ impl Session {
                 format!("new {seed}")
             }
             "rack" => {
-                let [tiles] = args else {
-                    return Err("rack TILES".into());
+                const USAGE: &str = "rack TILES, or rack N TILES, - for none";
+                let (seat, tiles) = match args {
+                    [tiles] => (None, tiles),
+                    [n, tiles] => {
+                        let n = n.parse::<usize>().map_err(|_| USAGE)?;
+                        if !(1..=self.seats.len()).contains(&n) {
+                            return Err(format!("player 1 to {}", self.seats.len()).into());
+                        }
+                        (Some(n - 1), tiles)
+                    }
+                    _ => return Err(USAGE.into()),
                 };
                 let mut rack = Vec::new();
-                alphabet::AlphabetReader::new_for_racks(self.game_config.alphabet())
-                    .set_word(tiles, &mut rack)?;
-                self.change(|game| {
-                    let game = game.as_mut().ok_or("no game: new first")?;
-                    game.turns.truncate(game.at);
-                    game.rack = Some(rack);
-                    Ok(())
-                })?;
+                if tiles != "-" {
+                    alphabet::AlphabetReader::new_for_racks(self.game_config.alphabet())
+                        .set_word(tiles, &mut rack)?;
+                }
+                self.type_rack(seat, rack)?;
                 line.to_string()
             }
             "play" => {
-                let play = self.read_play(args)?;
+                if self.game.is_some() && self.seats[self.state.turn as usize] == Seat::Given {
+                    // what a player whose seat is given held: what they were
+                    // known to hold, plus whatever the move needs that was not
+                    // there; for exch N, tiles no one saw
+                    let (tiles, args, hidden) = self.tiles_needed(args)?;
+                    let held = match hidden {
+                        true => tiles,
+                        false => completed(&self.state.current_player().rack, &tiles),
+                    };
+                    let before = self.game.clone();
+                    self.change(|game| {
+                        let game = game.as_mut().ok_or("no game: new first")?;
+                        game.turns.truncate(game.at);
+                        game.rack = Some(held);
+                        Ok(())
+                    })?;
+                    if let Err(e) = self
+                        .read_play(&args)
+                        .and_then(|play| self.push_turn(play, hidden))
+                    {
+                        self.game = before;
+                        self.rebuild()?;
+                        return Err(e);
+                    }
+                } else {
+                    let play = self.read_play(args)?;
+                    self.push_turn(play, false)?;
+                }
+                self.show()?;
+                line.to_string()
+            }
+            "end" => {
+                // declare the game over here; the shell cannot see the end
+                // while a seat given holds tiles it was not told of
+                if !args.is_empty() {
+                    return Err("end".into());
+                }
+                if self.final_scores.is_some() {
+                    return Err("the game is over".into());
+                }
                 self.change(|game| {
                     let game = game.as_mut().ok_or("no game: new first")?;
                     game.turns.truncate(game.at);
-                    game.turns.push(Turn {
-                        rack: game.rack.take(),
-                        play,
-                    });
-                    game.at += 1;
+                    game.rack = None;
+                    let turn = game.turns.last_mut().ok_or("no move yet")?;
+                    turn.ended = true;
                     Ok(())
                 })?;
                 self.show()?;
+                line.to_string()
+            }
+            "player" => {
+                const USAGE: &str =
+                    "player N human, player N given, player N bot, or player N bot sim MS";
+                let [n, kind @ ..] = args else {
+                    return Err(USAGE.into());
+                };
+                let n = n.parse::<usize>().map_err(|_| USAGE)?;
+                if !(1..=self.seats.len()).contains(&n) {
+                    return Err(format!("player 1 to {}", self.seats.len()).into());
+                }
+                let seat = match kind {
+                    [kind] if kind == "human" => Seat::Human,
+                    [kind] if kind == "given" => Seat::Given,
+                    [kind] if kind == "bot" => Seat::Bot(None),
+                    [kind, sim, ms] if kind == "bot" && sim == "sim" => {
+                        let ms = ms.parse::<f64>()?;
+                        let usable = ms.is_finite() && ms > 0.0;
+                        if !usable {
+                            return Err("bot sim MS: MS above 0".into());
+                        }
+                        Seat::Bot(Some(ms))
+                    }
+                    _ => return Err(USAGE.into()),
+                };
+                // rebuild the game as that seat deals it: a seat given is dealt
+                // nothing
+                let before = std::mem::replace(&mut self.seats[n - 1], seat);
+                if let Err(e) = self.rebuild() {
+                    self.seats[n - 1] = before;
+                    self.rebuild()?;
+                    return Err(e);
+                }
                 line.to_string()
             }
             "back" | "forward" => {
@@ -306,7 +481,7 @@ impl Session {
                     .split_whitespace()
                     .map(String::from)
                     .collect::<Vec<_>>();
-                return self.run(&line, &words);
+                return self.run_one(&line, &words);
             }
             "show" => return self.show(),
             "gen" => {
@@ -417,41 +592,171 @@ impl Session {
         result
     }
 
-    // the state after the game's shown moves, rebuilt from its seed, with the
-    // rack given to the side to move
+    // play a move after the ones shown, which are dropped; hidden is true for
+    // an exchange of tiles no one saw
+    fn push_turn(&mut self, play: movegen::Play, hidden: bool) -> error::Returns<()> {
+        let given = self.seats[self.state.turn as usize] == Seat::Given;
+        self.change(|game| {
+            let game = game.as_mut().ok_or("no game: new first")?;
+            game.turns.truncate(game.at);
+            game.turns.push(Turn {
+                rack: game.rack.take(),
+                given,
+                play,
+                hidden,
+                ended: false,
+                shown: Vec::new(),
+            });
+            game.at += 1;
+            Ok(())
+        })
+    }
+
+    // set a rack: the side to move's, for their move, while the game goes on;
+    // anyone else's (or anyone's once the game is over), as it is after the
+    // moves shown (or before the first move, at the start). Set again, the rack
+    // is these tiles.
+    fn type_rack(&mut self, seat: Option<usize>, tiles: Vec<u8>) -> error::Returns<()> {
+        let to_move = self.state.turn as usize;
+        let seat = seat.unwrap_or(to_move);
+        let going = self.final_scores.is_none();
+        self.change(|game| {
+            let game = game.as_mut().ok_or("no game: new first")?;
+            game.turns.truncate(game.at);
+            if seat == to_move && going {
+                game.rack = Some(tiles);
+                return Ok(());
+            }
+            let set = match game.turns.last_mut() {
+                Some(turn) => &mut turn.shown,
+                None => &mut game.start,
+            };
+            match set.iter_mut().find(|(s, _)| *s == seat) {
+                Some((_, held)) => *held = tiles,
+                None => set.push((seat, tiles)),
+            }
+            Ok(())
+        })
+    }
+
+    // for a move as typed: the tiles it takes from its mover's rack, the move
+    // to read, and whether those tiles are ones no one saw. A place move takes
+    // its placed tiles (a blank as ?), and an exchange its tiles; exch N takes
+    // any N from the bag, which the exchange puts back, and is read as exch
+    // with those tiles.
+    fn tiles_needed(&self, args: &[String]) -> error::Returns<(Vec<u8>, Vec<String>, bool)> {
+        let alphabet = self.game_config.alphabet();
+        let mut tiles = Vec::new();
+        let mut args = args.to_vec();
+        let mut hidden = false;
+        match args.as_slice() {
+            [exch, n] if exch == "exch" && n.bytes().all(|b| b.is_ascii_digit()) => {
+                let n = n.parse::<usize>()?;
+                let bag = self.state.bag.as_slice();
+                if n == 0 || n > bag.len() {
+                    return Err(format!("exch 1 to {} tiles", bag.len()).into());
+                }
+                tiles = bag[..n].to_vec();
+                args[1] = alphabet.fmt_rack(&tiles).to_string();
+                hidden = true;
+            }
+            [exch, text] if exch == "exch" => {
+                alphabet::AlphabetReader::new_for_racks(alphabet).set_word(text, &mut tiles)?;
+            }
+            [coord, word] if coord != "exch" => {
+                let dim = self.game_config.board_layout().dim();
+                let coord = notation::parse_coord(coord, dim).ok_or("no such coordinate")?;
+                notation::read_place_word(
+                    &alphabet::AlphabetReader::new_for_plays(alphabet),
+                    &self.state.board_tiles,
+                    dim,
+                    &coord,
+                    word,
+                    &mut tiles,
+                )?;
+                tiles.retain(|&tile| tile != 0);
+                for tile in tiles.iter_mut() {
+                    if *tile & 0x80 != 0 {
+                        *tile = 0;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok((tiles, args, hidden))
+    }
+
+    // the game as dealt from its seed, except that a seat given (as its first
+    // move says, or before that move, as the seat is) is dealt nothing and its
+    // tiles stay in the bag; then the racks set before the first move. The
+    // seats take turns, player 1 first.
+    fn dealt(&self, game: &Game) -> error::Returns<(Replay, GameRng)> {
+        let mut rng = GameRng::seed_from_u64(game.seed);
+        let mut state = game_state::GameState::new(self.game_config);
+        state.reset_and_draw_tiles_double_ended(self.game_config, &mut rng);
+        let mut given = [false; 2];
+        for (seat, given) in given.iter_mut().enumerate() {
+            *given = match game.turns.get(seat) {
+                Some(turn) => turn.given,
+                None => self.seats[seat] == Seat::Given,
+            };
+            if *given {
+                let rack = std::mem::take(&mut state.players[seat].rack);
+                state.bag.return_tiles(&rack);
+            }
+        }
+        let mut replay = Replay {
+            state,
+            given,
+            typed: Default::default(),
+        };
+        replay.type_racks(&game.start)?;
+        Ok((replay, rng))
+    }
+
+    // rebuild the state after the moves shown from the game's seed, with the
+    // rack given to the side to move. Their next move goes by their seat: a
+    // seat dealt draws a full rack; a seat given holds only what is known of
+    // its rack (a rack dealt before keeps only what was typed of it)
     fn rebuild(&mut self) -> error::Returns<()> {
         let Some(game) = &self.game else {
             return Ok(());
         };
-        let mut rng = GameRng::seed_from_u64(game.seed);
-        let mut state = game_state::GameState::new(self.game_config);
-        state.reset_and_draw_tiles_double_ended(self.game_config, &mut rng);
-        let mut final_scores = vec![0; self.game_config.num_players() as usize];
-        let mut ended = false;
+        let (mut replay, mut rng) = self.dealt(game)?;
+        let mut final_scores = None;
         let mut board_before_last = None;
         for turn in game.turns[..game.at].iter() {
-            if ended {
+            if final_scores.is_some() {
                 return Err("the game is over".into());
             }
-            if let Some(rack) = &turn.rack {
-                give_rack(&mut state, rack)?;
-            }
+            let held = replay.ready_rack(self.game_config, turn)?;
+            let state = &mut replay.state;
             board_before_last = Some((state.board_tiles.to_vec(), turn.play.clone()));
             state.play(self.game_config, &mut rng, &turn.play)?;
-            match state.check_game_ended(self.game_config, &mut final_scores)? {
-                game_state::CheckGameEnded::NotEnded => state.next_turn(),
-                _ => ended = true,
+            final_scores = replay.end_of_turn(self.game_config, turn, held)?;
+            if final_scores.is_none() {
+                replay.state.next_turn();
             }
         }
-        if let Some(rack) = &game.rack {
-            if ended {
-                return Err("the game is over".into());
+        if final_scores.is_none() {
+            let to_move = replay.state.turn as usize;
+            let given = self.seats[to_move] == Seat::Given;
+            if given && !replay.given[to_move] {
+                replay.forget_drawn(to_move);
             }
-            give_rack(&mut state, rack)?;
+            replay.given[to_move] = given;
+            match &game.rack {
+                Some(rack) => replay.give_rack(rack)?,
+                None if !given => top_up(self.game_config, &mut replay.state, to_move),
+                None => {}
+            }
+        } else if game.rack.is_some() {
+            return Err("the game is over".into());
         }
-        self.state = state;
+        self.racks_given = replay.given;
+        self.state = replay.state;
         self.board_before_last = board_before_last;
-        self.final_scores = ended.then_some(final_scores);
+        self.final_scores = final_scores;
         Ok(())
     }
 
@@ -539,32 +844,82 @@ impl Session {
             writeln!(out, "no game: new to start one")?;
             return Ok(());
         };
-        display::print_game_state(self.game_config, &self.state, None)?;
+        let alphabet = self.game_config.alphabet();
+        display::print_board(
+            alphabet,
+            self.game_config.board_layout(),
+            &self.state.board_tiles,
+        )?;
+        // each player's score and rack, the computer's hidden as _s (a seat
+        // given shows what it is known to hold); and, if the side to move is a
+        // person, the tiles they have not seen
+        let turn = self.state.turn as usize;
+        for (i, player) in self.state.players.iter().enumerate() {
+            writeln!(
+                out,
+                "player {} ({}): {}{}{}",
+                i + 1,
+                match self.seats[i] {
+                    Seat::Human => "human".to_string(),
+                    Seat::Given => "given".to_string(),
+                    Seat::Bot(None) => "bot".to_string(),
+                    Seat::Bot(Some(ms)) => format!("bot sim {ms}"),
+                },
+                equity::descale_score(player.score),
+                match self.rack_text(i, &player.rack) {
+                    rack if rack.is_empty() => rack,
+                    rack => format!(" {rack}"),
+                },
+                if i == turn && self.final_scores.is_none() {
+                    " (to move)"
+                } else {
+                    ""
+                },
+            )?;
+        }
+        if !matches!(self.seats[turn], Seat::Bot(_)) {
+            let mut unseen = self.state.bag.as_slice().to_vec();
+            for (i, player) in self.state.players.iter().enumerate() {
+                if i != turn {
+                    unseen.extend_from_slice(&player.rack);
+                }
+            }
+            unseen.sort_unstable();
+            writeln!(
+                out,
+                "unseen by player {}: {} {}",
+                turn + 1,
+                unseen.len(),
+                alphabet.fmt_rack(&unseen)
+            )?;
+        }
         // each move with the board before it, so that a tile played through
         // shows; moves taken back are marked
         if let Some((_, kwg)) = self.kwg {
-            let alphabet = self.game_config.alphabet();
-            let mut rng = GameRng::seed_from_u64(game.seed);
-            let mut board = game_state::GameState::new(self.game_config);
-            board.reset_and_draw_tiles_double_ended(self.game_config, &mut rng);
+            let (mut replay, mut rng) = self.dealt(game)?;
             for (i, turn) in game.turns.iter().enumerate() {
-                if let Some(rack) = &turn.rack {
-                    give_rack(&mut board, rack)?;
-                }
+                let held = replay.ready_rack(self.game_config, turn)?;
+                let board = &mut replay.state;
                 let mover = board.turn as usize;
-                let rack = alphabet.fmt_rack(&board.players[mover].rack).to_string();
-                let text = turn
-                    .play
-                    .fmt(&movegen::BoardSnapshot {
-                        board_tiles: &board.board_tiles,
-                        game_config: self.game_config,
-                        kwg,
-                        anagrams: None,
-                        rack_lengths: None,
-                        klv: self.klv,
-                    })
-                    .to_string();
+                let rack = self.rack_text(mover, &board.players[mover].rack);
+                let text = match &turn.play {
+                    // an exchange of tiles no one saw shows only how many
+                    movegen::Play::Exchange { tiles } if turn.hidden => {
+                        format!("Exch. {}", "_".repeat(tiles.len()))
+                    }
+                    play => play
+                        .fmt(&movegen::BoardSnapshot {
+                            board_tiles: &board.board_tiles,
+                            game_config: self.game_config,
+                            kwg,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: self.klv,
+                        })
+                        .to_string(),
+                };
                 board.play(self.game_config, &mut rng, &turn.play)?;
+                replay.end_of_turn(self.game_config, turn, held)?;
                 writeln!(
                     out,
                     "{}{:>3}. player {} {:<7} {} (total {})",
@@ -573,9 +928,9 @@ impl Session {
                     mover + 1,
                     rack,
                     text,
-                    equity::descale_score(board.players[mover].score),
+                    equity::descale_score(replay.state.players[mover].score),
                 )?;
-                board.next_turn();
+                replay.state.next_turn();
             }
         }
         if let Some(final_scores) = &self.final_scores {
@@ -590,6 +945,15 @@ impl Session {
             )?;
         }
         Ok(())
+    }
+
+    // a seat's rack as show prints it: a person's as its tiles (? for a blank),
+    // the computer's as an _ for each tile
+    fn rack_text(&self, seat: usize, rack: &[u8]) -> String {
+        match self.seats[seat] {
+            Seat::Bot(_) => "_".repeat(rack.len()),
+            _ => self.game_config.alphabet().fmt_rack(rack).to_string(),
+        }
     }
 
     fn best_moves(&mut self, n: usize) -> error::Returns<()> {
@@ -663,6 +1027,7 @@ impl Session {
             )?;
             return Ok(self.move_generator.plays[0].play.clone());
         };
+        let state = self.filled_state();
         move_picker::gen_simmer_candidates(
             &mut move_filter::GenMoves::Unfiltered,
             &mut self.move_generator,
@@ -698,7 +1063,7 @@ impl Session {
         let mut rollouts = (FIRST as usize * num_candidates) as f64;
         let mut iterations = FIRST;
         let mut ticked = 0;
-        simmer.begin_decision(&self.move_generator, &self.state, FIRST, &leaves)?;
+        simmer.begin_decision(&self.move_generator, &state, FIRST, &leaves)?;
         loop {
             let spent = t0.elapsed().as_secs_f64() * 1000.0;
             let in_play = simmer.active_stream_ids().count();
@@ -726,6 +1091,21 @@ impl Session {
             t0.elapsed().as_secs_f64() * 1000.0,
         )?;
         Ok(self.move_generator.plays[simmer.best_so_far()].play.clone())
+    }
+
+    // the position shown with each other seat's rack topped up from the bag to
+    // full (never past full; a rack given holds only what is known): a sim
+    // draws the opponent's rack again each iteration, as many tiles as it finds
+    // there
+    fn filled_state(&self) -> game_state::GameState {
+        let mut state = self.state.clone();
+        let to_move = state.turn as usize;
+        for seat in 0..self.seats.len() {
+            if seat != to_move {
+                top_up(self.game_config, &mut state, seat);
+            }
+        }
+        state
     }
 
     // a sim's seed for the position shown: the game's, plus how many moves the
@@ -810,7 +1190,7 @@ impl Session {
                 },
             )?;
             simmer.reseed(self.position_seed());
-            simmer.begin_decision(&move_generator, &self.state, 0, &leaves)?;
+            simmer.begin_decision(&move_generator, &self.filled_state(), 0, &leaves)?;
             let stream_of = (0..move_generator.plays.len() as u64).collect();
             self.sim = Some(Sim {
                 move_generator,
@@ -986,13 +1366,209 @@ impl Session {
     }
 }
 
-// the side to move given exactly these tiles, from the bag or the other racks
-fn give_rack(state: &mut game_state::GameState, rack: &[u8]) -> error::Returns<()> {
-    state.set_current_rack(rack);
-    if state.current_player().rack.len() != rack.len() {
-        return Err("those tiles are not all unseen".into());
+// a game being replayed from its seed: its state; by seat, whether its rack is
+// given (as its last move's was, or before its first move, as that move's or
+// the seat's); and by seat, the tiles of its rack that were typed (a rack set,
+// and what moves left of it), which setting another seat's rack never takes,
+// unlike a tile the shell drew
+struct Replay {
+    state: game_state::GameState,
+    given: [bool; 2],
+    typed: [Vec<u8>; 2],
+}
+
+impl Replay {
+    // finish a move once it is played (held is how many tiles its mover held
+    // before it): what the mover typed and kept stays typed; a seat given drew
+    // nothing anyone saw, so what it drew goes back in the bag and it keeps its
+    // leave; then the racks set after it apply. The game is over if it was
+    // declared over (end), if a dealt mover placed tiles and the bag left them
+    // none, or after the variant's scoreless turns; then the tiles left count:
+    // a player with none (dealt, or set to none) gets twice the other's, and
+    // the other loses nothing; otherwise each player loses their own.
+    fn end_of_turn(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        turn: &Turn,
+        held: usize,
+    ) -> error::Returns<Option<Vec<i32>>> {
+        let state = &mut self.state;
+        let mover = state.turn as usize;
+        let (placed, used) = match &turn.play {
+            movegen::Play::Place { word, .. } => (true, word.iter().filter(|&&t| t != 0).count()),
+            movegen::Play::Exchange { tiles } => (false, tiles.len()),
+        };
+        let out = placed && !turn.given && state.players[mover].rack.is_empty();
+        let rack = &mut state.players[mover].rack;
+        let leave = held.saturating_sub(used).min(rack.len());
+        self.typed[mover] = kept(&self.typed[mover], &rack[..leave]);
+        if turn.given {
+            let drawn = rack.split_off(leave);
+            state.bag.return_tiles(&drawn);
+        }
+        self.type_racks(&turn.shown)?;
+        let state = &self.state;
+        if !turn.ended && !out && !state.scoreless_turns_ended(game_config) {
+            return Ok(None);
+        }
+        let set_none = |seat| turn.shown.iter().any(|(s, t)| *s == seat && t.is_empty());
+        let none = (0..state.players.len()).find(|&seat| {
+            state.players[seat].rack.is_empty() && (!self.given[seat] || set_none(seat))
+        });
+        let alphabet = game_config.alphabet();
+        let mut final_scores = vec![0; state.players.len()];
+        for (seat, (score, player)) in final_scores
+            .iter_mut()
+            .zip(state.players.iter())
+            .enumerate()
+        {
+            *score = match none {
+                // two players: the one with no tiles gets twice the other's
+                Some(none) if none == seat => alphabet
+                    .scaled_rack_score(&state.players[1 - seat].rack)
+                    .checked_mul(2)
+                    .and_then(|bonus| player.score.checked_add(bonus))
+                    .ok_or("score overflow")?,
+                Some(_) => player.score,
+                None => player
+                    .score
+                    .checked_sub(alphabet.scaled_rack_score(&player.rack))
+                    .ok_or("score overflow")?,
+            };
+        }
+        Ok(Some(final_scores))
     }
-    Ok(())
+
+    // set racks, in any order, each then counted as typed: each rack's tiles go
+    // back in the bag first, then each new tile is taken from the bag, or else
+    // from a dealt rack that is not being set and holds a copy the shell drew
+    // (that rack drawing a replacement while the bag has one); never a typed
+    // tile, and never from a rack given
+    fn type_racks(&mut self, shown: &[(usize, Vec<u8>)]) -> error::Returns<()> {
+        for (seat, _) in shown {
+            let rack = std::mem::take(&mut self.state.players[*seat].rack);
+            self.state.bag.return_tiles(&rack);
+            self.typed[*seat].clear();
+        }
+        let set = shown.iter().map(|&(seat, _)| seat).collect::<Vec<_>>();
+        for (seat, tiles) in shown {
+            for &tile in tiles {
+                self.take_tile(&set, tile)?;
+                self.state.players[*seat].rack.push(tile);
+            }
+            self.typed[*seat].clone_from(tiles);
+        }
+        Ok(())
+    }
+
+    // take a tile out of the bag, or else out of a dealt rack (not one of
+    // these) holding a copy the shell drew (more copies than were typed), which
+    // draws a replacement while the bag has one: a typed tile outweighs one the
+    // shell drew, even with none left to draw
+    fn take_tile(&mut self, not: &[usize], tile: u8) -> error::Returns<()> {
+        let state = &mut self.state;
+        if state.bag.remove_tile(tile).is_some() {
+            return Ok(());
+        }
+        let count = |tiles: &[u8]| tiles.iter().filter(|&&t| t == tile).count();
+        let other = (0..state.players.len())
+            .filter(|&seat| !self.given[seat] && !not.contains(&seat))
+            .find(|&seat| count(&state.players[seat].rack) > count(&self.typed[seat]));
+        let Some(other) = other else {
+            return Err("those tiles are not all unseen".into());
+        };
+        let rack = &mut state.players[other].rack;
+        let at = rack
+            .iter()
+            .rposition(|&t| t == tile)
+            .ok_or("no such tile")?;
+        rack.swap_remove(at);
+        let held = rack.len() + 1;
+        state
+            .bag
+            .replenish(&mut state.players[other].rack, held, other);
+        Ok(())
+    }
+
+    // the side to move given exactly these tiles
+    fn give_rack(&mut self, rack: &[u8]) -> error::Returns<()> {
+        let mover = self.state.turn as usize;
+        self.type_racks(&[(mover, rack.to_vec())])
+    }
+
+    // ready the mover's rack before their move, by the move's kind: the tiles
+    // given for it, if any; else a seat dealt draws a full rack, and a seat
+    // given holds what it was known to hold (of a rack dealt before, what was
+    // typed). Returns how many tiles that is.
+    fn ready_rack(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        turn: &Turn,
+    ) -> error::Returns<usize> {
+        let mover = self.state.turn as usize;
+        if turn.given && !self.given[mover] {
+            self.forget_drawn(mover);
+        }
+        self.given[mover] = turn.given;
+        match &turn.rack {
+            Some(rack) => self.give_rack(rack)?,
+            None if !turn.given => top_up(game_config, &mut self.state, mover),
+            None => {}
+        }
+        Ok(self.state.players[mover].rack.len())
+    }
+
+    // a dealt rack that becomes given keeps what was typed of it, and what the
+    // shell drew goes back in the bag
+    fn forget_drawn(&mut self, seat: usize) {
+        let mut drawn = std::mem::take(&mut self.state.players[seat].rack);
+        let known = kept(&self.typed[seat], &drawn);
+        for tile in &known {
+            if let Some(at) = drawn.iter().position(|t| t == tile) {
+                drawn.swap_remove(at);
+            }
+        }
+        self.state.bag.return_tiles(&drawn);
+        self.state.players[seat].rack = known;
+    }
+}
+
+// the typed tiles a leave still holds: when a move used a copy of a tile, a
+// drawn copy is taken to have gone first
+fn kept(typed: &[u8], leave: &[u8]) -> Vec<u8> {
+    let mut spare = leave.to_vec();
+    let mut kept = Vec::new();
+    for &tile in typed {
+        if let Some(at) = spare.iter().position(|&t| t == tile) {
+            spare.swap_remove(at);
+            kept.push(tile);
+        }
+    }
+    kept
+}
+
+// draw a dealt rack up to full from the bag (never past full)
+fn top_up(game_config: &game_config::GameConfig, state: &mut game_state::GameState, seat: usize) {
+    let full = game_config.rack_size() as usize;
+    state
+        .bag
+        .replenish(&mut state.players[seat].rack, full, seat);
+}
+
+// a rack known to hold these tiles, plus whatever a move needs that they lack
+// (a blank as 0)
+fn completed(known: &[u8], needed: &[u8]) -> Vec<u8> {
+    let mut rack = known.to_vec();
+    let mut spare = known.to_vec();
+    for &tile in needed {
+        match spare.iter().position(|&t| t == tile) {
+            Some(at) => {
+                spare.swap_remove(at);
+            }
+            None => rack.push(tile),
+        }
+    }
+    rack
 }
 
 #[cfg(test)]
@@ -1029,12 +1605,283 @@ mod tests {
         session
     }
 
+    // a line as typed
     fn run(session: &mut Session, line: &str) -> error::Returns<()> {
         let words = line
             .split_whitespace()
             .map(String::from)
             .collect::<Vec<_>>();
-        session.run(line, &words)
+        session.run(line, &words, true)
+    }
+
+    // a line as source reads it from a file
+    fn replay(session: &mut Session, line: &str) -> error::Returns<()> {
+        let words = line
+            .split_whitespace()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        session.run(line, &words, false)
+    }
+
+    #[test]
+    #[inline]
+    fn a_bot_seat_moves_when_its_turn_comes_and_a_replay_adds_no_move() {
+        let mut first = session();
+        for line in ["player 2 bot", "new 7", "rack AETAETE", "play 8G AT"] {
+            run(&mut first, line).unwrap();
+        }
+        // the bot answered the typed move, logged as its play
+        assert_eq!(first.game.as_ref().unwrap().turns.len(), 2);
+        assert_eq!(first.log.len(), 5);
+        assert!(first.log[4].starts_with("play "), "{}", first.log[4]);
+        // read back as source reads it, the log replays the same game, with no
+        // extra move
+        let mut second = session();
+        for line in first.log.clone() {
+            replay(&mut second, &line).unwrap();
+        }
+        assert_eq!(snapshot(&first), snapshot(&second));
+        assert_eq!(second.game.as_ref().unwrap().turns.len(), 2);
+        // its rack shows as an _ for each tile
+        assert_eq!(first.rack_text(1, &[1, 2, 0]), "___");
+        assert_eq!(first.rack_text(0, &[1, 2, 0]), "AB?");
+    }
+
+    #[test]
+    #[inline]
+    fn a_given_players_rack_is_what_is_given_and_what_their_moves_show() {
+        let mut first = session();
+        for line in ["player 2 given", "new 7", "rack AETAETE", "play 8G AT"] {
+            run(&mut first, line).unwrap();
+        }
+        // player 2 is dealt nothing; given AT, they play EA: their rack was AT
+        // plus the E the move needed, and afterward they hold the T and draw
+        // nothing anyone sees
+        assert!(first.state.players[1].rack.is_empty());
+        run(&mut first, "r 2 AT").unwrap();
+        run(&mut first, "p 9H EA").unwrap();
+        assert_eq!(first.state.players[1].rack, [20]);
+        let turn = &first.game.as_ref().unwrap().turns[1];
+        assert_eq!(turn.rack.as_deref(), Some(&[1, 20, 5][..]));
+        // after an exchange of tiles no one saw, nothing of the rack is known
+        run(&mut first, "play H8 TEA").unwrap();
+        run(&mut first, "play exch 3").unwrap();
+        assert!(first.state.players[1].rack.is_empty());
+        assert_eq!(first.state.players[1].num_exchanges, 1);
+        assert!(first.game.as_ref().unwrap().turns[3].hidden);
+        assert!(run(&mut first, "play exch 9").is_err());
+        // logged as the long commands, and replayed the same
+        assert!(first.log.contains(&"rack 2 AT".to_string()));
+        assert!(first.log.contains(&"play 9H EA".to_string()));
+        let mut second = session();
+        for line in first.log.clone() {
+            replay(&mut second, &line).unwrap();
+        }
+        assert_eq!(snapshot(&first), snapshot(&second));
+    }
+
+    #[test]
+    #[inline]
+    fn at_an_end_each_rack_left_counts_as_known() {
+        let mut first = session();
+        for line in ["player 2 given", "new 7", "rack AETAETE", "play 8G AT"] {
+            run(&mut first, line).unwrap();
+        }
+        run(&mut first, "rack 2 EE").unwrap();
+        for _ in 0..6 {
+            run(&mut first, "play pass").unwrap();
+        }
+        // after six scoreless turns, each rack left counts against its player,
+        // player 2's being the EE they were given
+        let alphabet = first.game_config.alphabet();
+        let counted = |session: &Session| {
+            let players = session.state.players.iter();
+            players
+                .map(|player| player.score - alphabet.scaled_rack_score(&player.rack))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first.state.players[1].rack, [5, 5]);
+        assert_eq!(first.final_scores, Some(counted(&first)));
+        // a rack set at the end counts as set; tiles that are not unseen are
+        // refused
+        assert!(run(&mut first, "rack 2 ZZZZZZZ").is_err());
+        run(&mut first, "rack 2 EEA").unwrap();
+        assert_eq!(first.final_scores, Some(counted(&first)));
+        // player 2, with no tiles, gets twice player 1's, and player 1 loses
+        // nothing
+        run(&mut first, "rack 2 -").unwrap();
+        let score = |seat: usize| first.state.players[seat].score;
+        let twice = 2 * alphabet.scaled_rack_score(&first.state.players[0].rack);
+        assert_eq!(first.final_scores, Some(vec![score(0), score(1) + twice]));
+        let mut second = session();
+        for line in first.log.clone() {
+            replay(&mut second, &line).unwrap();
+        }
+        assert_eq!(snapshot(&first), snapshot(&second));
+        assert_eq!(first.final_scores, second.final_scores);
+    }
+
+    #[test]
+    #[inline]
+    fn end_says_the_game_is_over_and_the_racks_left_count() {
+        let mut first = session();
+        for line in ["player 2 given", "new 7", "rack AT", "play 8G AT"] {
+            run(&mut first, line).unwrap();
+        }
+        assert!(first.final_scores.is_none());
+        run(&mut first, "end").unwrap();
+        assert!(run(&mut first, "end").is_err());
+        // player 1's dealt rack counts against them; player 2's, with nothing
+        // known, counts nothing
+        let alphabet = first.game_config.alphabet();
+        let left = alphabet.scaled_rack_score(&first.state.players[0].rack);
+        let score = first.state.players[0].score;
+        assert_eq!(first.final_scores, Some(vec![score - left, 0]));
+        run(&mut first, "rack 2 EE").unwrap();
+        let ee = alphabet.scaled_rack_score(&[5, 5]);
+        assert_eq!(first.final_scores, Some(vec![score - left, -ee]));
+        // with player 1 set to no tiles, they get twice player 2's
+        run(&mut first, "rack 1 -").unwrap();
+        assert_eq!(first.final_scores, Some(vec![score + 2 * ee, 0]));
+        // taken back and replayed, it ends again
+        run(&mut first, "back").unwrap();
+        assert!(first.final_scores.is_none());
+        run(&mut first, "forward").unwrap();
+        assert_eq!(first.final_scores, Some(vec![score + 2 * ee, 0]));
+        let mut second = session();
+        for line in first.log.clone() {
+            replay(&mut second, &line).unwrap();
+        }
+        assert_eq!(snapshot(&first), snapshot(&second));
+        assert_eq!(first.final_scores, second.final_scores);
+    }
+
+    #[test]
+    #[inline]
+    fn a_sim_draws_a_given_rack_full_from_the_bag() {
+        let mut session = session();
+        for line in [
+            "player 2 given",
+            "new 7",
+            "rack AETAETE",
+            "play 8G AT",
+            "play 9H EA",
+        ] {
+            run(&mut session, line).unwrap();
+        }
+        // they hold nothing known; a sim of player 1's move draws them a full
+        // rack
+        assert!(session.state.players[1].rack.is_empty());
+        let filled = session.filled_state();
+        assert_eq!(filled.players[1].rack.len(), 7);
+        assert_eq!(filled.bag.len() + 7, session.state.bag.len());
+        run(&mut session, "sim 4").unwrap();
+        assert!(session.computer_move(Some(50.0)).is_ok());
+    }
+
+    #[test]
+    #[inline]
+    fn a_rack_set_takes_a_tile_the_shell_drew_never_one_typed() {
+        let mut first = session();
+        run(&mut first, "new 7").unwrap();
+        // player 1 takes every copy of a tile player 2 was dealt: player 2's
+        // copies are taken, and they draw again
+        let alphabet = first.game_config.alphabet();
+        let tile = first.state.players[1].rack[0];
+        let copies = vec![tile; alphabet.freq(tile) as usize];
+        run(&mut first, &format!("rack {}", alphabet.fmt_rack(&copies))).unwrap();
+        assert_eq!(first.state.players[0].rack, copies);
+        assert_eq!(first.state.players[1].rack.len(), 7);
+        assert!(!first.state.players[1].rack.contains(&tile));
+        // once typed, none of them can go to player 2
+        let one = format!("rack 2 {}", alphabet.fmt_rack(&[tile]));
+        let error = run(&mut first, &one).unwrap_err().to_string();
+        assert_eq!(error, "those tiles are not all unseen");
+        // nor can what a move leaves of a typed rack: both blanks, kept
+        let mut second = session();
+        for line in ["new 7", "rack ??AT", "play 8G AT"] {
+            run(&mut second, line).unwrap();
+        }
+        assert!(run(&mut second, "rack ?").is_err());
+        assert!(run(&mut second, "rack E").is_ok());
+        // with the bag empty, a drawn tile is still taken, leaving its rack one
+        // short
+        let game_config = second.game_config;
+        let mut state = game_state::GameState::new(game_config);
+        state.bag.set_from_iter(std::iter::empty());
+        state.players[0].rack = vec![17, 1];
+        let mut replay = Replay {
+            state,
+            given: [false; 2],
+            typed: Default::default(),
+        };
+        replay.type_racks(&[(1, vec![17])]).unwrap();
+        assert_eq!(replay.state.players[0].rack, [1]);
+        assert_eq!(replay.state.players[1].rack, [17]);
+        // and that Q, typed now, is not taken back
+        assert!(replay.type_racks(&[(0, vec![17])]).is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_seat_changed_in_a_game_keeps_the_moves_made_before() {
+        // the computer moves, then the seat is made given
+        let mut first = session();
+        for line in ["player 2 bot", "new 7", "rack AETAETE", "play 8G AT"] {
+            run(&mut first, line).unwrap();
+        }
+        assert_eq!(first.game.as_ref().unwrap().turns.len(), 2);
+        run(&mut first, "player 2 given").unwrap();
+        run(&mut first, "play pass").unwrap();
+        // to move, they hold only what is known of their rack: none of the
+        // tiles the shell drew for the computer
+        assert!(first.state.players[1].rack.is_empty());
+        run(&mut first, "play pass").unwrap();
+        let mut second = session();
+        for line in first.log.clone() {
+            replay(&mut second, &line).unwrap();
+        }
+        assert_eq!(snapshot(&second), snapshot(&first));
+        // the seat is given, then the computer's, which draws a rack of its own
+        // to move with
+        let mut third = session();
+        for line in [
+            "player 2 given",
+            "new 7",
+            "rack AETAETE",
+            "play 8G AT",
+            "play 9H EA",
+            "player 2 bot",
+        ] {
+            run(&mut third, line).unwrap();
+        }
+        assert!(third.state.players[1].rack.is_empty());
+        run(&mut third, "play pass").unwrap();
+        assert_eq!(third.game.as_ref().unwrap().turns.len(), 4);
+        let mut fourth = session();
+        for line in third.log.clone() {
+            replay(&mut fourth, &line).unwrap();
+        }
+        assert_eq!(snapshot(&fourth), snapshot(&third));
+        // given for a pass, then dealt as a person's: with the game over before
+        // their next move, nothing is known of their rack, which counts nothing
+        // and has not gone out
+        let mut fifth = session();
+        for line in [
+            "player 2 given",
+            "new 7",
+            "rack AETAETE",
+            "play 8G AT",
+            "play pass",
+            "player 2 human",
+            "end",
+        ] {
+            run(&mut fifth, line).unwrap();
+        }
+        let alphabet = fifth.game_config.alphabet();
+        let player = &fifth.state.players[0];
+        let left = alphabet.scaled_rack_score(&player.rack);
+        assert_eq!(fifth.final_scores, Some(vec![player.score - left, 0]));
     }
 
     // a state, for comparing: the board, each score and rack (sorted), the bag

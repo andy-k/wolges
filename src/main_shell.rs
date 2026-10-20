@@ -25,7 +25,7 @@ fn main() -> error::Returns<()> {
     let mut cmd_stack = Vec::<(String, Option<(String, usize)>)>::new();
     loop {
         if let Some((line, source)) = cmd_stack.pop() {
-            if let Some((filename, line_num)) = source {
+            if let Some((filename, line_num)) = &source {
                 writeln!(std::io::stdout(), "{filename}:{line_num}> {line}")?;
             }
             let split = if cfg!(windows) {
@@ -75,7 +75,10 @@ fn main() -> error::Returns<()> {
                                 }
                             }
                             _ => {
-                                if let Err(err) = session.run(&line, &strings) {
+                                // a line from a file replays what was logged,
+                                // including the computer's moves
+                                let typed = source.is_none();
+                                if let Err(err) = session.run(&line, &strings, typed) {
                                     writeln!(std::io::stdout(), "error: {err}")?;
                                 }
                             }
