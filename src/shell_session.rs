@@ -43,8 +43,9 @@ struct Turn {
 // was done to it before, an end declared, racks set, and time, is undone with
 // it); points to its player (a challenge's bonus); the game lost by a player on
 // a challenge of it; the game declared over (end); a player's rack set (none
-// for a player with no tiles); and, on the move that ended the game, points a
-// player lost for time
+// for a player with no tiles); on the move that ended the game, points a player
+// lost for time; and points its player was given beyond the board's score, or
+// short of it (a misscore)
 #[derive(Clone, PartialEq)]
 enum After {
     Withdraw,
@@ -53,6 +54,7 @@ enum After {
     End,
     Rack(usize, Vec<u8>),
     Time(usize, i32),
+    Adjust(i32),
 }
 
 // what a challenge of a move costs: under double, the challenger's turn if the
@@ -92,6 +94,16 @@ impl Turn {
             .iter()
             .filter_map(bonus)
             .reduce(|sum, points| sum + points)
+    }
+
+    // the points its player was given beyond the board's score (below 0 for
+    // short of it): the misscore's size
+    fn adjust(&self) -> i32 {
+        let adjust = |after: &After| match after {
+            After::Adjust(points) => *points,
+            _ => 0,
+        };
+        self.after.iter().map(adjust).sum()
     }
 
     // the player who lost the game on a challenge of it
@@ -296,6 +308,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "take back the last move as a phony challenged off",
     ),
     ("bonus N", "give the last move's player N more points"),
+    (
+        "adjust POINTS",
+        "the last move scored POINTS more than the board makes it (fewer if below 0): a misscore",
+    ),
     (
         "time N POINTS",
         "once the game is over, player N loses POINTS for time",
@@ -839,6 +855,31 @@ impl Session {
                         .checked_add(points)
                         .ok_or("too many points")?;
                     turn.after.push(After::Time(n - 1, points));
+                    Ok(())
+                })?;
+                self.show()?;
+                line.to_string()
+            }
+            "adjust" => {
+                const USAGE: &str = "adjust POINTS (below 0 for fewer)";
+                let [points] = args else {
+                    return Err(USAGE.into());
+                };
+                let points = points.parse::<i32>().map_err(|_| USAGE)?;
+                if points == 0 {
+                    return Err("adjust POINTS: POINTS not 0".into());
+                }
+                // kept apart from the board's score, on the move it applies to
+                self.change(|game| {
+                    let game = game.as_mut().ok_or("no game: new first")?;
+                    let last = game.at.checked_sub(1).ok_or("no move before")?;
+                    game.cut();
+                    let turn = &mut game.turns[last];
+                    if !matches!(turn.play, movegen::Play::Place { .. }) || turn.withdrawn() {
+                        return Err("only a move on the board can be misscored".into());
+                    }
+                    turn.adjust().checked_add(points).ok_or("too many points")?;
+                    turn.after.push(After::Adjust(points));
                     Ok(())
                 })?;
                 self.show()?;
@@ -1570,6 +1611,14 @@ impl Session {
                     Some(bonus) => format!("{text}, {bonus:+} after a challenge"),
                     None => text,
                 };
+                // a misscore: what it was scored as
+                let text = match &turn.play {
+                    movegen::Play::Place { score, .. } if turn.adjust() != 0 => format!(
+                        "{text}, scored as {}",
+                        equity::descale_score(*score) + turn.adjust()
+                    ),
+                    _ => text,
+                };
                 replay.play_turn(self.game_config, &mut rng, turn)?;
                 replay.end_of_turn(self.game_config, turn, held)?;
                 writeln!(
@@ -2183,11 +2232,42 @@ impl Session {
                     self.run_line(&format!("rack {} {known}", seat + 1))
                         .map_err(|e| on_line(line_number, &e))?;
                 }
+                // a move whose score differs from the board's, by a note giving
+                // the board's or by its line alone, is a misscore, adjusted; by
+                // its line alone, it is also printed, so that a move read wrong
+                // shows
+                let game = self.game.as_ref().ok_or("no game")?;
+                if let (GcgKind::Play(_), movegen::Play::Place { score, .. }) =
+                    (&gcg_move.kind, &game.turns[game.at - 1].play)
+                {
+                    let board = equity::descale_score(*score);
+                    if let Some(correct) = gcg_move.correct
+                        && correct != board
+                    {
+                        return Err(on_line(
+                            line_number,
+                            format_args!("the board scores it {board}, the file's note {correct}"),
+                        )
+                        .into());
+                    }
+                    if gcg_move.score != board {
+                        let adjust = gcg_move.score - board;
+                        if gcg_move.correct.is_none() {
+                            let said = format!(
+                                "scored {} where the board makes {board}: a misscore",
+                                gcg_move.score
+                            );
+                            writeln!(std::io::stdout(), "{}", on_line(line_number, &said))?;
+                        }
+                        self.run_line(&format!("adjust {adjust}"))
+                            .map_err(|e| on_line(line_number, &e))?;
+                    }
+                }
                 let game = self.game.as_ref().ok_or("no game")?;
                 let turn = &game.turns[game.at - 1];
                 let score = match (&gcg_move.kind, &turn.play) {
                     (GcgKind::Play(_), movegen::Play::Place { score, .. }) => {
-                        equity::descale_score(*score)
+                        equity::descale_score(*score) + turn.adjust()
                     }
                     _ => gcg_move.score,
                 };
@@ -2342,6 +2422,9 @@ impl Session {
             };
             let rack = rack_text(self.game_config, turn.given, known, held_tiles);
             let before = equity::descale_score(board.players[mover].score);
+            // a misscore: the move as scored, then the board's score in a note
+            // after its line (a note is about the line before it)
+            let scored = score + turn.adjust();
             // a phony taken back: its line as played, then its taking back,
             // with the total as before it
             text.push_str(&format!(
@@ -2349,13 +2432,16 @@ impl Session {
                 nicknames[mover],
                 rack,
                 play,
-                score,
-                before + score
+                scored,
+                before + scored
             ));
+            if scored != score {
+                text.push_str(&format!("{GCG_CORRECT}{score}\n"));
+            }
             if turn.withdrawn() {
                 text.push_str(&format!(
                     ">{}: {} -- -{} {}\n",
-                    nicknames[mover], rack, score, before
+                    nicknames[mover], rack, scored, before
                 ));
             }
             replay.play_turn(self.game_config, &mut rng, turn)?;
@@ -2574,6 +2660,10 @@ enum GcgKind {
     Player(String, String),
 }
 
+// the start of gcg save's line for a misscore, before the board's score: GCG
+// keeps the score as agreed, and this note the score the board makes
+const GCG_CORRECT: &str = "#note the correct score is ";
+
 // a line of a GCG file: its number, its player (by the order the players first
 // move; for #rackN, where #playerN's nickname moves, else player N), the rack,
 // what it does, and the score and total it gives
@@ -2584,6 +2674,7 @@ struct GcgMove {
     kind: GcgKind,
     score: i32,
     total: i32,
+    correct: Option<i32>, // a move's score as the board makes it, if a note gives it
 }
 
 // decode a GCG file's text by the encoding it declares, UTF-8 or ISO 8859-1
@@ -2610,7 +2701,8 @@ fn gcg_decode(bytes: &[u8]) -> error::Returns<String> {
 // back, challenge bonuses, the racks its end counts, time penalties, the racks
 // of a game not over (#rack1 and #rack2, for the players #player1 and #player2
 // give, and #incomplete, for the side to move), the players' nicknames and full
-// names, and the lexicon, skipping every other # line
+// names, a move's score as the board makes it (the note after a misscore), and
+// the lexicon, skipping every other # line
 fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
     let mut moves = Vec::new();
     let mut players = Vec::<String>::new();
@@ -2619,6 +2711,16 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
         let fail = |what: &str| format!("line {line_number}: {what}: {line:?}");
         if line.starts_with('#') {
             let pragma = line.trim_end();
+            // a misscore note: the board's score for the move before
+            if let Some(correct) = pragma.strip_prefix(GCG_CORRECT) {
+                let correct = correct.parse().map_err(|_| fail("no score"))?;
+                let played = moves
+                    .iter_mut()
+                    .rev()
+                    .find(|m: &&mut GcgMove| matches!(m.kind, GcgKind::Play(_)));
+                played.ok_or_else(|| fail("no move before"))?.correct = Some(correct);
+                continue;
+            }
             let words = pragma.split_whitespace().collect::<Vec<_>>();
             match words.as_slice() {
                 [player @ ("#player1" | "#player2"), nickname, full @ ..] => {
@@ -2631,6 +2733,7 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
                         kind: GcgKind::Player(nickname.to_string(), full.join(" ")),
                         score: 0,
                         total: 0,
+                        correct: None,
                     });
                     continue;
                 }
@@ -2642,6 +2745,7 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
                         kind: GcgKind::Incomplete,
                         score: 0,
                         total: 0,
+                        correct: None,
                     });
                     continue;
                 }
@@ -2653,6 +2757,7 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
                         kind: GcgKind::Lexicon(name.to_string()),
                         score: 0,
                         total: 0,
+                        correct: None,
                     });
                     continue;
                 }
@@ -2680,6 +2785,7 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
                 kind,
                 score: 0,
                 total: 0,
+                correct: None,
             });
             continue;
         }
@@ -2754,6 +2860,7 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
             kind,
             score: score.parse().map_err(|_| fail("no score"))?,
             total: total.parse().map_err(|_| fail("no total"))?,
+            correct: None,
         });
     }
     // the player of #rackN or #playerN: the seat where #playerN's nickname
@@ -2807,8 +2914,8 @@ struct Replay {
 }
 
 impl Replay {
-    // play a turn's move (a pass, if it was taken back), then give its bonus to
-    // its mover
+    // play a turn's move (a pass, if it was taken back), then give its bonus
+    // and its misscore to its mover
     fn play_turn(
         &mut self,
         game_config: &game_config::GameConfig,
@@ -2818,9 +2925,12 @@ impl Replay {
         let state = &mut self.state;
         state.play(game_config, rng, &turn.played())?;
         let mover = state.turn as usize;
+        // a misscore goes with the move, and is taken back with it
+        let adjust = if turn.withdrawn() { 0 } else { turn.adjust() };
         state.players[mover].score = state.players[mover]
             .score
             .checked_add(equity::scale_score(turn.bonus().unwrap_or(0)))
+            .and_then(|score| score.checked_add(equity::scale_score(adjust)))
             .ok_or("score overflow")?;
         Ok(())
     }
@@ -3843,12 +3953,15 @@ mod tests {
         );
         assert_eq!(second.log.len(), 3 + 2 * 5 + 2);
         assert_eq!(second.log[3..5], ["rack AETAETE", "phony 8G AT"]);
-        // a score the file gets wrong stops the load there
-        let wrong = text.replace("8G AT +4 4", "8G AT +5 5");
+        // a total that disagrees with its score stops the load there (a score
+        // the board does not make is a misscore)
+        let wrong = text.replace("8G AT +4 4", "8G AT +5 4");
         let mut third = session();
         let error = third.load_moves(&gcg_moves(&wrong).unwrap()).unwrap_err();
         assert!(
-            error.to_string().contains("scores 4 for a total of 4"),
+            error
+                .to_string()
+                .contains("scores 5 for a total of 5 here, 5 for 4"),
             "{error}"
         );
         // tiles played through in parentheses, as other programs write them,
@@ -3921,6 +4034,50 @@ mod tests {
         }
         // an encoding declared after the mark still counts
         assert!(gcg_decode(b"\xef\xbb\xbf#character-encoding UTF-8\nJos\xe9\n").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn a_misscore_is_kept_apart_and_goes_out_as_gcg_and_back() {
+        let mut first = session();
+        for line in &GAME[..3] {
+            run(&mut first, line).unwrap();
+        }
+        // AT through the star makes 4; its player was given 5
+        assert!(run(&mut first, "adjust 0").is_err());
+        run(&mut first, "adjust 1").unwrap();
+        assert_eq!(first.state.players[0].score, equity::scale_score(5));
+        let turn = &first.game.as_ref().unwrap().turns[0];
+        let four = equity::scale_score(4);
+        assert!(matches!(turn.play, movegen::Play::Place { score, .. } if score == four));
+        // the move as scored, then the board's score in a note
+        let text = first.gcg_text().unwrap();
+        let lines = ">p1: AETAETE 8G AT +5 5\n#note the correct score is 4\n";
+        assert!(text.contains(lines), "{text}");
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(second.gcg_text().unwrap(), text);
+        assert!(second.log.contains(&"adjust 1".to_string()));
+        // without the note, as other programs write it, the same game loads
+        let plain = text.replace("#note the correct score is 4\n", "");
+        let mut third = session();
+        third.load_moves(&gcg_moves(&plain).unwrap()).unwrap();
+        assert_eq!(third.gcg_text().unwrap(), text);
+        // a note the board does not agree with stops the load
+        let wrong = text.replace("is 4\n", "is 3\n");
+        assert!(session().load_moves(&gcg_moves(&wrong).unwrap()).is_err());
+        // with a challenge's bonus after it, the note still follows the move's
+        // line
+        run(&mut second, "bonus 10").unwrap();
+        let text = second.gcg_text().unwrap();
+        assert!(text.contains(&format!("{lines}>p1: ")), "{text}");
+        assert!(text.contains(" (challenge) +10 15\n"), "{text}");
+        let mut fourth = session();
+        fourth.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(fourth.gcg_text().unwrap(), text);
+        // undo takes it back
+        run(&mut first, "undo").unwrap();
+        assert_eq!(first.state.players[0].score, four);
     }
 
     #[test]
