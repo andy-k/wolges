@@ -4122,7 +4122,7 @@ fn discover_playability<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                                 &movegen::GenMovesParams {
                                     board_snapshot,
                                     rack: cur_rack,
-                                    max_gen: 2, // to allow finding equal-equity plays.
+                                    max_gen: 1, // plays that tie the top still reach the predicate
                                     num_exchanges_by_this_player: game_state
                                         .current_player()
                                         .num_exchanges,
