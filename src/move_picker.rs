@@ -313,6 +313,33 @@ pub struct Simmer<
     ticked: u64,
 }
 
+// a block of iterations, those after lo up to hi, rolled out for the plays
+// still in (indices into the move generator's plays), in the order the rows
+// give them
+pub struct SimBlock {
+    pub lo: u64,
+    pub hi: u64,
+    pub plays: Vec<usize>,
+}
+
+// a block's rows, by iteration and then by play: the objectives, and when
+// observing, the equities and win rates
+pub struct SimRows {
+    pub objective: Vec<f64>,
+    pub equity: Vec<f64>,
+    pub win_rate: Vec<f64>,
+}
+
+impl SimRows {
+    // append the rows of the iterations that follow these
+    #[inline]
+    pub fn extend(&mut self, later: SimRows) {
+        self.objective.extend(later.objective);
+        self.equity.extend(later.equity);
+        self.win_rate.extend(later.win_rate);
+    }
+}
+
 pub struct SimmerParams<'a> {
     pub num_sim_iters: u64,
     pub num_sim_plies: usize,
@@ -1494,7 +1521,7 @@ impl<
 
         #[cfg(not(target_family = "wasm"))]
         if self.sim_threads > 1 {
-            return self.run_iterations_parallel(move_generator, budget, count);
+            return self.run_iterations_parallel(move_generator, count);
         }
         let mut candidates = std::mem::take(&mut self.candidates);
         let mut retired = std::mem::take(&mut self.retired);
@@ -1553,145 +1580,168 @@ impl<
         Ok(())
     }
 
-    // reduce every iteration in the same order whatever the thread count: the variance
-    // combine is not associative in floating point.
+    // the next block to roll out: from the iterations done up to the next look
+    // or end, whichever is first, for the candidates still in; none once end is
+    // reached or fewer than two candidates are left
+    #[inline]
+    pub fn next_block(&self, end: u64) -> Option<SimBlock> {
+        if self.candidates.len() < 2 || self.iters_done >= end {
+            return None;
+        }
+        let lo = self.iters_done;
+        Some(SimBlock {
+            lo,
+            hi: end.min((lo / PRUNE_CADENCE + 1) * PRUNE_CADENCE),
+            plays: self
+                .candidates
+                .iter()
+                .map(|candidate| candidate.play_index)
+                .collect(),
+        })
+    }
+
+    // compute the rows of the iterations after lo up to hi for plays, on a
+    // thread or a separate worker: each iteration is seeded by its index alone,
+    // so the rows are the same however a block is split
+    #[inline]
+    pub fn block_rows(
+        &self,
+        move_generator: &movegen::KurniaMoveGenerator,
+        lo: u64,
+        hi: u64,
+        plays: &[usize],
+    ) -> error::Returns<SimRows> {
+        let mut simmer = self.simmer.prepared_clone(self.game_config);
+        let pristine = simmer.prepared_state().clone();
+        let size = (hi - lo) as usize * plays.len();
+        let mut rows = SimRows {
+            objective: Vec::new(),
+            equity: Vec::new(),
+            win_rate: Vec::new(),
+        };
+        rows.objective.reserve(size);
+        if OBSERVE {
+            rows.equity.reserve(size);
+            rows.win_rate.reserve(size);
+        }
+        for sim_iter in lo + 1..=hi {
+            simmer.restore_prepared(&pristine);
+            simmer.reseed(mix(self.decision_seed, sim_iter));
+            simmer.prepare_iteration();
+            for &play_index in plays {
+                let (value, sim_spread, win_prob) = rollout_objective(
+                    &mut simmer,
+                    self.game_config,
+                    self.kwg,
+                    self.arm_tables,
+                    self.klv,
+                    &move_generator.plays[play_index].play,
+                    self.win_pct_table,
+                )?;
+                rows.objective.push(value);
+                if OBSERVE {
+                    rows.equity.push(simmer::spread_points(sim_spread));
+                    rows.win_rate.push(win_prob);
+                }
+            }
+        }
+        Ok(rows)
+    }
+
+    // take in a whole block's rows, each candidate's in iteration order
+    // (combining variances is not associative in floating point), then the look
+    // at the block's end if it ends on one
+    #[inline]
+    pub fn absorb_block(&mut self, block: &SimBlock, rows: &SimRows) -> error::Returns<()> {
+        let num_candidates = block.plays.len();
+        let size = (block.hi - block.lo) as usize * num_candidates;
+        if block.lo != self.iters_done
+            || !self
+                .candidates
+                .iter()
+                .map(|candidate| candidate.play_index)
+                .eq(block.plays.iter().copied())
+            || rows.objective.len() != size
+            || (OBSERVE && (rows.equity.len() != size || rows.win_rate.len() != size))
+        {
+            return Err("the rows are not the block's the simmer is at".into());
+        }
+        for (candidate_index, candidate) in self.candidates.iter_mut().enumerate() {
+            for k in (candidate_index..size).step_by(num_candidates) {
+                candidate.stats.update(rows.objective[k]);
+                candidate.objectives.push(rows.objective[k]);
+                if OBSERVE {
+                    candidate.equity_stats.update(rows.equity[k]);
+                    candidate.win_rate_stats.update(rows.win_rate[k]);
+                }
+            }
+        }
+        self.iters_done = block.hi;
+        let budget = self.num_sim_iters;
+        tick(
+            self.decision_t0,
+            &mut self.ticked,
+            block.hi,
+            budget,
+            self.candidates.len(),
+        );
+        if block.hi.is_multiple_of(PRUNE_CADENCE) {
+            const Z: f64 = 1.96; // 95% confidence interval
+            retire_paired(&mut self.candidates, &mut self.retired, paired_z(budget));
+            let prune_periods_remaining = budget.saturating_sub(block.hi) / PRUNE_CADENCE;
+            limit_surviving_candidates(
+                &mut self.candidates,
+                &mut self.retired,
+                Z,
+                1 + 2 * prune_periods_remaining as usize,
+            );
+        }
+        Ok(())
+    }
+
+    // split each block into contiguous ranges, one per thread, and put the rows
+    // back together in iteration order
     #[cfg(not(target_family = "wasm"))]
     #[inline]
     fn run_iterations_parallel(
         &mut self,
         move_generator: &movegen::KurniaMoveGenerator,
-        budget: u64,
         count: u64,
     ) -> error::Returns<()> {
-        let mut candidates = std::mem::take(&mut self.candidates);
-        let mut retired = std::mem::take(&mut self.retired);
-        const Z: f64 = 1.96; // 95% confidence interval
-        let paired_z = paired_z(budget);
         let num_threads = self.sim_threads;
-        let decision_seed = self.decision_seed;
-        let game_config = self.game_config;
-        let kwg = self.kwg;
-        let arm_tables = self.arm_tables;
-        let klv = self.klv;
-        let win_pct_table = self.win_pct_table;
-        let base_simmer = &self.simmer;
         let end = self.iters_done + count;
-
-        while self.iters_done < end {
-            let block_start = self.iters_done;
-            let next_boundary = (block_start / PRUNE_CADENCE + 1) * PRUNE_CADENCE;
-            let block_end = end.min(next_boundary);
-            let num_candidates = candidates.len();
-            let block_len = (block_end - block_start) as usize;
-
-            let play_indices: Vec<usize> = candidates
-                .iter()
-                .map(|candidate| candidate.play_index)
-                .collect();
-
-            let mut thread_rows: Vec<(Vec<f64>, Vec<f64>, Vec<f64>)> =
-                Vec::with_capacity(num_threads);
+        while let Some(block) = self.next_block(end) {
+            let block_len = (block.hi - block.lo) as usize;
+            let mut rows = SimRows {
+                objective: Vec::new(),
+                equity: Vec::new(),
+                win_rate: Vec::new(),
+            };
+            let this = &*self;
             std::thread::scope(|scope| -> error::Returns<()> {
                 let mut handles = Vec::with_capacity(num_threads);
                 for thread_index in 0..num_threads {
-                    let play_indices = &play_indices;
-
                     let base = block_len / num_threads;
                     let extra = block_len % num_threads;
                     let lo = thread_index * base + thread_index.min(extra);
                     let hi = lo + base + if thread_index < extra { 1 } else { 0 };
-                    handles.push(scope.spawn(move || -> error::Returns<_> {
-                        let mut simmer = base_simmer.prepared_clone(game_config);
-
-                        let pristine = simmer.prepared_state().clone();
-                        let span = hi - lo;
-                        let mut objective = Vec::with_capacity(span * num_candidates);
-                        let mut equity = Vec::new();
-                        let mut win_rate = Vec::new();
-                        if OBSERVE {
-                            equity.reserve(span * num_candidates);
-                            win_rate.reserve(span * num_candidates);
-                        }
-                        for offset in lo..hi {
-                            let sim_iter = block_start + 1 + offset as u64;
-                            simmer.restore_prepared(&pristine);
-                            simmer.reseed(mix(decision_seed, sim_iter));
-                            simmer.prepare_iteration();
-                            for &play_index in play_indices.iter() {
-                                let (value, sim_spread, win_prob) = rollout_objective(
-                                    &mut simmer,
-                                    game_config,
-                                    kwg,
-                                    arm_tables,
-                                    klv,
-                                    &move_generator.plays[play_index].play,
-                                    win_pct_table,
-                                )?;
-                                objective.push(value);
-                                if OBSERVE {
-                                    equity.push(simmer::spread_points(sim_spread));
-                                    win_rate.push(win_prob);
-                                }
-                            }
-                        }
-                        Ok((objective, equity, win_rate))
+                    let block = &block;
+                    handles.push(scope.spawn(move || {
+                        this.block_rows(
+                            move_generator,
+                            block.lo + lo as u64,
+                            block.lo + hi as u64,
+                            &block.plays,
+                        )
                     }));
                 }
                 for handle in handles {
-                    thread_rows.push(handle.join().unwrap()?);
+                    rows.extend(handle.join().unwrap()?);
                 }
                 Ok(())
             })?;
-
-            let mut block_objective: Vec<f64> = Vec::with_capacity(block_len * num_candidates);
-            let mut block_equity: Vec<f64> = Vec::new();
-            let mut block_win_rate: Vec<f64> = Vec::new();
-            if OBSERVE {
-                block_equity.reserve(block_len * num_candidates);
-                block_win_rate.reserve(block_len * num_candidates);
-            }
-            for (objective, equity, win_rate) in thread_rows {
-                block_objective.extend(objective);
-                if OBSERVE {
-                    block_equity.extend(equity);
-                    block_win_rate.extend(win_rate);
-                }
-            }
-            for (candidate_index, candidate) in candidates.iter_mut().enumerate() {
-                for iteration in 0..block_len {
-                    let k = iteration * num_candidates + candidate_index;
-                    candidate.stats.update(block_objective[k]);
-                    candidate.objectives.push(block_objective[k]);
-                    if OBSERVE {
-                        candidate.equity_stats.update(block_equity[k]);
-                        candidate.win_rate_stats.update(block_win_rate[k]);
-                    }
-                }
-            }
-            self.iters_done = block_end;
-            tick(
-                self.decision_t0,
-                &mut self.ticked,
-                block_end,
-                budget,
-                candidates.len(),
-            );
-            if block_end.is_multiple_of(PRUNE_CADENCE) {
-                retire_paired(&mut candidates, &mut retired, paired_z);
-                let prune_periods_remaining = budget.saturating_sub(block_end) / PRUNE_CADENCE;
-                limit_surviving_candidates(
-                    &mut candidates,
-                    &mut retired,
-                    Z,
-                    1 + 2 * prune_periods_remaining as usize,
-                );
-                if candidates.len() < 2 {
-                    break;
-                }
-            }
+            self.absorb_block(&block, &rows)?;
         }
-        self.candidates = candidates;
-        self.retired = retired;
         Ok(())
     }
 
@@ -2180,6 +2230,107 @@ mod tests {
         let z = paired_z(1000);
         assert!((z + normal_quantile(0.05 / 62.0)).abs() < 1e-12);
         assert!(3.1 < z && z < 3.2, "{z}");
+    }
+
+    #[test]
+    #[inline]
+    fn blocks_however_split_give_the_sequential_numbers() {
+        let game_config = game_config::make_english_game_config();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&tiny_lexicon()).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = simmer::DefaultRng::seed_from_u64(7);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        game_state.set_current_rack(&[1, 1, 5, 5, 20, 20, 0]);
+        let board_snapshot = movegen::BoardSnapshot {
+            board_tiles: &game_state.board_tiles,
+            game_config: &game_config,
+            kwg: &kwg,
+            anagrams: arm_tables.anagrams(),
+            rack_lengths: arm_tables.rack_lengths(),
+            klv: &klv,
+        };
+        let mut move_generator = movegen::KurniaMoveGenerator::new(&game_config);
+        let mut scratch = Vec::new();
+        gen_simmer_candidates(
+            &mut move_filter::GenMoves::Unfiltered,
+            &mut move_generator,
+            &board_snapshot,
+            &game_state.current_player().rack,
+            0,
+            SIMMER_FIELD,
+            &mut scratch,
+        );
+        assert!(move_generator.plays.len() > 2);
+        let new_simmer = |sim_threads| {
+            let mut simmer = Simmer::<_, _, true>::new(
+                &game_config,
+                &kwg,
+                &arm_tables,
+                &klv,
+                SimmerParams {
+                    num_sim_iters: 64,
+                    num_sim_plies: 2,
+                    sim_threads,
+                    win_pct_table: None,
+                    quiet: true,
+                },
+            )
+            .unwrap();
+            simmer.reseed(11);
+            simmer
+        };
+
+        let mut sequential = new_simmer(1);
+        sequential
+            .begin_decision(&move_generator, &game_state, 64, &[])
+            .unwrap();
+        assert!(sequential.retired_stream_ids().count() > 0);
+
+        let mut threaded = new_simmer(3);
+        threaded
+            .begin_decision(&move_generator, &game_state, 64, &[])
+            .unwrap();
+        assert_eq!(
+            sequential.leaderboard(usize::MAX),
+            threaded.leaderboard(usize::MAX)
+        );
+
+        // the same decision a block at a time, each split in three uneven parts
+        // as three workers would roll them out
+        let mut blocked = new_simmer(1);
+        blocked
+            .begin_decision(&move_generator, &game_state, 0, &[])
+            .unwrap();
+        let mut stale = None;
+        while let Some(block) = blocked.next_block(64) {
+            let a = block.lo + (block.hi - block.lo) / 3;
+            let b = a + (block.hi - a) / 2;
+            let mut rows = SimRows {
+                objective: Vec::new(),
+                equity: Vec::new(),
+                win_rate: Vec::new(),
+            };
+            for (lo, hi) in [(block.lo, a), (a, b), (b, block.hi)] {
+                rows.extend(
+                    blocked
+                        .block_rows(&move_generator, lo, hi, &block.plays)
+                        .unwrap(),
+                );
+            }
+            blocked.absorb_block(&block, &rows).unwrap();
+            stale.get_or_insert((block, rows));
+        }
+        assert_eq!(
+            sequential.leaderboard(usize::MAX),
+            blocked.leaderboard(usize::MAX)
+        );
+        assert_eq!(sequential.best_so_far(), blocked.best_so_far());
+
+        // a block taken in out of its turn is refused
+        let (block, rows) = stale.unwrap();
+        assert!(blocked.absorb_block(&block, &rows).is_err());
     }
 
     #[inline]
