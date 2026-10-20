@@ -27,17 +27,42 @@ const DEFAULT_ENDGAME_SECONDS: f64 = 10.0;
 // a move of the game, with: the rack its mover was given before it, if any (for
 // a seat given, what it was known to hold plus what the move needed); whether
 // the mover's seat was given, so that they drew nothing anyone saw; whether its
-// exchange was of tiles no one saw (exch N); whether the game was declared over
-// after it (end); and the racks set after it, by seat (none for a player with
-// no tiles)
+// exchange was of tiles no one saw (exch N); whether it was a phony taken back
+// (the turn then a pass, with the board and the rack as before it); the points
+// its challenges that stood gave its mover, if any; whether the game was
+// declared over after it (end); and the racks set after it, by seat (none for a
+// player with no tiles)
 #[derive(Clone)]
 struct Turn {
     rack: Option<Vec<u8>>,
     given: bool,
     play: movegen::Play,
     hidden: bool,
+    withdrawn: bool,
+    bonus: Option<i32>,
     ended: bool,
     shown: Vec<(usize, Vec<u8>)>,
+}
+
+// what a challenge of a move that stands costs: the challenger's turn, or a
+// number of points to the player challenged
+#[derive(Clone, Copy, PartialEq)]
+enum ChallengeRule {
+    Double,
+    Bonus(i32),
+}
+
+impl Turn {
+    // what the turn did to the game: a phony taken back is a pass
+    fn played(&self) -> std::borrow::Cow<'_, movegen::Play> {
+        if self.withdrawn {
+            std::borrow::Cow::Owned(movegen::Play::Exchange {
+                tiles: [][..].into(),
+            })
+        } else {
+            std::borrow::Cow::Borrowed(&self.play)
+        }
+    }
 }
 
 // a game: the bag dealt from its seed, the racks set before its first move, its
@@ -96,7 +121,8 @@ pub struct Session {
     sim: Option<Sim>, // of the position shown; any change to the game ends it
     seats: [Seat; 2],
     racks_given: [bool; 2], // by seat, whether its current rack is given
-    printing: bool,         // false while a file's game is read in
+    challenge_rule: ChallengeRule,
+    printing: bool, // false while a file's game is read in
     log: Vec<String>,
     quiet: bool, // no progress printed while a sim or a solve runs
     memory: Option<endgame::MemoryLimit>, // the memory an endgame solve stays within
@@ -127,6 +153,23 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("play exch TILES", "the side to move exchanges these tiles"),
     ("play pass", "the side to move passes"),
+    (
+        "phony MOVE",
+        "like play, but words not in the lexicon are allowed (and listed)",
+    ),
+    (
+        "challenge",
+        "challenge the last move: a phony is taken back, else the challenge rule applies",
+    ),
+    (
+        "challenges RULE",
+        "set the challenge rule: double (the challenger loses a turn) or bonus N (N points to the move's player; the default is 5)",
+    ),
+    (
+        "withdraw",
+        "take back the last move as a phony challenged off",
+    ),
+    ("bonus N", "give the last move's player N more points"),
     (
         "end",
         "end the game here; the racks left count as at any end",
@@ -224,6 +267,7 @@ impl Session {
             sim: None,
             seats: [Seat::Human; 2],
             racks_given: [false; 2],
+            challenge_rule: ChallengeRule::Bonus(5),
             printing: true,
             log: Vec::new(),
             quiet,
@@ -372,7 +416,8 @@ impl Session {
                 self.type_rack(seat, rack)?;
                 line.to_string()
             }
-            "play" => {
+            "play" | "phony" => {
+                let phony = words[0] == "phony";
                 if self.game.is_some() && self.seats[self.state.turn as usize] == Seat::Given {
                     // what a player whose seat is given held: what they were
                     // known to hold, plus whatever the move needs that was not
@@ -390,7 +435,7 @@ impl Session {
                         Ok(())
                     })?;
                     if let Err(e) = self
-                        .read_play(&args)
+                        .read_play(&args, phony)
                         .and_then(|play| self.push_turn(play, hidden))
                     {
                         self.game = before;
@@ -398,7 +443,7 @@ impl Session {
                         return Err(e);
                     }
                 } else {
-                    let play = self.read_play(args)?;
+                    let play = self.read_play(args, phony)?;
                     self.push_turn(play, false)?;
                 }
                 self.show()?;
@@ -422,6 +467,133 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
+                line.to_string()
+            }
+            "withdraw" | "bonus" | "challenge" => {
+                // for a challenge, what the last move's words say: the board
+                // before it and the move as played
+                let words_stand = if words[0] == "challenge" {
+                    let game = self.game.as_ref().ok_or("no game: new first")?;
+                    let turn = game.at.checked_sub(1).map(|at| &game.turns[at]);
+                    let turn = turn.ok_or("no move to challenge")?;
+                    // a move can be challenged only once: not one taken back,
+                    // nor one that stood a challenge
+                    if turn.withdrawn {
+                        return Err("the last move was taken back already".into());
+                    }
+                    if turn.bonus.is_some() {
+                        return Err("the last move stood a challenge already".into());
+                    }
+                    if !matches!(turn.play, movegen::Play::Place { .. }) {
+                        return Err("the last move made no word to challenge".into());
+                    }
+                    let (board_before, _) = self
+                        .board_before_last
+                        .as_ref()
+                        .ok_or("no move to challenge")?;
+                    let mut stands = true;
+                    self.play_scorer.find_invalid_words(
+                        &movegen::BoardSnapshot {
+                            board_tiles: board_before,
+                            game_config: self.game_config,
+                            kwg: self.kwg()?,
+                            anagrams: None,
+                            rack_lengths: None,
+                            klv: self.klv,
+                        },
+                        &turn.play,
+                        |_: &[u8]| stands = false,
+                    );
+                    Some(stands)
+                } else {
+                    None
+                };
+                let bonus = match (words[0].as_str(), args, words_stand) {
+                    ("bonus", [points], _) => Some(points.parse::<i32>()?),
+                    ("bonus", _, _) => return Err("bonus POINTS".into()),
+                    (_, [_, ..], _) => {
+                        return Err(format!("{} takes nothing more", words[0]).into());
+                    }
+                    (_, _, Some(true)) => match self.challenge_rule {
+                        ChallengeRule::Bonus(points) => Some(points),
+                        ChallengeRule::Double => None,
+                    },
+                    _ => None,
+                };
+                let withdraw = words[0] == "withdraw" || words_stand == Some(false);
+                // after the game's last move there is no turn to lose
+                let lose_turn = words_stand == Some(true)
+                    && self.challenge_rule == ChallengeRule::Double
+                    && self.final_scores.is_none();
+                if let Some(stands) = words_stand {
+                    writeln!(
+                        std::io::stdout(),
+                        "{}",
+                        match (stands, self.challenge_rule) {
+                            (false, _) => "a phony: taken back".to_string(),
+                            (true, ChallengeRule::Double) =>
+                                "it stands: the challenger loses the turn".to_string(),
+                            (true, ChallengeRule::Bonus(points)) =>
+                                format!("it stands: {points:+} to its player"),
+                        }
+                    )?;
+                }
+                let challenger_given = self.seats[self.state.turn as usize] == Seat::Given;
+                self.change(|game| {
+                    let game = game.as_mut().ok_or("no game: new first")?;
+                    let last = game.at.checked_sub(1).ok_or("no move before")?;
+                    game.turns.truncate(game.at);
+                    // a rack given to the challenger stays theirs, for the turn
+                    // they lose, if they lose it
+                    let pending = game.rack.take();
+                    let turn = &mut game.turns[last];
+                    if withdraw {
+                        if turn.withdrawn {
+                            return Err("the last move was taken back already".into());
+                        }
+                        if !matches!(turn.play, movegen::Play::Place { .. }) {
+                            return Err("only a move that placed tiles is taken back".into());
+                        }
+                        // taken back, the move ended nothing, and the racks set
+                        // after it belong to a board that is gone
+                        turn.withdrawn = true;
+                        turn.ended = false;
+                        turn.shown.clear();
+                    }
+                    // a bonus given by hand adds to the move's bonus: a file
+                    // may give one move more than one
+                    if let Some(points) = bonus {
+                        let sum = turn.bonus.unwrap_or(0).checked_add(points);
+                        turn.bonus = Some(sum.ok_or("too many points")?);
+                    }
+                    if lose_turn {
+                        game.turns.push(Turn {
+                            rack: pending,
+                            given: challenger_given,
+                            play: movegen::Play::Exchange {
+                                tiles: [][..].into(),
+                            },
+                            hidden: false,
+                            withdrawn: false,
+                            bonus: None,
+                            ended: false,
+                            shown: Vec::new(),
+                        });
+                        game.at += 1;
+                    } else {
+                        game.rack = pending;
+                    }
+                    Ok(())
+                })?;
+                self.show()?;
+                line.to_string()
+            }
+            "challenges" => {
+                self.challenge_rule = match args {
+                    [double] if double == "double" => ChallengeRule::Double,
+                    [bonus, points] if bonus == "bonus" => ChallengeRule::Bonus(points.parse()?),
+                    _ => return Err("challenges double, or challenges bonus POINTS".into()),
+                };
                 line.to_string()
             }
             "player" => {
@@ -605,11 +777,11 @@ impl Session {
                 match args.first().map(String::as_str) {
                     None => self.sim_run(DEFAULT_SIM_ITERATIONS)?,
                     Some("add") => {
-                        let play = self.read_play(&args[1..])?;
+                        let play = self.read_play(&args[1..], false)?;
                         self.sim_add(play)?;
                     }
                     Some("drop") => {
-                        let play = self.read_play(&args[1..])?;
+                        let play = self.read_play(&args[1..], false)?;
                         self.sim_drop(&play)?;
                     }
                     Some("show") => {
@@ -691,6 +863,8 @@ impl Session {
                 given,
                 play,
                 hidden,
+                withdrawn: false,
+                bonus: None,
                 ended: false,
                 shown: Vec::new(),
             });
@@ -817,9 +991,9 @@ impl Session {
                 return Err("the game is over".into());
             }
             let held = replay.ready_rack(self.game_config, turn)?;
-            let state = &mut replay.state;
-            board_before_last = Some((state.board_tiles.to_vec(), turn.play.clone()));
-            state.play(self.game_config, &mut rng, &turn.play)?;
+            let board_tiles = replay.state.board_tiles.to_vec();
+            board_before_last = Some((board_tiles, turn.played().into_owned()));
+            replay.play_turn(self.game_config, &mut rng, turn)?;
             final_scores = replay.end_of_turn(self.game_config, turn, held)?;
             if final_scores.is_none() {
                 replay.state.next_turn();
@@ -848,8 +1022,9 @@ impl Session {
     }
 
     // read a move as typed (pass, an exchange, or a coordinate and a word),
-    // check it against the board, the rack, and the lexicon, and score it
-    fn read_play(&mut self, args: &[String]) -> error::Returns<movegen::Play> {
+    // check it against the board, the rack, and (unless it may be a phony) the
+    // lexicon, and score it
+    fn read_play(&mut self, args: &[String], phony: bool) -> error::Returns<movegen::Play> {
         if self.game.is_none() {
             return Err("no game: new first".into());
         }
@@ -920,7 +1095,11 @@ impl Session {
                 )
             });
         if !phonies.is_empty() {
-            return Err(format!("not in the lexicon: {}", phonies.join(", ")).into());
+            let words = phonies.join(", ");
+            if !phony {
+                return Err(format!("not in the lexicon: {words} (phony plays it anyway)").into());
+            }
+            writeln!(std::io::stdout(), "not in the lexicon: {words}")?;
         }
         Ok(play)
     }
@@ -984,7 +1163,8 @@ impl Session {
             )?;
         }
         // each move with the board before it, so that a tile played through
-        // shows; moves taken back are marked
+        // shows, and what a challenge did to it (taken back, or a bonus); the
+        // moves after those shown are marked ~
         if let Some((_, kwg)) = self.kwg {
             let (mut replay, mut rng) = self.dealt(game)?;
             for (i, turn) in game.turns.iter().enumerate() {
@@ -1007,8 +1187,12 @@ impl Session {
                             klv: self.klv,
                         })
                         .to_string(),
+                } + if turn.withdrawn { ", taken back" } else { "" };
+                let text = match turn.bonus {
+                    Some(bonus) => format!("{text}, {bonus:+} after a challenge"),
+                    None => text,
                 };
-                board.play(self.game_config, &mut rng, &turn.play)?;
+                replay.play_turn(self.game_config, &mut rng, turn)?;
                 replay.end_of_turn(self.game_config, turn, held)?;
                 writeln!(
                     out,
@@ -1477,10 +1661,13 @@ impl Session {
     // make a new game of a GCG file's moves: new with a fresh seed; each seat
     // given whose rack shows an _ on any line, or that has no line (a seat
     // dealt shows its racks; the others are not given); then each move's rack
-    // (its known tiles) and play, run and logged as those commands, each
-    // checked against the score and total the file gives; then its end (end,
-    // and the racks it counted, checked the same way) or its racks as they
-    // stand. It stops at the first that fails, keeping the game made so far.
+    // (its known tiles) and play (as phony: a word not in the lexicon stands
+    // until challenged), each phony taken back (withdraw), and each challenge's
+    // bonus (bonus, and rack for the rack its line gives), run and logged as
+    // those commands, each checked against the score and total the file gives;
+    // then its end (end, and the racks it counted, checked the same way) or its
+    // racks as they stand. It stops at the first that fails, keeping the game
+    // made so far.
     fn load_moves(&mut self, moves: &[GcgMove]) -> error::Returns<()> {
         let seed = GameRng::try_from_rng(&mut rand::rngs::SysRng)?.next_u64();
         self.printing = false;
@@ -1512,10 +1699,18 @@ impl Session {
                     }
                 }
                 let mut standing = Vec::new();
+                let seats = self.seats.len();
                 for gcg_move in moves {
                     let line_number = gcg_move.line_number;
-                    let play = match &gcg_move.kind {
-                        GcgKind::Play(play) => play,
+                    // a move belongs to the side to move; a phony taken back or
+                    // a challenge's bonus belongs to the last mover (counted by
+                    // the moves made, since a game ended by its last move
+                    // leaves that mover to move)
+                    let made = self.game.as_ref().map_or(0, |game| game.at);
+                    let (seat, what) = match &gcg_move.kind {
+                        GcgKind::Play(play) => (made % seats, format!("phony {play}")),
+                        GcgKind::Withdraw => ((made + 1) % seats, "withdraw".to_string()),
+                        GcgKind::Bonus(bonus) => ((made + 1) % seats, format!("bonus {bonus}")),
                         GcgKind::Rack => {
                             standing.push(gcg_move);
                             continue;
@@ -1526,32 +1721,42 @@ impl Session {
                             continue;
                         }
                     };
-                    let mover = self.state.turn as usize;
-                    if gcg_move.seat != mover {
+                    if gcg_move.seat != seat {
                         return Err(on_line(
                             line_number,
                             format_args!(
-                                "the file's player {} moves where player {} is to move",
+                                "the file's player {} is in the place of player {}",
                                 gcg_move.seat + 1,
-                                mover + 1
+                                seat + 1
                             ),
                         )
                         .into());
                     }
                     // an _ is a tile no one saw
                     let known = gcg_move.rack.replace('_', "");
-                    if !known.is_empty() {
+                    if let GcgKind::Play(_) = gcg_move.kind
+                        && !known.is_empty()
+                    {
                         self.run_line(&format!("rack {known}"))
                             .map_err(|e| on_line(line_number, &e))?;
                     }
-                    self.run_line(&format!("play {play}"))
-                        .map_err(|e| on_line(line_number, &e))?;
+                    self.run_line(&what).map_err(|e| on_line(line_number, &e))?;
+                    // a challenge's line gives the rack the move left
+                    if let GcgKind::Bonus(_) = gcg_move.kind
+                        && !known.is_empty()
+                    {
+                        self.run_line(&format!("rack {} {known}", seat + 1))
+                            .map_err(|e| on_line(line_number, &e))?;
+                    }
                     let game = self.game.as_ref().ok_or("no game")?;
-                    let score = match &game.turns[game.at - 1].play {
-                        movegen::Play::Place { score, .. } => equity::descale_score(*score),
-                        movegen::Play::Exchange { .. } => 0,
+                    let turn = &game.turns[game.at - 1];
+                    let score = match (&gcg_move.kind, &turn.play) {
+                        (GcgKind::Play(_), movegen::Play::Place { score, .. }) => {
+                            equity::descale_score(*score)
+                        }
+                        _ => gcg_move.score,
                     };
-                    let total = equity::descale_score(self.state.players[mover].score);
+                    let total = equity::descale_score(self.state.players[seat].score);
                     if (score, total) != (gcg_move.score, gcg_move.total) {
                         return Err(on_line(line_number, format_args!(
                         "it scores {score} for a total of {total} here, {} for {} in the file",
@@ -1617,11 +1822,13 @@ impl Session {
     // the moves shown, written as GCG: a header with the players p1 and p2,
     // then a line for each move (a tile played through as '.', a blank in
     // lowercase, an exchange as - and its tiles, or - and how many for tiles no
-    // one saw, and a pass as -); if the game is over, the racks it counted (the
-    // other's to the player with none, or each rack left against its player),
-    // else each rack as it is, as #rack1 and #rack2. GCG has no bag order or
-    // seed, and no way to say a seat is given when it shows no _, or that an
-    // end counted no rack: those are lost.
+    // one saw, and a pass as -), followed by its taking back as a phony (the
+    // rack, --, and minus the score, the total as before it) and a challenge's
+    // bonus (the rack after the move, then (challenge) and the points); if the
+    // game is over, the racks it counted (the other's to the player with none,
+    // or each rack left against its player), else each rack as it is, as #rack1
+    // and #rack2. GCG has no bag order or seed, and no way to say a seat is
+    // given when it shows no _, or that an end counted no rack: those are lost.
     fn gcg_text(&self) -> error::Returns<String> {
         let game = self.game.as_ref().ok_or("no game: new first")?;
         let alphabet = self.game_config.alphabet();
@@ -1675,16 +1882,39 @@ impl Session {
                 &held_tiles[..]
             };
             let rack = rack_text(self.game_config, turn.given, known, held_tiles);
-            board.play(self.game_config, &mut rng, &turn.play)?;
+            let before = equity::descale_score(board.players[mover].score);
+            // a phony taken back: its line as played, then its taking back,
+            // with the total as before it
             text.push_str(&format!(
                 ">p{}: {} {} +{} {}\n",
                 mover + 1,
                 rack,
                 play,
                 score,
-                equity::descale_score(board.players[mover].score)
+                before + score
             ));
+            if turn.withdrawn {
+                text.push_str(&format!(
+                    ">p{}: {} -- -{} {}\n",
+                    mover + 1,
+                    rack,
+                    score,
+                    before
+                ));
+            }
+            replay.play_turn(self.game_config, &mut rng, turn)?;
             final_scores = replay.end_of_turn(self.game_config, turn, held)?;
+            // a challenge's bonus: the rack after the move, then the points
+            if let Some(bonus) = turn.bonus {
+                let after = &replay.state.players[mover];
+                text.push_str(&format!(
+                    ">p{}: {} (challenge) {:+} {}\n",
+                    mover + 1,
+                    rack_text(self.game_config, turn.given, &after.rack, &after.rack),
+                    bonus,
+                    equity::descale_score(after.score)
+                ));
+            }
             if final_scores.is_some() {
                 break;
             }
@@ -1832,18 +2062,23 @@ fn solve_endgame(
     Ok((solver, solved))
 }
 
-// what a line of a GCG file says: a move, as play takes it; that its player had
-// no tiles at the end, so the other's rack counts to them; the rack its player
-// showed at the end; or a player's rack in a game not over (#rack1, #rack2)
+// what a line of a GCG file does: a move, as play takes it; the move before
+// taken back as a phony; points to its player after a challenge; that its
+// player had no tiles at the end, so the other's rack counts to them; the rack
+// its player showed at the end; or a player's rack in a game not over (#rack1,
+// #rack2)
 enum GcgKind {
     Play(String),
+    Withdraw,
+    Bonus(i32),
     Out,
     Shown,
     Rack,
 }
 
 // a line of a GCG file: its number, its player (by the order the players first
-// move; for #rackN, player N), the rack, what it says, and its score and total
+// move; for #rackN, player N), the rack, what it does, and the score and total
+// it gives
 struct GcgMove {
     line_number: usize,
     seat: usize,
@@ -1853,9 +2088,9 @@ struct GcgMove {
     total: i32,
 }
 
-// read a GCG file's moves, the racks its end counts, and the racks of a game
-// not over, skipping every other # line. A challenge bonus, a time penalty, and
-// a phony taken back are refused, with an error saying so
+// read a GCG file's moves, phonies taken back, challenge bonuses, the racks its
+// end counts, and the racks of a game not over, skipping every other # line. A
+// time penalty is refused, with an error saying so
 fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
     let mut moves = Vec::new();
     let mut players = Vec::<String>::new();
@@ -1900,13 +2135,17 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
             }
         };
         let tokens = rest.split_whitespace().collect::<Vec<_>>();
-        if tokens
-            .iter()
-            .any(|&token| token == "(challenge)" || token == "(time)")
-        {
-            return Err(fail("a challenge bonus or a time penalty is not taken").into());
+        if tokens.contains(&"(time)") {
+            return Err(fail("a time penalty is not taken").into());
         }
         let (rack, kind, score, total) = match tokens.as_slice() {
+            // a challenge's bonus, after the rack the move left (none, for a
+            // move that went out)
+            [rack @ .., "(challenge)", score, total] if rack.len() < 2 => {
+                let bonus = score.parse().map_err(|_| fail("no score"))?;
+                let rack = rack.first().copied().unwrap_or("");
+                (rack, GcgKind::Bonus(bonus), *score, *total)
+            }
             // the end's racks: the other's, counted to the player with no
             // tiles, or a rack shown, with what it cost
             [counted, score, total] if counted.starts_with('(') && counted.ends_with(')') => {
@@ -1922,7 +2161,7 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
                 *score,
                 *total,
             ),
-            [_, "--", _, _] => return Err(fail("a phony taken back is not taken").into()),
+            [rack, "--", score, total] => (*rack, GcgKind::Withdraw, *score, *total),
             [rack, "-", score, total] => (*rack, GcgKind::Play("pass".into()), *score, *total),
             [rack, exch, score, total] if exch.starts_with('-') => (
                 *rack,
@@ -1977,6 +2216,24 @@ struct Replay {
 }
 
 impl Replay {
+    // play a turn's move (a pass, if it was taken back), then give its bonus to
+    // its mover
+    fn play_turn(
+        &mut self,
+        game_config: &game_config::GameConfig,
+        rng: &mut GameRng,
+        turn: &Turn,
+    ) -> error::Returns<()> {
+        let state = &mut self.state;
+        state.play(game_config, rng, &turn.played())?;
+        let mover = state.turn as usize;
+        state.players[mover].score = state.players[mover]
+            .score
+            .checked_add(equity::scale_score(turn.bonus.unwrap_or(0)))
+            .ok_or("score overflow")?;
+        Ok(())
+    }
+
     // finish a move once it is played (held is how many tiles its mover held
     // before it): what the mover typed and kept stays typed; a seat given drew
     // nothing anyone saw, so what it drew goes back in the bag and it keeps its
@@ -1993,7 +2250,7 @@ impl Replay {
     ) -> error::Returns<Option<Vec<i32>>> {
         let state = &mut self.state;
         let mover = state.turn as usize;
-        let (placed, used) = match &turn.play {
+        let (placed, used) = match &*turn.played() {
             movegen::Play::Place { word, .. } => (true, word.iter().filter(|&&t| t != 0).count()),
             movegen::Play::Exchange { tiles } => (false, tiles.len()),
         };
@@ -2741,7 +2998,7 @@ mod tests {
         second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
         assert!(second.seats[1] == Seat::Given);
         assert_eq!(snapshot(&second), snapshot(&first));
-        assert!(second.log.contains(&"play exch 3".to_string()));
+        assert!(second.log.contains(&"phony exch 3".to_string()));
         assert_eq!(second.gcg_text().unwrap(), text);
         // back at their leave, the T: it is written as known, the rest as _
         run(&mut first, "back 4").unwrap();
@@ -2974,7 +3231,7 @@ mod tests {
         // then each rack as it is
         assert!(second.log[0].starts_with("new "));
         assert_eq!(second.log.len(), 1 + 2 * 5 + 2);
-        assert_eq!(second.log[1..3], ["rack AETAETE", "play 8G AT"]);
+        assert_eq!(second.log[1..3], ["rack AETAETE", "phony 8G AT"]);
         // a score the file gets wrong stops the load there
         let wrong = text.replace("8G AT +4 4", "8G AT +5 5");
         let mut third = session();
@@ -2990,8 +3247,8 @@ mod tests {
         fourth.load_moves(&gcg_moves(&through).unwrap()).unwrap();
         assert_eq!(fourth.state.board_tiles, first.state.board_tiles);
         assert_eq!(scores(&fourth), scores(&first));
-        assert!(gcg_moves(">p1: ABC (challenge) +5 5").is_err());
-        assert!(gcg_moves(">p1: ABC -- -4 0").is_err());
+        assert!(gcg_moves(">p1: ABC (time) -10 5").is_err());
+        assert!(gcg_moves(">p1: ABC 8G").is_err());
     }
 
     #[test]
@@ -3074,6 +3331,114 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_phony_challenged_off_goes_back_and_a_word_that_stands_costs_the_rule() {
+        let mut session = session();
+        for line in &GAME[..3] {
+            run(&mut session, line).unwrap();
+        }
+        run(&mut session, "rack EEE").unwrap();
+        let before = snapshot(&session);
+        // TEEE has four letters, and none of the tiny lexicon's words do
+        run(&mut session, "phony H8 TEEE").unwrap();
+        run(&mut session, "challenge").unwrap();
+        let after = snapshot(&session);
+        assert_eq!(
+            (&after.0, &after.1, &after.2),
+            (&before.0, &before.1, &before.2)
+        );
+        assert_eq!(after.3, 0, "the phony's player has had their turn");
+        assert!(session.game.as_ref().unwrap().turns[1].withdrawn);
+        assert!(
+            run(&mut session, "challenge").is_err(),
+            "nothing new to challenge"
+        );
+        // a word that stands: five points to its player by default
+        run(&mut session, "play 9H EA").unwrap();
+        let points = session.state.players[0].score;
+        run(&mut session, "challenge").unwrap();
+        assert_eq!(
+            session.state.players[0].score - points,
+            equity::scale_score(5)
+        );
+        assert_eq!(session.state.turn, 1);
+        // a move is challenged only once: once it stands, there is no second
+        // challenge
+        let error = run(&mut session, "challenge").unwrap_err().to_string();
+        assert_eq!(error, "the last move stood a challenge already");
+        // double: the challenger loses the turn
+        run(&mut session, "challenges double").unwrap();
+        run(&mut session, "rack EAT").unwrap();
+        run(&mut session, "play 10H AT").unwrap();
+        run(&mut session, "challenge").unwrap();
+        assert_eq!(session.state.turn, 1, "player 1 lost the turn");
+        // a turn lost, or any move that placed no tiles, has no word to
+        // challenge, nor a phony to take back
+        let error = run(&mut session, "challenge").unwrap_err().to_string();
+        assert_eq!(error, "the last move made no word to challenge");
+        let error = run(&mut session, "withdraw").unwrap_err().to_string();
+        assert_eq!(error, "only a move that placed tiles is taken back");
+        // the log replays to the same game, and so does its GCG
+        let mut second = Session::new(true, None).unwrap();
+        second.use_kwg("tiny", session.kwg().unwrap());
+        for line in session.log.clone() {
+            replay(&mut second, &line).unwrap();
+        }
+        assert_eq!(snapshot(&second), snapshot(&session));
+        let text = session.gcg_text().unwrap();
+        assert!(text.contains(">p2: EEE H8 .EEE +"), "{text}");
+        assert!(text.contains(">p2: EEE -- -"), "{text}");
+        assert!(text.contains(" (challenge) +5 "), "{text}");
+        let mut third = Session::new(true, None).unwrap();
+        third.use_kwg("tiny", session.kwg().unwrap());
+        third.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(snapshot(&third), snapshot(&session));
+        assert_eq!(third.gcg_text().unwrap(), text);
+        // a file may give one move more than one challenge line (a server bug
+        // once gave four): they are read as given, the bonuses added up
+        let mut fourth = self::session();
+        for line in GAME[..3].iter().chain(&["bonus 5"; 4]) {
+            run(&mut fourth, line).unwrap();
+        }
+        let text = fourth.gcg_text().unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.contains(" (challenge) +20 "))
+            .unwrap();
+        let (head, total) = line.rsplit_once(' ').unwrap();
+        let total = total.parse::<i32>().unwrap();
+        let rack = head.strip_suffix(" (challenge) +20").unwrap();
+        let lines = (0..4)
+            .map(|k: i32| format!("{rack} (challenge) +5 {}", total - 15 + 5 * k))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut fifth = self::session();
+        let four = text.replace(line, &lines);
+        fifth.load_moves(&gcg_moves(&four).unwrap()).unwrap();
+        assert_eq!(snapshot(&fifth), snapshot(&fourth));
+        assert_eq!(fifth.gcg_text().unwrap(), text);
+    }
+
+    #[test]
+    #[inline]
+    fn a_phony_said_to_go_out_and_challenged_off_ends_nothing() {
+        let mut session = session();
+        for line in [
+            "player 2 given",
+            "new 7",
+            "rack TEAT",
+            "phony 8G TEAT",
+            "end",
+        ] {
+            run(&mut session, line).unwrap();
+        }
+        assert!(session.final_scores.is_some());
+        run(&mut session, "challenge").unwrap();
+        assert!(session.final_scores.is_none());
+        assert!(!session.game.as_ref().unwrap().turns[0].ended);
+    }
+
+    #[test]
+    #[inline]
     fn a_word_not_in_the_lexicon_is_refused() {
         let mut session = session();
         run(&mut session, "new 7").unwrap();
@@ -3084,7 +3449,7 @@ mod tests {
         // words have two or three
         let before = snapshot(&session);
         let error = run(&mut session, "play H8 TEEE").unwrap_err().to_string();
-        assert_eq!(error, "not in the lexicon: TEEE");
+        assert_eq!(error, "not in the lexicon: TEEE (phony plays it anyway)");
         assert_eq!(snapshot(&session), before);
         assert!(run(&mut session, "play H8 TEE").is_ok());
     }
