@@ -10,71 +10,256 @@ use std::io::Write;
 // for their limits
 const LIMIT_CADENCE: u64 = 1024;
 
-// move one tile at a time from rack
-#[derive(Clone, Eq, Hash, PartialEq)]
-struct PlacedTile {
-    tile: u8,  // 0x01-0x3f, 0x81-0xbf
-    whose: u8, // 0 or 1
-    idx: i16,  // 0..r * c
+// splitmix64's increment: https://prng.di.unimi.it/splitmix64.c
+const SPLITMIX64_GAMMA: u64 = 0x9e3779b97f4a7c15;
+
+// https://doi.org/10.1145/2714064.2660195 https://prng.di.unimi.it/splitmix64.c
+#[inline(always)]
+fn splitmix64(s: &mut u64) -> u64 {
+    *s = s.wrapping_add(SPLITMIX64_GAMMA);
+    let mut z = *s;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^ (z >> 31)
 }
 
-// canonical order of tile placements from start-of-endgame state (state 0)
-// - tiles are placed in (tile, idx) order
-// - each (blank-wiped) tile coming from both players are placed by p0 first
-#[derive(Clone, Eq, Hash, PartialEq)]
-struct State {
-    parent: u32,
-    placed_tile: PlacedTile,
+// a position's key is the XOR of the keys of its parts (zobrist hashing): each
+// tile on its square, each count of each tile in each rack, the second player
+// to move, and a pass just made. The index-th key is splitmix64's draw after
+// index others from state 0, so no table needs to hold them
+#[inline(always)]
+fn zobrist(index: u64) -> u64 {
+    let mut state = index.wrapping_mul(SPLITMIX64_GAMMA);
+    splitmix64(&mut state)
 }
 
-#[derive(Clone)]
-enum StateSideEvalEquityType {
-    Exact,      // ==
-    LowerBound, // >=
-    UpperBound, // <=
+// the kind of key, in an index's upper half
+const SQUARE_KEYS: u64 = 0;
+const RACK_KEYS: u64 = 1 << 32;
+const SECOND_TO_MOVE: u64 = 2 << 32;
+const JUST_PASSED: u64 = 3 << 32;
+
+// the key of a tile on a square; a blank is keyed apart from the tile it stands
+// for
+#[inline(always)]
+fn square_key(square: usize, tile: u8) -> u64 {
+    zobrist(SQUARE_KEYS | ((square as u64) << 8) | tile as u64)
 }
 
-// best move for a side
-#[derive(Clone)]
-struct StateSideEval {
-    equity: f32,
-    play_idx: u32,
-    new_state_idx: u32, // not cheap to regen
-    equity_type: StateSideEvalEquityType,
+// the change to a player's rack key when their count of a tile (a blank as 0)
+// goes from count to count + 1, or back; a count of zero has no key
+#[inline(always)]
+fn rack_step(player: u8, tile: u8, count: usize) -> u64 {
+    let key = |count: usize| {
+        zobrist(RACK_KEYS | ((player as u64) << 24) | ((tile as u64) << 16) | count as u64)
+    };
+    if count == 0 {
+        key(1)
+    } else {
+        key(count) ^ key(count + 1)
+    }
+}
+
+// the rack tile behind a tile on the board: a blank for a blank
+#[inline(always)]
+fn held_tile(tile: u8) -> u8 {
+    tile & !((tile as i8) >> 7) as u8
+}
+
+// how a stored value bounds its position's true value
+#[derive(Clone, Copy, PartialEq)]
+enum Bound {
+    Exact, // ==
+    Lower, // >=
+    Upper, // <=
+}
+
+// the depth stored with a value when no line below it was cut short by the
+// depth: it is then the position's value to the end, good for a search of any
+// depth
+const COMPLETE: i8 = i8::MAX;
+
+// the best move as stored: its place among the moves the generator gives for
+// the position, or a pass, or none
+const PASS_PLAY: u16 = u16::MAX - 1;
+const NO_PLAY: u16 = u16::MAX;
+
+// what the table knows of a position
+#[derive(Clone, Copy)]
+struct Entry {
+    value: f32,
+    play: u16,
     depth: i8,
+    bound: Bound,
 }
 
-impl StateSideEval {
+// the positions the search has valued, in buckets of four entries, 64 bytes
+// each, a cache line's size (not aligned to one). An entry is two words: the
+// position's key, then, from the low bits up, the value's bits, the best move,
+// the depth, the bound (none for an empty entry), and the generation of the
+// solve that stored it
+struct Table {
+    buckets: Vec<[u64; 8]>,
+    held: usize,     // entries holding a position
+    generation: u64, // the solve storing now
+}
+
+impl Table {
+    // a bucket to start with; the table grows as the search fills it
     #[inline(always)]
     fn new() -> Self {
         Self {
-            equity: f32::NEG_INFINITY,
-            play_idx: !0,
-            new_state_idx: !0,
-            equity_type: StateSideEvalEquityType::LowerBound,
-            depth: i8::MIN,
+            buckets: vec![[0; 8]],
+            held: 0,
+            generation: 0,
+        }
+    }
+
+    // the positions the table has room for
+    #[inline(always)]
+    fn room(&self) -> usize {
+        4 * self.buckets.len()
+    }
+
+    // a key's bucket, by multiply-shift, so the table can have any number of
+    // buckets
+    #[inline(always)]
+    fn bucket(&self, key: u64) -> usize {
+        ((key as u128 * self.buckets.len() as u128) >> 64) as usize
+    }
+
+    #[inline(always)]
+    fn word(&self, entry: Entry) -> u64 {
+        entry.value.to_bits() as u64
+            | (entry.play as u64) << 32
+            | (entry.depth as u8 as u64) << 48
+            | (match entry.bound {
+                Bound::Exact => 1,
+                Bound::Lower => 2,
+                Bound::Upper => 3,
+            }) << 56
+            | (self.generation & 0x3f) << 58
+    }
+
+    #[inline(always)]
+    fn entry(word: u64) -> Option<Entry> {
+        let bound = match (word >> 56) & 3 {
+            1 => Bound::Exact,
+            2 => Bound::Lower,
+            3 => Bound::Upper,
+            _ => return None,
+        };
+        Some(Entry {
+            value: f32::from_bits(word as u32),
+            play: (word >> 32) as u16,
+            depth: (word >> 48) as u8 as i8,
+            bound,
+        })
+    }
+
+    #[inline(always)]
+    fn probe(&self, key: u64) -> Option<Entry> {
+        let bucket = &self.buckets[self.bucket(key)];
+        (0..4)
+            .find(|&slot| bucket[2 * slot] == key && (bucket[2 * slot + 1] >> 56) & 3 != 0)
+            .and_then(|slot| Self::entry(bucket[2 * slot + 1]))
+    }
+
+    // store into the position's own entry, else an empty one, else over the
+    // shallowest one an earlier solve stored, else over the shallowest; a
+    // deeper value of the position stays unless this one is exact. Returns
+    // whether it took an empty entry
+    #[inline(always)]
+    fn store(&mut self, key: u64, entry: Entry) -> bool {
+        let word = self.word(entry);
+        let generation = self.generation & 0x3f;
+        let index = self.bucket(key);
+        let bucket = &mut self.buckets[index];
+        let mut victim = 0;
+        let mut victim_rank = i32::MAX;
+        for slot in 0..4 {
+            let old = bucket[2 * slot + 1];
+            if (old >> 56) & 3 == 0 {
+                bucket[2 * slot] = key;
+                bucket[2 * slot + 1] = word;
+                self.held += 1;
+                return true;
+            }
+            let depth = (old >> 48) as u8 as i8;
+            if bucket[2 * slot] == key {
+                if depth <= entry.depth || entry.bound == Bound::Exact {
+                    bucket[2 * slot + 1] = word;
+                }
+                return false;
+            }
+            let rank = depth as i32 + if old >> 58 == generation { 256 } else { 0 };
+            if rank < victim_rank {
+                victim = slot;
+                victim_rank = rank;
+            }
+        }
+        bucket[2 * victim] = key;
+        bucket[2 * victim + 1] = word;
+        false
+    }
+
+    // move the table to this many buckets, keeping every entry that fits
+    #[inline(never)]
+    fn resize(&mut self, buckets: usize) {
+        let old = std::mem::replace(&mut self.buckets, vec![[0; 8]; buckets]);
+        self.held = 0;
+        for bucket in &old {
+            for slot in 0..4 {
+                let word = bucket[2 * slot + 1];
+                if (word >> 56) & 3 != 0 {
+                    self.put(bucket[2 * slot], word);
+                }
+            }
+        }
+    }
+
+    // place a stored word of a position not in the table, as a resize keeps it:
+    // in an empty entry, else in place of the shallowest if it is deeper
+    #[inline(always)]
+    fn put(&mut self, key: u64, word: u64) {
+        let index = self.bucket(key);
+        let bucket = &mut self.buckets[index];
+        let mut victim = 0;
+        let mut victim_depth = i8::MAX;
+        for slot in 0..4 {
+            let old = bucket[2 * slot + 1];
+            if (old >> 56) & 3 == 0 {
+                bucket[2 * slot] = key;
+                bucket[2 * slot + 1] = word;
+                self.held += 1;
+                return;
+            }
+            let depth = (old >> 48) as u8 as i8;
+            if depth < victim_depth {
+                victim = slot;
+                victim_depth = depth;
+            }
+        }
+        if (word >> 48) as u8 as i8 > victim_depth {
+            bucket[2 * victim] = key;
+            bucket[2 * victim + 1] = word;
         }
     }
 }
 
-// best move for both sides
-struct StateEval {
-    best_place_move: [StateSideEval; 2],
-    best_move: [StateSideEval; 2], // pass allowed
-    child_play_idxs: [usize; 3],   // workbuf.child_plays[a..b]=p0, [b..c]=p1
+// a position's value as a search found it, and whether no line below it was cut
+// short by the depth
+struct Searched {
+    value: f32,
+    complete: bool,
 }
 
-// misnomer now. there used to be one per ply, now there's just one.
-#[derive(Default)]
-struct PlyBuffer {
-    board_tiles: Vec<u8>,
-    racks: [Vec<u8>; 2],
-}
-
-struct ChildPlay {
-    new_state_idx: u32, // workbuf.states; 0=play out, !0=missing, same idx = pass
-    play_idx: u32,      // workbuf.plays
-    valuation: f32,     // refined over time
+// a move generated for a position, as the search orders it
+struct Candidate {
+    play: movegen::Play,
+    index: u16,     // its place among the moves generated, NO_PLAY past what fits
+    valuation: f32, // a play out's whole value, else its score
+    plays_out: bool,
 }
 
 // WorkBuffer contains reusable allocations.
@@ -84,146 +269,85 @@ struct ChildPlay {
 struct WorkBuffer {
     t0: std::time::Instant,           // the solve's start, for its time limit
     dur_movegen: std::time::Duration, // for progress, timed only while something listens
-    vec_placed_tile: Vec<PlacedTile>,
-    current_ply_buffer: PlyBuffer, // only using one
     movegen: movegen::KurniaMoveGenerator,
-    states: Vec<State>, // [0] = dummy initial state, excludes play outs
-    state_finder: fash::MyHashMap<State, u32>, // maps all states except 0
-    state_eval: fash::MyHashMap<u32, StateEval>,
-    plays: Vec<movegen::Play>, // global u32->Play mapping. [0] = pass, [1..] = place
-    play_finder: fash::MyHashMap<movegen::Play, u32>, // maps all plays except pass
-    child_plays: Vec<ChildPlay>, // subslices of StateEval, often re-sorted; excludes pass
-    depth_limited: bool,       // set when a line was cut short by the ply limit this pass
-    max_depth: i8,             // this pass's depth, for progress
+    board_tiles: Vec<u8>,  // the position searched, made and unmade in place
+    racks: [Vec<u8>; 2],   // its racks, each sorted
+    rack_scores: [i32; 2], // what its racks' tiles score
+    key: u64,              // its board's and racks' keys
+    lists: Vec<Vec<Candidate>>, // the moves generated at each ply from the root
+    table: Table,
+    can_grow: bool, // the memory limit has not yet refused the table more room this solve
+    max_depth: i8,  // this pass's depth, for progress
+    finished: i8,   // the deepest pass this solve finished, for the principal variation
     time_limit: Option<std::time::Duration>,
     state_limit: Option<usize>,
     memory_limit: Option<MemoryLimit>,
     check_limits: bool, // from the second pass on, when a limit is set
     nodes: u64,         // this pass's nodes, to space the looks at the clock
+    searched: u64,      // this solve's nodes, for progress
     cut_short: bool,    // a limit stopped this pass
     progress: Option<ProgressFn>,
     in_bag: Option<u64>, // inside a search with a tile in the bag, its endgames so far
-    written: [usize; 3], // the most states, plays, and child_plays have held, for the memory limit
 }
 
 impl WorkBuffer {
     fn new(game_config: &game_config::GameConfig) -> Self {
-        let dim = game_config.board_layout().dim();
-        let board_area = dim.rows as usize * dim.cols as usize;
         Self {
             t0: std::time::Instant::now(),
             dur_movegen: Default::default(),
-            vec_placed_tile: Vec::with_capacity(board_area),
-            current_ply_buffer: Default::default(),
             movegen: movegen::KurniaMoveGenerator::new(game_config),
-            states: Vec::new(),
-            state_finder: Default::default(),
-            state_eval: Default::default(),
-            plays: Vec::new(),
-            play_finder: fash::MyHashMap::default(),
-            child_plays: Vec::new(),
-            depth_limited: false,
+            board_tiles: Vec::new(),
+            racks: [Vec::new(), Vec::new()],
+            rack_scores: [0, 0],
+            key: 0,
+            lists: Vec::new(),
+            table: Table::new(),
+            can_grow: true,
             max_depth: 0,
+            finished: 0,
             time_limit: None,
             state_limit: None,
             memory_limit: None,
             check_limits: false,
             nodes: 0,
+            searched: 0,
             cut_short: false,
             progress: None,
             in_bag: None,
-            written: [0; 3],
         }
     }
 
-    #[inline]
-    fn init(&mut self) {
-        self.t0 = std::time::Instant::now();
-        self.dur_movegen = Default::default();
-        // a cleared list keeps its buffer, and the memory its entries were in
-        self.written = [
-            self.written[0].max(self.states.len()),
-            self.written[1].max(self.plays.len()),
-            self.written[2].max(self.child_plays.len()),
-        ];
-        // no need to clear temp spaces here
-        // put an unused entry in states, because index 0 is special
-        self.states.clear();
-        self.states.push(State {
-            parent: !0,
-            placed_tile: PlacedTile {
-                tile: !0,
-                whose: !0,
-                idx: !0,
-            },
-        });
-        self.state_finder.clear();
-        self.state_eval.clear();
-        self.plays.clear();
-        // plays[0] is always Pass
-        self.plays.push(movegen::Play::Exchange {
-            tiles: [][..].into(),
-        });
-        self.play_finder.clear();
-        self.child_plays.clear();
-    }
-
-    // the bytes the lists have taken but never written: a list doubles as it
-    // grows, and the part it has not reached costs no memory until it does
+    // store a value, growing the table once three quarters of it holds
+    // positions: to twice its size, or as big as the memory limit allows while
+    // the old table is still held. Once the limit refuses, the table keeps its
+    // size and stores replace other positions
     #[inline(always)]
-    fn unwritten(&self) -> usize {
-        #[inline(always)]
-        fn tail<T>(list: &Vec<T>, written: usize) -> usize {
-            list.capacity().saturating_sub(list.len().max(written)) * std::mem::size_of::<T>()
+    fn store(&mut self, key: u64, entry: Entry) {
+        if self.table.store(key, entry)
+            && self.can_grow
+            && self.table.held >= 3 * self.table.buckets.len()
+        {
+            let now = self.table.buckets.len();
+            let mut buckets = now.saturating_mul(2);
+            if let Some(limit) = self.memory_limit {
+                let room = limit.bytes.saturating_sub((limit.held)()).saturating_sub(1)
+                    / std::mem::size_of::<[u64; 8]>();
+                buckets = buckets.min(room);
+            }
+            if buckets > now {
+                self.table.resize(buckets);
+            } else {
+                self.can_grow = false;
+            }
         }
-        tail(&self.states, self.written[0])
-            + tail(&self.plays, self.written[1])
-            + tail(&self.child_plays, self.written[2])
     }
-
-    // whether taking growth more bytes would pass the memory limit: a table
-    // fills its new buffer while it still holds the old one, so it is looked at
-    // before it grows
-    #[inline(always)]
-    fn would_pass(&self, growth: usize) -> bool {
-        growth > 0
-            && self.check_limits
-            && self
-                .memory_limit
-                .is_some_and(|limit| limit.passed(self.unwritten(), growth))
-    }
-}
-
-// the bytes a table takes to hold more new keys than it has room for: twice its
-// buckets, where std's map keeps 7 entries to 8 buckets, a bucket an entry and
-// a control byte; none while they fit
-#[inline(always)]
-fn growth<K, V>(table: &fash::MyHashMap<K, V>, more: usize) -> usize {
-    if table.len() + more <= table.capacity() {
-        0
-    } else {
-        2 * table.capacity().div_ceil(7) * 8 * (std::mem::size_of::<(K, V)>() + 1)
-    }
-}
-
-// only for reporting
-pub struct FoundPlay<'a> {
-    pub equity: equity::Equity,
-    pub play: &'a movegen::Play,
-}
-
-// the solver counts millipoints in f32, which holds whole ones exactly; an
-// average, such as the peg's margin, rounds to the nearest
-#[inline(always)]
-fn to_equity(v: f32) -> equity::Equity {
-    equity::Equity::new(v.round() as i32)
 }
 
 // past any limit a solve stops, and answers from the deepest search that
 // finished
 pub struct Limits {
     pub time: Option<std::time::Duration>,
-    pub states: Option<usize>,
+    pub states: Option<usize>, // a solve stops once the table holds this many positions
     pub memory: Option<MemoryLimit>,
 }
 
@@ -235,9 +359,10 @@ impl Limits {
     };
 }
 
-// the most bytes the program may use, and how to read how many it holds; the
-// solver takes off what its lists hold but have never written, and adds what a
-// table is about to take
+// the most bytes the program may use, and how to read how many it holds. The
+// table grows only while the program stays within them, then replaces other
+// positions, so a solve stops on the limit only when the rest of the program
+// passes it
 #[derive(Clone, Copy)] // each endgame of a search with a tile in the bag takes a copy
 pub struct MemoryLimit {
     pub bytes: usize,
@@ -246,17 +371,14 @@ pub struct MemoryLimit {
 
 impl MemoryLimit {
     #[inline(always)]
-    fn passed(&self, unwritten: usize, growth: usize) -> bool {
-        (self.held)()
-            .saturating_sub(unwritten)
-            .saturating_add(growth)
-            >= self.bytes
+    fn passed(&self) -> bool {
+        (self.held)() >= self.bytes
     }
 }
 
 // a search with a tile in the bag solves many endgames as one solve: its time
-// limit is one deadline for them all, on its clock, and its state limit is each
-// one's; the endgames take turns holding its one listener
+// limit is one deadline for them all, on its clock, and its state limit applies
+// to the table they share; the endgames take turns holding its one listener
 struct BagLimits {
     time: Option<std::time::Duration>,
     states: Option<usize>,
@@ -283,6 +405,13 @@ impl BagLimits {
     }
 }
 
+// the solver counts millipoints in f32, which holds whole ones exactly; an
+// average, such as the peg's margin, rounds to the nearest
+#[inline(always)]
+fn to_equity(v: f32) -> equity::Equity {
+    equity::Equity::new(v.round() as i32)
+}
+
 // a solve's answer: exact, or the value of the deepest search that finished
 // before a limit stopped it
 pub struct Solved {
@@ -299,10 +428,9 @@ pub struct Progress {
     pub depth: i8,
     pub value: Option<equity::Equity>, // the depth's value, once it has finished
     pub movegen: std::time::Duration,
-    pub states: usize,
-    pub evaluated: usize,
-    pub child_plays: usize,
-    pub plays: usize,
+    pub nodes: u64,  // the solve's nodes so far
+    pub held: usize, // the positions the table holds
+    pub room: usize, // the positions it has room for
 }
 
 impl Progress {
@@ -333,8 +461,8 @@ impl std::fmt::Display for ProgressLine<'_> {
         }
         write!(
             f,
-            ": after {:?} ({:?} on movegen), there are {} states, {} evaluated, {} child_plays, {} plays",
-            self.elapsed, p.movegen, p.states, p.evaluated, p.child_plays, p.plays,
+            ": after {:?} ({:?} on movegen), {} nodes, the table holds {} positions of {}",
+            self.elapsed, p.movegen, p.nodes, p.held, p.room,
         )
     }
 }
@@ -352,7 +480,6 @@ pub struct EndgameSolver<'a, N: kwg::Node, L: kwg::Node> {
     klv: Box<klv::Klv<L>>,
     board_tiles: Vec<u8>,
     racks: [Vec<u8>; 2],
-    rack_scores: [i32; 2],
     work_buffer: WorkBuffer,
 }
 
@@ -372,11 +499,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             klv: Box::new(klv::Klv::<L>::from_bytes_alloc(klv::EMPTY_KLV_BYTES)?),
             board_tiles: Vec::new(),
             racks: [Vec::new(), Vec::new()],
-            rack_scores: [0, 0],
             work_buffer: WorkBuffer::new(game_config),
         })
     }
 
+    // set the position to solve; the table keeps what it knows, which holds for
+    // any position of the same game and lexicon
     pub fn init(&mut self, board_tiles: &[u8], racks: [&[u8]; 2]) {
         self.board_tiles.clear();
         self.board_tiles.extend_from_slice(board_tiles);
@@ -384,147 +512,171 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         self.racks[0].extend_from_slice(racks[0]);
         self.racks[1].clear();
         self.racks[1].extend_from_slice(racks[1]);
-        self.rack_scores[0] = self.game_config.alphabet().scaled_rack_score(racks[0]);
-        self.rack_scores[1] = self.game_config.alphabet().scaled_rack_score(racks[1]);
-        self.work_buffer.init();
     }
 
+    // reset the position searched to the one to solve, computing its key afresh
+    #[inline]
+    fn reset_position(&mut self) {
+        let alphabet = self.game_config.alphabet();
+        let work_buffer = &mut self.work_buffer;
+        work_buffer.board_tiles.clone_from(&self.board_tiles);
+        work_buffer.key = 0;
+        for (square, &tile) in work_buffer.board_tiles.iter().enumerate() {
+            if tile != 0 {
+                work_buffer.key ^= square_key(square, tile);
+            }
+        }
+        for player in 0..2 {
+            let rack = &mut work_buffer.racks[player];
+            rack.clone_from(&self.racks[player]);
+            rack.sort_unstable();
+            for (i, &tile) in rack.iter().enumerate() {
+                let count = rack[..i].iter().rev().take_while(|&&t| t == tile).count();
+                work_buffer.key ^= rack_step(player as u8, tile, count);
+            }
+            work_buffer.rack_scores[player] = alphabet.scaled_rack_score(rack);
+        }
+    }
+
+    // the key of the position searched with player_idx to move, and whether the
+    // move before was a pass
     #[inline(always)]
-    fn get_new_state_idx(
-        &mut self,
-        state_idx: u32,
-        which_player: u8,
-        play_idx: u32,
-    ) -> error::Returns<u32> {
-        match &self.work_buffer.plays[play_idx as usize] {
-            movegen::Play::Exchange { .. } => Ok(state_idx),
-            movegen::Play::Place {
-                down,
-                lane,
-                idx,
-                word,
-                score: _score,
-            } => {
-                // rebuild the current stack
-                {
-                    self.work_buffer.vec_placed_tile.clear();
-                    let mut state_idx = state_idx;
-                    while state_idx != 0 {
-                        let state = &self.work_buffer.states[state_idx as usize];
-                        self.work_buffer
-                            .vec_placed_tile
-                            .push(state.placed_tile.clone());
-                        state_idx = state.parent;
-                    }
-                    self.work_buffer.vec_placed_tile.reverse();
+    fn node_key(&self, player_idx: u8, just_passed: bool) -> u64 {
+        let mut key = self.work_buffer.key;
+        if player_idx != 0 {
+            key ^= zobrist(SECOND_TO_MOVE);
+        }
+        if just_passed {
+            key ^= zobrist(JUST_PASSED);
+        }
+        key
+    }
+
+    // play player_idx's move on the position searched
+    #[inline(always)]
+    fn place(&mut self, player_idx: u8, play: &movegen::Play) {
+        if let movegen::Play::Place {
+            down,
+            lane,
+            idx,
+            word,
+            ..
+        } = play
+        {
+            let strider = self.game_config.board_layout().dim().lane(*down, *lane);
+            let alphabet = self.game_config.alphabet();
+            let work_buffer = &mut self.work_buffer;
+            let rack = &mut work_buffer.racks[player_idx as usize];
+            for (i, &tile) in (*idx..).zip(word.iter()) {
+                if tile != 0 {
+                    let square = strider.at(i);
+                    work_buffer.board_tiles[square] = tile;
+                    work_buffer.key ^= square_key(square, tile);
+                    let held = held_tile(tile);
+                    let at = rack.partition_point(|&t| t < held);
+                    let count = rack[at..].iter().take_while(|&&t| t == held).count();
+                    work_buffer.key ^= rack_step(player_idx, held, count - 1);
+                    rack.remove(at);
+                    work_buffer.rack_scores[player_idx as usize] -= alphabet.scaled_score(held);
                 }
-
-                // place the tiles
-                let dim = self.game_config.board_layout().dim();
-                let strider = dim.lane(*down, *lane);
-                for (i, &tile) in (*idx..).zip(word.iter()) {
-                    if tile != 0 {
-                        self.work_buffer.vec_placed_tile.push(PlacedTile {
-                            tile,
-                            whose: which_player,
-                            idx: strider.at(i) as i16,
-                        });
-                    }
-                }
-
-                debug_assert!(
-                    self.work_buffer.vec_placed_tile.len() <= dim.rows as usize * dim.cols as usize,
-                    "placed-tile buffer exceeded the board area"
-                );
-
-                // normalize the ordering
-                self.work_buffer
-                    .vec_placed_tile
-                    .sort_unstable_by(|a, b| a.tile.cmp(&b.tile).then_with(|| a.idx.cmp(&b.idx)));
-
-                // normalize the tile owner
-                {
-                    // the blanks (0x81-0xbf) are sorted at end and treated as one group
-                    let mut threshold = 0x80u8;
-                    let mut freq = [0, 0];
-                    for cursor in (0..self.work_buffer.vec_placed_tile.len()).rev() {
-                        let new_threshold = self.work_buffer.vec_placed_tile[cursor].tile;
-                        if new_threshold < threshold {
-                            threshold = new_threshold;
-                            let mut p = cursor + 1;
-                            for _ in 0..freq[0] {
-                                self.work_buffer.vec_placed_tile[p].whose = 0;
-                                p += 1;
-                            }
-                            for _ in 0..freq[1] {
-                                self.work_buffer.vec_placed_tile[p].whose = 1;
-                                p += 1;
-                            }
-                            freq[0] = 0;
-                            freq[1] = 0;
-                        }
-                        freq[self.work_buffer.vec_placed_tile[cursor].whose as usize] += 1;
-                    }
-                    // assign the "whose" of the final leftmost group
-                    {
-                        let mut p = 0;
-                        for _ in 0..freq[0] {
-                            self.work_buffer.vec_placed_tile[p].whose = 0;
-                            p += 1;
-                        }
-                        for _ in 0..freq[1] {
-                            self.work_buffer.vec_placed_tile[p].whose = 1;
-                            p += 1;
-                        }
-                    }
-                }
-
-                // get the new state_idx; each tile placed may be a new state
-                if self.work_buffer.would_pass(growth(
-                    &self.work_buffer.state_finder,
-                    self.work_buffer.vec_placed_tile.len(),
-                )) {
-                    self.work_buffer.cut_short = true;
-                    return Err("a limit stopped the search".into());
-                }
-                let mut new_state_idx = 0;
-                for placed_tile in self.work_buffer.vec_placed_tile.iter() {
-                    let new_state = State {
-                        parent: new_state_idx,
-                        placed_tile: placed_tile.clone(),
-                    };
-                    let new_new_state_idx = self.work_buffer.states.len() as u32;
-                    new_state_idx = *self
-                        .work_buffer
-                        .state_finder
-                        .entry(new_state.clone())
-                        .or_insert(new_new_state_idx);
-                    if new_state_idx == new_new_state_idx {
-                        self.work_buffer.states.push(new_state);
-                        if new_new_state_idx == !0 {
-                            // this might happen, but only after a very long time
-                            return Err("too many states".into());
-                        }
-                    }
-                }
-
-                Ok(new_state_idx)
             }
         }
     }
 
+    // take player_idx's move back from the position searched
     #[inline(always)]
-    fn both_pass_value(&self, mut state_idx: u32, player_idx: u8) -> f32 {
-        let mut rack_scores = [self.rack_scores[0], self.rack_scores[1]];
-        let alphabet = self.game_config.alphabet();
-        while state_idx != 0 {
-            let state = &self.work_buffer.states[state_idx as usize];
-            let blanked_tile =
-                state.placed_tile.tile & !((state.placed_tile.tile as i8) >> 7) as u8;
-            rack_scores[state.placed_tile.whose as usize] -= alphabet.scaled_score(blanked_tile);
-            state_idx = state.parent;
+    fn unplace(&mut self, player_idx: u8, play: &movegen::Play) {
+        if let movegen::Play::Place {
+            down,
+            lane,
+            idx,
+            word,
+            ..
+        } = play
+        {
+            let strider = self.game_config.board_layout().dim().lane(*down, *lane);
+            let alphabet = self.game_config.alphabet();
+            let work_buffer = &mut self.work_buffer;
+            let rack = &mut work_buffer.racks[player_idx as usize];
+            for (i, &tile) in (*idx..).zip(word.iter()) {
+                if tile != 0 {
+                    let square = strider.at(i);
+                    work_buffer.board_tiles[square] = 0;
+                    work_buffer.key ^= square_key(square, tile);
+                    let held = held_tile(tile);
+                    let at = rack.partition_point(|&t| t < held);
+                    let count = rack[at..].iter().take_while(|&&t| t == held).count();
+                    work_buffer.key ^= rack_step(player_idx, held, count);
+                    rack.insert(at, held);
+                    work_buffer.rack_scores[player_idx as usize] += alphabet.scaled_score(held);
+                }
+            }
         }
+    }
+
+    // the value for player_idx if both players pass now, each losing their rack
+    #[inline(always)]
+    fn both_pass_value(&self, player_idx: u8) -> f32 {
+        let rack_scores = &self.work_buffer.rack_scores;
         (rack_scores[player_idx as usize ^ 1] - rack_scores[player_idx as usize]) as f32
+    }
+
+    // generate player_idx's moves that place tiles (a pass is searched on its
+    // own) on the position searched, into this ply's list: the table's move
+    // first, then by valuation
+    #[inline]
+    fn generate(&mut self, ply: usize, player_idx: u8, table_play: u16) {
+        let work_buffer = &mut self.work_buffer;
+        if work_buffer.lists.len() <= ply {
+            work_buffer.lists.resize_with(ply + 1, Vec::new);
+        }
+        // timed only while something listens
+        let t1 = work_buffer.progress.is_some().then(std::time::Instant::now);
+        work_buffer.movegen.gen_moves_raw_all_unsorted(
+            &movegen::BoardSnapshot {
+                board_tiles: &work_buffer.board_tiles,
+                game_config: self.game_config,
+                kwg: self.kwg,
+                anagrams: self.arm_tables.anagrams(),
+                rack_lengths: self.arm_tables.rack_lengths(),
+                klv: &self.klv,
+            },
+            &work_buffer.racks[player_idx as usize],
+            0, // TODO: use game_state to track this
+            movegen::PassPolicy::AsACandidate,
+        );
+        if let Some(t1) = t1 {
+            work_buffer.dur_movegen += t1.elapsed();
+        }
+        let rack_len = work_buffer.racks[player_idx as usize].len();
+        let out_bonus = 2 * work_buffer.rack_scores[player_idx as usize ^ 1];
+        let list = &mut work_buffer.lists[ply];
+        list.clear();
+        for (i, candidate) in work_buffer.movegen.plays.iter().enumerate() {
+            if let movegen::Play::Place { word, score, .. } = &candidate.play {
+                let plays_out = word.iter().filter(|&&t| t != 0).count() == rack_len;
+                list.push(Candidate {
+                    play: candidate.play.clone(),
+                    index: if i < PASS_PLAY as usize {
+                        i as u16
+                    } else {
+                        NO_PLAY
+                    },
+                    valuation: if plays_out {
+                        (score + out_bonus) as f32
+                    } else {
+                        *score as f32
+                    },
+                    plays_out,
+                });
+            }
+        }
+        let first = |candidate: &Candidate| table_play < PASS_PLAY && candidate.index == table_play;
+        list.sort_unstable_by(|a, b| {
+            first(b)
+                .cmp(&first(a))
+                .then_with(|| b.valuation.total_cmp(&a.valuation))
+        });
     }
 
     #[inline]
@@ -543,14 +695,16 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         // ending the game, so it counts as one tile.
         let mine = self.racks[player_idx as usize].len().max(1);
         let theirs = self.racks[player_idx as usize ^ 1].len().max(1);
-        let longest = (2 * (mine + theirs) + (mine == 1) as usize - 3).min(i8::MAX as usize);
-        self.work_buffer.time_limit = limits.time;
-        self.work_buffer.state_limit = limits.states;
-        self.work_buffer.memory_limit = limits.memory;
+        let longest = (2 * (mine + theirs) + (mine == 1) as usize - 3).min(COMPLETE as usize - 1);
+        let work_buffer = &mut self.work_buffer;
+        work_buffer.time_limit = limits.time;
+        work_buffer.state_limit = limits.states;
+        work_buffer.memory_limit = limits.memory;
+        work_buffer.can_grow = true;
+        work_buffer.searched = 0;
+        work_buffer.finished = 0;
+        work_buffer.table.generation += 1;
         for max_depth in 1..=longest as i8 {
-            let old_num_state_eval = self.work_buffer.state_eval.len();
-
-            self.work_buffer.depth_limited = false;
             self.work_buffer.max_depth = max_depth;
             // the first pass always finishes, so a solve cut short still has a value
             self.work_buffer.check_limits = max_depth > 1
@@ -558,19 +712,12 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
             self.work_buffer.nodes = 0;
             self.work_buffer.cut_short = false;
             let searched = if max_depth == 1 {
-                self.negamax_eval(
-                    0,
-                    player_idx,
-                    max_depth,
-                    f32::NEG_INFINITY,
-                    f32::INFINITY,
-                    false,
-                )
+                self.root_search(player_idx, max_depth, f32::NEG_INFINITY, f32::INFINITY)
             } else {
                 self.aspiration_search(player_idx, max_depth, last_valuation)
             };
-            let valuation = match searched {
-                Ok(valuation) => valuation,
+            let searched = match searched {
+                Ok(searched) => searched,
                 Err(_) if self.work_buffer.cut_short => {
                     return Ok(Solved {
                         value: to_equity(last_valuation),
@@ -580,23 +727,24 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 }
                 Err(e) => return Err(e),
             };
-            last_valuation = valuation;
+            last_valuation = searched.value;
+            self.work_buffer.finished = max_depth;
             if self.work_buffer.in_bag.is_none() {
-                self.report(Some(to_equity(valuation)))?;
+                self.report(Some(to_equity(searched.value)))?;
             }
             if verbose {
                 self.print_best_line(player_idx)?;
             }
 
-            if self.work_buffer.state_eval.len() == old_num_state_eval
-                && !self.work_buffer.depth_limited
-            {
+            // no line was cut short by the depth, so the value is the
+            // position's
+            if searched.complete {
                 break;
             }
             // a pass that ended past a limit is the last
             if (max_depth as usize) < longest && self.past_a_limit() {
                 return Ok(Solved {
-                    value: to_equity(valuation),
+                    value: to_equity(searched.value),
                     depth: max_depth,
                     exact: false,
                 });
@@ -611,17 +759,27 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
 
     #[inline(always)]
     fn past_a_limit(&self) -> bool {
-        self.work_buffer
+        let work_buffer = &self.work_buffer;
+        work_buffer
             .time_limit
-            .is_some_and(|limit| self.work_buffer.t0.elapsed() >= limit)
-            || self
-                .work_buffer
+            .is_some_and(|limit| work_buffer.t0.elapsed() >= limit)
+            || work_buffer
                 .state_limit
-                .is_some_and(|limit| self.work_buffer.states.len() >= limit)
-            || self
-                .work_buffer
-                .memory_limit
-                .is_some_and(|limit| limit.passed(self.work_buffer.unwritten(), 0))
+                .is_some_and(|limit| work_buffer.table.held >= limit)
+            || work_buffer.memory_limit.is_some_and(|limit| limit.passed())
+    }
+
+    // search the position to solve to depth within alpha and beta
+    #[inline]
+    fn root_search(
+        &mut self,
+        player_idx: u8,
+        depth: i8,
+        alpha: f32,
+        beta: f32,
+    ) -> error::Returns<Searched> {
+        self.reset_position();
+        self.negamax_eval(0, player_idx, depth, alpha, beta, false)
     }
 
     #[inline]
@@ -630,22 +788,15 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         player_idx: u8,
         max_depth: i8,
         last_valuation: f32,
-    ) -> error::Returns<f32> {
+    ) -> error::Returns<Searched> {
         const ASPIRATION_WINDOW: f32 = (3 * super::equity::SCALE) as f32;
         let lo = last_valuation - ASPIRATION_WINDOW;
         let hi = last_valuation + ASPIRATION_WINDOW;
-        let v = self.negamax_eval(0, player_idx, max_depth, lo, hi, false)?;
-        if v > lo && v < hi {
-            Ok(v)
+        let searched = self.root_search(player_idx, max_depth, lo, hi)?;
+        if searched.value > lo && searched.value < hi {
+            Ok(searched)
         } else {
-            self.negamax_eval(
-                0,
-                player_idx,
-                max_depth,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
-                false,
-            )
+            self.root_search(player_idx, max_depth, f32::NEG_INFINITY, f32::INFINITY)
         }
     }
 
@@ -685,495 +836,302 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
     }
 
     // based on https://en.wikipedia.org/wiki/Negamax
+    // search the position for player_idx to move, depth plies on, within alpha
+    // and beta, its moves at this ply's list; just_passed means the move before
+    // was a pass, so a pass now ends the game
     fn negamax_eval(
         &mut self,
-        state_idx: u32,
+        ply: usize,
         player_idx: u8,
         depth: i8,
         mut alpha: f32,
-        mut beta: f32,
+        beta: f32,
         just_passed: bool,
-    ) -> error::Returns<f32> {
-        // movegen not done for depth == 0, so no state_eval.
+    ) -> error::Returns<Searched> {
+        // a line cut short by the depth is valued as if both passed
         if depth == 0 {
-            self.work_buffer.depth_limited = true;
-
-            return Ok(self.both_pass_value(state_idx, player_idx));
+            return Ok(Searched {
+                value: self.both_pass_value(player_idx),
+                complete: false,
+            });
         }
 
         // the listener, if any, hears every node
         if self.work_buffer.progress.is_some() {
             self.report(None)?;
         }
+        self.work_buffer.searched += 1;
 
-        // the states are looked at every node, the clock and the memory every
+        // the table is looked at every node, the clock and the memory every
         // LIMIT_CADENCE nodes
         if self.work_buffer.check_limits {
-            self.work_buffer.nodes += 1;
-            if self
-                .work_buffer
+            let work_buffer = &mut self.work_buffer;
+            work_buffer.nodes += 1;
+            if work_buffer
                 .state_limit
-                .is_some_and(|limit| self.work_buffer.states.len() >= limit)
-                || (self.work_buffer.nodes.is_multiple_of(LIMIT_CADENCE)
-                    && (self
-                        .work_buffer
+                .is_some_and(|limit| work_buffer.table.held >= limit)
+                || (work_buffer.nodes.is_multiple_of(LIMIT_CADENCE)
+                    && (work_buffer
                         .time_limit
-                        .is_some_and(|limit| self.work_buffer.t0.elapsed() >= limit)
-                        || self
-                            .work_buffer
-                            .memory_limit
-                            .is_some_and(|limit| limit.passed(self.work_buffer.unwritten(), 0))))
+                        .is_some_and(|limit| work_buffer.t0.elapsed() >= limit)
+                        || work_buffer.memory_limit.is_some_and(|limit| limit.passed())))
             {
-                self.work_buffer.cut_short = true;
+                work_buffer.cut_short = true;
                 return Err("a limit stopped the search".into());
             }
         }
 
-        // return and/or trim range
-        let alpha_orig = alpha;
-        let state_eval = if let Some(state_eval) = self.work_buffer.state_eval.get(&state_idx) {
-            let state_side_eval = &state_eval.best_move[player_idx as usize];
-            if state_side_eval.depth >= depth {
-                // a table-served best_move is always a PLACE, so its value cannot depend on the
-                // consecutive-pass count.
-                debug_assert!(
-                    state_side_eval.play_idx != 0,
-                    "endgame TT served a pass value; pass-count invariant broken",
+        // a value stored deep enough answers when it is exact or a bound past
+        // the window; its move goes first either way. A bound inside the window
+        // does not narrow it, so what this search finds is bounded by the
+        // window alone, and a full window always finds the exact value
+        let key = self.node_key(player_idx, just_passed);
+        let mut table_play = NO_PLAY;
+        if let Some(entry) = self.work_buffer.table.probe(key) {
+            table_play = entry.play;
+            if entry.depth >= depth
+                && match entry.bound {
+                    Bound::Exact => true,
+                    Bound::Lower => entry.value >= beta,
+                    Bound::Upper => entry.value <= alpha,
+                }
+            {
+                return Ok(Searched {
+                    value: entry.value,
+                    complete: entry.depth == COMPLETE,
+                });
+            }
+        }
+        let alpha_searched = alpha;
+
+        self.generate(ply, player_idx, table_play);
+        let list = std::mem::take(&mut self.work_buffer.lists[ply]);
+        let mut best = Searched {
+            value: f32::NEG_INFINITY,
+            complete: true,
+        };
+        let mut best_play = NO_PLAY;
+        let mut failed = None;
+        for candidate in &list {
+            let value = if candidate.plays_out {
+                candidate.valuation
+            } else {
+                // the math goes like this:
+                // child negamax returns v.
+                // this parent negamax wants (score - v),
+                // where alpha <= (score - v) <= beta.
+                // so (score - beta) <= v <= (score - alpha).
+                // since child_alpha <= v <= child_beta,
+                // we set child_alpha = (score - beta)
+                // and child_beta = (score - alpha).
+                let score = candidate.valuation;
+                self.place(player_idx, &candidate.play);
+                let child = self.negamax_eval(
+                    ply + 1,
+                    player_idx ^ 1,
+                    depth - 1,
+                    score - beta,
+                    score - alpha,
+                    false,
                 );
-                match state_side_eval.equity_type {
-                    StateSideEvalEquityType::Exact => {
-                        return Ok(state_side_eval.equity);
+                self.unplace(player_idx, &candidate.play);
+                match child {
+                    Ok(child) => {
+                        best.complete &= child.complete;
+                        score - child.value
                     }
-                    StateSideEvalEquityType::LowerBound => {
-                        if state_side_eval.equity > alpha {
-                            alpha = state_side_eval.equity;
-                        }
-                    }
-                    StateSideEvalEquityType::UpperBound => {
-                        if state_side_eval.equity < beta {
-                            beta = state_side_eval.equity;
-                        }
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
                     }
                 }
-                if alpha >= beta {
-                    return Ok(state_side_eval.equity);
-                }
-            }
-            state_eval
-        } else {
-            let current_ply_buffer = &mut self.work_buffer.current_ply_buffer;
-            current_ply_buffer.board_tiles.clear();
-            current_ply_buffer
-                .board_tiles
-                .extend_from_slice(&self.board_tiles);
-            current_ply_buffer.racks[0].clear();
-            current_ply_buffer.racks[0].extend_from_slice(&self.racks[0]);
-            current_ply_buffer.racks[1].clear();
-            current_ply_buffer.racks[1].extend_from_slice(&self.racks[1]);
-
-            // revivify the state
-            {
-                let mut state_idx = state_idx;
-                while state_idx != 0 {
-                    let state = &self.work_buffer.states[state_idx as usize];
-                    current_ply_buffer.board_tiles[state.placed_tile.idx as usize] =
-                        state.placed_tile.tile;
-                    let rack = &mut current_ply_buffer.racks[state.placed_tile.whose as usize];
-                    let blanked_tile =
-                        state.placed_tile.tile & !((state.placed_tile.tile as i8) >> 7) as u8;
-                    let tombstone_idx = rack.iter().rposition(|&t| t == blanked_tile).unwrap();
-                    rack[tombstone_idx] = 0x80;
-                    state_idx = state.parent;
-                }
-                current_ply_buffer.racks[0].retain(|&t| t != 0x80);
-                current_ply_buffer.racks[1].retain(|&t| t != 0x80);
-            }
-            // read only from here, so a table can be looked at before it grows
-            let current_ply_buffer = &self.work_buffer.current_ply_buffer;
-            let alphabet = self.game_config.alphabet();
-            let rack_scores = [
-                alphabet.scaled_rack_score(&current_ply_buffer.racks[0]),
-                alphabet.scaled_rack_score(&current_ply_buffer.racks[1]),
-            ];
-
-            /*
-            writeln!(std::io::stdout(),
-                "position {} has racks {:?} and board",
-                state_idx, current_ply_buffer.racks
-            )?;
-            super::display::print_board(
-                self.game_config.alphabet(),
-                self.game_config.board_layout(),
-                &current_ply_buffer.board_tiles,
-            );
-            */
-
-            // generate moves
-            let board_snapshot = movegen::BoardSnapshot {
-                board_tiles: &current_ply_buffer.board_tiles,
-                game_config: self.game_config,
-                kwg: self.kwg,
-                anagrams: self.arm_tables.anagrams(),
-                rack_lengths: self.arm_tables.rack_lengths(),
-                klv: &self.klv,
             };
-            let mut state_eval = StateEval {
-                best_place_move: [StateSideEval::new(), StateSideEval::new()],
-                best_move: [StateSideEval::new(), StateSideEval::new()],
-                child_play_idxs: [self.work_buffer.child_plays.len(), 0, 0],
+            if value > best.value {
+                best.value = value;
+                best_play = candidate.index;
+                if value > alpha {
+                    alpha = value;
+                }
+                if value >= beta {
+                    break;
+                }
+            }
+        }
+        self.work_buffer.lists[ply] = list;
+        if let Some(e) = failed {
+            return Err(e);
+        }
+
+        // the pass, unless a move placing tiles has already reached beta
+        if best.value < beta {
+            let value = if just_passed {
+                self.both_pass_value(player_idx)
+            } else {
+                let child =
+                    self.negamax_eval(ply + 1, player_idx ^ 1, depth - 1, -beta, -alpha, true)?;
+                best.complete &= child.complete;
+                -child.value
             };
-            for which_player in 0..2 {
-                // timed only while something listens
-                let t1 = self
-                    .work_buffer
-                    .progress
-                    .is_some()
-                    .then(std::time::Instant::now);
-                const DO_HASTY: bool = false;
-                if !DO_HASTY || which_player == 0 {
-                    self.work_buffer.movegen.gen_moves_raw_all_unsorted(
-                        &board_snapshot,
-                        &current_ply_buffer.racks[which_player],
-                        0, // TODO: use game_state to track this
-                        movegen::PassPolicy::AsACandidate,
-                    );
-                } else {
-                    // simulate hasty blunders
-                    self.work_buffer
-                        .movegen
-                        .gen_moves_unfiltered(&movegen::GenMovesParams {
-                            board_snapshot: &board_snapshot,
-                            rack: &current_ply_buffer.racks[which_player],
-                            max_gen: 1,
-                            num_exchanges_by_this_player: 0, // TODO: use game_state to track this
-                            pass_policy: movegen::PassPolicy::OnlyWhenForced,
-                            dynamic_leaves: None,
-                        });
-                }
-                if let Some(t1) = t1 {
-                    self.work_buffer.dur_movegen += t1.elapsed();
-                }
-                // each play found may be a new play
-                if self.work_buffer.would_pass(growth(
-                    &self.work_buffer.play_finder,
-                    self.work_buffer.movegen.plays.len(),
-                )) {
-                    self.work_buffer.cut_short = true;
-                    return Err("a limit stopped the search".into());
-                }
-                for candidate in &self.work_buffer.movegen.plays {
-                    match &candidate.play {
-                        movegen::Play::Exchange { .. } => {
-                            // no need to store pass explicitly
-                        }
-                        movegen::Play::Place { word, score, .. } => {
-                            let new_new_play_idx = self.work_buffer.plays.len() as u32;
-                            let new_play_idx = *self
-                                .work_buffer
-                                .play_finder
-                                .entry(candidate.play.clone())
-                                .or_insert(new_new_play_idx);
-                            if new_play_idx == new_new_play_idx {
-                                self.work_buffer.plays.push(candidate.play.clone());
-                                if new_new_play_idx == !0 {
-                                    // this should not happen
-                                    return Err("too many plays".into());
-                                }
-                            }
-                            self.work_buffer.child_plays.push(
-                                if word.iter().filter(|&&t| t != 0).count()
-                                    == current_ply_buffer.racks[which_player].len()
-                                {
-                                    // playing out
-                                    ChildPlay {
-                                        new_state_idx: 0,
-                                        play_idx: new_play_idx,
-                                        valuation: (score + 2 * rack_scores[which_player ^ 1])
-                                            as f32,
-                                    }
-                                } else {
-                                    ChildPlay {
-                                        new_state_idx: !0, // filled in later
-                                        play_idx: new_play_idx,
-                                        valuation: *score as f32,
-                                    }
-                                },
-                            );
-                        }
-                    }
-                }
-                state_eval.child_play_idxs[which_player + 1] = self.work_buffer.child_plays.len();
-            }
-
-            if self
-                .work_buffer
-                .would_pass(growth(&self.work_buffer.state_eval, 1))
-            {
-                self.work_buffer.cut_short = true;
-                return Err("a limit stopped the search".into());
-            }
-            self.work_buffer
-                .state_eval
-                .entry(state_idx)
-                .or_insert(state_eval)
-        };
-
-        let low_idx = state_eval.child_play_idxs[player_idx as usize];
-        let high_idx = state_eval.child_play_idxs[player_idx as usize + 1];
-
-        const LAZY_MOVE_ORDER_PREFIX: Option<usize> = None;
-
-        let mut sorted_end = high_idx;
-        match LAZY_MOVE_ORDER_PREFIX {
-            Some(k) if high_idx - low_idx > k => {
-                let slice = &mut self.work_buffer.child_plays[low_idx..high_idx];
-
-                slice.select_nth_unstable_by(k, |a, b| b.valuation.total_cmp(&a.valuation));
-                slice[..k].sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
-                sorted_end = low_idx + k;
-            }
-            _ => {
-                self.work_buffer.child_plays[low_idx..high_idx]
-                    .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
+            if value > best.value {
+                best.value = value;
+                best_play = PASS_PLAY;
             }
         }
 
-        // perform actual negamax
-        let mut best_idx = !0;
-        let mut best_valuation = f32::NEG_INFINITY;
-        for child_play_idx in low_idx..high_idx {
-            if sorted_end < high_idx && child_play_idx == sorted_end {
-                self.work_buffer.child_plays[sorted_end..high_idx]
-                    .sort_unstable_by(|a, b| b.valuation.total_cmp(&a.valuation));
-                sorted_end = high_idx;
-            }
-            match &self.work_buffer.plays
-                [self.work_buffer.child_plays[child_play_idx].play_idx as usize]
-            {
-                movegen::Play::Exchange { .. } => {
-                    unreachable!();
-                }
-                movegen::Play::Place { score, .. } => {
-                    let child_valuation =
-                        if self.work_buffer.child_plays[child_play_idx].new_state_idx == 0 {
-                            // playing out, valuation is already correct
-                            self.work_buffer.child_plays[child_play_idx].valuation
-                        } else {
-                            let score = *score as f32;
-                            if self.work_buffer.child_plays[child_play_idx].new_state_idx == !0 {
-                                // construct the new state
-                                self.work_buffer.child_plays[child_play_idx].new_state_idx = self
-                                    .get_new_state_idx(
-                                    state_idx,
-                                    player_idx,
-                                    self.work_buffer.child_plays[child_play_idx].play_idx,
-                                )?;
-                            }
-                            // the math goes like this:
-                            // child negamax returns v.
-                            // this parent negamax wants (score - v),
-                            // where alpha <= (score - v) <= beta.
-                            // so (score - beta) <= v <= (score - alpha).
-                            // since child_alpha <= v <= child_beta,
-                            // we set child_alpha = (score - beta)
-                            // and child_beta = (score - alpha).
-                            score
-                                - self.negamax_eval(
-                                    self.work_buffer.child_plays[child_play_idx].new_state_idx,
-                                    player_idx ^ 1,
-                                    depth - 1,
-                                    score - beta,
-                                    score - alpha,
-                                    false,
-                                )?
-                        };
-                    self.work_buffer.child_plays[child_play_idx].valuation = child_valuation;
-                    // only place moves affect alpha/beta
-                    if child_valuation > best_valuation {
-                        best_valuation = child_valuation;
-                        best_idx = child_play_idx;
-                        if child_valuation > alpha {
-                            alpha = child_valuation;
-                        }
-                        if child_valuation >= beta {
-                            break;
-                        }
-                    }
-                }
-            };
-        }
-
-        // expand no-pass side first
-        let pass_valuation = if just_passed {
-            self.both_pass_value(state_idx, player_idx)
-        } else {
-            -self.negamax_eval(state_idx, player_idx ^ 1, depth - 1, -beta, -alpha, true)?
-        };
-
-        // fill in best_place_move
-        let state_eval = self.work_buffer.state_eval.get_mut(&state_idx).unwrap();
-        if best_idx == !0 {
-            // no valid place moves exist, must pass
-            state_eval.best_place_move[player_idx as usize] = StateSideEval {
-                equity: pass_valuation,
-                play_idx: 0,
-                new_state_idx: state_idx,
-                equity_type: StateSideEvalEquityType::Exact,
-                depth: i8::MIN, // cannot cache pass_valuation
-            };
-        } else {
-            let best_play = &self.work_buffer.child_plays[best_idx];
-            state_eval.best_place_move[player_idx as usize] = StateSideEval {
-                equity: best_valuation,
-                play_idx: best_play.play_idx,
-                new_state_idx: best_play.new_state_idx,
-                equity_type: if best_valuation <= alpha_orig {
-                    StateSideEvalEquityType::UpperBound
-                } else if best_valuation >= beta {
-                    StateSideEvalEquityType::LowerBound
+        self.work_buffer.store(
+            key,
+            Entry {
+                value: best.value,
+                play: best_play,
+                depth: if best.complete { COMPLETE } else { depth },
+                bound: if best.value <= alpha_searched {
+                    Bound::Upper
+                } else if best.value >= beta {
+                    Bound::Lower
                 } else {
-                    StateSideEvalEquityType::Exact
+                    Bound::Exact
                 },
-                depth,
-            };
-        }
-
-        // best_move is the better of best_place_move or pass_valuation.
-        if pass_valuation > best_valuation {
-            state_eval.best_move[player_idx as usize] = StateSideEval {
-                equity: pass_valuation,
-                play_idx: 0,
-                new_state_idx: state_idx,
-                equity_type: StateSideEvalEquityType::Exact,
-                depth: i8::MIN, // cannot cache pass_valuation
-            };
-            best_valuation = pass_valuation;
-        } else {
-            state_eval.best_move[player_idx as usize] =
-                state_eval.best_place_move[player_idx as usize].clone();
-        }
-
-        Ok(best_valuation)
+            },
+        );
+        Ok(best)
     }
 
-    // must have been precomputed
-    #[inline(always)]
-    pub fn append_solution<'b, F: FnMut(FoundPlay<'b>)>(
-        &'a self,
-        mut state_idx: u32,
-        mut player_idx: u8,
-        mut out: F,
-    ) where
-        'a: 'b,
-    {
-        while let Some(ans) = self.work_buffer.state_eval.get(&state_idx) {
-            let mut ans1 = &ans.best_move[player_idx as usize];
-            let play = &self.work_buffer.plays[ans1.play_idx as usize];
-            out(FoundPlay {
-                equity: to_equity(ans1.equity),
-                play,
-            });
-            if let movegen::Play::Exchange { .. } = play {
-                player_idx ^= 1;
-                ans1 = &ans.best_move[player_idx as usize];
-                if ans1.play_idx == !0 {
-                    // not yet evaluated
+    // the principal variation of the deepest pass that finished: each move with
+    // the value of the position it is played from, for its mover, read from the
+    // table to the end of the line or as deep as that pass went; a position the
+    // table cannot answer exactly is searched again with a full window
+    #[inline]
+    pub fn collect_pv(&mut self, player_idx: u8, out: &mut Vec<(equity::Equity, movegen::Play)>) {
+        out.clear();
+        let check_limits = std::mem::replace(&mut self.work_buffer.check_limits, false);
+        self.reset_position();
+        let mut player_idx = player_idx;
+        let mut just_passed = false;
+        let mut depth = self.work_buffer.finished;
+        while depth > 0 {
+            let key = self.node_key(player_idx, just_passed);
+            let fits = |entry: &Entry| {
+                entry.bound == Bound::Exact && entry.depth >= depth && entry.play != NO_PLAY
+            };
+            let entry = match self.work_buffer.table.probe(key).filter(fits) {
+                Some(entry) => entry,
+                None => {
+                    if self
+                        .negamax_eval(
+                            0,
+                            player_idx,
+                            depth,
+                            f32::NEG_INFINITY,
+                            f32::INFINITY,
+                            just_passed,
+                        )
+                        .is_err()
+                    {
+                        break;
+                    }
+                    match self.work_buffer.table.probe(key).filter(fits) {
+                        Some(entry) => entry,
+                        None => break,
+                    }
+                }
+            };
+            let value = to_equity(entry.value);
+            if entry.play == PASS_PLAY {
+                out.push((
+                    value,
+                    movegen::Play::Exchange {
+                        tiles: [][..].into(),
+                    },
+                ));
+                // a second pass ends the game
+                if just_passed {
                     break;
                 }
-                let play = &self.work_buffer.plays[ans1.play_idx as usize];
-                out(FoundPlay {
-                    equity: to_equity(ans1.equity),
-                    play,
-                });
-                if let movegen::Play::Exchange { .. } = play {
-                    // both passed, done
+                just_passed = true;
+            } else {
+                // the move the table keeps, generated again
+                self.generate(0, player_idx, NO_PLAY);
+                let Some(candidate) = self.work_buffer.lists[0]
+                    .iter()
+                    .find(|candidate| candidate.index == entry.play)
+                else {
+                    break;
+                };
+                let play = candidate.play.clone();
+                let plays_out = candidate.plays_out;
+                self.place(player_idx, &play);
+                out.push((value, play));
+                if plays_out {
                     break;
                 }
-            }
-            state_idx = ans1.new_state_idx;
-            if state_idx == 0 || state_idx == !0 {
-                break;
+                just_passed = false;
             }
             player_idx ^= 1;
+            depth -= 1;
         }
-    }
-
-    #[inline]
-    pub fn collect_pv(&'a self, player_idx: u8, out: &mut Vec<(equity::Equity, movegen::Play)>) {
-        out.clear();
-        self.append_solution(0, player_idx, |found| {
-            out.push((found.equity, found.play.clone()));
-        });
+        self.work_buffer.check_limits = check_limits;
     }
 
     #[inline]
     pub fn print_best_line(&mut self, player_idx: u8) -> std::io::Result<()> {
-        let mut current_ply_buffer = std::mem::take(&mut self.work_buffer.current_ply_buffer);
-        let board_tiles = &mut current_ply_buffer.board_tiles;
-        board_tiles.clone_from(&self.board_tiles);
-        let racks = &mut current_ply_buffer.racks;
-        racks.clone_from(&self.racks);
+        let mut line = Vec::new();
+        self.collect_pv(player_idx, &mut line);
+        let mut board_tiles = self.board_tiles.clone();
+        let mut racks = self.racks.clone();
         let mut leftovers = [None, None];
         let mut i = 0usize;
-        let mut written = Ok(());
-        self.append_solution(0, player_idx, |ply| {
+        for (equity, play) in &line {
             let player_turn_idx = (player_idx as usize + i) & 1;
             let rack = &mut racks[player_turn_idx];
             leftovers[player_turn_idx ^ 1] = None;
             leftovers[player_turn_idx] = Some(equity::Equity::new(
-                ply.equity.raw()
-                    - match ply.play {
+                equity.raw()
+                    - match play {
                         movegen::Play::Exchange { .. } => 0,
                         movegen::Play::Place { score, .. } => *score,
                     },
             ));
-            if written.is_ok() {
-                written = writeln!(
-                    std::io::stdout(),
-                    "{}: p{}: {}{:width$} {} {}",
-                    i,
-                    player_turn_idx,
-                    self.game_config.alphabet().fmt_rack(rack),
-                    "",
-                    ply.equity,
-                    ply.play.fmt(&movegen::BoardSnapshot {
-                        board_tiles,
-                        game_config: self.game_config,
-                        kwg: self.kwg,
-                        anagrams: self.arm_tables.anagrams(),
-                        rack_lengths: self.arm_tables.rack_lengths(),
-                        klv: &self.klv,
-                    }),
-                    width = self.game_config.rack_size() as usize - rack.len(),
-                );
-            }
-            match &ply.play {
-                movegen::Play::Exchange { .. } => {}
-                movegen::Play::Place {
-                    down,
-                    lane,
-                    idx,
-                    word,
-                    score: _,
-                } => {
-                    let strider = self.game_config.board_layout().dim().lane(*down, *lane);
+            writeln!(
+                std::io::stdout(),
+                "{}: p{}: {}{:width$} {} {}",
+                i,
+                player_turn_idx,
+                self.game_config.alphabet().fmt_rack(rack),
+                "",
+                equity,
+                play.fmt(&movegen::BoardSnapshot {
+                    board_tiles: &board_tiles,
+                    game_config: self.game_config,
+                    kwg: self.kwg,
+                    anagrams: self.arm_tables.anagrams(),
+                    rack_lengths: self.arm_tables.rack_lengths(),
+                    klv: &self.klv,
+                }),
+                width = self.game_config.rack_size() as usize - rack.len(),
+            )?;
+            if let movegen::Play::Place {
+                down,
+                lane,
+                idx,
+                word,
+                score: _,
+            } = play
+            {
+                let strider = self.game_config.board_layout().dim().lane(*down, *lane);
 
-                    // place the tiles
-                    for (i, &tile) in (*idx..).zip(word.iter()) {
-                        if tile != 0 {
-                            board_tiles[strider.at(i)] = tile;
-                            let blanked_tile = tile & !((tile as i8) >> 7) as u8;
-                            let tombstone_idx =
-                                rack.iter().rposition(|&t| t == blanked_tile).unwrap();
-                            rack[tombstone_idx] = 0x80;
-                        }
+                // place the tiles
+                for (i, &tile) in (*idx..).zip(word.iter()) {
+                    if tile != 0 {
+                        board_tiles[strider.at(i)] = tile;
+                        let tombstone_idx =
+                            rack.iter().rposition(|&t| t == held_tile(tile)).unwrap();
+                        rack[tombstone_idx] = 0x80;
                     }
-                    rack.retain(|&t| t != 0x80);
                 }
+                rack.retain(|&t| t != 0x80);
             }
             i += 1;
-        });
-        written?;
+        }
         for _ in 0..2 {
             let player_turn_idx = (player_idx as usize + i) & 1;
             let rack = &racks[player_turn_idx];
@@ -1199,9 +1157,8 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
         display::print_board(
             self.game_config.alphabet(),
             self.game_config.board_layout(),
-            board_tiles,
+            &board_tiles,
         )?;
-        self.work_buffer.current_ply_buffer = current_ply_buffer;
         Ok(())
     }
 
@@ -1215,10 +1172,9 @@ impl<'a, N: kwg::Node, L: kwg::Node> EndgameSolver<'a, N, L> {
                 depth: work_buffer.max_depth,
                 value,
                 movegen: work_buffer.dur_movegen,
-                states: work_buffer.states.len(),
-                evaluated: work_buffer.state_eval.len(),
-                child_plays: work_buffer.child_plays.len(),
-                plays: work_buffer.plays.len(),
+                nodes: work_buffer.searched,
+                held: work_buffer.table.held,
+                room: work_buffer.table.room(),
             }),
             None => Ok(()),
         }
@@ -1864,7 +1820,7 @@ pub fn peg_aggregate(hypotheses: &[(u32, equity::Equity)]) -> (f32, equity::Equi
 
 #[cfg(test)]
 mod tests {
-    use super::{EndgameSolver, PegMove};
+    use super::{EndgameSolver, PegMove, splitmix64};
     use crate::{alphabet, anagrams, bites, build, equity, game_config, klv, kwg, movegen};
 
     #[inline]
@@ -2310,17 +2266,6 @@ mod tests {
         out
     }
 
-    // https://doi.org/10.1145/2714064.2660195
-    // https://prng.di.unimi.it/splitmix64.c
-    #[inline]
-    fn splitmix64(s: &mut u64) -> u64 {
-        *s = s.wrapping_add(0x9e3779b97f4a7c15);
-        let mut z = *s;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-        z ^ (z >> 31)
-    }
-
     #[inline]
     fn random_positions(n: usize) -> Vec<(String, Position)> {
         let letters = [1u8, 2, 20, 8]; // A B T H
@@ -2437,9 +2382,10 @@ mod tests {
         let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
 
         let mut cut = 0usize;
-        let mut grown = 0usize;
+        let mut crowded = 0usize;
         for (name, pos) in all_positions() {
-            // every depth an unlimited solve finishes: its value and its states
+            // every depth an unlimited solve finishes: its value and the
+            // positions its table holds
             let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let mut egs =
                 EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
@@ -2447,7 +2393,7 @@ mod tests {
             let seen = finished.clone();
             egs.report_progress(move |p: &super::Progress| {
                 if let Some(value) = p.value {
-                    seen.borrow_mut().push((p.depth, value, p.states));
+                    seen.borrow_mut().push((p.depth, value, p.held));
                 }
                 Ok(())
             });
@@ -2524,9 +2470,9 @@ mod tests {
                 "[{name}] a memory limit never reached answers as an unlimited solve"
             );
 
-            // nothing held, but a byte allowed: a table's growth would pass the
-            // limit, so the search stops before the table grows, and answers a
-            // depth that finished
+            // with nothing held and one byte allowed, the table cannot grow
+            // past its first bucket, so its positions replace each other, and
+            // the solve still runs to the end
             let mut egs =
                 EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
             egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
@@ -2539,17 +2485,12 @@ mod tests {
                 }),
             };
             let solved = egs.solve_within(0, &limits).unwrap();
-            if !solved.exact {
-                grown += 1;
-                assert!(
-                    finished
-                        .iter()
-                        .any(|&(d, v, _)| (d, v) == (solved.depth, solved.value)),
-                    "[{name}] a table's growth answers depth {} with {}, which no pass finished",
-                    solved.depth,
-                    solved.value
-                );
-            }
+            assert!(
+                solved.exact && solved.value == full.value,
+                "[{name}] a table that may not grow answers as an unlimited solve"
+            );
+            assert_eq!(egs.work_buffer.table.room(), 4);
+            crowded += (finished.last().unwrap().2 > 4) as usize;
 
             // one state past the first depth's: the search stops within a later
             // pass, or after it, and answers a depth that finished
@@ -2581,7 +2522,7 @@ mod tests {
             }
         }
         assert!(cut > 0, "no state limit cut a solve short");
-        assert!(grown > 0, "no table's growth cut a solve short");
+        assert!(crowded > 0, "no solve needed more than a bucket");
     }
 
     #[test]
@@ -2652,34 +2593,105 @@ mod tests {
 
     #[test]
     #[inline]
-    fn the_memory_limit_takes_off_only_what_the_lists_never_wrote() {
+    fn a_key_made_move_by_move_is_the_key_made_afresh() {
         let gc = game_config::make_english_game_config();
-        let mut work_buffer = super::WorkBuffer::new(&gc);
-        work_buffer.init();
-        let at_start = work_buffer.unwritten();
-        let size = std::mem::size_of::<super::ChildPlay>();
-        work_buffer.child_plays.reserve_exact(100);
-        let taken = work_buffer.child_plays.capacity();
-        for _ in 0..60 {
-            work_buffer.child_plays.push(super::ChildPlay {
-                new_state_idx: !0,
-                play_idx: 0,
-                valuation: 0.0,
-            });
+        let kwg_bytes = tiny_kwg_bytes();
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(&kwg_bytes).unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &gc, false).unwrap();
+        let mut egs =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut afresh =
+            EndgameSolver::<kwg::Node22, kwg::Node22>::new(&gc, &kwg, &arm_tables).unwrap();
+        let mut moves = 0usize;
+        for (name, pos) in all_positions() {
+            for mover in 0..2u8 {
+                egs.init(&pos.board, [&pos.racks[0][..], &pos.racks[1][..]]);
+                egs.reset_position();
+                let before = egs.work_buffer.key;
+                egs.generate(0, mover, super::NO_PLAY);
+                let list = std::mem::take(&mut egs.work_buffer.lists[0]);
+                for candidate in &list {
+                    let movegen::Play::Place {
+                        down,
+                        lane,
+                        idx,
+                        word,
+                        ..
+                    } = &candidate.play
+                    else {
+                        unreachable!("a candidate places tiles");
+                    };
+                    egs.place(mover, &candidate.play);
+                    let mut board = pos.board.clone();
+                    let mut racks = pos.racks.clone();
+                    apply_place(
+                        &gc,
+                        &mut board,
+                        &mut racks[mover as usize],
+                        *down,
+                        *lane,
+                        *idx,
+                        word,
+                    );
+                    afresh.init(&board, [&racks[0][..], &racks[1][..]]);
+                    afresh.reset_position();
+                    assert_eq!(
+                        egs.work_buffer.key, afresh.work_buffer.key,
+                        "[{name}] the key after a move"
+                    );
+                    assert_eq!(egs.work_buffer.racks, afresh.work_buffer.racks);
+                    assert_eq!(egs.work_buffer.rack_scores, afresh.work_buffer.rack_scores);
+                    egs.unplace(mover, &candidate.play);
+                    assert_eq!(
+                        egs.work_buffer.key, before,
+                        "[{name}] the key after the move is taken back"
+                    );
+                    assert_eq!(egs.work_buffer.board_tiles, pos.board);
+                    moves += 1;
+                }
+            }
         }
+        assert!(moves > 0, "no move was made");
+    }
+
+    #[test]
+    #[inline]
+    fn the_table_keeps_what_it_is_given_and_the_deeper_of_two() {
+        let entry = |value: f32, depth: i8, bound: super::Bound| super::Entry {
+            value,
+            play: 7,
+            depth,
+            bound,
+        };
+        let mut table = super::Table::new();
+        table.generation = 1;
+        assert!(table.probe(1).is_none(), "an empty table knows nothing");
+        assert!(table.store(1, entry(-2.5, 3, super::Bound::Lower)));
+        let found = table.probe(1).unwrap();
         assert_eq!(
-            work_buffer.unwritten(),
-            at_start + (taken - 60) * size,
-            "a list's buffer past its entries is taken off"
+            (found.value, found.play, found.depth),
+            (-2.5, 7, 3),
+            "an entry comes back as it went in"
         );
-        // cleared, the list keeps its buffer and the memory its entries were in
-        work_buffer.init();
-        assert_eq!(work_buffer.child_plays.capacity(), taken);
-        assert_eq!(
-            work_buffer.unwritten(),
-            at_start + (taken - 60) * size,
-            "a cleared list still counts what it held"
-        );
+        assert!(found.bound == super::Bound::Lower);
+        // a shallower bound leaves the deeper value; an exact one takes its
+        // place
+        assert!(!table.store(1, entry(9.0, 2, super::Bound::Upper)));
+        assert_eq!(table.probe(1).unwrap().value, -2.5);
+        assert!(!table.store(1, entry(4.0, 1, super::Bound::Exact)));
+        assert_eq!(table.probe(1).unwrap().value, 4.0);
+        assert_eq!(table.held, 1);
+        // a full bucket gives up its shallowest entry
+        for key in 2..=4 {
+            assert!(table.store(key, entry(0.0, 5, super::Bound::Exact)));
+        }
+        assert!(!table.store(5, entry(0.0, 5, super::Bound::Exact)));
+        assert!(table.probe(1).is_none(), "the shallowest entry made room");
+        assert!((2..=5).all(|key| table.probe(key).is_some()));
+        // a table twice as big keeps every entry
+        table.resize(2);
+        assert_eq!(table.held, 4);
+        assert!((2..=5).all(|key| table.probe(key).is_some()));
     }
 
     #[test]

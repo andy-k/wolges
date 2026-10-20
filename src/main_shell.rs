@@ -21,8 +21,8 @@ struct Cli {
         long,
         value_name = "GB",
         default_value_t = endgame_watch::DEFAULT_MAX_MEMORY_GB,
-        help = "stop an endgame solve once the program uses GB gigabytes (10^9 bytes each; 0: \
-                never)"
+        help = "keep the program within GB gigabytes (10^9 bytes each; 0: no limit): an \
+                endgame's table grows only while it fits"
     )]
     max_memory: f64,
 }
