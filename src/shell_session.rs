@@ -164,6 +164,7 @@ pub struct Session {
     sim: Option<Sim>, // of the position shown; any change to the game ends it
     seats: [Seat; 2],
     racks_given: [bool; 2], // by seat, whether its current rack is given
+    names: [Option<(String, String)>; 2], // a seat's nickname and full name
     challenge_rule: ChallengeRule,
     printing: bool, // false while a file's game is read in
     log: Vec<String>,
@@ -236,6 +237,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "player N bot [sim MS]",
         "the computer plays seat N, its rack hidden, moving when its turn comes (with sim MS, by a sim of MS ms)",
+    ),
+    (
+        "nickname N NICKNAME [FULL NAME]",
+        "player N's nickname and full name in GCG (pN and player N if not given)",
     ),
     (
         "bot",
@@ -327,6 +332,7 @@ impl Session {
             sim: None,
             seats: [Seat::Human; 2],
             racks_given: [false; 2],
+            names: Default::default(),
             challenge_rule: ChallengeRule::Bonus(5),
             printing: true,
             log: Vec::new(),
@@ -703,6 +709,27 @@ impl Session {
                     Ok(())
                 })?;
                 self.show()?;
+                line.to_string()
+            }
+            "nickname" => {
+                const USAGE: &str = "nickname N NICKNAME [FULL NAME]";
+                let [n, nickname, full @ ..] = args else {
+                    return Err(USAGE.into());
+                };
+                let n = n.parse::<usize>().map_err(|_| USAGE)?;
+                if !(1..=self.seats.len()).contains(&n) {
+                    return Err(format!("player 1 to {}", self.seats.len()).into());
+                }
+                // a move's line starts with the nickname, so it must fit there
+                if nickname.contains(':') || nickname.starts_with(['#', '>']) {
+                    return Err("a nickname cannot hold a colon or start with # or >".into());
+                }
+                let full = if full.is_empty() {
+                    format!("player {n}")
+                } else {
+                    full.join(" ")
+                };
+                self.names[n - 1] = Some((nickname.clone(), full));
                 line.to_string()
             }
             "time" => {
@@ -1926,6 +1953,13 @@ impl Session {
         self.printing = false;
         let loaded = (|| -> error::Returns<()> {
             self.run_line(&format!("new {seed}"))?;
+            // the players' nicknames and full names, as the file gives them
+            for gcg_move in moves {
+                if let GcgKind::Player(nickname, full) = &gcg_move.kind {
+                    let line = format!("nickname {} {nickname} {full}", gcg_move.seat + 1);
+                    self.run_line(line.trim_end())?;
+                }
+            }
             let mut lines = vec![false; self.seats.len()];
             let mut unseen = vec![false; self.seats.len()];
             for gcg_move in moves {
@@ -1984,7 +2018,7 @@ impl Session {
                         standing.push(gcg_move);
                         continue;
                     }
-                    GcgKind::Lexicon(_) => continue,
+                    GcgKind::Lexicon(_) | GcgKind::Player(..) => continue,
                     // a time penalty belongs to its own player, the game over
                     // by then (end it, if the shell did not see it so: an end
                     // that counted no rack has no line)
@@ -2111,23 +2145,30 @@ impl Session {
         Ok(())
     }
 
-    // the moves shown as GCG: a header (the players p1 and p2, and the
-    // lexicon), then a line a move (a tile played through as '.', a blank in
-    // lowercase, an exchange as - and its tiles, or - and how many for tiles no
-    // one saw, and a pass as -), each followed by its taking back as a phony
-    // (the rack, --, and minus the score, the total as before) and a
-    // challenge's bonus (the rack after the move, then (challenge) and the
-    // points); if the game is over, the racks it counted (none after a loss on
-    // a challenge; else the other's to the player with none, or each rack left
-    // against its player) and what time cost, else each rack as it is (#rack1,
-    // #rack2). GCG cannot say that a seat showing no _ is given, that an end
-    // counted no rack, or that a challenge lost the game.
+    // the moves shown as GCG: a header (the players' nicknames and full names,
+    // and the lexicon), then a line for each move (a tile played through as
+    // '.', a blank in lowercase, an exchange as - and its tiles or - and how
+    // many, and a pass as -) and a line for each thing done to it; then, if the
+    // game is over, the racks it counted (the other's to the player with none,
+    // or each rack left against its player) and what time cost, else each rack
+    // as it is (#rack1, #rack2). GCG has no bag order or seed, and cannot say
+    // that a seat showing no _ is given, that an end counted no rack, or that a
+    // challenge lost the game.
     fn gcg_text(&self) -> error::Returns<String> {
         let game = self.game.as_ref().ok_or("no game: new first")?;
         let alphabet = self.game_config.alphabet();
         let mut text = String::from("#character-encoding UTF-8\n");
-        for seat in 1..=self.seats.len() {
-            text.push_str(&format!("#player{seat} p{seat} player {seat}\n"));
+        // a move's line says whose move it is by the nickname alone
+        let mut nicknames = Vec::<String>::new();
+        for seat in 0..self.seats.len() {
+            let (nickname, full) = self.gcg_name(seat);
+            if nicknames.contains(&nickname) {
+                return Err(
+                    format!("two players are {nickname}: give one another nickname").into(),
+                );
+            }
+            text.push_str(&format!("#player{} {nickname} {full}\n", seat + 1));
+            nicknames.push(nickname);
         }
         if let Some(lexicon) = self.lexicon_name() {
             text.push_str(&format!("#lexicon {lexicon}\n"));
@@ -2182,8 +2223,8 @@ impl Session {
             // a phony taken back: its line as played, then its taking back,
             // with the total as before it
             text.push_str(&format!(
-                ">p{}: {} {} +{} {}\n",
-                mover + 1,
+                ">{}: {} {} +{} {}\n",
+                nicknames[mover],
                 rack,
                 play,
                 score,
@@ -2191,11 +2232,8 @@ impl Session {
             ));
             if turn.withdrawn {
                 text.push_str(&format!(
-                    ">p{}: {} -- -{} {}\n",
-                    mover + 1,
-                    rack,
-                    score,
-                    before
+                    ">{}: {} -- -{} {}\n",
+                    nicknames[mover], rack, score, before
                 ));
             }
             replay.play_turn(self.game_config, &mut rng, turn)?;
@@ -2204,8 +2242,8 @@ impl Session {
             if let Some(bonus) = turn.bonus {
                 let after = &replay.state.players[mover];
                 text.push_str(&format!(
-                    ">p{}: {} (challenge) {:+} {}\n",
-                    mover + 1,
+                    ">{}: {} (challenge) {:+} {}\n",
+                    nicknames[mover],
                     rack_text(self.game_config, turn.given, &after.rack, &after.rack),
                     bonus,
                     equity::descale_score(after.score)
@@ -2244,8 +2282,8 @@ impl Session {
                     let other = &board.players[1 - seat].rack;
                     if none == Some(seat) {
                         text.push_str(&format!(
-                            ">p{}: ({}) +{} {}\n",
-                            seat + 1,
+                            ">{}: ({}) +{} {}\n",
+                            nicknames[seat],
                             alphabet.fmt_rack(other),
                             2 * alphabet.rack_score(other),
                             total(seat)
@@ -2253,8 +2291,8 @@ impl Session {
                     } else if none.is_none() && !player.rack.is_empty() {
                         // the rack, then the tiles that cost the points
                         text.push_str(&format!(
-                            ">p{}: {} ({}) -{} {}\n",
-                            seat + 1,
+                            ">{}: {} ({}) -{} {}\n",
+                            nicknames[seat],
                             alphabet.fmt_rack(&player.rack),
                             alphabet.fmt_rack(&player.rack),
                             alphabet.rack_score(&player.rack),
@@ -2270,8 +2308,8 @@ impl Session {
             for (seat, &lost) in game.turns[at].time.iter().enumerate() {
                 if lost != 0 {
                     text.push_str(&format!(
-                        ">p{}: {} (time) -{} {}\n",
-                        seat + 1,
+                        ">{}: {} (time) -{} {}\n",
+                        nicknames[seat],
                         alphabet.fmt_rack(&board.players[seat].rack),
                         lost,
                         equity::descale_score(final_scores[seat])
@@ -2317,6 +2355,14 @@ impl Session {
             state.next_turn();
         }
         Ok(text)
+    }
+
+    // a seat's names in GCG: its nickname and full name (pN and player N if not
+    // given)
+    fn gcg_name(&self, seat: usize) -> (String, String) {
+        self.names[seat]
+            .clone()
+            .unwrap_or_else(|| (format!("p{}", seat + 1), format!("player {}", seat + 1)))
     }
 
     // the lexicon's name, from its file's name: CSW24 for CSW24.kwg
@@ -2390,7 +2436,8 @@ fn solve_endgame(
 // player had no tiles at the end, so the other's rack counts to them; the rack
 // its player showed at the end; a player's rack in a game not over (#rack1,
 // #rack2), or the side to move's (#incomplete); once the game is over, the
-// points its player lost for time; or the lexicon the game was played with
+// points its player lost for time; the lexicon the game was played with; or a
+// player's nickname and full name (#player1, #player2)
 enum GcgKind {
     Play(String),
     Withdraw,
@@ -2401,6 +2448,7 @@ enum GcgKind {
     Incomplete,
     Time(i32),
     Lexicon(String),
+    Player(String, String),
 }
 
 // a line of a GCG file: its number, its player (by the order the players first
@@ -2438,8 +2486,8 @@ fn gcg_decode(bytes: &[u8]) -> error::Returns<String> {
 // read a GCG file's moves (a rack left empty is one no one saw), phonies taken
 // back, challenge bonuses, the racks its end counts, time penalties, the racks
 // of a game not over (#rack1 and #rack2, for the players #player1 and #player2
-// give, and #incomplete, for the side to move), and the lexicon, skipping every
-// other # line
+// give, and #incomplete, for the side to move), the players' nicknames and full
+// names, and the lexicon, skipping every other # line
 fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
     let mut moves = Vec::new();
     let mut players = Vec::<String>::new();
@@ -2450,8 +2498,19 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
             let pragma = line.trim_end();
             let words = pragma.split_whitespace().collect::<Vec<_>>();
             match words.as_slice() {
-                ["#player1", nickname, ..] => nicknames[0] = Some(nickname.to_string()),
-                ["#player2", nickname, ..] => nicknames[1] = Some(nickname.to_string()),
+                [player @ ("#player1" | "#player2"), nickname, full @ ..] => {
+                    let player = usize::from(*player == "#player2");
+                    nicknames[player] = Some(nickname.to_string());
+                    moves.push(GcgMove {
+                        line_number,
+                        seat: player,
+                        rack: String::new(),
+                        kind: GcgKind::Player(nickname.to_string(), full.join(" ")),
+                        score: 0,
+                        total: 0,
+                    });
+                    continue;
+                }
                 ["#incomplete", tiles] => {
                     moves.push(GcgMove {
                         line_number,
@@ -2574,15 +2633,16 @@ fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
             total: total.parse().map_err(|_| fail("no total"))?,
         });
     }
-    // the player of #rackN: the seat where #playerN's nickname first moved,
-    // else the seat the other nickname did not move in, else seat N
+    // the player of #rackN or #playerN: the seat where #playerN's nickname
+    // first moved, else the seat the other nickname did not move in, else seat
+    // N
     let moved = |player: usize| {
         let nickname = nicknames[player].as_ref()?;
         players.iter().position(|p| p == nickname)
     };
     for gcg_move in moves.iter_mut() {
         let player = gcg_move.seat;
-        if matches!(gcg_move.kind, GcgKind::Rack) && player < 2 {
+        if matches!(gcg_move.kind, GcgKind::Rack | GcgKind::Player(..)) && player < 2 {
             gcg_move.seat = moved(player)
                 .or_else(|| moved(1 - player).and_then(|seat| 1usize.checked_sub(seat)))
                 .unwrap_or(player);
@@ -3641,7 +3701,8 @@ mod tests {
         assert_eq!(text.matches("\n#rack").count(), 2, "{text}");
         assert!(text.contains("\n#lexicon tiny\n"), "{text}");
         let moves = gcg_moves(&text).unwrap();
-        assert_eq!(moves.len(), 5 + 2 + 1);
+        // the moves, the racks, the lexicon, and the players
+        assert_eq!(moves.len(), 5 + 2 + 1 + 2);
         let lexicon = |m: &GcgMove| matches!(&m.kind, GcgKind::Lexicon(name) if name == "tiny");
         assert!(moves.iter().any(lexicon));
         let mut second = session();
@@ -3649,11 +3710,15 @@ mod tests {
         assert_eq!(snapshot(&second), snapshot(&first));
         assert_eq!(second.gcg_text().unwrap(), text);
         let scores = |s: &Session| s.state.players.iter().map(|p| p.score).collect::<Vec<_>>();
-        // logged as the commands that made it: a rack and a play for each move,
-        // then each rack as it is
+        // logged as the commands that made it: the players' names, a rack and a
+        // play for each move, then each rack as it is
         assert!(second.log[0].starts_with("new "));
-        assert_eq!(second.log.len(), 1 + 2 * 5 + 2);
-        assert_eq!(second.log[1..3], ["rack AETAETE", "phony 8G AT"]);
+        assert_eq!(
+            second.log[1..3],
+            ["nickname 1 p1 player 1", "nickname 2 p2 player 2"]
+        );
+        assert_eq!(second.log.len(), 3 + 2 * 5 + 2);
+        assert_eq!(second.log[3..5], ["rack AETAETE", "phony 8G AT"]);
         // a score the file gets wrong stops the load there
         let wrong = text.replace("8G AT +4 4", "8G AT +5 5");
         let mut third = session();
@@ -3732,6 +3797,39 @@ mod tests {
         }
         // an encoding declared after the mark still counts
         assert!(gcg_decode(b"\xef\xbb\xbf#character-encoding UTF-8\nJos\xe9\n").is_err());
+    }
+
+    #[test]
+    #[inline]
+    fn players_nicknamed_go_out_as_gcg_and_come_back() {
+        let mut first = session();
+        run(&mut first, "nickname 1 ann Ann Example").unwrap();
+        run(&mut first, "nickname 2 bob").unwrap();
+        for bad in [
+            "nickname 3 cy",
+            "nickname 1 a:b",
+            "nickname 1 #c",
+            "nickname 1",
+        ] {
+            assert!(run(&mut first, bad).is_err(), "{bad}");
+        }
+        for line in GAME {
+            run(&mut first, line).unwrap();
+        }
+        let text = first.gcg_text().unwrap();
+        assert!(
+            text.contains("\n#player1 ann Ann Example\n#player2 bob player 2\n"),
+            "{text}"
+        );
+        assert!(text.contains("\n>ann: AETAETE 8G AT +4 4\n"), "{text}");
+        assert!(text.contains("\n>bob: TEATEAT 9H EA +"), "{text}");
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(second.gcg_text().unwrap(), text);
+        // a move's line tells its player by the nickname alone, so two players
+        // cannot share one
+        run(&mut second, "nickname 2 ann").unwrap();
+        assert!(second.gcg_text().is_err());
     }
 
     #[test]
