@@ -409,6 +409,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "gcg load FILE",
         "start a new game from a GCG file's moves, logged as the commands it runs",
     ),
+    (
+        "gcg words OUT PATH...",
+        "write to OUT, a new file, a line for each word each move of the GCG files (or a directory's .gcg files) formed",
+    ),
     ("r, p, k, b", "short for rack, play, gen (kibitz), and show"),
     ("help", "this list"),
     ("exit", "leave the shell"),
@@ -1269,7 +1273,10 @@ impl Session {
                         let moves = gcg_moves(&gcg_decode(&std::fs::read(path)?)?)?;
                         self.load_moves(&moves)
                     }
-                    _ => Err("gcg save FILE or gcg load FILE".into()),
+                    [words, out, paths @ ..] if words == "words" && !paths.is_empty() => {
+                        self.gcg_words(out, paths)
+                    }
+                    _ => Err("gcg save FILE, gcg load FILE, or gcg words OUT PATH...".into()),
                 };
             }
             "sim" => {
@@ -2216,6 +2223,9 @@ impl Session {
             }
         }
         let seed = GameRng::try_from_rng(&mut rand::rngs::SysRng)?.next_u64();
+        // show the game once it is read in, unless the session prints nothing
+        // (as in the sessions gcg words reads files into)
+        let printing = self.printing;
         self.printing = false;
         let loaded = (|| -> error::Returns<()> {
             self.run_line(&format!("new {seed}"))?;
@@ -2411,8 +2421,10 @@ impl Session {
             }
             Ok(())
         })();
-        self.printing = true;
-        self.show()?;
+        self.printing = printing;
+        if printing {
+            self.show()?;
+        }
         loaded
     }
 
@@ -2706,6 +2718,110 @@ impl Session {
     fn lexicon_name(&self) -> Option<&str> {
         let (path, _) = self.kwg.as_ref()?;
         std::path::Path::new(path).file_stem()?.to_str()
+    }
+
+    // write the words each move of GCG files formed (paths, each a file or a
+    // directory whose .gcg files are read in name order) to out, a new file, a
+    // line a word as write_words writes them. Each file is read into a new
+    // session with this one's lexicon and leaves, leaving this game untouched,
+    // and its name is printed; a file that does not load prints where it
+    // stopped, keeps the words of the moves before, and the next file goes on
+    fn gcg_words(&self, out: &str, paths: &[String]) -> error::Returns<()> {
+        let mut files = Vec::new();
+        for path in paths {
+            if std::fs::metadata(path)?.is_dir() {
+                let mut found = std::fs::read_dir(path)?
+                    .map(|entry| entry.map(|entry| entry.path()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                found.retain(|file| {
+                    let gcg = |extension: &std::ffi::OsStr| extension.eq_ignore_ascii_case("gcg");
+                    file.extension().is_some_and(gcg)
+                });
+                found.sort();
+                files.extend(found);
+            } else {
+                files.push(std::path::PathBuf::from(path));
+            }
+        }
+        let mut written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(out)?;
+        let mut session = Session::new(true, self.memory)?;
+        if let Some((path, kwg)) = &self.kwg {
+            session.use_kwg(path, kwg);
+        }
+        session.klv = self.klv;
+        session.printing = false;
+        let mut stdout = std::io::stdout();
+        for (k, file) in (1..).zip(&files) {
+            let name = file.display().to_string();
+            writeln!(stdout, "file {k} of {}: {name}", files.len())?;
+            session.game = None;
+            let loaded = (|| -> error::Returns<()> {
+                let moves = gcg_moves(&gcg_decode(&std::fs::read(file)?)?)?;
+                session.load_moves(&moves)
+            })();
+            session.write_words(&name, &mut written)?;
+            if let Err(e) = loaded {
+                writeln!(stdout, "{name}: {e}; the moves before kept")?;
+            }
+        }
+        Ok(())
+    }
+
+    // write the words each move shown formed, one line a word, tab separated:
+    // the file's name, the move's number, its player's nickname, the word (with
+    // the tiles it played through, and a blank as its letter), main or cross (a
+    // hook), and "taken back" for a phony withdrawn
+    fn write_words(&self, name: &str, out: &mut impl Write) -> error::Returns<()> {
+        let Some(game) = &self.game else {
+            return Ok(());
+        };
+        let kwg = self.kwg()?;
+        let alphabet = self.game_config.alphabet();
+        let (mut replay, mut rng) = self.dealt(game)?;
+        let mut words = play_scorer::PlayScorer::new();
+        for (number, turn) in (1..).zip(&game.turns[..game.at]) {
+            let held = replay.ready_rack(self.game_config, turn)?;
+            let (nickname, _) = self.gcg_name(replay.state.turn as usize);
+            let taken_back = if turn.withdrawn() { "\ttaken back" } else { "" };
+            let mut kind = "main";
+            let mut written = Ok(());
+            words.words_all(
+                &movegen::BoardSnapshot {
+                    board_tiles: &replay.state.board_tiles,
+                    game_config: self.game_config,
+                    kwg,
+                    anagrams: None,
+                    rack_lengths: None,
+                    klv: self.klv,
+                },
+                &turn.play,
+                |word: &[u8]| {
+                    // a move's own word comes first
+                    let word = word
+                        .iter()
+                        .map(|&tile| alphabet.of_board(tile).unwrap_or("?"))
+                        .collect::<String>();
+                    if written.is_ok() {
+                        written = writeln!(
+                            out,
+                            "{name}\t{number}\t{nickname}\t{word}\t{kind}{taken_back}"
+                        );
+                    }
+                    kind = "cross";
+                    true
+                },
+            );
+            written?;
+            replay.play_turn(self.game_config, &mut rng, turn)?;
+            if replay.end_of_turn(self.game_config, turn, held)?.is_some() {
+                break;
+            }
+            replay.state.next_turn();
+        }
+        Ok(())
     }
 
     // a move written as play takes it: a coordinate and a word (8D across, D8
@@ -4371,6 +4487,41 @@ mod tests {
         ] {
             assert!(run(&mut fourth, bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    #[inline]
+    fn the_words_each_move_formed_go_out_a_line_each() {
+        // a GCG file's game, read in as gcg words reads one
+        let words = |lines: &[&str]| {
+            let mut first = session();
+            for line in lines {
+                run(&mut first, line).unwrap();
+            }
+            let text = first.gcg_text().unwrap();
+            let mut second = session();
+            second.printing = false;
+            second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+            let mut out = Vec::new();
+            second.write_words("g.gcg", &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        // the move's own word first, with the tiles it played through, then
+        // each hook
+        let lines = concat!(
+            "g.gcg\t1\tp1\tAT\tmain\n",
+            "g.gcg\t2\tp2\tEA\tmain\n",
+            "g.gcg\t2\tp2\tTE\tcross\n",
+            "g.gcg\t3\tp1\tTEA\tmain\n",
+        );
+        assert_eq!(words(GAME), lines);
+        // a phony taken back: its words, marked so
+        let phony = ["rack EEE", "phony H8 TEEE", "challenge"];
+        let text = words(&[&GAME[..3], &phony].concat());
+        assert!(
+            text.ends_with("g.gcg\t2\tp2\tTEEE\tmain\ttaken back\n"),
+            "{text}"
+        );
     }
 
     #[test]
