@@ -91,6 +91,7 @@ pub struct Session {
     sim: Option<Sim>, // of the position shown; any change to the game ends it
     seats: [Seat; 2],
     racks_given: [bool; 2], // by seat, whether its current rack is given
+    printing: bool,         // false while a file's game is read in
     log: Vec<String>,
     quiet: bool, // no progress printed while a sim runs
 }
@@ -177,6 +178,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "write those commands to FILE, a new file, for source to run",
     ),
     ("source FILE", "run the commands in FILE"),
+    (
+        "gcg save FILE",
+        "write the moves shown to FILE, a new GCG file (without the bag order or seed)",
+    ),
+    (
+        "gcg load FILE",
+        "start a new game from a GCG file's moves, logged as the commands it runs",
+    ),
     ("r, p, k, b", "short for rack, play, gen (kibitz), and show"),
     ("help", "this list"),
     ("exit", "leave the shell"),
@@ -205,6 +214,7 @@ impl Session {
             sim: None,
             seats: [Seat::Human; 2],
             racks_given: [false; 2],
+            printing: true,
             log: Vec::new(),
             quiet,
         })
@@ -248,8 +258,10 @@ impl Session {
 
     // run one command. A command that changes the session is logged as line
     // (new with the seed it used, a short command as its long form, bot as the
-    // move it chose), but sim commands are not (they are analysis, which any
-    // change to the game ends); a command that fails changes nothing
+    // move it chose, gcg load as the commands it runs), but sim commands are
+    // not (they are analysis, which any change to the game ends); a command
+    // that fails changes nothing, except gcg load, which keeps the game it made
+    // up to the line that failed
     fn run_one(&mut self, line: &str, words: &[String]) -> error::Returns<()> {
         // short commands run and are logged as their long forms
         let longer = match words[0].as_str() {
@@ -511,6 +523,24 @@ impl Session {
                     writeln!(file, "{line}")?;
                 }
                 return Ok(());
+            }
+            "gcg" => {
+                return match args {
+                    [save, path] if save == "save" => {
+                        let text = self.gcg_text()?;
+                        let mut file = std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(path)?;
+                        file.write_all(text.as_bytes())?;
+                        Ok(())
+                    }
+                    [load, path] if load == "load" => {
+                        let moves = gcg_moves(&std::fs::read_to_string(path)?)?;
+                        self.load_moves(&moves)
+                    }
+                    _ => Err("gcg save FILE or gcg load FILE".into()),
+                };
             }
             "sim" => {
                 const USAGE: &str =
@@ -839,6 +869,9 @@ impl Session {
     }
 
     fn show(&self) -> error::Returns<()> {
+        if !self.printing {
+            return Ok(());
+        }
         let mut out = std::io::stdout();
         let Some(game) = &self.game else {
             writeln!(out, "no game: new to start one")?;
@@ -1338,6 +1371,276 @@ impl Session {
         Ok(())
     }
 
+    // run one command as if read from a file: no bot moves after it
+    fn run_line(&mut self, line: &str) -> error::Returns<()> {
+        let words = line
+            .split_whitespace()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        self.run_one(line, &words)
+    }
+
+    // make a new game of a GCG file's moves: new with a fresh seed; each seat
+    // given whose rack shows an _ on any line, or that has no line (a seat
+    // dealt shows its racks; the others are not given); then each move's rack
+    // (its known tiles) and play, run and logged as those commands, each
+    // checked against the score and total the file gives; then its end (end,
+    // and the racks it counted, checked the same way) or its racks as they
+    // stand. It stops at the first that fails, keeping the game made so far.
+    fn load_moves(&mut self, moves: &[GcgMove]) -> error::Returns<()> {
+        let seed = GameRng::try_from_rng(&mut rand::rngs::SysRng)?.next_u64();
+        self.printing = false;
+        let loaded =
+            (|| -> error::Returns<()> {
+                self.run_line(&format!("new {seed}"))?;
+                let mut lines = vec![false; self.seats.len()];
+                let mut unseen = vec![false; self.seats.len()];
+                for gcg_move in moves {
+                    let seat = gcg_move.seat;
+                    if seat >= self.seats.len() {
+                        return Err(format!(
+                            "line {}: player 1 to {}",
+                            gcg_move.line_number,
+                            self.seats.len()
+                        )
+                        .into());
+                    }
+                    lines[seat] = true;
+                    if matches!(gcg_move.kind, GcgKind::Play(_) | GcgKind::Rack) {
+                        unseen[seat] |= gcg_move.rack.contains('_');
+                    }
+                }
+                for (seat, (&lines, &unseen)) in lines.iter().zip(&unseen).enumerate() {
+                    let given = unseen || !lines;
+                    if given != (self.seats[seat] == Seat::Given) {
+                        let kind = if given { "given" } else { "human" };
+                        self.run_line(&format!("player {} {kind}", seat + 1))?;
+                    }
+                }
+                let mut standing = Vec::new();
+                for gcg_move in moves {
+                    let line_number = gcg_move.line_number;
+                    let play = match &gcg_move.kind {
+                        GcgKind::Play(play) => play,
+                        GcgKind::Rack => {
+                            standing.push(gcg_move);
+                            continue;
+                        }
+                        end => {
+                            self.load_end(gcg_move, end)
+                                .map_err(|e| on_line(line_number, &e))?;
+                            continue;
+                        }
+                    };
+                    let mover = self.state.turn as usize;
+                    if gcg_move.seat != mover {
+                        return Err(on_line(
+                            line_number,
+                            format_args!(
+                                "the file's player {} moves where player {} is to move",
+                                gcg_move.seat + 1,
+                                mover + 1
+                            ),
+                        )
+                        .into());
+                    }
+                    // an _ is a tile no one saw
+                    let known = gcg_move.rack.replace('_', "");
+                    if !known.is_empty() {
+                        self.run_line(&format!("rack {known}"))
+                            .map_err(|e| on_line(line_number, &e))?;
+                    }
+                    self.run_line(&format!("play {play}"))
+                        .map_err(|e| on_line(line_number, &e))?;
+                    let game = self.game.as_ref().ok_or("no game")?;
+                    let score = match &game.turns[game.at - 1].play {
+                        movegen::Play::Place { score, .. } => equity::descale_score(*score),
+                        movegen::Play::Exchange { .. } => 0,
+                    };
+                    let total = equity::descale_score(self.state.players[mover].score);
+                    if (score, total) != (gcg_move.score, gcg_move.total) {
+                        return Err(on_line(line_number, format_args!(
+                        "it scores {score} for a total of {total} here, {} for {} in the file",
+                        gcg_move.score, gcg_move.total
+                    ))
+                    .into());
+                    }
+                }
+                for gcg_move in standing {
+                    let line_number = gcg_move.line_number;
+                    let known = gcg_move.rack.replace('_', "");
+                    if !known.is_empty() {
+                        self.run_line(&format!("rack {} {known}", gcg_move.seat + 1))
+                            .map_err(|e| on_line(line_number, &e))?;
+                    }
+                }
+                Ok(())
+            })();
+        self.printing = true;
+        self.show()?;
+        loaded
+    }
+
+    // read a GCG file's end, line by line, with the game over (end, if the
+    // shell did not see it so): either its player has no tiles and the other's
+    // rack counts to them, or its player's rack is left and counts against
+    // them. The rack is set (by rack, with - for none), and what it counts and
+    // the total are checked against the file's.
+    fn load_end(&mut self, gcg_move: &GcgMove, kind: &GcgKind) -> error::Returns<()> {
+        if self.final_scores.is_none() {
+            self.run_line("end")?;
+        }
+        let seat = gcg_move.seat;
+        let (counted, sign) = match kind {
+            GcgKind::Out => {
+                self.run_line(&format!("rack {} -", seat + 1))?;
+                (1 - seat, 2)
+            }
+            GcgKind::Shown => (seat, -1),
+            _ => return Ok(()),
+        };
+        let rack = match gcg_move.rack.as_str() {
+            "" => "-",
+            rack => rack,
+        };
+        self.run_line(&format!("rack {} {rack}", counted + 1))?;
+        let final_scores = self.final_scores.as_ref().ok_or("the game is not over")?;
+        let cost = self
+            .game_config
+            .alphabet()
+            .rack_score(&self.state.players[counted].rack);
+        let (score, total) = (sign * cost, equity::descale_score(final_scores[seat]));
+        if (score, total) != (gcg_move.score, gcg_move.total) {
+            return Err(format!(
+                "its rack counts {score} for a total of {total} here, {} for {} in the file",
+                gcg_move.score, gcg_move.total
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    // the moves shown, written as GCG: a header with the players p1 and p2,
+    // then a line for each move (a tile played through as '.', a blank in
+    // lowercase, an exchange as - and its tiles, or - and how many for tiles no
+    // one saw, and a pass as -); if the game is over, the racks it counted (the
+    // other's to the player with none, or each rack left against its player),
+    // else each rack as it is, as #rack1 and #rack2. GCG has no bag order or
+    // seed, and no way to say a seat is given when it shows no _, or that an
+    // end counted no rack: those are lost.
+    fn gcg_text(&self) -> error::Returns<String> {
+        let game = self.game.as_ref().ok_or("no game: new first")?;
+        let alphabet = self.game_config.alphabet();
+        let mut text = String::from("#character-encoding UTF-8\n");
+        for seat in 1..=self.seats.len() {
+            text.push_str(&format!("#player{seat} p{seat} player {seat}\n"));
+        }
+        let (mut replay, mut rng) = self.dealt(game)?;
+        let mut final_scores = None;
+        for turn in &game.turns[..game.at] {
+            let held = replay.ready_rack(self.game_config, turn)?;
+            let board = &mut replay.state;
+            let mover = board.turn as usize;
+            let (play, score) = match &turn.play {
+                movegen::Play::Exchange { tiles } if tiles.is_empty() => ("-".to_string(), 0),
+                // for tiles no one saw, only how many
+                movegen::Play::Exchange { tiles } if turn.hidden => {
+                    (format!("-{}", tiles.len()), 0)
+                }
+                movegen::Play::Exchange { tiles } => (format!("-{}", alphabet.fmt_rack(tiles)), 0),
+                movegen::Play::Place {
+                    down,
+                    lane,
+                    idx,
+                    word,
+                    score,
+                } => {
+                    let mut text = if *down {
+                        format!("{}{} ", display::column(*lane), idx + 1)
+                    } else {
+                        format!("{}{} ", lane + 1, display::column(*idx))
+                    };
+                    for &tile in word.iter() {
+                        text.push_str(if tile == 0 {
+                            "."
+                        } else {
+                            alphabet
+                                .of_board(tile)
+                                .ok_or("a tile not in the alphabet")?
+                        });
+                    }
+                    (text, equity::descale_score(*score))
+                }
+            };
+            // a given seat's rack: what it was known to hold (no tile of an
+            // exchange no one saw)
+            let held_tiles = &board.players[mover].rack;
+            let known = if turn.hidden {
+                &[][..]
+            } else {
+                &held_tiles[..]
+            };
+            let rack = rack_text(self.game_config, turn.given, known, held_tiles);
+            board.play(self.game_config, &mut rng, &turn.play)?;
+            text.push_str(&format!(
+                ">p{}: {} {} +{} {}\n",
+                mover + 1,
+                rack,
+                play,
+                score,
+                equity::descale_score(board.players[mover].score)
+            ));
+            final_scores = replay.end_of_turn(self.game_config, turn, held)?;
+            if final_scores.is_some() {
+                break;
+            }
+            replay.state.next_turn();
+        }
+        let board = &replay.state;
+        match final_scores {
+            // the racks as they are, the side to move's as set, if it was
+            None => {
+                for (seat, player) in self.state.players.iter().enumerate() {
+                    if !player.rack.is_empty() {
+                        let (given, rack) = (self.racks_given[seat], &player.rack);
+                        let rack = rack_text(self.game_config, given, rack, rack);
+                        text.push_str(&format!("#rack{} {rack}\n", seat + 1));
+                    }
+                }
+            }
+            Some(final_scores) => {
+                let last = &game.turns[game.at - 1];
+                let set_none = |seat| last.shown.iter().any(|(s, t)| *s == seat && t.is_empty());
+                let none = (0..board.players.len()).find(|&seat| {
+                    board.players[seat].rack.is_empty() && (!replay.given[seat] || set_none(seat))
+                });
+                for (seat, player) in board.players.iter().enumerate() {
+                    let other = &board.players[1 - seat].rack;
+                    if none == Some(seat) {
+                        text.push_str(&format!(
+                            ">p{}: ({}) +{} {}\n",
+                            seat + 1,
+                            alphabet.fmt_rack(other),
+                            2 * alphabet.rack_score(other),
+                            equity::descale_score(final_scores[seat])
+                        ));
+                    } else if none.is_none() && !player.rack.is_empty() {
+                        // the rack, then the tiles that cost the points
+                        text.push_str(&format!(
+                            ">p{}: {} ({}) -{} {}\n",
+                            seat + 1,
+                            alphabet.fmt_rack(&player.rack),
+                            alphabet.fmt_rack(&player.rack),
+                            alphabet.rack_score(&player.rack),
+                            equity::descale_score(final_scores[seat])
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(text)
+    }
+
     // a move written as play takes it: a coordinate and a word (8D across, D8
     // down; a tile played through in parentheses), exch and its tiles, or pass
     fn play_text(&self, play: &movegen::Play) -> error::Returns<String> {
@@ -1364,6 +1667,139 @@ impl Session {
             }
         })
     }
+}
+
+// what a line of a GCG file says: a move, as play takes it; that its player had
+// no tiles at the end, so the other's rack counts to them; the rack its player
+// showed at the end; or a player's rack in a game not over (#rack1, #rack2)
+enum GcgKind {
+    Play(String),
+    Out,
+    Shown,
+    Rack,
+}
+
+// a line of a GCG file: its number, its player (by the order the players first
+// move; for #rackN, player N), the rack, what it says, and its score and total
+struct GcgMove {
+    line_number: usize,
+    seat: usize,
+    rack: String,
+    kind: GcgKind,
+    score: i32,
+    total: i32,
+}
+
+// read a GCG file's moves, the racks its end counts, and the racks of a game
+// not over, skipping every other # line. A challenge bonus, a time penalty, and
+// a phony taken back are refused, with an error saying so
+fn gcg_moves(text: &str) -> error::Returns<Vec<GcgMove>> {
+    let mut moves = Vec::new();
+    let mut players = Vec::<String>::new();
+    for (line_number, line) in (1..).zip(text.lines()) {
+        let fail = |what: &str| format!("line {line_number}: {what}: {line:?}");
+        if line.starts_with('#') {
+            let pragma = line.trim_end();
+            let rack = pragma.strip_prefix("#rack").map(str::split_whitespace);
+            let (seat, rack, kind) = match rack {
+                Some(mut tokens) => {
+                    let n = tokens.next().and_then(|n| n.parse::<usize>().ok());
+                    let Some(seat) = n.and_then(|n| n.checked_sub(1)) else {
+                        continue;
+                    };
+                    match (tokens.next(), tokens.next()) {
+                        (Some(rack), None) => (seat, rack, GcgKind::Rack),
+                        (None, _) => continue,
+                        _ => return Err(fail("not a rack this reads").into()),
+                    }
+                }
+                None => continue,
+            };
+            moves.push(GcgMove {
+                line_number,
+                seat,
+                rack: rack.to_string(),
+                kind,
+                score: 0,
+                total: 0,
+            });
+            continue;
+        }
+        let Some(rest) = line.strip_prefix('>') else {
+            continue;
+        };
+        let (player, rest) = rest.split_once(':').ok_or_else(|| fail("no colon"))?;
+        let seat = match players.iter().position(|p| p == player) {
+            Some(seat) => seat,
+            None => {
+                players.push(player.to_string());
+                players.len() - 1
+            }
+        };
+        let tokens = rest.split_whitespace().collect::<Vec<_>>();
+        if tokens
+            .iter()
+            .any(|&token| token == "(challenge)" || token == "(time)")
+        {
+            return Err(fail("a challenge bonus or a time penalty is not taken").into());
+        }
+        let (rack, kind, score, total) = match tokens.as_slice() {
+            // the end's racks: the other's, counted to the player with no
+            // tiles, or a rack shown, with what it cost
+            [counted, score, total] if counted.starts_with('(') && counted.ends_with(')') => {
+                let rack = &counted[1..counted.len() - 1];
+                (rack, GcgKind::Out, *score, *total)
+            }
+            [rack, counted, score, total] if counted.starts_with('(') => {
+                (*rack, GcgKind::Shown, *score, *total)
+            }
+            [rack, coord, word, score, total] => (
+                *rack,
+                GcgKind::Play(format!("{coord} {word}")),
+                *score,
+                *total,
+            ),
+            [_, "--", _, _] => return Err(fail("a phony taken back is not taken").into()),
+            [rack, "-", score, total] => (*rack, GcgKind::Play("pass".into()), *score, *total),
+            [rack, exch, score, total] if exch.starts_with('-') => (
+                *rack,
+                GcgKind::Play(format!("exch {}", &exch[1..])),
+                *score,
+                *total,
+            ),
+            _ => return Err(fail("not a move this reads").into()),
+        };
+        moves.push(GcgMove {
+            line_number,
+            seat,
+            rack: rack.to_string(),
+            kind,
+            score: score.parse().map_err(|_| fail("no score"))?,
+            total: total.parse().map_err(|_| fail("no total"))?,
+        });
+    }
+    Ok(moves)
+}
+
+// an error message, prefixed with the number of the GCG line it is about
+fn on_line(line_number: usize, what: impl std::fmt::Display) -> String {
+    format!("line {line_number}: {what}")
+}
+
+// a rack as GCG writes it: its tiles, or for a seat given, the known tiles and
+// an _ for each of the rest of a full rack (none past full)
+fn rack_text(
+    game_config: &game_config::GameConfig,
+    given: bool,
+    known: &[u8],
+    held: &[u8],
+) -> String {
+    let alphabet = game_config.alphabet();
+    if !given {
+        return alphabet.fmt_rack(held).to_string();
+    }
+    let rest = (game_config.rack_size() as usize).saturating_sub(known.len());
+    format!("{}{}", alphabet.fmt_rack(known), "_".repeat(rest))
 }
 
 // a game being replayed from its seed: its state; by seat, whether its rack is
@@ -2106,6 +2542,297 @@ mod tests {
 
     #[test]
     #[inline]
+    fn a_given_seats_racks_go_out_as_gcg_and_come_back() {
+        let mut first = session();
+        for line in [
+            "player 2 given",
+            "new 7",
+            "rack AETAETE",
+            "play 8G AT",
+            "rack 2 AT",
+            "play 9H EA",
+            "play H8 TEA",
+            "play exch 3",
+            "play pass",
+            "play exch AE",
+        ] {
+            run(&mut first, line).unwrap();
+        }
+        let text = first.gcg_text().unwrap();
+        // the known tiles (given AT, plus the E their move needed) and an _ for
+        // each of the rest; an exchange of tiles no one saw, as how many; one
+        // typed, as its tiles; and no note
+        assert!(text.contains(">p2: ATE____ 9H EA +"), "{text}");
+        assert!(text.contains(">p2: _______ -3 +0 "), "{text}");
+        assert!(text.contains(">p2: AE_____ -AE +0 "), "{text}");
+        assert!(!text.contains("#note"), "{text}");
+        // the side to move's rack as it is, and none for player 2, who holds
+        // nothing known
+        let rack = first
+            .game_config
+            .alphabet()
+            .fmt_rack(&first.state.players[0].rack);
+        assert!(text.contains(&format!("\n#rack1 {rack}\n")), "{text}");
+        assert!(!text.contains("#rack2"), "{text}");
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert!(second.seats[1] == Seat::Given);
+        assert_eq!(snapshot(&second), snapshot(&first));
+        assert!(second.log.contains(&"play exch 3".to_string()));
+        assert_eq!(second.gcg_text().unwrap(), text);
+        // back at their leave, the T: it is written as known, the rest as _
+        run(&mut first, "back 4").unwrap();
+        let text = first.gcg_text().unwrap();
+        assert!(text.contains("\n#rack2 T______\n"), "{text}");
+        let mut third = session();
+        third.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(snapshot(&third), snapshot(&first));
+        assert_eq!(third.state.players[1].rack, [20]);
+    }
+
+    #[test]
+    #[inline]
+    fn a_seat_given_with_no_line_comes_back_given_and_one_known_in_full_human() {
+        // player 2 never moved, and the game is over: nothing of theirs was
+        // counted, and they have no line, so they come back given (dealt, their
+        // rack would count)
+        let mut first = session();
+        for line in [
+            "player 2 given",
+            "new 7",
+            "rack AETAETE",
+            "play 8G AT",
+            "end",
+        ] {
+            run(&mut first, line).unwrap();
+        }
+        let text = first.gcg_text().unwrap();
+        assert!(!text.contains('_'), "{text}");
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert!(second.seats[1] == Seat::Given);
+        assert_eq!(second.final_scores, first.final_scores);
+        assert_eq!(snapshot(&second), snapshot(&first));
+        // their racks given in full: no _ shows it, so they come back human,
+        // with each rack and the end's count as the file gives them
+        let mut first = session();
+        for line in [
+            "player 2 given",
+            "new 7",
+            "rack AETAETE",
+            "play 8G AT",
+            "rack 2 AETAETE",
+            "play 9H EA",
+            "end",
+        ] {
+            run(&mut first, line).unwrap();
+        }
+        let text = first.gcg_text().unwrap();
+        assert!(text.contains(">p2: AETAETE 9H EA +"), "{text}");
+        assert!(!text.contains('_'), "{text}");
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert!(second.seats[1] == Seat::Human);
+        assert_eq!(second.final_scores, first.final_scores);
+        assert_eq!(snapshot(&second), snapshot(&first));
+        assert_eq!(second.gcg_text().unwrap(), text);
+    }
+
+    #[test]
+    #[inline]
+    fn six_scoreless_turns_end_the_gcg_with_each_rack_and_what_it_costs() {
+        let mut first = session();
+        run(&mut first, "new 7").unwrap();
+        for _ in 0..6 {
+            run(&mut first, "play pass").unwrap();
+        }
+        let text = first.gcg_text().unwrap();
+        let alphabet = first.game_config.alphabet();
+        for (seat, player) in first.state.players.iter().enumerate() {
+            let rack = alphabet.fmt_rack(&player.rack).to_string();
+            assert!(
+                text.contains(&format!(">p{}: {rack} ({rack}) -", seat + 1)),
+                "{text}"
+            );
+        }
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(second.final_scores, first.final_scores);
+        assert_eq!(snapshot(&second), snapshot(&first));
+    }
+
+    #[test]
+    #[inline]
+    fn a_rack_shown_at_a_scoreless_end_goes_out_as_gcg_and_comes_back() {
+        let mut first = session();
+        for line in ["player 2 given", "new 7", "rack AETAETE", "play 8G AT"] {
+            run(&mut first, line).unwrap();
+        }
+        for _ in 0..6 {
+            run(&mut first, "play pass").unwrap();
+        }
+        // player 2's rack, nothing known and not shown, has no line and counts
+        // nothing
+        let ends = |text: &str, player: &str| {
+            let lines = text.lines();
+            lines
+                .filter(|line| line.starts_with(player) && line.contains('('))
+                .count()
+        };
+        let text = first.gcg_text().unwrap();
+        assert_eq!((ends(&text, ">p1:"), ends(&text, ">p2:")), (1, 0), "{text}");
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(second.final_scores, first.final_scores);
+        // once shown, it has its line, read back as the rack shown
+        let alphabet = first.game_config.alphabet();
+        let shown = alphabet
+            .fmt_rack(&first.state.bag.as_slice()[..7])
+            .to_string();
+        run(&mut first, &format!("rack 2 {shown}")).unwrap();
+        let text = first.gcg_text().unwrap();
+        let cost = alphabet.rack_score(&first.state.players[1].rack);
+        let line = format!(">p2: {shown} ({shown}) -{cost} ");
+        assert!(text.contains(&line), "{text}");
+        let mut third = session();
+        third.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(third.final_scores, first.final_scores);
+        assert!(third.log.contains(&format!("rack 2 {shown}")));
+        // a cost the file gets wrong stops the load there
+        let wrong = text.replace(&line, &format!(">p2: {shown} ({shown}) -{} ", cost + 1));
+        let error = session()
+            .load_moves(&gcg_moves(&wrong).unwrap())
+            .unwrap_err();
+        assert!(error.to_string().contains("its rack counts"), "{error}");
+    }
+
+    #[test]
+    #[inline]
+    fn an_end_said_goes_out_as_gcg_and_comes_back() {
+        let mut first = session();
+        for line in [
+            "player 2 given",
+            "new 7",
+            "rack AETAETE",
+            "play 8G AT",
+            "play 9H EA",
+            "play H8 TEA",
+            "end",
+        ] {
+            run(&mut first, line).unwrap();
+        }
+        // player 1's rack counts against them; player 2's, with nothing known,
+        // counts nothing
+        let alphabet = first.game_config.alphabet();
+        let rack = alphabet.fmt_rack(&first.state.players[0].rack).to_string();
+        let cost = alphabet.rack_score(&first.state.players[0].rack);
+        let total = equity::descale_score(first.final_scores.as_ref().unwrap()[0]);
+        let counted = format!(">p1: {rack} ({rack}) -{cost} {total}\n");
+        let text = first.gcg_text().unwrap();
+        assert!(text.ends_with(&counted), "{text}");
+        let loads_back = |text: &str, first: &Session| {
+            let mut second = session();
+            second.load_moves(&gcg_moves(text).unwrap()).unwrap();
+            assert_eq!(second.final_scores, first.final_scores);
+            assert_eq!(snapshot(&second), snapshot(first));
+            assert_eq!(second.gcg_text().unwrap(), text);
+            second
+        };
+        assert!(loads_back(&text, &first).log.contains(&"end".to_string()));
+        // with both shown, each rack counts against its player
+        run(&mut first, "rack 2 EE").unwrap();
+        let text = first.gcg_text().unwrap();
+        assert!(text.contains(&counted), "{text}");
+        assert!(text.contains("\n>p2: EE (EE) -2 "), "{text}");
+        loads_back(&text, &first);
+        // player 2 with no tiles gets twice player 1's rack, the only end line
+        run(&mut first, "rack 2 -").unwrap();
+        let text = first.gcg_text().unwrap();
+        let score = equity::descale_score(first.final_scores.as_ref().unwrap()[1]);
+        let twice = format!(">p2: ({rack}) +{} {score}\n", 2 * cost);
+        assert!(text.ends_with(&twice), "{text}");
+        assert!(!text.contains(&counted), "{text}");
+        loads_back(&text, &first);
+        // both seats given, nothing known of either: no rack to count
+        let mut first = session();
+        for line in [
+            "player 1 given",
+            "player 2 given",
+            "new 7",
+            "play 8G AT",
+            "play 9H EA",
+            "end",
+        ] {
+            run(&mut first, line).unwrap();
+        }
+        // GCG has no line for that end: it comes back not over, and the same
+        // otherwise
+        let text = first.gcg_text().unwrap();
+        assert!(!text.contains('('), "{text}");
+        let mut second = session();
+        second.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert!(second.final_scores.is_none());
+        assert_eq!(second.gcg_text().unwrap(), text);
+        // player 1 has no tiles and nothing is known of player 2's: nothing to
+        // count
+        run(&mut first, "rack 1 -").unwrap();
+        let text = first.gcg_text().unwrap();
+        assert!(text.contains("\n>p1: () +0 4\n"), "{text}");
+        loads_back(&text, &first);
+    }
+
+    #[test]
+    #[inline]
+    fn a_game_goes_out_as_gcg_and_comes_back_to_the_same_board_and_scores() {
+        let mut first = session();
+        for line in GAME {
+            run(&mut first, line).unwrap();
+        }
+        for line in ["rack AAA", "play exch AA", "play pass"] {
+            run(&mut first, line).unwrap();
+        }
+        let text = first.gcg_text().unwrap();
+        assert!(text.starts_with("#character-encoding UTF-8\n#player1 p1 player 1\n"));
+        assert!(text.contains(">p1: AETAETE 8G AT +4 4\n"), "{text}");
+        // TEA through the T and the E already on column H
+        assert!(text.contains(" H8 ..A +"), "{text}");
+        assert!(text.contains(">p2: AAA -AA +0 "), "{text}");
+        assert!(text.contains(" - +0 "), "{text}");
+        // the game is not over: each rack as it is
+        assert_eq!(text.matches("\n#rack").count(), 2, "{text}");
+        let moves = gcg_moves(&text).unwrap();
+        assert_eq!(moves.len(), 5 + 2);
+        let mut second = session();
+        second.load_moves(&moves).unwrap();
+        assert_eq!(snapshot(&second), snapshot(&first));
+        assert_eq!(second.gcg_text().unwrap(), text);
+        let scores = |s: &Session| s.state.players.iter().map(|p| p.score).collect::<Vec<_>>();
+        // logged as the commands that made it: a rack and a play for each move,
+        // then each rack as it is
+        assert!(second.log[0].starts_with("new "));
+        assert_eq!(second.log.len(), 1 + 2 * 5 + 2);
+        assert_eq!(second.log[1..3], ["rack AETAETE", "play 8G AT"]);
+        // a score the file gets wrong stops the load there
+        let wrong = text.replace("8G AT +4 4", "8G AT +5 5");
+        let mut third = session();
+        let error = third.load_moves(&gcg_moves(&wrong).unwrap()).unwrap_err();
+        assert!(
+            error.to_string().contains("scores 4 for a total of 4"),
+            "{error}"
+        );
+        // tiles played through in parentheses, as other programs write them,
+        // even at the start of the word
+        let through = text.replace(" H8 ..A +", " H8 (TE)A +");
+        let mut fourth = session();
+        fourth.load_moves(&gcg_moves(&through).unwrap()).unwrap();
+        assert_eq!(fourth.state.board_tiles, first.state.board_tiles);
+        assert_eq!(scores(&fourth), scores(&first));
+        assert!(gcg_moves(">p1: ABC (challenge) +5 5").is_err());
+        assert!(gcg_moves(">p1: ABC -- -4 0").is_err());
+    }
+
+    #[test]
+    #[inline]
     fn a_word_not_in_the_lexicon_is_refused() {
         let mut session = session();
         run(&mut session, "new 7").unwrap();
@@ -2162,5 +2889,12 @@ mod tests {
             run(&mut second, &line).unwrap();
         }
         assert_eq!(snapshot(&second), snapshot(&first));
+        // and in GCG, there and back
+        let text = first.gcg_text().unwrap();
+        assert!(text.contains(">p1: AETAETEATE 8G AT +4 4\n"), "{text}");
+        assert!(text.contains(">p2: EA 9H EA +"), "{text}");
+        let mut third = session();
+        third.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+        assert_eq!(snapshot(&third), snapshot(&first));
     }
 }
