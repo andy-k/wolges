@@ -29,9 +29,9 @@ const DEFAULT_ENDGAME_SECONDS: f64 = 10.0;
 // the mover's seat was given, so that they drew nothing anyone saw; whether its
 // exchange was of tiles no one saw (exch N); whether it was a phony taken back
 // (the turn then a pass, with the board and the rack as before it); the points
-// its challenges that stood gave its mover, if any; whether the game was
-// declared over after it (end); and the racks set after it, by seat (none for a
-// player with no tiles)
+// its challenges that stood gave its mover, if any; the player who lost the
+// game on a challenge of it; whether the game was declared over after it (end);
+// and the racks set after it, by seat (none for a player with no tiles)
 #[derive(Clone, PartialEq)]
 struct Turn {
     rack: Option<Vec<u8>>,
@@ -40,16 +40,20 @@ struct Turn {
     hidden: bool,
     withdrawn: bool,
     bonus: Option<i32>,
+    loser: Option<usize>,
     ended: bool,
     shown: Vec<(usize, Vec<u8>)>,
 }
 
-// what a challenge of a move that stands costs: the challenger's turn, or a
-// number of points to the player challenged
+// what a challenge of a move costs: under double, the challenger's turn if the
+// move stands; under bonus, a number of points to its player if it stands;
+// under triple, the game, which ends, lost by the challenger if the move stands
+// and by its player (who takes it back) if it does not
 #[derive(Clone, Copy, PartialEq)]
 enum ChallengeRule {
     Double,
     Bonus(i32),
+    Triple,
 }
 
 impl Turn {
@@ -151,6 +155,7 @@ pub struct Session {
     state: game_state::GameState,
     board_before_last: Option<(Vec<u8>, movegen::Play)>,
     final_scores: Option<Vec<i32>>,
+    loser: Option<usize>, // the seat that lost the game on a challenge
     move_generator: movegen::KurniaMoveGenerator,
     infer_generator: movegen::KurniaMoveGenerator,
     play_scorer: play_scorer::PlayScorer,
@@ -199,13 +204,17 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "challenges RULE",
-        "set the challenge rule: double (the challenger loses a turn) or bonus N (N points to the move's player; the default is 5)",
+        "set the challenge rule: double (the challenger loses a turn), triple (whoever is wrong loses the game), or bonus N (N points to the move's player; the default is 5)",
     ),
     (
         "withdraw",
         "take back the last move as a phony challenged off",
     ),
     ("bonus N", "give the last move's player N more points"),
+    (
+        "lost N",
+        "player N lost the game on a challenge of the last move",
+    ),
     (
         "end",
         "end the game here; the racks left count as at any end",
@@ -305,6 +314,7 @@ impl Session {
             state: game_state::GameState::new(game_config),
             board_before_last: None,
             final_scores: None,
+            loser: None,
             move_generator: movegen::KurniaMoveGenerator::new(game_config),
             infer_generator: movegen::KurniaMoveGenerator::new(game_config),
             play_scorer: play_scorer::PlayScorer::new(),
@@ -521,8 +531,12 @@ impl Session {
                     let game = self.game.as_ref().ok_or("no game: new first")?;
                     let turn = game.at.checked_sub(1).map(|at| &game.turns[at]);
                     let turn = turn.ok_or("no move to challenge")?;
-                    // a move can be challenged only once: not one taken back,
-                    // nor one that stood a challenge
+                    // a move can be challenged only once: not one the game was
+                    // lost on, nor one taken back, nor one that stood a
+                    // challenge
+                    if turn.loser.is_some() {
+                        return Err("the game was lost on a challenge".into());
+                    }
                     if turn.withdrawn {
                         return Err("the last move was taken back already".into());
                     }
@@ -561,7 +575,7 @@ impl Session {
                     }
                     (_, _, Some(true)) => match self.challenge_rule {
                         ChallengeRule::Bonus(points) => Some(points),
-                        ChallengeRule::Double => None,
+                        ChallengeRule::Double | ChallengeRule::Triple => None,
                     },
                     _ => None,
                 };
@@ -570,16 +584,30 @@ impl Session {
                 let lose_turn = words_stand == Some(true)
                     && self.challenge_rule == ChallengeRule::Double
                     && self.final_scores.is_none();
+                // under triple, the challenge ends the game: the challenger
+                // (the side to move, counted by the moves made) loses if the
+                // move stands, and the move's player loses if it does not
+                let made = self.game.as_ref().map_or(0, |game| game.at);
+                let seats = self.seats.len();
+                let loser = match (words_stand, self.challenge_rule) {
+                    (Some(true), ChallengeRule::Triple) => Some(made % seats),
+                    (Some(false), ChallengeRule::Triple) => Some((made + 1) % seats),
+                    _ => None,
+                };
                 if let Some(stands) = words_stand {
                     writeln!(
                         std::io::stdout(),
                         "{}",
                         match (stands, self.challenge_rule) {
+                            (false, ChallengeRule::Triple) =>
+                                "a phony: taken back, and its player loses the game".to_string(),
                             (false, _) => "a phony: taken back".to_string(),
                             (true, ChallengeRule::Double) =>
                                 "it stands: the challenger loses the turn".to_string(),
                             (true, ChallengeRule::Bonus(points)) =>
                                 format!("it stands: {points:+} to its player"),
+                            (true, ChallengeRule::Triple) =>
+                                "it stands: the challenger loses the game".to_string(),
                         }
                     )?;
                 }
@@ -589,9 +617,13 @@ impl Session {
                     let last = game.at.checked_sub(1).ok_or("no move before")?;
                     game.cut();
                     // a rack given to the challenger stays theirs, for the turn
-                    // they lose, if they lose it
+                    // they lose, if they lose it; a game the challenge ends
+                    // keeps no rack (it counts none)
                     let pending = game.rack.take();
                     let turn = &mut game.turns[last];
+                    if turn.loser.is_some() {
+                        return Err("the game was lost on a challenge".into());
+                    }
                     if withdraw {
                         if turn.withdrawn {
                             return Err("the last move was taken back already".into());
@@ -611,6 +643,9 @@ impl Session {
                         let sum = turn.bonus.unwrap_or(0).checked_add(points);
                         turn.bonus = Some(sum.ok_or("too many points")?);
                     }
+                    if loser.is_some() {
+                        turn.loser = loser;
+                    }
                     if lose_turn {
                         game.turns.push(Turn {
                             rack: pending,
@@ -621,13 +656,41 @@ impl Session {
                             hidden: false,
                             withdrawn: false,
                             bonus: None,
+                            loser: None,
                             ended: false,
                             shown: Vec::new(),
                         });
                         game.at += 1;
-                    } else {
+                    } else if loser.is_none() {
                         game.rack = pending;
                     }
+                    Ok(())
+                })?;
+                self.show()?;
+                line.to_string()
+            }
+            "lost" => {
+                // what a challenge under triple does, by hand: player N lost
+                // the game on a challenge of the last move, with the scores as
+                // they are
+                const USAGE: &str = "lost N, for player N";
+                let [n] = args else {
+                    return Err(USAGE.into());
+                };
+                let n = n.parse::<usize>().map_err(|_| USAGE)?;
+                if !(1..=self.seats.len()).contains(&n) {
+                    return Err(format!("player 1 to {}", self.seats.len()).into());
+                }
+                self.change(|game| {
+                    let game = game.as_mut().ok_or("no game: new first")?;
+                    let last = game.at.checked_sub(1).ok_or("no move before")?;
+                    game.cut();
+                    game.rack = None;
+                    let turn = &mut game.turns[last];
+                    if turn.loser.is_some() {
+                        return Err("the game was lost on a challenge".into());
+                    }
+                    turn.loser = Some(n - 1);
                     Ok(())
                 })?;
                 self.show()?;
@@ -698,8 +761,14 @@ impl Session {
             "challenges" => {
                 self.challenge_rule = match args {
                     [double] if double == "double" => ChallengeRule::Double,
+                    [triple] if triple == "triple" => ChallengeRule::Triple,
                     [bonus, points] if bonus == "bonus" => ChallengeRule::Bonus(points.parse()?),
-                    _ => return Err("challenges double, or challenges bonus POINTS".into()),
+                    _ => {
+                        return Err(
+                            "challenges double, challenges triple or challenges bonus POINTS"
+                                .into(),
+                        );
+                    }
                 };
                 line.to_string()
             }
@@ -980,6 +1049,7 @@ impl Session {
                 hidden,
                 withdrawn: false,
                 bonus: None,
+                loser: None,
                 ended: false,
                 shown: Vec::new(),
             });
@@ -991,8 +1061,11 @@ impl Session {
     // set a rack: the side to move's, for their move, while the game goes on;
     // anyone else's (or anyone's once the game is over), as it is after the
     // moves shown (or before the first move, at the start). Set again, the rack
-    // is these tiles.
+    // is these tiles. A game lost on a challenge counts no rack.
     fn type_rack(&mut self, seat: Option<usize>, tiles: Vec<u8>) -> error::Returns<()> {
+        if self.loser.is_some() {
+            return Err("the game was lost on a challenge: no rack counts".into());
+        }
         let to_move = self.state.turn as usize;
         let seat = seat.unwrap_or(to_move);
         let going = self.final_scores.is_none();
@@ -1101,6 +1174,7 @@ impl Session {
         let (mut replay, mut rng) = self.dealt(game)?;
         let mut final_scores = None;
         let mut board_before_last = None;
+        let mut loser = None;
         for turn in game.turns[..game.at].iter() {
             if final_scores.is_some() {
                 return Err("the game is over".into());
@@ -1110,6 +1184,7 @@ impl Session {
             board_before_last = Some((board_tiles, turn.played().into_owned()));
             replay.play_turn(self.game_config, &mut rng, turn)?;
             final_scores = replay.end_of_turn(self.game_config, turn, held)?;
+            loser = turn.loser;
             if final_scores.is_none() {
                 replay.state.next_turn();
             }
@@ -1133,6 +1208,7 @@ impl Session {
         self.state = replay.state;
         self.board_before_last = board_before_last;
         self.final_scores = final_scores;
+        self.loser = loser;
         Ok(())
     }
 
@@ -1325,12 +1401,16 @@ impl Session {
         if let Some(final_scores) = &self.final_scores {
             writeln!(
                 out,
-                "game over, {}",
+                "game over, {}{}",
                 final_scores
                     .iter()
                     .map(|&s| equity::descale_score(s).to_string())
                     .collect::<Vec<_>>()
-                    .join(" to ")
+                    .join(" to "),
+                match self.loser {
+                    Some(seat) => format!(", and player {} lost on a challenge", seat + 1),
+                    None => String::new(),
+                }
             )?;
         }
         Ok(())
@@ -1934,16 +2014,16 @@ impl Session {
         Ok(())
     }
 
-    // the moves shown, written as GCG: a header with the players p1 and p2,
-    // then a line for each move (a tile played through as '.', a blank in
-    // lowercase, an exchange as - and its tiles, or - and how many for tiles no
-    // one saw, and a pass as -), followed by its taking back as a phony (the
-    // rack, --, and minus the score, the total as before it) and a challenge's
-    // bonus (the rack after the move, then (challenge) and the points); if the
-    // game is over, the racks it counted (the other's to the player with none,
-    // or each rack left against its player), else each rack as it is, as #rack1
-    // and #rack2. GCG has no bag order or seed, and no way to say a seat is
-    // given when it shows no _, or that an end counted no rack: those are lost.
+    // the moves shown as GCG: a header (the players p1 and p2), then a line a
+    // move (a tile played through as '.', a blank in lowercase, an exchange as
+    // - and its tiles, or - and how many for tiles no one saw, and a pass as
+    // -), each followed by its taking back as a phony (the rack, --, and minus
+    // the score, the total as before) and a challenge's bonus (the rack after
+    // the move, then (challenge) and the points); if the game is over, except
+    // by a loss on a challenge, the racks it counted (the other's to the player
+    // with none, or each rack left against its player), else each rack as it is
+    // (#rack1, #rack2). GCG cannot say that a seat showing no _ is given, that
+    // an end counted no rack, or that a challenge lost the game.
     fn gcg_text(&self) -> error::Returns<String> {
         let game = self.game.as_ref().ok_or("no game: new first")?;
         let alphabet = self.game_config.alphabet();
@@ -2036,7 +2116,10 @@ impl Session {
             replay.state.next_turn();
         }
         let board = &replay.state;
+        let lost = game.at > 0 && game.turns[game.at - 1].loser.is_some();
         match final_scores {
+            // a game lost on a challenge counts no rack
+            Some(_) if lost => {}
             // the racks as they are, the side to move's as set, if it was
             None => {
                 for (seat, player) in self.state.players.iter().enumerate() {
@@ -2352,11 +2435,13 @@ impl Replay {
     // finish a move once it is played (held is how many tiles its mover held
     // before it): what the mover typed and kept stays typed; a seat given drew
     // nothing anyone saw, so what it drew goes back in the bag and it keeps its
-    // leave; then the racks set after it apply. The game is over if it was
-    // declared over (end), if a dealt mover placed tiles and the bag left them
-    // none, or after the variant's scoreless turns; then the tiles left count:
-    // a player with none (dealt, or set to none) gets twice the other's, and
-    // the other loses nothing; otherwise each player loses their own.
+    // leave; then the racks set after it apply. A challenge of it that lost the
+    // game ended the game, with the scores as they are. Else the game is over
+    // if it was declared over (end), if a dealt mover placed tiles and the bag
+    // left them none, or after the variant's scoreless turns; then the tiles
+    // left count: a player with none (dealt, or set to none) gets twice the
+    // other's, and the other loses nothing; otherwise each player loses their
+    // own.
     fn end_of_turn(
         &mut self,
         game_config: &game_config::GameConfig,
@@ -2379,6 +2464,9 @@ impl Replay {
         }
         self.type_racks(&turn.shown)?;
         let state = &self.state;
+        if turn.loser.is_some() {
+            return Ok(Some(state.players.iter().map(|p| p.score).collect()));
+        }
         if !turn.ended && !out && !state.scoreless_turns_ended(game_config) {
             return Ok(None);
         }
@@ -3550,6 +3638,82 @@ mod tests {
         run(&mut session, "challenge").unwrap();
         assert!(session.final_scores.is_none());
         assert!(!session.game.as_ref().unwrap().turns[0].ended);
+    }
+
+    #[test]
+    #[inline]
+    fn a_triple_challenge_ends_the_game_against_whoever_was_wrong() {
+        // AT stands: player 2, who challenged it, loses
+        let mut first = session();
+        for line in &GAME[..3] {
+            run(&mut first, line).unwrap();
+        }
+        run(&mut first, "challenges triple").unwrap();
+        run(&mut first, "challenge").unwrap();
+        assert_eq!(first.loser, Some(1));
+        assert!(first.final_scores.is_some());
+        assert!(run(&mut first, "play 9H EA").is_err(), "the game is over");
+        assert!(run(&mut first, "rack 2 EA").is_err(), "no rack counts");
+        assert!(run(&mut first, "challenge").is_err(), "lost already");
+        assert!(run(&mut first, "lost 1").is_err(), "lost already");
+        // its GCG: a loss counts no rack, and GCG has no line for the loss, so
+        // it comes back not over, with the same board and scores
+        let loads_back = |text: &str, first: &Session| {
+            let mut second = session();
+            second.load_moves(&gcg_moves(text).unwrap()).unwrap();
+            assert_eq!(second.loser, None);
+            assert!(second.final_scores.is_none());
+            let (board, players, ..) = snapshot(&second);
+            let scores = players.iter().map(|p| p.0).collect::<Vec<_>>();
+            let (first_board, first_players, ..) = snapshot(first);
+            assert_eq!(board, first_board);
+            assert_eq!(
+                scores,
+                first_players.iter().map(|p| p.0).collect::<Vec<_>>()
+            );
+        };
+        let text = first.gcg_text().unwrap();
+        assert!(text.ends_with(">p1: AETAETE 8G AT +4 4\n"), "{text}");
+        loads_back(&text, &first);
+        // TEEE does not stand: it is taken back, and its player, player 2,
+        // loses
+        let mut second = session();
+        for line in &GAME[..3] {
+            run(&mut second, line).unwrap();
+        }
+        for line in [
+            "challenges triple",
+            "rack EEE",
+            "phony H8 TEEE",
+            "challenge",
+        ] {
+            run(&mut second, line).unwrap();
+        }
+        assert_eq!(second.loser, Some(1));
+        assert!(second.game.as_ref().unwrap().turns[1].withdrawn);
+        let text = second.gcg_text().unwrap();
+        assert!(text.ends_with(">p2: EEE -- -4 0\n"), "{text}");
+        loads_back(&text, &second);
+        let mut third = session();
+        for line in second.log.clone() {
+            replay(&mut third, &line).unwrap();
+        }
+        assert_eq!(third.loser, Some(1));
+        assert_eq!(snapshot(&third), snapshot(&second));
+        // taking the challenged move back takes the end back with it
+        run(&mut second, "back").unwrap();
+        assert_eq!(second.loser, None);
+        assert!(second.final_scores.is_none());
+        // by hand, the same loss
+        run(&mut second, "forward").unwrap();
+        assert!(run(&mut second, "lost 3").is_err());
+        let mut fourth = session();
+        for line in &GAME[..3] {
+            run(&mut fourth, line).unwrap();
+        }
+        run(&mut fourth, "lost 2").unwrap();
+        assert_eq!(fourth.loser, Some(1));
+        assert_eq!(fourth.final_scores, first.final_scores);
     }
 
     #[test]
