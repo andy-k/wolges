@@ -59,13 +59,14 @@ enum After {
 }
 
 // what a challenge of a move costs: under double, the challenger's turn if the
-// move stands; under bonus, a number of points to its player if it stands;
+// move stands; under bonus, a number of points to its player if it stands, per
+// word challenged or per challenge (single is a bonus of none, shown as +0);
 // under triple, the game, which ends, lost by the challenger if the move stands
 // and by its player (who takes it back) if it does not
 #[derive(Clone, Copy, PartialEq)]
 enum ChallengeRule {
     Double,
-    Bonus(i32),
+    Bonus { points: i32, per_word: bool },
     Triple,
 }
 
@@ -297,12 +298,12 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "like play, but words not in the lexicon are allowed (and listed)",
     ),
     (
-        "challenge",
-        "challenge the last move: a phony is taken back, else the challenge rule applies",
+        "challenge [WORD ...]",
+        "challenge the last move's words (only those given, if any): a phony is taken back, else the challenge rule applies",
     ),
     (
         "challenges RULE",
-        "set the challenge rule: double (the challenger loses a turn), triple (whoever is wrong loses the game), or bonus N (N points to the move's player; the default is 5)",
+        "set the challenge rule: double (the challenger loses a turn), triple (whoever is wrong loses the game), bonus N [word | turn] (N points to the move's player per word or per challenge; the default is bonus 5 turn), or single (no cost, shown as +0)",
     ),
     (
         "withdraw",
@@ -438,7 +439,10 @@ impl Session {
             seats: [Seat::Human; 2],
             racks_given: [false; 2],
             names: Default::default(),
-            challenge_rule: ChallengeRule::Bonus(5),
+            challenge_rule: ChallengeRule::Bonus {
+                points: 5,
+                per_word: false,
+            },
             printing: true,
             log: Vec::new(),
             quiet,
@@ -644,8 +648,10 @@ impl Session {
             }
             "withdraw" | "bonus" | "challenge" => {
                 // for a challenge, what the last move's words say: the board
-                // before it and the move as played
-                let words_stand = if words[0] == "challenge" {
+                // before it and the move as played; the words challenged, the
+                // ones given (each a word it made), else every word it made;
+                // and whether they all stand
+                let challenged = if words[0] == "challenge" {
                     let game = self.game.as_ref().ok_or("no game: new first")?;
                     let turn = game.at.checked_sub(1).map(|at| &game.turns[at]);
                     let turn = turn.ok_or("no move to challenge")?;
@@ -668,35 +674,79 @@ impl Session {
                         .board_before_last
                         .as_ref()
                         .ok_or("no move to challenge")?;
-                    let mut stands = true;
+                    let board_snapshot = &movegen::BoardSnapshot {
+                        board_tiles: board_before,
+                        game_config: self.game_config,
+                        kwg: self.kwg()?,
+                        anagrams: None,
+                        rack_lengths: None,
+                        klv: self.klv,
+                    };
+                    let mut made = Vec::<Vec<u8>>::new();
+                    self.play_scorer
+                        .words_all(board_snapshot, &turn.play, |word: &[u8]| {
+                            if !made.iter().any(|w| w == word) {
+                                made.push(word.to_vec());
+                            }
+                            true
+                        });
+                    let mut invalid = Vec::<Vec<u8>>::new();
                     self.play_scorer.find_invalid_words(
-                        &movegen::BoardSnapshot {
-                            board_tiles: board_before,
-                            game_config: self.game_config,
-                            kwg: self.kwg()?,
-                            anagrams: None,
-                            rack_lengths: None,
-                            klv: self.klv,
-                        },
+                        board_snapshot,
                         &turn.play,
-                        |_: &[u8]| stands = false,
+                        |word: &[u8]| invalid.push(word.to_vec()),
                     );
-                    Some(stands)
+                    let mut named = Vec::<Vec<u8>>::new();
+                    let reader =
+                        alphabet::AlphabetReader::new_for_words(self.game_config.alphabet());
+                    for arg in args {
+                        let mut word = Vec::new();
+                        reader.set_word(arg, &mut word)?;
+                        if !made.contains(&word) {
+                            return Err(format!("{arg}: not a word the last move made").into());
+                        }
+                        if !named.contains(&word) {
+                            named.push(word);
+                        }
+                    }
+                    let counted = if named.is_empty() { &made } else { &named };
+                    let stands = counted.iter().all(|word| !invalid.contains(word));
+                    Some((stands, counted.len(), named))
                 } else {
                     None
                 };
-                let bonus = match (words[0].as_str(), args, words_stand) {
+                let words_stand = challenged.as_ref().map(|(stands, ..)| *stands);
+                let bonus = match (words[0].as_str(), args, &challenged) {
                     ("bonus", [points], _) => Some(points.parse::<i32>()?),
                     ("bonus", _, _) => return Err("bonus POINTS".into()),
-                    (_, [_, ..], _) => {
-                        return Err(format!("{} takes nothing more", words[0]).into());
-                    }
-                    (_, _, Some(true)) => match self.challenge_rule {
-                        ChallengeRule::Bonus(points) => Some(points),
+                    ("withdraw", [_, ..], _) => return Err("withdraw takes nothing more".into()),
+                    (_, _, Some((true, count, _))) => match self.challenge_rule {
+                        ChallengeRule::Bonus { points, per_word } => Some(if per_word {
+                            points.checked_mul(*count as i32).ok_or("too many points")?
+                        } else {
+                            points
+                        }),
                         ChallengeRule::Double | ChallengeRule::Triple => None,
                     },
                     _ => None,
                 };
+                // the words given, noted on the move after what the challenge
+                // did
+                let note = challenged
+                    .as_ref()
+                    .filter(|(.., named)| !named.is_empty())
+                    .map(|(.., named)| {
+                        let alphabet = self.game_config.alphabet();
+                        let text = |word: &Vec<u8>| {
+                            word.iter()
+                                .map(|&tile| alphabet.of_board(tile).unwrap_or("?"))
+                                .collect::<String>()
+                        };
+                        format!(
+                            "challenged {}",
+                            named.iter().map(text).collect::<Vec<_>>().join(" ")
+                        )
+                    });
                 let withdraw = words[0] == "withdraw" || words_stand == Some(false);
                 // after the game's last move there is no turn to lose
                 let lose_turn = words_stand == Some(true)
@@ -722,8 +772,8 @@ impl Session {
                             (false, _) => "a phony: taken back".to_string(),
                             (true, ChallengeRule::Double) =>
                                 "it stands: the challenger loses the turn".to_string(),
-                            (true, ChallengeRule::Bonus(points)) =>
-                                format!("it stands: {points:+} to its player"),
+                            (true, ChallengeRule::Bonus { .. }) =>
+                                format!("it stands: {:+} to its player", bonus.unwrap_or(0)),
                             (true, ChallengeRule::Triple) =>
                                 "it stands: the challenger loses the game".to_string(),
                         }
@@ -763,6 +813,9 @@ impl Session {
                     }
                     if let Some(seat) = loser {
                         turn.after.push(After::Lose(seat));
+                    }
+                    if let Some(note) = note {
+                        turn.after.push(After::Note(note));
                     }
                     if lose_turn {
                         game.turns.push(Turn {
@@ -973,16 +1026,27 @@ impl Session {
                 line.to_string()
             }
             "challenges" => {
-                self.challenge_rule = match args {
-                    [double] if double == "double" => ChallengeRule::Double,
-                    [triple] if triple == "triple" => ChallengeRule::Triple,
-                    [bonus, points] if bonus == "bonus" => ChallengeRule::Bonus(points.parse()?),
-                    _ => {
-                        return Err(
-                            "challenges double, challenges triple or challenges bonus POINTS"
-                                .into(),
-                        );
-                    }
+                const USAGE: &str =
+                    "challenges double, triple, bonus POINTS [word | turn], or single";
+                let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+                self.challenge_rule = match args.as_slice() {
+                    ["double"] => ChallengeRule::Double,
+                    ["triple"] => ChallengeRule::Triple,
+                    // no cost for a word that stands, and a phony not
+                    // challenged stays
+                    ["single"] => ChallengeRule::Bonus {
+                        points: 0,
+                        per_word: false,
+                    },
+                    ["bonus", points, per @ ..] => ChallengeRule::Bonus {
+                        points: points.parse().map_err(|_| USAGE)?,
+                        per_word: match per {
+                            [] | ["turn"] => false,
+                            ["word"] => true,
+                            _ => return Err(USAGE.into()),
+                        },
+                    },
+                    _ => return Err(USAGE.into()),
                 };
                 line.to_string()
             }
@@ -4247,6 +4311,66 @@ mod tests {
         let turns = &fifth.game.as_ref().unwrap().turns;
         assert_eq!(turns.len(), 1);
         assert!(turns[0].after == [After::Note("on AT, said over three lines".into())]);
+    }
+
+    #[test]
+    #[inline]
+    fn a_challenge_of_the_words_named_costs_as_the_rule_says_and_goes_out_as_gcg() {
+        // under AT, the phony EAEE, making AE and TA too
+        let after = |rule: &str| {
+            let mut session = session();
+            let lines = [rule, "rack EAEE", "phony 9G EAEE"];
+            for line in GAME[..3].iter().chain(&lines) {
+                run(&mut session, line).unwrap();
+            }
+            session
+        };
+        let round_trip = |session: &Session| {
+            let text = session.gcg_text().unwrap();
+            let mut again = self::session();
+            again.load_moves(&gcg_moves(&text).unwrap()).unwrap();
+            assert_eq!(again.gcg_text().unwrap(), text);
+            text
+        };
+        // its good words challenged, at 5 a word: the phony stays, and the
+        // words challenged are noted
+        let mut first = after("challenges bonus 5 word");
+        assert!(run(&mut first, "challenge EAT").is_err());
+        let before = first.state.players[1].score;
+        run(&mut first, "challenge AE ta").unwrap();
+        assert_eq!(
+            first.state.players[1].score,
+            before + equity::scale_score(10)
+        );
+        let text = round_trip(&first);
+        assert!(text.contains(" (challenge) +10 "), "{text}");
+        assert!(text.contains("\n#note challenged AE TA\n"), "{text}");
+        // the words are chosen up front: once the move stands, the phony not
+        // challenged cannot be challenged afterward
+        let error = run(&mut first, "challenge EAEE").unwrap_err().to_string();
+        assert_eq!(error, "the last move stood a challenge already");
+        // challenging the phony, or every word by giving none, takes the move
+        // back
+        let mut second = after("challenges bonus 5 word");
+        run(&mut second, "challenge EAEE").unwrap();
+        assert!(second.game.as_ref().unwrap().turns[1].withdrawn());
+        let mut third = after("challenges bonus 5 turn");
+        run(&mut third, "challenge").unwrap();
+        assert!(third.game.as_ref().unwrap().turns[1].withdrawn());
+        // a good word challenged under single: no cost, shown as +0
+        let mut fourth = after("challenges single");
+        let before = fourth.state.players[1].score;
+        run(&mut fourth, "challenge TA").unwrap();
+        assert_eq!(fourth.state.players[1].score, before);
+        let text = round_trip(&fourth);
+        assert!(text.contains(" (challenge) +0 "), "{text}");
+        for bad in [
+            "challenges bonus",
+            "challenges bonus 5 words",
+            "challenges single 0",
+        ] {
+            assert!(run(&mut fourth, bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
