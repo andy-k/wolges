@@ -237,7 +237,15 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
         let mut next_play = movegen::Play::Exchange {
             tiles: [][..].into(),
         };
-        for ply in 0..=self.num_sim_plies {
+        // once the bag is empty, keep playing past the horizon: with nothing
+        // left to draw, the rollout plays out the endgame with the generator's
+        // endgame moves, up to a cap in case no run of scoreless turns ends the
+        // game
+        let num_plies_cap = self.num_sim_plies
+            + 2 * game_config.num_players() as usize * game_config.rack_size() as usize;
+        let mut ply = 0;
+        while ply <= self.num_sim_plies || (self.game_state.bag.is_empty() && ply <= num_plies_cap)
+        {
             next_play.clone_from(if ply == 0 {
                 candidate_play
             } else {
@@ -286,6 +294,21 @@ impl<R: rand::Rng + SeedableRng + CopyState> Simmer<R> {
                 }
             }
             self.game_state.next_turn();
+            ply += 1;
+        }
+        // if the cap is reached with the bag empty and the game not over, each
+        // player keeps their rack to the end and draws nothing, so value it as
+        // the generator values a rack it keeps, not by the leave table
+        if self.game_state.bag.is_empty() {
+            let alphabet = game_config.alphabet();
+            for (value, player) in self
+                .last_seen_leave_values
+                .iter_mut()
+                .zip(self.game_state.players.iter())
+            {
+                *value =
+                    -equity::ENDGAME_PENALTY_BASE - 2 * alphabet.scaled_rack_score(&player.rack);
+            }
         }
         Ok(false)
     }
@@ -521,6 +544,59 @@ mod tests {
         simmer.last_seen_leave_values[turn] = 5 * equity::SCALE;
         simmer.last_seen_leave_values[1 - turn] = 0;
         assert_eq!(simmer.final_equity_spread().unwrap(), 55 * equity::SCALE);
+    }
+
+    #[test]
+    #[inline]
+    fn a_rollout_plays_the_endgame_out_once_the_bag_is_empty() {
+        let game_config = game_config::make_english_game_config();
+        let alphabet = game_config.alphabet();
+        let mut game_state = game_state::GameState::new(&game_config);
+        // the mover holds A and B (4 points), the opponent Q (10 points)
+        game_state.players[0].rack.extend_from_slice(&[1, 2]);
+        game_state.players[1].rack.push(17);
+        assert_eq!(alphabet.rack_score(&game_state.players[0].rack), 4);
+        assert_eq!(alphabet.rack_score(&game_state.players[1].rack), 10);
+        // every other tile is on the board, a blank as A, so the bag is empty
+        // and the generator, which counts the bag from the board, knows it
+        let mut tally = (0..alphabet.len())
+            .map(|tile| alphabet.freq(tile))
+            .collect::<Vec<_>>();
+        for player in game_state.players.iter() {
+            for &tile in player.rack.iter() {
+                tally[tile as usize] -= 1;
+            }
+        }
+        let mut square = 0;
+        for (tile, &count) in (0u8..).zip(tally.iter()) {
+            for _ in 0..count {
+                game_state.board_tiles[square] = if tile == 0 { 0x81 } else { tile };
+                square += 1;
+            }
+        }
+        game_state.bag.set_from_iter(std::iter::empty());
+
+        // with no words, every ply passes, past the two-ply horizon, until the
+        // sixth scoreless turn in a row ends the game
+        let kwg = kwg::Kwg::<kwg::Node22>::from_bytes_alloc(b"\x00\x00\x40\x00").unwrap();
+        let arm_tables = anagrams::ArmTables::build(&kwg, &game_config, false).unwrap();
+        let klv = klv::Klv::<kwg::Node22>::from_bytes_alloc(klv::EMPTY_KLV_BYTES).unwrap();
+        let mut simmer = Simmer::new(&game_config).unwrap();
+        simmer.reseed(5);
+        simmer.prepare(&game_config, &game_state, 2, false);
+        simmer.prepare_iteration();
+        let pass = movegen::Play::Exchange {
+            tiles: [][..].into(),
+        };
+        let game_ended = simmer
+            .simulate(&game_config, &kwg, &arm_tables, &klv, &pass)
+            .unwrap();
+        assert!(game_ended);
+        assert_eq!(simmer.game_state.zero_turns, 6);
+
+        // a game that ends on scoreless turns takes each player's own tiles off
+        // their score, so the mover is ahead by 6 points
+        assert_eq!(simmer.final_equity_spread().unwrap(), 6 * equity::SCALE);
     }
 
     #[test]
