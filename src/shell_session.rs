@@ -1822,6 +1822,29 @@ impl Session {
         }
         let kwg = self.kwg()?;
         let arm_tables = self.arm_tables()?;
+        // with the bag empty, both racks are known (a given seat's rack is all
+        // the unseen tiles, once they fit in it), so solve rather than sim; the
+        // solve reads no kept leaves, so none are inferred before it
+        if let Some(ms) = sim_ms {
+            let endgame_state = self.endgame_state();
+            if endgame_state.bag.is_empty() {
+                let (mut solver, _) = solve_endgame(
+                    self.game_config,
+                    kwg,
+                    arm_tables,
+                    &endgame_state,
+                    &endgame::Limits {
+                        time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
+                        states: None,
+                        memory: self.memory,
+                    },
+                    self.quiet,
+                )?;
+                let mut line = Vec::new();
+                solver.collect_pv(endgame_state.turn, &mut line);
+                return Ok(line.first().ok_or("the solve found no move")?.1.clone());
+            }
+        }
         let leaves = match sim_ms {
             Some(_) => self.kept_leaves()?,
             None => Vec::new(),
@@ -1845,26 +1868,6 @@ impl Session {
             )?;
             return Ok(self.move_generator.plays[0].play.clone());
         };
-        // with the bag empty, both racks are known (a given seat's rack is all
-        // the unseen tiles, once they fit in it), so solve rather than sim
-        let endgame_state = self.endgame_state();
-        if endgame_state.bag.is_empty() {
-            let (mut solver, _) = solve_endgame(
-                self.game_config,
-                kwg,
-                arm_tables,
-                &endgame_state,
-                &endgame::Limits {
-                    time: Some(std::time::Duration::from_secs_f64(ms / 1000.0)),
-                    states: None,
-                    memory: self.memory,
-                },
-                self.quiet,
-            )?;
-            let mut line = Vec::new();
-            solver.collect_pv(endgame_state.turn, &mut line);
-            return Ok(line.first().ok_or("the solve found no move")?.1.clone());
-        }
         let state = self.filled_state();
         move_picker::gen_simmer_candidates(
             &mut move_filter::GenMoves::Unfiltered,
@@ -4689,6 +4692,47 @@ mod tests {
         session.racks_given[0] = true;
         let error = run(&mut session, "endgame 5").unwrap_err().to_string();
         assert!(error.contains("bag is not empty"), "{error}");
+    }
+
+    #[test]
+    #[inline]
+    fn the_computer_infers_nothing_for_a_solved_endgame() {
+        // the position of the test above, after the opponent passed: the bag is
+        // empty, and the board holds every tile but the side to move's AT and
+        // E; an inference would read that pass
+        let mut session = session();
+        run(&mut session, "new 7").unwrap();
+        let game_config = session.game_config;
+        let alphabet = game_config.alphabet();
+        let mut tiles = Vec::new();
+        for tile in 0..alphabet.len() {
+            for _ in 0..alphabet.freq(tile) {
+                tiles.push(if tile == 0 { 0x81 } else { tile });
+            }
+        }
+        for held in [1, 20, 5] {
+            let at = tiles.iter().position(|&t| t == held).unwrap();
+            tiles.remove(at);
+        }
+        let mut state = game_state::GameState::new(game_config);
+        state.board_tiles[..tiles.len()].copy_from_slice(&tiles);
+        state.bag.set_from_iter(std::iter::empty());
+        state.players[0].rack = vec![1, 20];
+        state.players[1].rack = vec![5];
+        session.board_before_last = Some((
+            state.board_tiles.to_vec(),
+            movegen::Play::Exchange {
+                tiles: [][..].into(),
+            },
+        ));
+        session.state = state;
+        assert!(matches!(
+            session.computer_move(Some(100.0)).unwrap(),
+            movegen::Play::Exchange { tiles } if tiles.is_empty()
+        ));
+        // the solve reads no kept leaves, so none were inferred: the inference
+        // tables are built at their first use
+        assert!(session.infer_tables.is_none());
     }
 
     #[test]
