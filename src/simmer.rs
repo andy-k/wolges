@@ -638,6 +638,40 @@ mod tests {
         assert_eq!(simmer.final_equity_spread().unwrap(), 6 * equity::SCALE);
     }
 
+    #[test]
+    #[inline]
+    fn the_opponent_holds_every_unseen_tile_whatever_they_kept_once_the_bag_is_empty() {
+        // the opponent's move drew the bag empty, so every tile the mover cannot
+        // see is on the opponent's rack: a kept leave put back first, and the
+        // refill after it, give them those tiles again, whichever leave is drawn
+        let game_config = game_config::make_english_game_config();
+        let mut game_state = game_state::GameState::new(&game_config);
+        let mut deal_rng = DefaultRng::seed_from_u64(2);
+        game_state.reset_and_draw_tiles(&game_config, &mut deal_rng);
+        game_state.bag.set_from_iter(std::iter::empty());
+        let opponent = 1 - game_state.turn as usize;
+        let mut held = game_state.players[opponent].rack.clone();
+        held.sort_unstable();
+        let others = (0..game_config.alphabet().len())
+            .filter(|tile| !held.contains(tile))
+            .collect::<Vec<_>>();
+        let kept_leaves = [
+            (held[..2].to_vec(), 1.0),
+            (vec![others[0], others[1]], 1.0),
+            (Vec::new(), 1.0),
+        ];
+        let mut simmer = Simmer::new(&game_config).unwrap();
+        simmer.prepare(&game_config, &game_state, 2, false, &kept_leaves);
+        for seed in 0..20 {
+            simmer.reseed(seed);
+            simmer.prepare_iteration();
+            let mut rack = simmer.initial_game_state.players[opponent].rack.clone();
+            rack.sort_unstable();
+            assert_eq!(rack, held, "seed {seed}");
+            assert!(simmer.initial_game_state.bag.is_empty(), "seed {seed}");
+        }
+    }
+
     // C(n, k) as a float, 0 when k > n
     #[inline]
     fn choose(n: usize, k: usize) -> f64 {
