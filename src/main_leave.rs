@@ -6499,8 +6499,10 @@ struct InferFitParams {
 }
 
 // play games, the mover against a hasty watcher, and at every move the mover
-// makes while the bag holds tiles weigh every rack the watcher cannot rule out,
-// as infer does; then the fuzz under which the true racks were likeliest
+// makes that leaves tiles in the bag after its own draw (the moves an inference
+// serves: one that draws the bag empty leaves the mover every unseen tile,
+// whatever they kept) weigh every rack the watcher cannot rule out, as infer
+// does; then the fuzz under which the true racks were likeliest
 #[inline]
 fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     game_config: game_config::GameConfig,
@@ -6653,7 +6655,16 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
                             )?;
                         }
                         let play = move_generator.plays[0].play.clone();
-                        if is_mover && !game_state.bag.is_empty() {
+                        // the moves an inference serves: tiles are left in the
+                        // bag after the move's own draw (an exchange leaves the
+                        // bag as it was)
+                        let num_placed = match &play {
+                            movegen::Play::Place { word, .. } => {
+                                word.iter().filter(|&&tile| tile != 0).count()
+                            }
+                            movegen::Play::Exchange { .. } => 0,
+                        };
+                        if is_mover && num_placed < game_state.bag.len() {
                             // what the watcher cannot see: the bag and the mover's rack
                             let mut pool = game_config.tiles_off_board(&game_state.board_tiles)?;
                             game_config.take_rack(&mut pool, &game_state.players[1].rack)?;
@@ -6770,12 +6781,12 @@ fn infer_fit<N: kwg::Node + Sync + Send, L: kwg::Node + Sync + Send>(
     moves.sort_unstable_by_key(|m| m.at);
     let n = moves.len();
     if n == 0 {
-        wolges::return_error!("no move with tiles in the bag: play more games".to_string());
+        wolges::return_error!("no move leaving tiles in the bag: play more games".to_string());
     }
     let count_of = |kind: MoveKind| moves.iter().filter(|m| m.kind == kind).count();
     writeln!(
         std::io::stdout(),
-        "{n} moves with tiles in the bag ({} placing, {} exchanges, {} passes) in {:?}",
+        "{n} moves leaving tiles in the bag ({} placing, {} exchanges, {} passes) in {:?}",
         count_of(MoveKind::Placed),
         count_of(MoveKind::Exchanged),
         count_of(MoveKind::Passed),
